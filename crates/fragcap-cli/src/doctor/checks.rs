@@ -10,7 +10,10 @@
 //! elevated and the process-event session could not open.
 
 use super::action::{Action, ActionKind, ExtcapScope};
-use super::{Check, DeepCaptureCa, Inputs, Privilege, Report, Subsystem};
+use super::{
+    Check, DeepCaptureCa, HumanPresentation, Inputs, NativeResourceContext, Privilege, Report,
+    Subsystem,
+};
 use fragcap::core::WIRESHARK_DOWNLOAD_URL;
 
 const IDENTITY: &str = "Identity";
@@ -593,7 +596,7 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                 finding.ownership_authority,
                 finding.detail
             );
-            match finding.health {
+            let check = match finding.health {
                 super::residue::ResidueHealth::Healthy | super::residue::ResidueHealth::Active => {
                     Check::ok(DEEP_CAPTURE, name, detail)
                 }
@@ -616,9 +619,108 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                     detail,
                     "inspect the reported journal refusal before starting Deep Capture",
                 ),
-            }
+            };
+            let human_remediation = check.action.as_ref().map_or_else(
+                || {
+                    check.remediation.as_ref().map(|_| {
+                        "Inspect the retained record before starting Deep Capture; no exact cleanup action is available."
+                            .to_string()
+                    })
+                },
+                |_| {
+                    Some(
+                        "Run `fragcap doctor --fix` to review and confirm cleanup of all eligible inactive Deep Capture records."
+                            .to_string(),
+                    )
+                },
+            );
+            let recovery_eligible = check.action.is_some();
+            check.with_native_presentation(
+                HumanPresentation {
+                    name: "native residue".to_string(),
+                    detail: native_residue_diagnosis(finding, &session_identity),
+                    remediation: human_remediation,
+                },
+                NativeResourceContext {
+                    session_id: session_identity,
+                    resource_id: finding.resource_id.clone(),
+                    kind: finding.kind.clone(),
+                    state: finding.state.clone(),
+                    health: finding.health.as_str().to_string(),
+                    ownership_authority: finding.ownership_authority.clone(),
+                    recovery_eligible,
+                },
+            )
         })
         .collect()
+}
+
+fn native_residue_diagnosis(
+    finding: &super::residue::ResourceFinding,
+    session_identity: &str,
+) -> String {
+    let condition = match finding.health {
+        super::residue::ResidueHealth::Healthy => format!(
+            "Completed Deep Capture history is retained for the {} record. This terminal resource state does not determine whether the session still has an active owner. No cleanup is needed, and this record does not block Deep Capture.",
+            finding.kind
+        ),
+        super::residue::ResidueHealth::Active => format!(
+            "An active Deep Capture session is proven to own the {} record. Cleanup is not available, and this record does not block Deep Capture.",
+            finding.kind
+        ),
+        super::residue::ResidueHealth::Stale
+            if finding.resource_id == "session-owner" && finding.state == "abandoned" =>
+        {
+            "An earlier Deep Capture session ended without retiring its owner record. No active owner was proven, so Deep Capture is blocked until all eligible inactive Deep Capture records are reviewed and confirmed for cleanup."
+                .to_string()
+        }
+        super::residue::ResidueHealth::Stale => format!(
+            "An earlier Deep Capture session left cleanup incomplete for the {} record. No active owner was proven, so Deep Capture is blocked. {}",
+            finding.kind,
+            recovery_availability(finding.recoverable)
+        ),
+        super::residue::ResidueHealth::CleanupFailed => format!(
+            "An earlier cleanup attempt failed for the {} record. No active owner was proven, so Deep Capture is blocked. {}",
+            finding.kind,
+            recovery_availability(finding.recoverable)
+        ),
+        super::residue::ResidueHealth::Unknown => format!(
+            "Ownership or lifecycle state could not be proven for the {} record. Deep Capture is blocked, and cleanup safety is not inferred. {}",
+            finding.kind,
+            recovery_availability(finding.recoverable)
+        ),
+        super::residue::ResidueHealth::Unsupported => format!(
+            "This fragcap build cannot classify the {} record. Active ownership and cleanup safety were not proven, so Deep Capture is blocked.",
+            finding.kind
+        ),
+    };
+    format!(
+        "{condition} Session {}; resource {}.",
+        human_identity(session_identity),
+        human_identity(&finding.resource_id)
+    )
+}
+
+fn human_identity(value: &str) -> String {
+    let mut rendered = String::from("`");
+    for c in value.chars() {
+        match c {
+            '\\' => rendered.push_str("\\\\"),
+            '`' => rendered.push_str("\\`"),
+            c if c.is_whitespace() => rendered.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => rendered.push(c),
+        }
+    }
+    rendered.push('`');
+    rendered
+}
+
+fn recovery_availability(recoverable: bool) -> &'static str {
+    if recoverable {
+        "An exact recorded cleanup action is available only after review and confirmation."
+    } else {
+        "No exact cleanup action is available."
+    }
 }
 
 fn stable_path_hash(path: &std::path::Path) -> u64 {
@@ -1153,6 +1255,142 @@ mod tests {
             check.action.as_ref().map(|action| action.kind),
             Some(ActionKind::CleanupDeepCapture)
         );
+        let human = check.human.as_ref().expect("human residue presentation");
+        assert_eq!(human.name, "native residue");
+        assert!(human.detail.contains("cleanup incomplete"));
+        assert!(human.detail.contains("No active owner was proven"));
+        assert!(human.detail.contains("Deep Capture is blocked"));
+        assert!(human
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("review and confirm cleanup"));
+        assert!(check.native_resource.as_ref().unwrap().recovery_eligible);
+    }
+
+    #[test]
+    fn native_residue_health_classes_have_truthful_guidance_and_action_parity() {
+        use crate::doctor::residue::{NativeResidueInventory, ResidueHealth, ResourceFinding};
+
+        let cases = [
+            (
+                ResidueHealth::Healthy,
+                "terminal",
+                false,
+                "Completed",
+                false,
+            ),
+            (ResidueHealth::Active, "held", true, "active", false),
+            (
+                ResidueHealth::Stale,
+                "applied",
+                true,
+                "cleanup incomplete",
+                true,
+            ),
+            (
+                ResidueHealth::CleanupFailed,
+                "cleanup-failed",
+                true,
+                "cleanup attempt failed",
+                true,
+            ),
+            (
+                ResidueHealth::Unknown,
+                "unknown",
+                false,
+                "could not be proven",
+                false,
+            ),
+            (
+                ResidueHealth::Unsupported,
+                "unsupported",
+                false,
+                "cannot classify",
+                false,
+            ),
+        ];
+        for (health, state, recoverable, phrase, expects_action) in cases {
+            let inventory = NativeResidueInventory {
+                findings: vec![ResourceFinding {
+                    session_id: "session".to_string(),
+                    bundle: std::path::PathBuf::from("C:\\sessions\\session"),
+                    resource_id: "resource".to_string(),
+                    kind: "route".to_string(),
+                    state: state.to_string(),
+                    health,
+                    recoverable,
+                    ownership_authority: "authority".to_string(),
+                    detail: "typed evidence".to_string(),
+                }],
+                limitations: Vec::new(),
+            };
+            let check = native_residue_checks(&inventory).pop().unwrap();
+            let human = check.human.as_ref().unwrap();
+            assert!(
+                human.detail.contains(phrase),
+                "{health:?}: {}",
+                human.detail
+            );
+            assert_eq!(check.action.is_some(), expects_action, "{health:?}");
+            assert_eq!(
+                check.native_resource.as_ref().unwrap().recovery_eligible,
+                expects_action
+            );
+            if health == ResidueHealth::Healthy {
+                assert!(human
+                    .detail
+                    .contains("does not determine whether the session still has an active owner"));
+                assert!(!human.detail.contains("No active owner is proven"));
+            }
+            let json = crate::doctor::Report {
+                checks: vec![check],
+            }
+            .render_json();
+            let record: serde_json::Value =
+                serde_json::from_str(json.lines().next().unwrap()).unwrap();
+            assert_eq!(record["native_resource"]["health"], health.as_str());
+            assert_eq!(
+                record["native_resource"]["recovery_eligible"],
+                expects_action
+            );
+        }
+    }
+
+    #[test]
+    fn abandoned_session_owner_names_the_exact_safety_boundary() {
+        let inventory = crate::doctor::residue::NativeResidueInventory {
+            findings: vec![crate::doctor::residue::ResourceFinding {
+                session_id: "old-session".to_string(),
+                bundle: std::path::PathBuf::from("C:\\sessions\\old-session"),
+                resource_id: "session-owner".to_string(),
+                kind: "owner".to_string(),
+                state: "abandoned".to_string(),
+                health: crate::doctor::residue::ResidueHealth::Stale,
+                recoverable: true,
+                ownership_authority: "session-owner-record".to_string(),
+                detail: "abandoned owner registration can be retired exactly".to_string(),
+            }],
+            limitations: Vec::new(),
+        };
+        let check = native_residue_checks(&inventory).pop().unwrap();
+        let human = check.human.unwrap();
+        assert!(human.detail.contains("earlier Deep Capture session ended"));
+        assert!(human.detail.contains("without retiring its owner record"));
+        assert!(human.detail.contains("No active owner was proven"));
+        assert!(human.detail.contains("Deep Capture is blocked"));
+        assert!(human
+            .remediation
+            .unwrap()
+            .contains("review and confirm cleanup"));
+        assert!(!check.detail.contains("native residue"));
+    }
+
+    #[test]
+    fn human_identity_escapes_whitespace_without_losing_unicode() {
+        assert_eq!(human_identity("session name"), "`session\\u{20}name`");
+        assert_eq!(human_identity("resource\t界"), "`resource\\u{9}界`");
+        assert_eq!(human_identity("a`b\\c"), "`a\\`b\\\\c`");
     }
 
     #[test]

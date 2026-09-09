@@ -27,6 +27,7 @@ mod attach;
 mod cli;
 mod color;
 mod commands;
+mod display;
 mod emit;
 mod events;
 mod exit;

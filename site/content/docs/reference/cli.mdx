@@ -362,6 +362,16 @@ fragcap steam list
 Report environment readiness. The default is read-only; `--fix` offers only the
 remediations already named by the report.
 
+Native Deep Capture residue is shown under a stable `native residue` label with
+plain-language ownership, readiness, and review guidance. Long session and
+resource identities wrap without truncation, and terminals use an aligned or
+compact layout from 40 through 80 display columns. With global `--json`, each
+native residue check retains its existing machine name and adds a
+`native_resource` object containing `session_id`, `resource_id`, `kind`,
+`state`, `health`, `ownership_authority`, and `recovery_eligible`. Read-only
+Doctor never performs cleanup; exact eligible records are reviewed and
+confirmed through `fragcap doctor --fix`.
+
 ```powershell
 fragcap doctor
 ```

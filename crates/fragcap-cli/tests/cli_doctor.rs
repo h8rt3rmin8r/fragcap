@@ -516,12 +516,33 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
         Some(ActionKind::CleanupDeepCapture)
     );
     let json = report.render_json();
-    assert!(
-        json.lines().any(|line| {
-            line.contains("\"section\":\"Deep Capture\"")
-                && line.contains("\"name\":\"native resource s1/trust\"")
-                && line.contains("\"status\":\"fail\"")
-        }),
-        "Deep Capture residue is present in machine output: {json}"
+    let record: serde_json::Value = json
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|record: &serde_json::Value| record["name"] == "native resource s1/trust")
+        .expect("Deep Capture residue is present in machine output");
+    assert_eq!(record["section"], "Deep Capture");
+    assert_eq!(record["status"], "fail");
+    assert_eq!(record["native_resource"]["session_id"], "s1");
+    assert_eq!(record["native_resource"]["resource_id"], "trust");
+    assert_eq!(record["native_resource"]["kind"], "trust");
+    assert_eq!(record["native_resource"]["state"], "applied");
+    assert_eq!(record["native_resource"]["health"], "stale");
+    assert_eq!(
+        record["native_resource"]["ownership_authority"],
+        "resource-journal"
     );
+    assert!(record["native_resource"]["recovery_eligible"]
+        .as_bool()
+        .unwrap());
+
+    let human = report.render_human();
+    let human_words = human.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(human.contains("native residue"));
+    assert!(human_words.contains("No active owner was proven"));
+    assert!(human_words.contains("Deep Capture is blocked"));
+    assert!(human_words.contains("review and confirm cleanup"));
+    assert!(human_words.contains("all eligible inactive Deep Capture records"));
+    assert!(!human.contains("session=s1"));
+    assert!(!human.contains("recovery authority"));
 }

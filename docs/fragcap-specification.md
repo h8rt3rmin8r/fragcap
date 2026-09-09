@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.53-draft \
+**Version:** 0.1.57-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-30 \
+**Date:** 2026-09-09 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -149,6 +149,7 @@ enforcement.
 | 0.1.54-draft | 2026-09-05 | W. Thompson | **Adds final native Windows package certification (issue #329).** Extends sections 24.3, 24.5, 25.5, 26.3, and 28.1. A closed contract binds the final ZIP, MSI, standalone catalog, and checksum bytes to exact contents, size ceilings, PE identity and imports, machine-readable native build identity, current unsigned policy, and a finite real installer lifecycle. Certification is blocking on pull requests and releases, and the exact certified bytes are independently revalidated before GitHub release creation or crate publication. |
 | 0.1.55-draft | 2026-09-09 | W. Thompson | **Corrects automatic target discovery integrity (issue #375).** Extends sections 7.1 and 17.7. The hero and Doctor paths now persist only authoritative platform identities or paths with verified engine evidence, exact platform-client subtrees are pruned from generic known-root discovery, explicit discovery reports the admission decision and offers privacy-safe aggregate output, and confirmed reconciliation removes only exact unchanged legacy tool-owned residue. |
 | 0.1.56-draft | 2026-09-09 | W. Thompson | **Binds every Deep Capture effect to one reviewed plan (issue #382).** Extends sections 17.2.1 and 29. The CLI prepares the exact process-local session CA, fully resolved profile and managed launch, normalized routing policy, artifacts, millisecond deadlines, possible fact writes, cleanup obligations, and refusal boundaries before one complete authorization. Interactive approval names the versioned BLAKE3 plan identifier. Structured execution uses `--authorize-stdin` and must return that exact identifier in the same process. Plan and prompt writes are authoritative, incomplete lines and expired authorities refuse, and the facade's final target resolver independently prepares and compares the live launch authority before endpoint selection. A bounded read-only prior-session inspection delegates pending recovery to Doctor rather than replaying unrelated effects. Listener reservation, bundle creation, trust, launch, Capture, and fact effects occur only afterward. Legacy Deep Capture `--trust-ca` and `--yes` inputs are hidden and rejected for one release with migration guidance. |
+| 0.1.57-draft | 2026-09-09 | W. Thompson | **Makes native Deep Capture residue diagnostics operator-readable (issue #373).** Extends section 26.3. Human Doctor output now uses one stable residue label, health-specific plain-language ownership and readiness guidance, and width-aware aligned or compact layouts down to 40 display columns. JSON retains the stable machine check identity and adds exact structured session, resource, lifecycle, ownership, and recovery-eligibility facts. Cleanup authority and behavior remain unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4556,6 +4557,33 @@ Each native check identifier is derived from the retained session and resource
 identity, never from its position in the inventory. Adding or removing another
 finding therefore cannot rename an unresolved resource in machine output or in
 a verdict's `blocking_checks` list.
+
+Human output presents those checks under the short stable label `native
+residue`, then explains the observed condition, whether active ownership was
+proven, the consequence for Deep Capture readiness, and the safe next action.
+Session and resource identities remain secondary context and cannot move the
+status column. An abandoned session-owner record explicitly says that the
+earlier session ended without retiring its owner record, no active owner was
+proven, and Deep Capture is blocked until all eligible inactive Deep Capture
+records are reviewed and confirmed for cleanup through `fragcap doctor --fix`.
+Active records never receive cleanup guidance, and unknown or unsupported
+records never imply safety.
+
+The human report defaults to 80 display columns for deterministic redirected
+output. A terminal width is bounded to 40 through 80 columns. Ordinary widths
+use aligned columns; narrower widths use a compact stacked check. Wrapping and
+padding count terminal display cells rather than UTF-8 bytes, color sequences
+do not affect alignment, and exact non-secret values are never truncated. An
+indivisible token may exceed the selected width rather than being altered.
+
+JSON check records keep their existing `section`, machine `name`, machine
+`detail`, `status`, `scope`, and optional `remediation`. Every native residue
+check also carries a `native_resource` object with stable `session_id`,
+`resource_id`, `kind`, `state`, `health`, `ownership_authority`, and
+`recovery_eligible` fields. Eligibility is true exactly when that check offers
+Doctor's shared cleanup action; an active resource can retain an exact journal
+plan without becoming eligible. This additive object contains no bundle path
+or secret. Verdict records and cleanup action selection remain unchanged.
 
 An active session is proven by an opaque generation-specific synchronization
 lease held for the session adapter lifetime. The recorded PID is diagnostic and

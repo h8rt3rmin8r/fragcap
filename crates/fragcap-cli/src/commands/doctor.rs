@@ -61,7 +61,10 @@ fn run_with_terminal(
             // The machine-readable form is never colorized.
             progress.render_report(|| report.render_json())
         } else {
-            progress.render_report(|| report.render_human_with(use_color(Stream::Stdout)))
+            let human_width = selected_human_width(stdout_terminal);
+            progress.render_report(|| {
+                report.render_human_with_width(use_color(Stream::Stdout), human_width)
+            })
         };
         let _ = write!(out, "{text}");
         return Ok(report.exit());
@@ -93,13 +96,40 @@ fn run_with_terminal(
         // is not offered rather than offered only to fail.
         elevation: cfg!(windows),
     };
+    let human_width = selected_human_width(true);
     Ok(fix::run_fix(
         caps,
         args.yes,
         use_color(Stream::Stdout),
+        human_width,
         out,
         emitter,
     ))
+}
+
+fn selected_human_width(stdout_terminal: bool) -> usize {
+    let reported = stdout_terminal.then(reported_terminal_width).flatten();
+    human_width(stdout_terminal, reported)
+}
+
+#[cfg(windows)]
+fn reported_terminal_width() -> Option<usize> {
+    terminal_size::terminal_size_of(std::io::stdout()).map(|(width, _)| usize::from(width.0))
+}
+
+#[cfg(not(windows))]
+fn reported_terminal_width() -> Option<usize> {
+    // fragcap is a Windows product. Keep unsupported-host builds deterministic
+    // without broadening the Windows-only terminal_size dependency.
+    None
+}
+
+fn human_width(stdout_terminal: bool, reported: Option<usize>) -> usize {
+    if stdout_terminal {
+        reported.unwrap_or(80).clamp(40, 80)
+    } else {
+        80
+    }
 }
 
 struct DoctorProgress<'e, 'w> {
@@ -139,6 +169,15 @@ impl probe::ProbeObserver for DoctorProgress<'_, '_> {
 mod tests {
     use super::*;
     use crate::emit::{Format, Verbosity};
+
+    #[test]
+    fn human_report_width_is_terminal_bounded_and_redirects_stay_stable() {
+        assert_eq!(human_width(false, Some(50)), 80);
+        assert_eq!(human_width(true, None), 80);
+        assert_eq!(human_width(true, Some(20)), 40);
+        assert_eq!(human_width(true, Some(50)), 50);
+        assert_eq!(human_width(true, Some(120)), 80);
+    }
 
     fn doctor_args(timings: bool, fix: bool) -> DoctorArgs {
         DoctorArgs {

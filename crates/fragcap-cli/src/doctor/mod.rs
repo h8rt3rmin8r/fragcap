@@ -19,6 +19,7 @@ pub mod residue;
 
 use fragcap::write_json_string;
 
+use crate::display::{display_width, pad_display};
 use crate::doctor::action::Action;
 use crate::exit::Exit;
 
@@ -264,6 +265,37 @@ pub struct Check {
     /// [`Check::fail_action`]) so the printed remediation and the offered action
     /// cannot drift.
     pub action: Option<Action>,
+    /// Human-only wording when the machine-facing name and detail should remain
+    /// stable for automation.
+    #[doc(hidden)]
+    pub human: Option<HumanPresentation>,
+    /// Exact non-secret native residue facts for structured output.
+    #[doc(hidden)]
+    pub native_resource: Option<NativeResourceContext>,
+}
+
+/// Human-only presentation for a check whose machine identity stays unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HumanPresentation {
+    /// Short stable label.
+    pub name: String,
+    /// Plain-language diagnosis.
+    pub detail: String,
+    /// Plain-language remediation, when the machine check has one.
+    pub remediation: Option<String>,
+}
+
+/// Exact non-secret facts attached to a native Deep Capture resource finding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeResourceContext {
+    pub session_id: String,
+    pub resource_id: String,
+    pub kind: String,
+    pub state: String,
+    pub health: String,
+    pub ownership_authority: String,
+    /// Whether this check offers Doctor's shared cleanup action.
+    pub recovery_eligible: bool,
 }
 
 impl Check {
@@ -285,6 +317,8 @@ impl Check {
             scope: Self::scope(section),
             remediation: None,
             action: None,
+            human: None,
+            native_resource: None,
         }
     }
 
@@ -302,6 +336,8 @@ impl Check {
             scope: Self::scope(section),
             remediation: None,
             action: None,
+            human: None,
+            native_resource: None,
         }
     }
 
@@ -319,6 +355,8 @@ impl Check {
             scope: Self::scope(section),
             remediation: None,
             action: None,
+            human: None,
+            native_resource: None,
         }
     }
 
@@ -337,6 +375,8 @@ impl Check {
             scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: None,
+            human: None,
+            native_resource: None,
         }
     }
 
@@ -358,6 +398,8 @@ impl Check {
             scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: Some(action),
+            human: None,
+            native_resource: None,
         }
     }
 
@@ -379,7 +421,19 @@ impl Check {
             scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: Some(action),
+            human: None,
+            native_resource: None,
         }
+    }
+
+    pub(crate) fn with_native_presentation(
+        mut self,
+        human: HumanPresentation,
+        native_resource: NativeResourceContext,
+    ) -> Self {
+        self.human = Some(human);
+        self.native_resource = Some(native_resource);
+        self
     }
 }
 
@@ -431,6 +485,14 @@ impl Report {
     /// (`color == false`) is byte-identical to [`Report::render_human`], so the
     /// golden path is never colorized.
     pub fn render_human_with(&self, color: bool) -> String {
+        self.render_human_with_width(color, DEFAULT_HUMAN_WIDTH)
+    }
+
+    /// Render the human report at a caller-selected terminal width.
+    #[doc(hidden)]
+    pub fn render_human_with_width(&self, color: bool, width: usize) -> String {
+        let width = width.clamp(MIN_HUMAN_WIDTH, DEFAULT_HUMAN_WIDTH);
+        let aligned = width >= ALIGNED_LAYOUT_MIN_WIDTH;
         let mut out = String::new();
         let mut section = "";
         for check in &self.checks {
@@ -448,16 +510,39 @@ impl Report {
                 out.push('\n');
                 section = check.section;
             }
-            // The visible prefix is "  " + name(22) + " " + status(5) + " " = 31
-            // columns, so a wrapped detail continuation hangs under column 31.
-            out.push_str(&format!("  {:<22} ", check.name));
-            out.push_str(&status_field(check.status, color));
-            out.push(' ');
-            out.push_str(&wrap_hanging(&check.detail, DETAIL_INDENT, LINE_WIDTH));
-            out.push('\n');
-            if let Some(remediation) = &check.remediation {
+            let name = check
+                .human
+                .as_ref()
+                .map_or(check.name.as_str(), |human| human.name.as_str());
+            let detail = check
+                .human
+                .as_ref()
+                .map_or(check.detail.as_str(), |human| human.detail.as_str());
+            let remediation = check.human.as_ref().map_or_else(
+                || check.remediation.as_deref(),
+                |human| human.remediation.as_deref(),
+            );
+            if aligned && display_width(name) <= NAME_WIDTH {
+                out.push_str("  ");
+                out.push_str(&pad_display(name, NAME_WIDTH));
+                out.push(' ');
+                out.push_str(&status_field(check.status, color));
+                out.push(' ');
+                out.push_str(&wrap_hanging(detail, DETAIL_INDENT, width));
+                out.push('\n');
+            } else {
+                out.push_str("  ");
+                out.push_str(name);
+                out.push(' ');
+                out.push_str(&status_field(check.status, color));
+                out.push('\n');
+                out.push_str("    ");
+                out.push_str(&wrap_hanging(detail, COMPACT_INDENT, width));
+                out.push('\n');
+            }
+            if let Some(remediation) = remediation {
                 out.push_str("    remediation: ");
-                out.push_str(&wrap_hanging(remediation, REMEDIATION_INDENT, LINE_WIDTH));
+                out.push_str(&wrap_hanging(remediation, REMEDIATION_INDENT, width));
                 out.push('\n');
             }
         }
@@ -494,6 +579,27 @@ impl Report {
             if let Some(remediation) = &check.remediation {
                 line.push_str(",\"remediation\":");
                 write_json_string(remediation, &mut line);
+            }
+            if let Some(native) = &check.native_resource {
+                line.push_str(",\"native_resource\":{\"session_id\":");
+                write_json_string(&native.session_id, &mut line);
+                line.push_str(",\"resource_id\":");
+                write_json_string(&native.resource_id, &mut line);
+                line.push_str(",\"kind\":");
+                write_json_string(&native.kind, &mut line);
+                line.push_str(",\"state\":");
+                write_json_string(&native.state, &mut line);
+                line.push_str(",\"health\":");
+                write_json_string(&native.health, &mut line);
+                line.push_str(",\"ownership_authority\":");
+                write_json_string(&native.ownership_authority, &mut line);
+                line.push_str(",\"recovery_eligible\":");
+                line.push_str(if native.recovery_eligible {
+                    "true"
+                } else {
+                    "false"
+                });
+                line.push('}');
             }
             line.push_str("}\n");
             out.push_str(&line);
@@ -539,10 +645,13 @@ impl Report {
 /// The column a wrapped detail continuation hangs under: "  " + name(22) + " " +
 /// status(5) + " ".
 const DETAIL_INDENT: usize = 31;
+const COMPACT_INDENT: usize = 4;
+const NAME_WIDTH: usize = 22;
 /// The column a wrapped remediation continuation hangs under: "    remediation: ".
 const REMEDIATION_INDENT: usize = 17;
-/// The width no default-content line should exceed.
-const LINE_WIDTH: usize = 80;
+const MIN_HUMAN_WIDTH: usize = 40;
+const ALIGNED_LAYOUT_MIN_WIDTH: usize = 60;
+const DEFAULT_HUMAN_WIDTH: usize = 80;
 
 /// Reset all ANSI styling.
 const ANSI_RESET: &str = crate::color::RESET;
@@ -577,7 +686,7 @@ fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
     for word in text.split_whitespace() {
         if cur.is_empty() {
             cur.push_str(word);
-        } else if cur.len() + 1 + word.len() <= avail {
+        } else if display_width(&cur) + 1 + display_width(word) <= avail {
             cur.push(' ');
             cur.push_str(word);
         } else {
@@ -590,4 +699,128 @@ fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
     }
     let indent_str = " ".repeat(indent);
     lines.join(&format!("\n{indent_str}"))
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::{Check, HumanPresentation, NativeResourceContext, Report};
+    use crate::display::display_width;
+
+    fn report() -> Report {
+        Report {
+            checks: vec![Check::fail(
+                "Deep Capture",
+                "native resource machine-session/machine-resource",
+                "machine detail remains stable",
+                "machine remediation remains stable",
+            )
+            .with_native_presentation(
+                HumanPresentation {
+                    name: "native residue".to_string(),
+                    detail: "An earlier session left cleanup incomplete for 界🎮 evidence. No active owner was proven, so Deep Capture is blocked. Session a-very-long-session-identity; resource trust-record."
+                        .to_string(),
+                    remediation: Some(
+                        "Run `fragcap doctor --fix` to review and confirm cleanup of all eligible inactive Deep Capture records."
+                            .to_string(),
+                    ),
+                },
+                NativeResourceContext {
+                    session_id: "machine-\"session\\界".to_string(),
+                    resource_id: "machine-resource\nline".to_string(),
+                    kind: "trust".to_string(),
+                    state: "applied".to_string(),
+                    health: "stale".to_string(),
+                    ownership_authority: "resource-journal".to_string(),
+                    recovery_eligible: true,
+                },
+            )],
+        }
+    }
+
+    #[test]
+    fn aligned_and_compact_layouts_fit_without_truncating_identity() {
+        for width in [80, 40] {
+            let text = report().render_human_with_width(false, width);
+            assert!(text.contains("native residue"));
+            assert!(text.contains("a-very-long-session-identity"));
+            assert!(text.contains("trust-record"));
+            for line in text.lines() {
+                assert!(
+                    display_width(line) <= width,
+                    "line exceeds {width} cells: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn color_changes_no_visible_layout() {
+        fn strip_ansi(value: &str) -> String {
+            let mut plain = String::new();
+            let mut chars = value.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    for escaped in chars.by_ref() {
+                        if escaped == 'm' {
+                            break;
+                        }
+                    }
+                } else {
+                    plain.push(c);
+                }
+            }
+            plain
+        }
+
+        for width in [80, 40] {
+            let plain = report().render_human_with_width(false, width);
+            let colored = report().render_human_with_width(true, width);
+            assert_eq!(strip_ansi(&colored), plain);
+        }
+    }
+
+    #[test]
+    fn structured_context_is_additive_and_human_wording_is_not_serialized() {
+        let json = report().render_json();
+        let record: serde_json::Value = serde_json::from_str(json.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            record["name"],
+            "native resource machine-session/machine-resource"
+        );
+        assert_eq!(record["detail"], "machine detail remains stable");
+        assert_eq!(
+            record["native_resource"]["session_id"],
+            "machine-\"session\\界"
+        );
+        assert_eq!(
+            record["native_resource"]["resource_id"],
+            "machine-resource\nline"
+        );
+        assert_eq!(record["native_resource"]["kind"], "trust");
+        assert_eq!(record["native_resource"]["state"], "applied");
+        assert_eq!(record["native_resource"]["health"], "stale");
+        assert_eq!(
+            record["native_resource"]["ownership_authority"],
+            "resource-journal"
+        );
+        assert!(record["native_resource"]["recovery_eligible"]
+            .as_bool()
+            .unwrap());
+        assert!(!json.contains("native residue"));
+
+        let ordinary = Report {
+            checks: vec![Check::ok("Identity", "version", "0.9.0")],
+        };
+        assert!(!ordinary.render_json().contains("native_resource"));
+    }
+
+    #[test]
+    fn indivisible_tokens_are_preserved_at_the_supported_boundary() {
+        let token = "x".repeat(60);
+        let report = Report {
+            checks: vec![Check::ok("Identity", "token", &token)],
+        };
+        let text = report.render_human_with_width(false, 40);
+        assert!(text.contains(&token));
+    }
 }

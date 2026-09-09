@@ -335,7 +335,7 @@ and transition rows prove the named edge in the terminal trace.
 
 ## 26. Observability and Diagnostics
 
-Structured lifecycle events, human progress, capture statistics, calibration phase outcomes, and the diagnostic command that reports Capture and Deep Capture readiness, exact CA trust state, target stores, interfaces, ETW, proxy support, and owned cleanup residue.
+Structured lifecycle events, human progress, capture statistics, calibration phase outcomes, and the diagnostic command that reports Capture and Deep Capture readiness, exact CA trust state, target stores, interfaces, ETW, proxy support, and owned cleanup residue. Native residue uses stable plain-language human guidance with 40-column compact rendering while additive JSON fields preserve exact session, resource, lifecycle, ownership, and recovery eligibility.
 
 ## 27. Spec Kit Decomposition
 
@@ -428,6 +428,8 @@ S130 adds one closed dependency policy over complete Windows/Linux graphs and th
 S131 adds a closed final Windows package contract, exact native build and PE identity, final-content and checksum reconciliation, determinate unsigned-state validation, and a blocking real installer lifecycle over the bytes that release publication later consumes. Package certification #329 is closed; the remaining completion gates are #330 through #334.
 S132 adds the versioned `fragcap::deep_capture::api` integration boundary, checked session and adapter builders, explicit serial ownership, thread-safe cooperative cancellation, standard Rust error interoperability, a reviewed stable inventory, CLI policy-path coverage, and a runnable production-native loopback example. Stable Rust API issue #330 is closed; the remaining completion gates are #331 through #334.
 S133 deliberately prioritizes target-discovery integrity issue #375 over the earlier assignment to #331. It separates discovery from automatic persistence, excludes exact platform subtrees, adds count-only validation, and requires exact confirmed reconciliation for historical tool-owned residue. Issue #331 remains open.
+S134 binds every Deep Capture effect to one canonical reviewed plan, one process-local CA, exact fully resolved launch authority, and one interactive or structured plan decision before effects. Prior-session recovery remains Doctor-owned.
+S135 makes Doctor's native residue findings understandable and width-stable while preserving exact machine identity, structured recovery facts, and the existing cleanup authority.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector
