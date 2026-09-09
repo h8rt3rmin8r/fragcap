@@ -27,6 +27,8 @@ The default snapshot is unavailable, routing is child environment, and family is
 - Protocol steps appear only when current unconflicted routing is positive.
 - Protocol steps and deferred protocols are sorted by stable protocol token and contain no duplicates.
 - Every step has one complete S121 case and one stable reason.
+- Evidence rows are considered only when their target identifier matches the request target's stored row identifier.
+- Process image comparison uses deterministic Unicode case folding and portable Windows executable basenames.
 - Proposal construction never writes or invokes an effect adapter.
 
 ## Stable reason tokens

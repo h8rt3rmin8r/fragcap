@@ -268,6 +268,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
     let routing_case = exact_case(request, launch_case, CompatibilityProtocol::Routing);
     match assess_facts(
         &request.facts,
+        request.target.id,
         CompatibilityFactKey::ProxyRouting,
         &routing_case,
         "reached-client",
@@ -305,6 +306,7 @@ fn validate_request(
     if request.backend_name.trim().is_empty()
         || request.backend_version.trim().is_empty()
         || request.fragcap_version.trim().is_empty()
+        || request.target.id.is_none()
         || request
             .target_version
             .as_deref()
@@ -312,7 +314,7 @@ fn validate_request(
     {
         limitations.push(limitation(
             CalibrationProposalLimitationKind::InvalidContext,
-            "backend, backend version, fragcap version, and any target version must be non-empty",
+            "a stored target id plus non-empty backend, backend version, fragcap version, and any target version are required",
             Vec::new(),
         ));
     }
@@ -482,7 +484,7 @@ fn validate_publisher_chain(launches: &[LaunchEntry]) -> Result<(), CalibrationP
             roles.push(role.to_string());
         }
         if image_roles.iter().any(|(image, known_role)| {
-            image.eq_ignore_ascii_case(launch.executable()) && known_role != role
+            windows_image_eq(image, launch.executable()) && known_role != role
         }) {
             conflicting_image = true;
         } else {
@@ -521,7 +523,7 @@ fn readiness(
         .map(|declared| {
             present_images
                 .iter()
-                .any(|observed| observed.eq_ignore_ascii_case(declared))
+                .any(|observed| windows_image_eq(observed, declared))
         })
         .collect();
     if present.iter().all(|value| !value) {
@@ -574,6 +576,7 @@ fn add_protocol_steps(
         let case = exact_case(request, launch_case, protocol);
         if let EvidenceAssessment::Needs(reason) = assess_facts(
             &request.facts,
+            request.target.id,
             CompatibilityFactKey::Inspectability,
             &case,
             "full",
@@ -610,11 +613,15 @@ enum EvidenceAssessment {
 
 fn assess_facts(
     facts: &[CompatibilityFact],
+    target_id: Option<i64>,
     key: CompatibilityFactKey,
     case: &CompatibilityCase,
     positive_value: &str,
 ) -> EvidenceAssessment {
-    let relevant: Vec<_> = facts.iter().filter(|fact| fact.key == key).collect();
+    let relevant: Vec<_> = facts
+        .iter()
+        .filter(|fact| Some(fact.target_id) == target_id && fact.key == key)
+        .collect();
     let mut current_values: Vec<&str> = relevant
         .iter()
         .filter(|fact| fact.applicability(case) == CompatibilityApplicability::Applicable)
@@ -663,10 +670,7 @@ where
 {
     let mut unique = Vec::<String>::new();
     for image in images {
-        if !unique
-            .iter()
-            .any(|known| known.eq_ignore_ascii_case(&image))
-        {
+        if !unique.iter().any(|known| windows_image_eq(known, &image)) {
             unique.push(image);
         }
     }
@@ -679,6 +683,14 @@ fn windows_image_name(executable: &str) -> String {
         .next()
         .unwrap_or(executable)
         .to_string()
+}
+
+fn windows_image_eq(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .chars()
+            .flat_map(char::to_lowercase)
+            .eq(right.chars().flat_map(char::to_lowercase))
 }
 
 fn limitation(
@@ -792,9 +804,9 @@ mod tests {
             None,
             json!([{ "executable": "C:\\Games\\Game\\Game.exe", "role": "client" }]),
         );
-        let request = request(direct)
+        let direct_request = request(direct)
             .with_process_snapshot(CalibrationProcessSnapshot::complete(["game.exe"]));
-        let proposal = propose_calibration(&request);
+        let proposal = propose_calibration(&direct_request);
         assert_eq!(
             proposal.readiness,
             CalibrationLaunchReadiness::OperatorAction {
@@ -804,6 +816,20 @@ mod tests {
             }
         );
         assert!(proposal.steps.is_empty());
+
+        let unicode = target(
+            None,
+            json!([{ "executable": "GÄME.EXE", "role": "client" }]),
+        );
+        let unicode_request = request(unicode)
+            .with_process_snapshot(CalibrationProcessSnapshot::complete(["gäme.exe"]));
+        assert!(matches!(
+            propose_calibration(&unicode_request).readiness,
+            CalibrationLaunchReadiness::OperatorAction {
+                observed_case: CompatibilityLaunchCase::DirectExeWarm,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1021,6 +1047,25 @@ mod tests {
     }
 
     #[test]
+    fn facts_for_another_target_cannot_suppress_selected_target_work() {
+        let mut foreign_route = fact(
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            CompatibilityProtocol::NotApplicable,
+        );
+        foreign_route.target_id = 8;
+        let request = request(direct_target())
+            .with_facts([foreign_route])
+            .with_protocol_candidates([CompatibilityProtocol::Https]);
+        let proposal = propose_calibration(&request);
+
+        assert_eq!(proposal.steps.len(), 1);
+        assert_eq!(proposal.steps[0].phase, CalibrationPhase::Reachability);
+        assert_eq!(proposal.steps[0].reason, CalibrationProposalReason::Missing);
+        assert_eq!(proposal.deferred_protocols.len(), 1);
+    }
+
+    #[test]
     fn stale_legacy_mismatch_negative_and_conflict_have_distinct_reasons() {
         let base = fact(
             CompatibilityFactKey::ProxyRouting,
@@ -1092,6 +1137,15 @@ mod tests {
             CalibrationProposalRequest::new(direct_target(), "", "0.9.0", "0.9.0")
                 .with_process_snapshot(CalibrationProcessSnapshot::complete(Vec::<String>::new()));
         let proposal = propose_calibration(&invalid_context);
+        assert_eq!(
+            proposal.limitations[0].kind,
+            CalibrationProposalLimitationKind::InvalidContext
+        );
+        assert!(proposal.steps.is_empty());
+
+        let mut unstored = direct_target();
+        unstored.id = None;
+        let proposal = propose_calibration(&request(unstored));
         assert_eq!(
             proposal.limitations[0].kind,
             CalibrationProposalLimitationKind::InvalidContext

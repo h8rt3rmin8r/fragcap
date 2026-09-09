@@ -79,11 +79,11 @@ An advanced caller can inspect the conservative default dimensions or supply an 
 - **FR-002**: A Steam topology MUST require one exact declared client and MUST include both the platform image and client image in warm-state evaluation.
 - **FR-003**: A direct topology MUST require one exact declared Windows client and MUST preserve all candidates when more than one is plausible.
 - **FR-004**: A publisher topology MUST preserve declared order and roles, require one terminal client, and reject incomplete or conflicting chains rather than repairing them by inference.
-- **FR-005**: Cold state MUST be concluded only from a complete process snapshot in which every image required by the selected topology is absent.
+- **FR-005**: Cold state MUST be concluded only from a complete process snapshot in which every image required by the selected topology is absent under the repository's deterministic Unicode case-folding convention.
 - **FR-006**: A warm result MUST name the observed warm case, exact cold counterpart, every declared image to close normally, and MUST NOT authorize or perform process control.
 - **FR-007**: Proposal generation MUST default to child-environment routing and IPv4 when no exact override is supplied, and MUST never silently fall back from a supplied dimension.
 - **FR-008**: Every proposed attempt MUST carry the exact launch case, routing strategy, address family, protocol, native backend name and version, fragcap version, and target version when available.
-- **FR-009**: Reachability MUST be the only runnable proposal until one unconflicted current exact `reached-client` routing fact exists for the selected case.
+- **FR-009**: Reachability MUST be the only runnable proposal until one unconflicted current exact `reached-client` routing fact exists for the selected target identifier and case; facts belonging to another target MUST NOT suppress work.
 - **FR-010**: Protocol attempts MUST be limited to caller-supplied observed protocol candidates from the shipped closed protocol set and MUST be ordered deterministically.
 - **FR-011**: A current exact positive routing or inspectability fact MUST suppress the equivalent redundant attempt only when no current exact conflict exists.
 - **FR-012**: Missing, stale, legacy-incomplete, context-mismatched, negative, and conflicting evidence MUST remain distinct proposal reasons.
