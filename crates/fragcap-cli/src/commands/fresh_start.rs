@@ -194,7 +194,7 @@ fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError
                     "all-users scope does not accept the installer current-user adapter",
                 ));
             }
-            if !crate::doctor::probe::is_elevated() {
+            if !platform_is_elevated() {
                 return Err(CliError::failure(
                     "all-users fresh-start inventory requires an elevated Administrator session",
                 ));
@@ -204,6 +204,16 @@ fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError
             })
         }
     }
+}
+
+#[cfg(windows)]
+fn platform_is_elevated() -> bool {
+    crate::doctor::probe::is_elevated()
+}
+
+#[cfg(not(windows))]
+fn platform_is_elevated() -> bool {
+    false
 }
 
 fn build_inventory(scope: &'static str, profiles: &[ProfileRoots]) -> io::Result<Inventory> {
