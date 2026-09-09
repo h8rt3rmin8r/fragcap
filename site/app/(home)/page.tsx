@@ -132,15 +132,19 @@ export default function HomePage() {
           className="fd-codeblock"
         >
           <code>{`$ fragcap targets
-  #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
-  1  sample_adventure  ready           Sample Engine  not scanned
-  2  sample_arena      needs a target  not scanned    Sample Protection
+Ready to capture:
+  #  TARGET            CAPTURE  ENGINE         SENSITIVITIES
+  1  sample_adventure  ready    Sample Engine  not scanned
+
+Needs setup:
+  #  TARGET        CAPTURE         ENGINE       SENSITIVITIES
+  2  sample_arena  needs a target  not scanned  Sample Protection
 
 Next command:  fragcap capture 1`}</code>
         </pre>
         <figcaption style={{ marginTop: '0.5rem', fontSize: '0.9rem', opacity: 0.8 }}>
-          fragcap discovers the capturable titles on your machine and ends by
-          naming the next command; the row number is what{' '}
+          fragcap groups discovered titles by capture readiness and ends by
+          naming the first ready action; the row number is what{' '}
           <code style={{ fontFamily: 'var(--font-mono)' }}>fragcap capture</code>{' '}
           honors.
         </figcaption>

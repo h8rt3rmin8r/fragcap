@@ -148,9 +148,9 @@ fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
 }
 
 /// The hero listing: run discovery and register newly found titles (so each row is
-/// a registered, capturable target), then present the registered targets ordered by
-/// handle with their CAPTURE and KNOWN columns, write the row-index snapshot, and
-/// name the next command. An empty result prints the commands that populate the
+/// a registered, capturable target), then present the registered targets grouped by
+/// readiness and ordered by handle inside each group, write the row-index snapshot,
+/// and name the next command. An empty result prints the commands that populate the
 /// store. Registration is additive and idempotent; no existing entry is modified
 /// (FR-001, FR-007).
 fn hero_listing(
@@ -203,7 +203,7 @@ fn hero_listing_with_machine_probe(
         .map_err(|e| CliError::failure(e.to_string()))?;
     let exclusions = steam_non_game_exclusions(&store);
     filter_platform_non_game_steam_targets(&mut targets, &exclusions);
-    targets.sort_by(|a, b| a.handle.cmp(&b.handle));
+    let ready_count = order_targets_for_listing(&mut targets);
 
     if targets.is_empty() {
         // The most recent listing displayed no rows: replace the snapshot with an
@@ -229,7 +229,7 @@ fn hero_listing_with_machine_probe(
         return Ok(Exit::SUCCESS);
     }
 
-    render_table(&targets, out);
+    render_target_groups(&targets, ready_count, out);
 
     // A machine-wide anti-cheat fact (slice S068, issue #170) is never a title's
     // evidence: it is rendered separately, once, and only when the probe actually
@@ -247,26 +247,22 @@ fn hero_listing_with_machine_probe(
         .write_listing_snapshot(&rows)
         .map_err(|e| CliError::failure(e.to_string()))?;
 
-    // End by naming the next command: the first ready row whose install root is not
-    // missing; else the first non-missing row of any readiness; else, only when
-    // every registered row's install root is missing, the first row (there is no
-    // better answer). `.unwrap_or(1)` alone was wrong here: it named row 1 even
-    // when row 1's own install root was missing and a healthy row existed further
-    // down (review of PR #193). A row whose files are gone is never offered ahead
-    // of one that is not, since suggesting one is a bad first command (issue #167).
-    let next = targets
+    // End by naming the next command from exactly one readiness group. Ready is
+    // the immediate-action class and therefore owns the footer whenever it exists;
+    // install presence ranks rows only inside that class. When there is no ready
+    // row, the same preference applies to the setup-needed group. Falling back to
+    // the group's first row preserves the populated-listing footer even when every
+    // recorded install root is missing (FR-010, FR-011; issue #376).
+    let candidates = if ready_count > 0 {
+        &targets[..ready_count]
+    } else {
+        &targets[ready_count..]
+    };
+    let next = candidates
         .iter()
-        .position(|t| {
-            fragcap::targets::capture_readiness(t) == fragcap::targets::CaptureReadiness::Ready
-                && install_presence(t) != InstallPresence::Missing
-        })
-        .or_else(|| {
-            targets
-                .iter()
-                .position(|t| install_presence(t) != InstallPresence::Missing)
-        })
-        .map(|i| i + 1)
-        .unwrap_or(1);
+        .position(|t| install_presence(t) != InstallPresence::Missing)
+        .unwrap_or(0)
+        + 1;
     let _ = writeln!(out, "\nNext command:  fragcap capture {next}");
 
     print_footer(out, footer);
@@ -296,8 +292,48 @@ fn empty_listing(out: &mut dyn Write) {
     let _ = writeln!(out, "  Scan a folder:  fragcap targets scan <dir>");
 }
 
-/// Render the numbered CAPTURE / ENGINE / SENSITIVITIES table. The target order is
-/// the caller's (handle order).
+/// Put every target into the final human order and return the ready-group length.
+/// The readiness rank is the primary key and the handle is the deterministic key
+/// inside each group. The caller uses this exact vector for rendering, snapshot
+/// persistence, and footer selection so those authorities cannot drift (FR-005 to
+/// FR-007).
+fn order_targets_for_listing(targets: &mut [TargetEntry]) -> usize {
+    targets.sort_by(|a, b| {
+        readiness_rank(a)
+            .cmp(&readiness_rank(b))
+            .then_with(|| a.handle.cmp(&b.handle))
+    });
+    targets.partition_point(|target| {
+        fragcap::targets::capture_readiness(target) == fragcap::targets::CaptureReadiness::Ready
+    })
+}
+
+fn readiness_rank(target: &TargetEntry) -> u8 {
+    match fragcap::targets::capture_readiness(target) {
+        fragcap::targets::CaptureReadiness::Ready => 0,
+        fragcap::targets::CaptureReadiness::NeedsTarget => 1,
+    }
+}
+
+/// Render each non-empty readiness group with its fixed heading. Both slices come
+/// from the final ordered vector, and each table measures only its own rows. Row
+/// numbers remain global through the start offset passed to [`render_table`].
+fn render_target_groups(targets: &[TargetEntry], ready_count: usize, out: &mut dyn Write) {
+    if ready_count > 0 {
+        let _ = writeln!(out, "Ready to capture:");
+        render_table(&targets[..ready_count], 1, out);
+    }
+    if ready_count < targets.len() {
+        if ready_count > 0 {
+            let _ = writeln!(out);
+        }
+        let _ = writeln!(out, "Needs setup:");
+        render_table(&targets[ready_count..], ready_count + 1, out);
+    }
+}
+
+/// Render one numbered CAPTURE / ENGINE / SENSITIVITIES table. The target order
+/// and one-based starting row are the caller's.
 ///
 /// # The width rule
 ///
@@ -327,10 +363,17 @@ fn empty_listing(out: &mut dyn Write) {
 /// character handle, all from rendered output. S083's uncertainty marker adds one
 /// visible character to below-verified technology products and follows the same
 /// no-clipping rule.
-fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
-    let num_w = targets.len().to_string().len().max(1);
+fn render_table(targets: &[TargetEntry], start_row: usize, out: &mut dyn Write) {
+    let num_w = (start_row + targets.len() - 1).to_string().len().max(1);
     let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
-    let capture_w = "needs a target".len();
+    let capture_w = width_of(
+        targets.iter().map(|target| {
+            fragcap::targets::capture_readiness(target)
+                .label()
+                .to_string()
+        }),
+        "CAPTURE",
+    );
     let engine_w = width_of(
         targets.iter().map(fragcap::targets::engine_summary),
         "ENGINE",
@@ -348,7 +391,7 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
         let _ = writeln!(
             out,
             "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
-            i + 1,
+            start_row + i,
             t.handle,
             capture,
             engine,
@@ -1626,13 +1669,95 @@ fn exe_stem(exe: &str) -> String {
 mod tests {
     use super::{
         display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
-        hero_listing_with_machine_probe, print_compatibility, print_discovery,
-        print_discovery_summary, reconcile, render_machine_section, render_table,
+        hero_listing_with_machine_probe, order_targets_for_listing, print_compatibility,
+        print_discovery, print_discovery_summary, reconcile, render_machine_section, render_table,
         steam_add_metadata, CandidateIdentity, ClassificationSource, CompatibilityMatrix,
         DetectionScan, Discovery, ExeScan, FidelityTier, SteamNonGameExclusions, Store,
         TargetClassification, TargetEntry, TargetsReconcileArgs,
     };
     use crate::emit::{Emitter, Format, Verbosity};
+
+    fn listing_target(stable_id: i64, handle: &str, anchor: Option<&str>) -> TargetEntry {
+        TargetEntry {
+            id: None,
+            stable_id,
+            handle: handle.to_string(),
+            name: handle.to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: anchor.map(str::to_string),
+            launch_entries: None,
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        }
+    }
+
+    #[test]
+    fn listing_order_is_ready_first_then_handle_with_one_boundary() {
+        let mut targets = vec![
+            listing_target(1, "a_setup", None),
+            listing_target(2, "z_ready", Some("steam:2")),
+            listing_target(3, "b_ready", Some("steam:3")),
+            listing_target(4, "y_setup", None),
+        ];
+
+        let ready_count = order_targets_for_listing(&mut targets);
+
+        assert_eq!(ready_count, 2);
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.handle.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b_ready", "z_ready", "a_setup", "y_setup"]
+        );
+    }
+
+    #[test]
+    fn table_renderer_uses_the_global_start_row() {
+        let targets = [
+            listing_target(1, "alpha", Some("steam:1")),
+            listing_target(2, "bravo", Some("steam:2")),
+        ];
+        let mut out = Vec::new();
+
+        render_table(&targets, 9, &mut out);
+
+        let text = String::from_utf8(out).expect("utf-8");
+        let rows: Vec<Vec<&str>> = text
+            .lines()
+            .skip(1)
+            .map(|line| line.split_whitespace().collect())
+            .collect();
+        assert_eq!(rows[0][..2], ["9", "alpha"]);
+        assert_eq!(rows[1][..2], ["10", "bravo"]);
+    }
+
+    #[test]
+    fn table_renderer_sizes_capture_from_only_its_group() {
+        let ready = [listing_target(1, "alpha", Some("steam:1"))];
+        let setup = [listing_target(2, "alpha", None)];
+        let mut ready_out = Vec::new();
+        let mut setup_out = Vec::new();
+
+        render_table(&ready, 1, &mut ready_out);
+        render_table(&setup, 2, &mut setup_out);
+
+        let ready_text = String::from_utf8(ready_out).expect("utf-8");
+        let setup_text = String::from_utf8(setup_out).expect("utf-8");
+        let ready_heading = ready_text.lines().next().expect("ready heading");
+        let setup_heading = setup_text.lines().next().expect("setup heading");
+        assert_eq!(
+            setup_heading.find("ENGINE").expect("setup engine column")
+                - ready_heading.find("ENGINE").expect("ready engine column"),
+            "needs a target".len() - "CAPTURE".len()
+        );
+    }
 
     #[test]
     fn compatibility_detail_renders_complete_and_legacy_case_dimensions() {
@@ -2219,10 +2344,10 @@ mod tests {
         let targets = [target];
 
         let mut table_only: Vec<u8> = Vec::new();
-        render_table(&targets, &mut table_only);
+        render_table(&targets, 1, &mut table_only);
 
         let mut with_machine_section: Vec<u8> = Vec::new();
-        render_table(&targets, &mut with_machine_section);
+        render_table(&targets, 1, &mut with_machine_section);
         render_machine_section(
             &[fragcap::targets::MachineAntiCheatFinding {
                 product: "Easy Anti-Cheat".to_string(),

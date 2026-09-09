@@ -546,11 +546,134 @@ fn hero_listing_shows_columns_ordered_by_handle_and_names_the_next_command() {
     assert!(alpha < zeta, "rows are handle-ordered:\n{out}");
     // A steam-anchored target is ready and the listing names the next command.
     assert!(out.contains("ready"), "{out}");
+    assert!(out.contains("Ready to capture:\n"), "{out}");
+    assert!(!out.contains("Needs setup:"), "{out}");
     assert!(
         out.contains("\n\nNext command:  fragcap capture 1\n"),
         "ends with a labelled next command:\n{out}"
     );
     assert_eq!(out.matches("Next command:").count(), 1, "{out}");
+}
+
+#[test]
+fn mixed_hero_listing_groups_readiness_with_global_rows_and_independent_widths() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[
+            {
+                "stable_id": 701, "handle": "z_ready", "name": "Z Ready",
+                "classification": "game", "classification_source": "user",
+                "fidelity": "authored", "anchor": "steam:701"
+            },
+            {
+                "stable_id": 702,
+                "handle": "a_setup_target_with_a_deliberately_wide_handle",
+                "name": "A Setup", "classification": "game",
+                "classification_source": "user", "fidelity": "authored"
+            },
+            {
+                "stable_id": 703, "handle": "b_ready", "name": "B Ready",
+                "classification": "game", "classification_source": "user",
+                "fidelity": "authored", "anchor": "steam:703"
+            },
+            {
+                "stable_id": 704, "handle": "y_setup", "name": "Y Setup",
+                "classification": "game", "classification_source": "user",
+                "fidelity": "authored"
+            }
+        ]"#,
+        &dir,
+    );
+
+    let (code, out, err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+
+    let ready_heading = out.find("Ready to capture:").expect("ready heading");
+    let needs_heading = out.find("Needs setup:").expect("needs heading");
+    let b_ready = out.find("b_ready").expect("b ready row");
+    let z_ready = out.find("z_ready").expect("z ready row");
+    let a_setup = out
+        .find("a_setup_target_with_a_deliberately_wide_handle")
+        .expect("a setup row");
+    let y_setup = out.find("y_setup").expect("y setup row");
+    assert!(
+        ready_heading < b_ready
+            && b_ready < z_ready
+            && z_ready < needs_heading
+            && needs_heading < a_setup
+            && a_setup < y_setup,
+        "groups are ready-first and handle-ordered within each group:\n{out}"
+    );
+
+    let row_for = |handle: &str| {
+        out.lines()
+            .find(|line| line.contains(handle))
+            .expect("target row")
+            .split_whitespace()
+            .next()
+            .expect("row number")
+            .to_string()
+    };
+    assert_eq!(row_for("b_ready"), "1", "{out}");
+    assert_eq!(row_for("z_ready"), "2", "{out}");
+    assert_eq!(
+        row_for("a_setup_target_with_a_deliberately_wide_handle"),
+        "3",
+        "{out}"
+    );
+    assert_eq!(row_for("y_setup"), "4", "{out}");
+
+    let table_headings: Vec<&str> = out
+        .lines()
+        .filter(|line| line.contains("TARGET") && line.contains("CAPTURE"))
+        .collect();
+    assert_eq!(table_headings.len(), 2, "one table per group:\n{out}");
+    assert!(
+        table_headings[0].find("CAPTURE") < table_headings[1].find("CAPTURE"),
+        "the wide setup handle must not widen the ready table:\n{out}"
+    );
+    assert!(
+        out.contains("Next command:  fragcap capture 1"),
+        "the first ready row is the next action:\n{out}"
+    );
+
+    for (row, handle) in [
+        ("1", "b_ready"),
+        ("2", "z_ready"),
+        ("3", "a_setup_target_with_a_deliberately_wide_handle"),
+        ("4", "y_setup"),
+    ] {
+        let (show_code, shown, show_err) = run(&["targets", "show", row, "--db", &store]);
+        assert_eq!(show_code, 0, "stdout:\n{shown}\nstderr:\n{show_err}");
+        assert!(
+            shown.contains(handle),
+            "snapshot row {row} must resolve to {handle}:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn all_setup_listing_omits_the_ready_group_and_preserves_export_bytes() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&["targets", "add", "Zulu Setup", "--db", &store]);
+    run(&["targets", "add", "Alpha Setup", "--db", &store]);
+
+    let (before_code, before, before_err) = run(&["targets", "export", "--db", &store]);
+    assert_eq!(before_code, 0, "stdout:\n{before}\nstderr:\n{before_err}");
+
+    let (code, out, err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+    assert!(!out.contains("Ready to capture:"), "{out}");
+    assert_eq!(out.matches("Needs setup:").count(), 1, "{out}");
+    assert!(out.find("alpha_setup") < out.find("zulu_setup"), "{out}");
+    assert!(out.contains("Next command:  fragcap capture 1"), "{out}");
+
+    let (after_code, after, after_err) = run(&["targets", "export", "--db", &store]);
+    assert_eq!(after_code, 0, "stdout:\n{after}\nstderr:\n{after_err}");
+    assert_eq!(after, before, "human grouping must not alter target export");
 }
 
 #[test]
@@ -900,6 +1023,9 @@ fn list_is_empty_on_a_fresh_store() {
     assert!(out.contains("No targets yet."), "{out}");
     assert!(out.contains("fragcap targets add"), "{out}");
     assert!(out.contains("fragcap targets scan"), "{out}");
+    assert!(!out.contains("Ready to capture:"), "{out}");
+    assert!(!out.contains("Needs setup:"), "{out}");
+    assert!(!out.contains("Next command:"), "{out}");
 }
 
 #[test]
@@ -1358,7 +1484,8 @@ fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row(
                 {{
                     "stable_id": 201, "handle": "gone_game", "name": "Gone Game",
                     "classification": "game", "classification_source": "user",
-                    "fidelity": "authored", "install_root": {missing_root:?}
+                    "fidelity": "authored", "anchor": "steam:201",
+                    "install_root": {missing_root:?}
                 }},
                 {{
                     "stable_id": 202, "handle": "healthy_game", "name": "Healthy Game",
@@ -1396,8 +1523,8 @@ fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row(
         "an unaffected row carries no note: {healthy_row}"
     );
 
-    // The missing-root row is never the suggested next command, even though it
-    // sorts first by handle (gone_game < healthy_game).
+    // Both rows are ready, but the missing-root row is never suggested ahead of
+    // the healthy row that follows it in the same readiness group.
     assert!(
         out.contains("fragcap capture 2"),
         "the next command skips the missing-root row: {out}"
@@ -1405,12 +1532,11 @@ fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row(
 }
 
 #[test]
-fn a_ready_but_missing_row_is_never_the_next_command_even_with_no_ready_alternative() {
-    // Review of PR #193 (Copilot): the previous single-predicate check
-    // (Ready && !Missing) fell through to `.unwrap_or(1)` whenever no row
-    // satisfied both at once, even if row 1 itself was Ready but Missing and a
-    // merely NeedsTarget, present row existed further down. That named exactly
-    // the missing row FR-011 says must never be suggested.
+fn a_ready_but_missing_row_still_outranks_every_setup_needed_row() {
+    // S138 intentionally tightens the footer priority from issue #167's global
+    // install-presence preference. A ready row remains the valid immediate action
+    // class even when its recorded install root is missing; a setup-needed row can
+    // no longer be recommended while any ready row exists (issue #376).
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);
     let missing_root = dir.path().join("does-not-exist").display().to_string();
@@ -1437,8 +1563,8 @@ fn a_ready_but_missing_row_is_never_the_next_command_even_with_no_ready_alternat
     let (code, out, _err) = run(&["targets", "list", "--db", &store]);
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("fragcap capture 2"),
-        "the present-but-not-ready row is suggested over the ready-but-missing one: {out}"
+        out.contains("fragcap capture 1"),
+        "the ready group outranks every setup-needed row: {out}"
     );
 }
 

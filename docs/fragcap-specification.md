@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.57-draft \
+**Version:** 0.1.59-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -151,6 +151,7 @@ enforcement.
 | 0.1.56-draft | 2026-09-09 | W. Thompson | **Binds every Deep Capture effect to one reviewed plan (issue #382).** Extends sections 17.2.1 and 29. The CLI prepares the exact process-local session CA, fully resolved profile and managed launch, normalized routing policy, artifacts, millisecond deadlines, possible fact writes, cleanup obligations, and refusal boundaries before one complete authorization. Interactive approval names the versioned BLAKE3 plan identifier. Structured execution uses `--authorize-stdin` and must return that exact identifier in the same process. Plan and prompt writes are authoritative, incomplete lines and expired authorities refuse, and the facade's final target resolver independently prepares and compares the live launch authority before endpoint selection. A bounded read-only prior-session inspection delegates pending recovery to Doctor rather than replaying unrelated effects. Listener reservation, bundle creation, trust, launch, Capture, and fact effects occur only afterward. Legacy Deep Capture `--trust-ca` and `--yes` inputs are hidden and rejected for one release with migration guidance. |
 | 0.1.57-draft | 2026-09-09 | W. Thompson | **Makes native Deep Capture residue diagnostics operator-readable (issue #373).** Extends section 26.3. Human Doctor output now uses one stable residue label, health-specific plain-language ownership and readiness guidance, and width-aware aligned or compact layouts down to 40 display columns. JSON retains the stable machine check identity and adds exact structured session, resource, lifecycle, ownership, and recovery-eligibility facts. Cleanup authority and behavior remain unchanged. |
 | 0.1.58-draft | 2026-09-09 | W. Thompson | **Adds explicit fresh-start uninstall cleanup (issue #377).** Extends sections 15.3, 24.5, 25.5, 26.3, and 28.1. Ordinary uninstall and every maintenance transition continue to preserve user state. An unchecked current-user removal choice passes the initiating user's exact canonical roots to one product-owned inventory, Doctor recovery, contained deletion, and bounded report authority. Silent cleanup requires two exact properties. Broader all-users cleanup is a separate administrator preview whose digest binds every profile and root before execution. |
+| 0.1.59-draft | 2026-09-09 | W. Thompson | **Groups the hero target listing by capture readiness (issue #376).** Extends section 17.7. Human output places handle-sorted `Ready to capture` rows before handle-sorted `Needs setup` rows, omits empty groups, measures each table independently without truncation, and assigns one continuous row sequence. The listing snapshot persists that exact order, and the footer never recommends setup while any ready target exists. Target export and stable identity remain unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3253,17 +3254,25 @@ successfully on their own machine that makes attribution concrete using their
 own data. With no subcommand it runs discovery across its tiers, registers any
 newly found high-confidence titles into `local.db` idempotently, withholds
 location-only candidates under FR-6e, and lists the registered
-targets as a numbered table:
+targets as readiness-grouped numbered tables:
 
 ```text
-  #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
-  1  sample_adventure  ready           Sample Engine  not scanned
-  2  sample_arena      needs a target  not scanned    Sample Protection
+Ready to capture:
+  #  TARGET            CAPTURE  ENGINE         SENSITIVITIES
+  1  sample_adventure  ready    Sample Engine  not scanned
+
+Needs setup:
+  #  TARGET        CAPTURE         ENGINE       SENSITIVITIES
+  2  sample_arena  needs a target  not scanned  Sample Protection
 
 Next command:  fragcap capture 1
 ```
 
-Rows are ordered by handle. The CAPTURE column is `ready` when the entry names
+Rows are partitioned by capture readiness, with `Ready to capture` first and
+`Needs setup` second, and are ordered by handle inside each group. A group and
+its heading are omitted when it has no rows. Row numbers form one continuous
+sequence over the final grouped order and never restart at a heading. The
+CAPTURE column is `ready` when the entry names
 a Windows client or carries a resolvable anchor, and `needs a target` when its
 launch chain is unresolved; every listed row is capturable in principle, so the
 column reports how close, never whether the row is valid, and it states that
@@ -3291,17 +3300,21 @@ is recorded for the row. A scanned-clean row, an incompletely scanned row, and a
 unscanned row are three different facts and are rendered as three different
 things (P-4).
 
-No column value is truncated and no row is wrapped. Every column but the last
-sizes to its content, the last is free-running, and the columns other than the
-target handle cost a bounded width; a handle wider than the remainder of an 80
-column terminal overflows visibly rather than being clipped, because a silently
-truncated value is the same class of loss as a silently dropped packet.
+No column value is truncated and no row is wrapped. Each readiness group sizes
+its own table independently, so a wide value in one group does not distort the
+other. Within a table every column but the last sizes to its content, the last
+is free-running, and the columns other than the target handle cost a bounded
+width; a handle wider than the remainder of an 80 column terminal overflows
+visibly rather than being clipped, because a silently truncated value is the
+same class of loss as a silently dropped packet.
 
 After any machine-findings section, a populated listing ends with one blank line
 and the exact labelled footer `Next command:  fragcap capture <row>`. The row is
-the first ready target whose install root is not missing, then the first target
-whose install root is not missing when none is both ready and present, and only
-then the first displayed target when every install root is missing. An empty
+the first ready target whose install root is not missing, then the first ready
+target when every ready install root is missing. Only when the ready group is
+empty may the footer select the first setup-needed target whose install root is
+not missing, then the first setup-needed target. A setup-needed target is never
+recommended while a ready target exists. An empty
 result prints the commands that populate the store rather than an empty table
 and prints no next-command footer. Registration is additive and idempotent: a
 repeat listing over an unchanged environment registers nothing new and never
@@ -3315,7 +3328,8 @@ a presentation and row-index rule, not a destructive migration: the row remains
 in `local.db`, and user-authored rows are not hidden solely because they share
 the same anchor or install directory.
 
-The listing writes a snapshot of the rows it displayed to `local.db`, and a
+The listing writes a snapshot of the rows it displayed to `local.db` in the
+exact final ready-then-setup order, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row
 number keeps naming the row the user saw across an intervening mutation.
 
