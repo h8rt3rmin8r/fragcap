@@ -38,6 +38,8 @@
 
 **Rationale**: The repository already has reviewed handling for combining marks, selectors, CJK, fullwidth forms, and emoji. Sharing it avoids subtly different width rules and adds no dependency.
 
+During extraction, S135 deliberately corrects one prior helper result: U+2764 followed by its emoji variation selector previously counted as one display cell because the selector counted zero while the heart base was absent from the wide set. The shared helper counts that emoji form as two cells. This proportional deviation is required for the new color and Unicode alignment contract and is protected by the extracted helper test.
+
 **Alternatives considered**: Byte or scalar counting was rejected because it visibly misaligns non-ASCII text. Copying the helpers was rejected as divergent logic. Adding a Unicode-width package was rejected because the existing bounded implementation covers the product's documented cases without a new lockfile package.
 
 ## D6. Keep recovery behavior completely outside presentation
