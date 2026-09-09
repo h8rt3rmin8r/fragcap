@@ -96,15 +96,25 @@ impl<'w> Emitter<'w> {
     /// Emit a lifecycle event. A no-op in human mode, where progress lines carry
     /// the same information.
     pub fn event(&mut self, event: &Event) {
+        let _ = self.event_checked(event);
+    }
+
+    /// Emit a lifecycle event and report a diagnostic-stream failure.
+    ///
+    /// Authorization uses this checked form because a plan that was not written
+    /// must never be treated as reviewable. Ordinary telemetry retains the
+    /// best-effort behavior of [`Emitter::event`].
+    pub fn event_checked(&mut self, event: &Event) -> std::io::Result<()> {
         if self.format == Format::Json || self.captured_events.is_some() {
             let line = event.render((self.clock)());
             if let Some(events) = &mut self.captured_events {
                 events.push(line.clone());
             }
             if self.format == Format::Json {
-                let _ = writeln!(self.err, "{line}");
+                writeln!(self.err, "{line}")?;
             }
         }
+        Ok(())
     }
 
     /// Begin copying structured lifecycle events for a session sidecar.
@@ -131,14 +141,20 @@ impl<'w> Emitter<'w> {
     /// Write required human-facing text even when ordinary progress is quiet.
     /// JSON mode remains exclusive and receives the corresponding event instead.
     pub fn required_human(&mut self, text: &str) {
+        let _ = self.required_human_checked(text);
+    }
+
+    /// Write required human-facing text and report a diagnostic-stream failure.
+    pub fn required_human_checked(&mut self, text: &str) -> std::io::Result<()> {
         if self.format == Format::Human {
-            let _ = write!(self.err, "{text}");
+            write!(self.err, "{text}")?;
         }
+        Ok(())
     }
 
     /// Flush the diagnostic stream before reading an interactive answer.
-    pub fn flush(&mut self) {
-        let _ = self.err.flush();
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.err.flush()
     }
 
     /// Whether this emitter is producing the structured event stream.

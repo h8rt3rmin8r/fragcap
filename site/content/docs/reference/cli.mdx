@@ -127,16 +127,17 @@ fragcap capture 1 --sink "tcp://127.0.0.1:9000,format=jsonl,payload=false,queue=
 
 Run Capture with explicit, target-scoped local proxy inspection. Exactly one
 stored-target input is required: positional `SELECTOR`, `--target`, or `--id`.
-The current implementation requires a managed launch, explicit CA trust
-confirmation, and compatible launch facts.
+The current implementation requires a managed launch, one exact complete-plan
+authorization, and compatible launch facts.
 
 ```powershell
-fragcap deep-capture sample-target --launch --trust-ca --har --key-log
+fragcap deep-capture sample-target --launch --har --key-log
 ```
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
+| `--authorize-stdin` | open | `false` | all | Select prompt-free authorization. Read the emitted plan, return its exact `plan-v1` identifier plus one LF on standard input in the same process, and keep the event stream open. Required with `--json`. |
 | `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
 | `--calibration-protocol` | `routing`, `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Select the exact case to measure. Reachability requires `routing`; TLS requires one concrete protocol. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
@@ -156,10 +157,12 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--proxy-bypass` | open | none | all | Add an explicit target bypass rule. Repeat or comma-separate DNS domain, IP, CIDR, or port-qualified authority rules. Bare and leading-dot domains both include descendants. Ambient proxy variables are never inherited. |
 | `--proxy-family` | `ipv4`, `ipv6` | `ipv4` | all | Bind the exact loopback family authorized by this session. No wildcard or automatic family fallback is used. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
-| `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. Conflicts with calibration. |
 | `--wait` | open | none | all | Set the target acquisition timeout. |
-| `--yes` | open | `false` | all | Pre-confirm Deep Capture prompts for an unattended run. |
+
+Deep Capture hides and rejects the former `--trust-ca` and `--yes` inputs for one release. The migration error points to the complete interactive plan or `--authorize-stdin`. Other commands retain their separately scoped `--yes` confirmations.
+
+Authorization plan and prompt writes must succeed before input is read. Interactive approval requires a complete LF-terminated line, and effective deadlines are bound at exact millisecond precision. The prepared CA must remain within its displayed validity period. Stored target authority is checked immediately after approval, then the facade independently resolves and compares the exact profile, executable paths, platform root, dispatch, and managed launch before endpoint selection. Before constructing a new plan, a bounded read-only inspection refuses any pending prior-session recovery and directs the operator to `fragcap doctor --fix`; the new plan never authorizes effects against an older session.
 
 Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.

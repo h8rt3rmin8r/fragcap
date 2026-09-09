@@ -335,11 +335,83 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn recover_deep_capture_journals(
     root: &Path,
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
     recover_deep_capture_journals_inner(root, out, false)
+}
+
+/// Inspect prior Deep Capture ownership without replaying or retiring anything.
+///
+/// A new session uses this before displaying its authorization plan. Any stale
+/// obligation is delegated to Doctor so that an approval for the new session
+/// cannot silently authorize effects against an older one.
+pub(crate) fn pending_deep_capture_recovery(root: &Path) -> Result<Vec<String>, Vec<String>> {
+    let mut failures = Vec::new();
+    let mut pending = Vec::new();
+    let mut roots = vec![root.to_path_buf()];
+    let mut active_bundles = Vec::new();
+    match registered_session_owners(root) {
+        Ok(entries) => {
+            for entry in entries {
+                match owner_is_active(&entry) {
+                    Ok(true) => active_bundles.push(entry.bundle),
+                    Ok(false) => {
+                        roots.push(entry.bundle.clone());
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::Unsupported
+                            && entry.lease_id.is_none() =>
+                    {
+                        roots.push(entry.bundle.clone());
+                    }
+                    Err(error) => failures.push(format!(
+                        "could not determine session owner {}: {error}",
+                        entry.registry_path.display()
+                    )),
+                }
+            }
+        }
+        Err(error) => failures.push(format!("session owner registry is invalid: {error}")),
+    }
+    roots.sort();
+    roots.dedup();
+    for journal in roots
+        .iter()
+        .flat_map(|root| resource_journals(root))
+        .filter(|journal| {
+            !active_bundles
+                .iter()
+                .any(|bundle| journal.starts_with(bundle))
+        })
+    {
+        match fragcap::deep_capture::read_resource_journal(&journal) {
+            Ok(prefix) => {
+                let recovery = prefix.recovery_plan();
+                if !recovery.actions.is_empty() || !recovery.refusals.is_empty() {
+                    pending.push(format!(
+                        "resource journal {} has {} recovery action(s) and {} refusal(s)",
+                        journal.display(),
+                        recovery.actions.len(),
+                        recovery.refusals.len()
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!(
+                "could not inspect resource journal {}: {error}",
+                journal.display()
+            )),
+        }
+    }
+    pending.sort();
+    pending.dedup();
+    if failures.is_empty() {
+        Ok(pending)
+    } else {
+        Err(failures)
+    }
 }
 
 fn recover_deep_capture_journals_with_legacy_confirmation(
@@ -1090,6 +1162,46 @@ mod tests {
         );
         assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
         assert_eq!(roots[0].owner_pid, std::process::id());
+    }
+
+    #[test]
+    fn pending_recovery_inspection_is_read_only_and_names_the_obligation() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("abandoned-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                "127.0.0.1:54321",
+                "session:session",
+                "close-loopback-listener",
+                ResourceState::Applied,
+                "bound",
+            ))
+            .expect("applied");
+        drop(journal);
+        drop(lease);
+
+        let pending = pending_deep_capture_recovery(root.path()).expect("inspect");
+        assert!(pending
+            .iter()
+            .any(|item| item.contains("1 recovery action(s)")));
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("unchanged journal");
+        assert_eq!(
+            prefix.latest()["proxy-listener"].state,
+            ResourceState::Applied
+        );
+        assert_eq!(registered_session_owners(root.path()).unwrap().len(), 1);
     }
 
     #[test]

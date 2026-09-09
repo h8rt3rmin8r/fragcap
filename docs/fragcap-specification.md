@@ -148,6 +148,7 @@ enforcement.
 | 0.1.53-draft | 2026-09-05 | W. Thompson | **Adds the native dependency and supply-chain release authority (issue #328).** Extends sections 24.3, 25.5, 27, and 28.1. A versioned policy binds the locked all-feature Linux and Windows graphs plus the exact shipped Windows runtime closure, rejects ungoverned compatibility lines, unsupported sources, stale critical reviews, expired exceptions, checksum drift, and advisory or license failures, and generates validated CycloneDX and third-party notice artifacts for both official package formats. Exact-pinned audit and evidence tools run on pull requests, main, release, a weekly schedule, and manual dispatch. S130 adds no product dependency or runtime behavior; final installer and archive certification remains #329. |
 | 0.1.54-draft | 2026-09-05 | W. Thompson | **Adds final native Windows package certification (issue #329).** Extends sections 24.3, 24.5, 25.5, 26.3, and 28.1. A closed contract binds the final ZIP, MSI, standalone catalog, and checksum bytes to exact contents, size ceilings, PE identity and imports, machine-readable native build identity, current unsigned policy, and a finite real installer lifecycle. Certification is blocking on pull requests and releases, and the exact certified bytes are independently revalidated before GitHub release creation or crate publication. |
 | 0.1.55-draft | 2026-09-09 | W. Thompson | **Corrects automatic target discovery integrity (issue #375).** Extends sections 7.1 and 17.7. The hero and Doctor paths now persist only authoritative platform identities or paths with verified engine evidence, exact platform-client subtrees are pruned from generic known-root discovery, explicit discovery reports the admission decision and offers privacy-safe aggregate output, and confirmed reconciliation removes only exact unchanged legacy tool-owned residue. |
+| 0.1.56-draft | 2026-09-09 | W. Thompson | **Binds every Deep Capture effect to one reviewed plan (issue #382).** Extends sections 17.2.1 and 29. The CLI prepares the exact process-local session CA, fully resolved profile and managed launch, normalized routing policy, artifacts, millisecond deadlines, possible fact writes, cleanup obligations, and refusal boundaries before one complete authorization. Interactive approval names the versioned BLAKE3 plan identifier. Structured execution uses `--authorize-stdin` and must return that exact identifier in the same process. Plan and prompt writes are authoritative, incomplete lines and expired authorities refuse, and the facade's final target resolver independently prepares and compares the live launch authority before endpoint selection. A bounded read-only prior-session inspection delegates pending recovery to Doctor rather than replaying unrelated effects. Listener reservation, bundle creation, trust, launch, Capture, and fact effects occur only afterward. Legacy Deep Capture `--trust-ca` and `--yes` inputs are hidden and rejected for one release with migration guidance. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3007,8 +3008,7 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --max-bytes <SIZE>     Stop after this many captured bytes
   -i, --interface <NAME>     Capture interface; repeatable
       --no-payload           Write packet metadata without payload bytes
-      --trust-ca             Confirm fragcap-owned CA trust changes
-      --yes                  Pre-confirm Deep Capture prompts
+      --authorize-stdin      Read the exact emitted plan identifier from standard input
       --restart-warm         Wait for normal shutdown and prepare a new cold launch
       --calibrate <PHASE>    Measure compatibility: reachability or tls
       --calibration-protocol <PROTOCOL>
@@ -3041,9 +3041,9 @@ the library coordinator and are directly testable without invoking the binary.
 The MVP requires `--launch`. The command must own the launch environment so
 scoped proxy configuration can be applied to that session only. It refuses real
 targets whose local compatibility facts do not show scoped proxy routing reaching
-the final client, and it refuses missing CA trust confirmation before mutating
-trust state. It never silently promotes an unknown launch path to system-wide
-proxy settings.
+the final client. One complete plan authorization includes any exact current-user
+trust action before mutation. It never silently promotes an unknown launch path
+to system-wide proxy settings.
 
 `--proxy-bypass` is the only operator bypass input. Repeated values and
 comma-delimited tokens accept ASCII DNS domains, IP literals, canonical CIDRs,
@@ -3071,14 +3071,14 @@ Compatibility calibration is the deliberate evidence-producing path for an unkno
 
 ```text
 fragcap deep-capture <SELECTOR> --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
-fragcap deep-capture <SELECTOR> --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture <SELECTOR> --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
 
 The calibration phase, launch case, and protocol flags form one explicit case and are absent from an ordinary Deep Capture invocation. Reachability accepts only `routing`; TLS requires one concrete protocol from the closed shipped classification set. Real calibration supports an exact owned cold Steam platform client, a cold direct-executable, and an exact cold publisher-chain launch over one explicit IPv4 or IPv6 loopback family. The existing `steam-protocol-cold` compatibility token names the Steam launch case and remains stable, but Deep Capture executes it through the owned root and observe-before-dispatch path. Warm Steam, warm direct executable, warm publisher launcher, a declared-versus-observed case mismatch, an unavailable routing strategy, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
 
-After side-effect-free resolution, launch-state validation, bundle validation, and Capture preparation, calibration emits the complete plan in human or structured form. It then requires an interactive affirmative answer or `--yes`. Preconfirmation never suppresses the plan. JSON and noninteractive runs without `--yes` refuse before mutation. Reachability refuses trust, HAR, and key-log options and never constructs a trust manager. TLS requires current same-case final-client routing and explicit trust intent.
+After a bounded read-only inspection proves that no prior session has pending recovery actions, and after read-only target, launch-state, compatibility, bundle, and routing validation, fragcap generates one process-local session CA and emits the complete plan in human or structured form. Pending prior recovery refuses with `fragcap doctor --fix` guidance; a new plan never replays older trust, artifact, journal, or owner-registry effects. The version-one plan identifier is `plan-v1:` followed by the lowercase BLAKE3 digest of the canonical plan. Interactive execution accepts one affirmative answer naming that plan on a complete LF-terminated line. Prompt-free and JSON execution require `--authorize-stdin`; the caller must return the exact identifier plus one LF on standard input while the process remains running. Plan or prompt write failure, whitespace, case changes, stale identifiers, extra input, malformed input, incomplete-line EOF, and I/O failure refuse before effects. Stored target authority is revalidated immediately after approval. The facade's final target resolver then independently prepares and compares the fully resolved profile, client executable, platform root, dispatch, and managed launch before endpoint selection, retaining that exact Capture preparation for execution. An authority whose displayed certificate validity has expired also refuses and requires a fresh plan. Only then may fragcap reserve the listener, create or protect bundle artifacts, mutate trust, route or launch the child, or append facts. Reachability refuses HAR and key-log options, records no trust action, and never invokes the trust adapter. TLS requires current same-case final-client routing and binds the exact CA thumbprint and fingerprint into the authorized plan.
 
-Each phase has finite launch, observation, proxy-shutdown, and cleanup deadlines. A shorter operator-supplied `--wait` or `--duration` becomes the effective bound; a longer value is capped at the calibration maximum. The plan and bundle report those effective values, proxy shutdown and cleanup enforce their displayed bounds, and no advertised deadline is merely descriptive. Structured events include `deep_capture.calibration_plan` before confirmation and `deep_capture.calibration_phase` for transitions and the terminal phase outcome. Existing proxy, trust, launch, application, bundle, cleanup, and completion events remain authoritative for their resources. Outcomes distinguish reached client, launcher only, escaped tree, proxy not reached, no relevant traffic, inconclusive, local CA accepted, explicitly observed certificate pinning, unknown trust, metadata only, unsupported protocol, interruption, and failure. Silence alone never proves a negative routing or pinning fact. Local CA acceptance additionally requires a full HTTPS observation correlated to the final client; launcher traffic cannot establish the selected target's trust behavior.
+Each phase has finite launch, observation, proxy-shutdown, and cleanup deadlines. A shorter operator-supplied `--wait` or `--duration` becomes the effective bound; a longer value is capped at the calibration maximum. The authorization plan binds those effective values at exact millisecond precision, the bundle reports its existing operational deadline values, proxy shutdown and cleanup enforce their displayed bounds, and no advertised deadline is merely descriptive. Structured events include one `deep_capture.authorization_plan` before input, one `deep_capture.authorization` terminal decision for the same identifier, and `deep_capture.calibration_phase` for transitions and the terminal phase outcome. Existing proxy, trust, launch, application, bundle, cleanup, and completion events remain authoritative for their resources. Outcomes distinguish reached client, launcher only, escaped tree, proxy not reached, no relevant traffic, inconclusive, local CA accepted, explicitly observed certificate pinning, unknown trust, metadata only, unsupported protocol, interruption, and failure. Silence alone never proves a negative routing or pinning fact. Local CA acceptance additionally requires a full HTTPS observation correlated to the final client; launcher traffic cannot establish the selected target's trust behavior.
 
 The supported real-target managed paths are an exact owned Steam launch from a
 cold Steam state, a cold direct-executable launch, and an exact cold publisher chain
@@ -3100,9 +3100,9 @@ running Steam process cannot
 inherit environment changes made in fragcap, so a warm Steam protocol launch is
 refused even when older facts exist for that case. A warm direct target is also
 refused because fragcap cannot retroactively change its environment. Deep Capture
-resolves and retains the effective Capture launch configuration during preflight,
-before starting the proxy, creating session CA material, or changing current-user
-trust. For a direct launch, it adds the selected loopback proxy variables to that
+resolves and retains the effective target launch authority during authorization
+preparation, generates the process-local session CA for exact review, and starts
+no proxy, listener, Capture, bundle, or trust effect. For a direct launch, it adds the selected loopback proxy variables to that
 exact child configuration. The run consumes the prepared path, working directory,
 arguments, and environment rather than resolving them again afterward.
 
@@ -3132,7 +3132,7 @@ require the target-process handle the project deliberately does not open.
 warm direct, Steam, and publisher observations. It does not claim the same-named
 process belongs to the selected target and performs no terminate, signal,
 window-message, protocol-exit, relaunch, or force-kill action. After an
-interactive confirmation, or `--yes`, the operator closes the application
+interactive confirmation, the operator closes the application
 through its normal user-facing control while fragcap observes the complete
 declared image set. The effective wait is the shorter of `--wait` and two
 minutes, defaulting to two minutes. Partial closure, inventory failure, and
@@ -3141,9 +3141,8 @@ deadline expiry are distinct no-effect outcomes.
 One complete snapshot with every declared image absent permits fresh target
 resolution and cold launch preparation. The selector must resolve to the same
 stored target and the observed result must be the corresponding supported cold
-case. fragcap then presents that newly prepared plan and requires a second
-interactive authorization, also pre-confirmable by `--yes`, before bundle,
-proxy, trust, routing, launch, or compatibility effects. The ordinary managed
+case. fragcap then presents one newly prepared complete session plan and requires
+its interactive authorization before bundle, proxy, trust, routing, launch, or compatibility effects. The ordinary managed
 session and cleanup authorities own every later result. The option conflicts
 with compatibility calibration and the controlled target; #317 retains
 calibration expansion.

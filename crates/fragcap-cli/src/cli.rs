@@ -443,13 +443,17 @@ pub struct DeepCaptureArgs {
     #[arg(long)]
     pub no_payload: bool,
 
-    /// Confirm fragcap-owned CA trust changes needed for HTTPS inspection.
-    #[arg(long)]
-    pub trust_ca: bool,
+    /// Read the exact emitted authorization plan identifier from standard input.
+    #[arg(long, conflicts_with_all = ["legacy_trust_ca", "legacy_yes"])]
+    pub authorize_stdin: bool,
 
-    /// Pre-confirm Deep Capture prompts for unattended runs.
-    #[arg(long)]
-    pub yes: bool,
+    /// Legacy Deep Capture trust confirmation (rejected with migration guidance).
+    #[arg(long = "trust-ca", hide = true, conflicts_with = "authorize_stdin")]
+    pub legacy_trust_ca: bool,
+
+    /// Legacy Deep Capture blanket confirmation (rejected with migration guidance).
+    #[arg(long = "yes", hide = true, conflicts_with = "authorize_stdin")]
+    pub legacy_yes: bool,
 
     /// Wait for operator-owned normal shutdown, then prepare a new cold launch.
     #[arg(

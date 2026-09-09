@@ -3,10 +3,10 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub use fragcap_proxy::ClientIdentity;
 use fragcap_proxy::{
@@ -58,6 +58,45 @@ pub struct NativeProxyAdapter {
     capture_payloads: bool,
     client_identity: Option<ClientIdentity>,
     listener_reservation: Option<NativeListenerReservation>,
+    prepared_authority: Option<PreparedNativeAuthority>,
+}
+
+static NEXT_PREPARED_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Process-local session authority prepared for exact plan review.
+pub struct PreparedNativeAuthority {
+    authority: Arc<fragcap_proxy::SessionCertificateAuthority>,
+    lifetime: Duration,
+}
+
+impl std::fmt::Debug for PreparedNativeAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedNativeAuthority")
+            .field("generation", &self.authority.generation())
+            .field("sha1_thumbprint", &self.authority.sha1_thumbprint())
+            .field("sha256_fingerprint", &self.authority.sha256_fingerprint())
+            .field("lifetime", &self.lifetime)
+            .finish()
+    }
+}
+
+impl PreparedNativeAuthority {
+    pub fn sha1_thumbprint(&self) -> &str {
+        self.authority.sha1_thumbprint()
+    }
+
+    pub fn sha256_fingerprint(&self) -> &str {
+        self.authority.sha256_fingerprint()
+    }
+
+    pub fn lifetime(&self) -> Duration {
+        self.lifetime
+    }
+
+    fn into_inner(self) -> Arc<fragcap_proxy::SessionCertificateAuthority> {
+        self.authority
+    }
 }
 
 /// Exact listener ownership retained from endpoint selection through startup.
@@ -173,7 +212,23 @@ impl NativeProxyAdapter {
             capture_payloads: true,
             client_identity: None,
             listener_reservation: None,
+            prepared_authority: None,
         }
+    }
+
+    /// Generate one session CA in memory before exact plan authorization.
+    pub fn prepare_authority(
+        now: SystemTime,
+        lifetime: Duration,
+    ) -> Result<PreparedNativeAuthority, super::PreflightRefusal> {
+        let generation = NEXT_PREPARED_AUTHORITY_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let authority =
+            fragcap_proxy::SessionCertificateAuthority::generate(generation, now, lifetime)
+                .map_err(|error| super::PreflightRefusal::new(error.code, error.detail))?;
+        Ok(PreparedNativeAuthority {
+            authority: Arc::new(authority),
+            lifetime,
+        })
     }
 
     pub fn limits(&self) -> NativeProxyLimits {
@@ -219,6 +274,12 @@ impl NativeProxyAdapter {
     /// Consume the exact listener retained by endpoint selection at startup.
     pub fn with_listener_reservation(mut self, reservation: NativeListenerReservation) -> Self {
         self.listener_reservation = Some(reservation);
+        self
+    }
+
+    /// Consume the exact authority whose public identity was authorized.
+    pub fn with_prepared_authority(mut self, authority: PreparedNativeAuthority) -> Self {
+        self.prepared_authority = Some(authority);
         self
     }
 }
@@ -354,6 +415,9 @@ impl ProxyBackend for NativeProxyAdapter {
             })
             .transpose()?;
         let mut backend = RuntimeBackend::new(config);
+        if let Some(authority) = self.prepared_authority.take() {
+            backend = backend.with_prepared_authority(authority.into_inner());
+        }
         if let Some(reservation) = &self.listener_reservation {
             backend = backend.with_reserved_listener(reservation.take(endpoint)?);
         }

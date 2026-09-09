@@ -136,27 +136,39 @@ pub(crate) fn register_session_owner(root: &Path, bundle: &Path) -> io::Result<S
             None => continue,
         };
         let path = registry.join(format!("{lease_id}.json"));
+        let pending = root.join(format!(".{lease_id}.owner.tmp"));
         let mut file = match std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .open(&path)
+            .open(&pending)
         {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         };
-        serde_json::to_writer(
-            &mut file,
-            &serde_json::json!({
-                "version": OWNER_VERSION,
-                "bundle": bundle,
-                "owner_pid": owner_pid,
-                "lease_id": lease_id,
-            }),
-        )
-        .map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
+        let write_result = (|| {
+            serde_json::to_writer(
+                &mut file,
+                &serde_json::json!({
+                    "version": OWNER_VERSION,
+                    "bundle": bundle,
+                    "owner_pid": owner_pid,
+                    "lease_id": lease_id,
+                }),
+            )
+            .map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            file.sync_all()
+        })();
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_file(&pending);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&pending, &path) {
+            let _ = std::fs::remove_file(&pending);
+            return Err(error);
+        }
         return Ok(lease);
     }
 }
@@ -791,6 +803,13 @@ mod tests {
             .remove(0);
         assert_eq!(owner.owner_pid, std::process::id());
         assert!(owner_is_active(&owner).expect("active"));
+        assert!(std::fs::read_dir(root.path())
+            .expect("root entries")
+            .all(|entry| !entry
+                .expect("root entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".owner.tmp")));
         drop(lease);
         assert!(!owner_is_active(&owner).expect("inactive"));
     }

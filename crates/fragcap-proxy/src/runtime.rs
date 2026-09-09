@@ -39,6 +39,7 @@ use crate::{
 pub struct NativeProxyBackend {
     config: NativeProxyConfig,
     reserved_listener: Option<StdTcpListener>,
+    prepared_authority: Option<Arc<SessionCertificateAuthority>>,
     destination_policy: Option<DestinationPolicy>,
     tls_client_config: Option<Arc<rustls::ClientConfig>>,
     application_sink: crate::application::SharedEventSink,
@@ -50,6 +51,7 @@ impl NativeProxyBackend {
         Self {
             config,
             reserved_listener: None,
+            prepared_authority: None,
             destination_policy: None,
             tls_client_config: None,
             application_sink: None,
@@ -60,6 +62,12 @@ impl NativeProxyBackend {
     /// Start from an already-bound exact listener retained across authorization.
     pub fn with_reserved_listener(mut self, listener: StdTcpListener) -> Self {
         self.reserved_listener = Some(listener);
+        self
+    }
+
+    /// Use the exact process-local authority prepared before session start.
+    pub fn with_prepared_authority(mut self, authority: Arc<SessionCertificateAuthority>) -> Self {
+        self.prepared_authority = Some(authority);
         self
     }
 
@@ -185,15 +193,21 @@ impl NativeProxyBackend {
         let capability = SessionCapability::generate()
             .map_err(|error| StartError::new("capability-generation-failed", error.to_string()))?;
         let capability_proof = capability.proof();
-        let generation = NEXT_AUTHORITY_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let certificate_authority = Arc::new(
-            SessionCertificateAuthority::generate(
-                generation,
-                std::time::SystemTime::now(),
-                Duration::from_secs(24 * 60 * 60),
-            )
-            .map_err(|error| StartError::new(error.code, error.detail))?,
-        );
+        let certificate_authority = match self.prepared_authority.take() {
+            Some(authority) => authority,
+            None => {
+                let generation = NEXT_AUTHORITY_GENERATION.fetch_add(1, Ordering::Relaxed);
+                Arc::new(
+                    SessionCertificateAuthority::generate(
+                        generation,
+                        std::time::SystemTime::now(),
+                        Duration::from_secs(24 * 60 * 60),
+                    )
+                    .map_err(|error| StartError::new(error.code, error.detail))?,
+                )
+            }
+        };
+        let generation = certificate_authority.generation();
         let ca_der = certificate_authority.der().to_vec();
         let ca_sha1_thumbprint = certificate_authority.sha1_thumbprint().to_string();
         let ca_sha256_fingerprint = certificate_authority.sha256_fingerprint().to_string();
@@ -2308,6 +2322,39 @@ fn owner_thread_timeout_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_authority_is_reported_exactly_and_consumed_once() {
+        let authority = Arc::new(
+            SessionCertificateAuthority::generate(
+                9001,
+                std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                Duration::from_secs(3_600),
+            )
+            .unwrap(),
+        );
+        let expected_sha1 = authority.sha1_thumbprint().to_string();
+        let expected_sha256 = authority.sha256_fingerprint().to_string();
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            2,
+            4_096,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let mut backend = NativeProxyBackend::new(config).with_prepared_authority(authority);
+
+        let mut first = backend.start(Duration::from_secs(2)).unwrap();
+        assert_eq!(first.authority_generation(), 9001);
+        assert_eq!(first.ca_sha1_thumbprint(), expected_sha1);
+        assert_eq!(first.ca_sha256_fingerprint(), expected_sha256);
+        let _ = first.stop(Duration::from_secs(2));
+
+        let mut second = backend.start(Duration::from_secs(2)).unwrap();
+        assert_ne!(second.authority_generation(), 9001);
+        assert_ne!(second.ca_sha256_fingerprint(), expected_sha256);
+        let _ = second.stop(Duration::from_secs(2));
+    }
 
     fn observation() -> RuntimeObservation {
         let endpoint = "127.0.0.1:40000".parse().unwrap();

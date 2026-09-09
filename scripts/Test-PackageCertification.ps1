@@ -182,7 +182,10 @@ Param(
             [hashtable]$Environment = @{},
 
             [Parameter(Mandatory=$false)]
-            [string]$ObservedExecutablePath
+            [string]$ObservedExecutablePath,
+
+            [Parameter(Mandatory=$false)]
+            [switch]$AuthorizeDeepCapturePlan
         )
         $start = [System.Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $FilePath
@@ -191,6 +194,7 @@ Param(
         $start.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        $start.RedirectStandardInput = [bool]$AuthorizeDeepCapturePlan
         foreach ($argument in $ArgumentList) { [void]$start.ArgumentList.Add($argument) }
         foreach ($name in $Environment.Keys) {
             if ($null -eq $Environment[$name]) { [void]$start.Environment.Remove($name) } else { $start.Environment[$name] = [string]$Environment[$name] }
@@ -200,8 +204,32 @@ Param(
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
         if (-not $process.Start()) { throw "could not start process" }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
         $waitTask = $process.WaitForExitAsync()
+        $stderrPrefix = [System.Collections.Generic.List[string]]::new()
+        if ($AuthorizeDeepCapturePlan) {
+            $planId = $null
+            do {
+                $lineTask = $process.StandardError.ReadLineAsync()
+                while (-not $lineTask.IsCompleted) {
+                    if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+                        try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
+                        throw "process did not emit an authorization plan within $TimeoutSeconds seconds"
+                    }
+                    [System.Threading.Thread]::Sleep(10)
+                }
+                $line = $lineTask.GetAwaiter().GetResult()
+                if ($null -eq $line) { throw 'process closed diagnostics before emitting an authorization plan' }
+                $stderrPrefix.Add($line)
+                if ($stderrPrefix.Count -gt 16 -or ($stderrPrefix -join "`n").Length -gt 262144) { throw 'authorization preamble exceeded its bound' }
+                try { $event = $line | ConvertFrom-Json -Depth 32 } catch { $event = $null }
+                if ($null -ne $event -and $event.event -ceq 'deep_capture.authorization_plan') { $planId = [string]$event.plan_id }
+            } while ([string]::IsNullOrEmpty($planId))
+            if ($planId -cnotmatch '^plan-v1:[0-9a-f]{64}$') { throw 'authorization plan emitted an invalid identifier' }
+            $process.StandardInput.Write("$planId`n")
+            $process.StandardInput.Flush()
+            $process.StandardInput.Close()
+        }
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $observedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $observedAddresses = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $observationSamples = 0
@@ -237,7 +265,8 @@ Param(
         $process.WaitForExit()
         $watch.Stop()
         $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $stderrRemainder = $stderrTask.GetAwaiter().GetResult()
+        $stderr = if ($stderrPrefix.Count -gt 0) { "$($stderrPrefix -join "`n")`n$stderrRemainder" } else { $stderrRemainder }
         if ($stdout.Length -gt 262144 -or $stderr.Length -gt 262144) { throw 'child output exceeded 256 KiB' }
         $exitCode = [int]$process.ExitCode
         $process.Dispose()
@@ -437,10 +466,13 @@ Param(
             [int[]]$AllowedExitCodes = @(0),
 
             [Parameter(Mandatory=$false)]
-            [switch]$ObserveTreeAndNetwork
+            [switch]$ObserveTreeAndNetwork,
+
+            [Parameter(Mandatory=$false)]
+            [switch]$AuthorizeDeepCapturePlan
         )
         $observedPath = if ($ObserveTreeAndNetwork) { $Executable } else { $null }
-        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds 60 -Environment $Environment -ObservedExecutablePath $observedPath
+        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds 60 -Environment $Environment -ObservedExecutablePath $observedPath -AuthorizeDeepCapturePlan:$AuthorizeDeepCapturePlan
         if ($AllowedExitCodes -notcontains $result.ExitCode) { throw "fragcap $($Arguments -join ' ') exited $($result.ExitCode): $($result.Stderr)" }
         return $result
     }
@@ -545,7 +577,7 @@ Param(
         $smokeFirewallRuleName = "fragcap-package-certification-$([guid]::NewGuid().ToString('N'))"
         if (-not $PSCmdlet.ShouldProcess($zipExe, 'Block non-loopback smoke traffic for the exact packaged executable')) { throw 'smoke network containment was not established' }
         [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
-        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--yes', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork
+        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
         if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
         if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "packaged controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
         if ($smoke.Observation.process_paths.Count -lt 1) { throw 'packaged controlled native smoke recorded no executable path' }

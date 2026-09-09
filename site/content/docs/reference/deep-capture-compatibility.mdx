@@ -126,12 +126,12 @@ fragcap deep-capture sample-target --launch --calibrate reachability --calibrati
 
 For an eligible stored direct target, use `--launch-case direct-exe-cold` instead. Warm Steam and direct-executable targets are refused before side effects.
 
-fragcap displays the target, phase, launch case, loopback proxy action, bundle destination, finite deadlines, possible fact writes, and cleanup obligations before asking for confirmation. A shorter `--wait` or `--duration` becomes the displayed calibration bound; longer values are capped at the calibration maximum. Shutdown and cleanup enforce the displayed bounds too. `--yes` preconfirms that displayed plan for an unattended run. JSON mode requires `--yes` because it cannot mix a prompt into the event stream.
+fragcap displays the exact target and launch authority, phase, loopback and routing policy, process-local CA identity when trust is needed, bundle and sensitive artifacts, finite deadlines, possible fact writes, cleanup obligations, refusal boundaries, and versioned plan identifier before asking once for confirmation. A shorter `--wait` or `--duration` becomes the displayed calibration bound; longer values are capped at the calibration maximum. Shutdown and cleanup enforce the displayed bounds too. JSON and prompt-free automation require `--authorize-stdin`; the caller reads the plan event and returns its exact identifier plus one LF in the same process.
 
 Review the new rows with `fragcap targets show sample-target`. If current evidence for the same launch case says `proxy-routing = reached-client`, a separate TLS phase can measure CA acceptance and inspectability:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
 
 Use the same exact cold launch case in both phases.
