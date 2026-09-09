@@ -1,0 +1,2 @@
+<!-- spec-impact: 16.3 -->
+2026-09-09: S136 selects one human layout for the complete Steam title result. A four-column table is used only when every complete row fits the shared 40-through-80 display-column width; otherwise every row uses labeled vertical fields. No value is truncated. Tab, carriage return, and line feed are represented visibly in human fields so observed controls cannot become layout syntax, while JSON preserves the original values. Discovery, identity resolution, ordering, diagnostics, exits, and storage remain outside the presentation change.

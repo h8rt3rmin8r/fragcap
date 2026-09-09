@@ -16,11 +16,15 @@ fn steam_list_is_wired_and_not_a_stub() {
     // With Steam installed the listing succeeds (exit 0); without it, discovery
     // reports no installation (a usage error, exit 2). Either way it is really
     // wired, not the old stub.
-    let (code, _out, err) = run(&["steam", "list"]);
+    let (code, out, err) = run(&["steam", "list"]);
     assert!(code == 0 || code == 2, "unexpected exit {code}: {err}");
     assert!(
         !err.contains("not yet implemented"),
         "the steam stub path is still reachable: {err}"
+    );
+    assert!(
+        !out.contains('\t'),
+        "human steam list output must not contain tab separators: {out:?}"
     );
 }
 
@@ -73,8 +77,9 @@ fn steam_list_json_never_prints_a_human_line_regardless_of_machine_state() {
             "a non-JSON line reached stdout in --json mode: {line:?}"
         );
     }
+    assert!(!out.contains('\t'), "JSON output must not contain raw tabs");
     assert!(
-        !out.contains("APP ID\tNAME"),
+        !out.contains("APP ID  NAME"),
         "the human header must never appear in --json mode"
     );
 }

@@ -2825,8 +2825,7 @@ anchoring it to `steam:<app_id>` (replacing the retired `steam profile <app_id>`
 scaffold). The client executable is recovered at capture time by the install-layout
 cascade keyed on the anchor (section 15.7.4).
 
-`fragcap steam list` enumerates the installed titles this machine can see, so an
-operator can find the app id to register.
+`fragcap steam list` enumerates the installed titles this machine can see, so an operator can find the app id to register. Human output is one width-aware headed listing with no tab separators: complete rows align by visible display cells when they fit, while an over-width result uses labeled vertical records for the whole listing. Neither form truncates values, and positioned, registered-but-unpositioned, and unregistered targets remain distinct. Interactive width is clamped to 40 through 80 display columns, with 80 used for redirected or unavailable measurements. JSON Lines remains the stable machine interface; enumeration, diagnostics, sorting, exits, and the read-only target-store join are independent from presentation.
 
 ### 16.4 Managed Launch
 

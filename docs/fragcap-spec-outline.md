@@ -232,11 +232,7 @@ The single local target store, source and fidelity model, resolution order, disc
 ## 16. Steam Integration
 
 Scoped to its own crate so core stays platform-neutral. Covers library
-folder and app manifest parsing, installed-title enumeration, profile
-scaffolding from an installed game, and managed launch via either the Steam
-protocol handler or one exact stored direct executable. Direct launch retains
-its path, working directory, argument vector, and child-only environment before
-effects; Steam environment handoff remains compatibility-dependent.
+folder and app manifest parsing, installed-title enumeration, its display-cell-aware aligned or vertical human listing and stable JSON interface, target registration from an installed game, and managed launch via either the Steam protocol handler or one exact stored direct executable. Direct launch retains its path, working directory, argument vector, and child-only environment before effects; Steam environment handoff remains compatibility-dependent.
 
 ## 17. Command Line Interface
 

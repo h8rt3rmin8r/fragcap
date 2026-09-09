@@ -24,7 +24,7 @@
 //! <app_id>` (it lands in the user store); the retired `steam profile <app_id>`
 //! scaffolding is gone.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use fragcap::steam::{self, InstalledTitle, SteamError};
 use fragcap::targets::{Store, TargetsError};
@@ -32,6 +32,7 @@ use fragcap::write_json_string;
 
 use crate::cli::{SteamArgs, SteamCommand};
 use crate::commands::targets::default_local_store;
+use crate::display::{display_width, human_display_value, pad_display, selected_stdout_width};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
@@ -185,35 +186,126 @@ fn list(json: bool, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, 
     if json {
         render_json(&rows, out);
     } else {
-        render_human(&rows, out);
+        let width = selected_stdout_width(std::io::stdout().is_terminal());
+        render_human(&rows, width, out);
     }
     Ok(Exit::SUCCESS)
 }
 
-/// Render the human table: a header, then one row per title with a textually
-/// distinct `TARGET` cell per identity state (contract:
+/// Render one width-aware human listing with a textually distinct `TARGET`
+/// value per identity state (contract:
 /// `specs/067-steam-list-identity-json/contracts/steam-list-cli.md`).
-fn render_human(rows: &[ListingRow<'_>], out: &mut dyn Write) {
+fn render_human(rows: &[ListingRow<'_>], width: usize, out: &mut dyn Write) {
     if rows.is_empty() {
         let _ = writeln!(out, "no installed titles enumerated");
         return;
     }
-    let _ = writeln!(out, "APP ID\tNAME\tSTATE\tTARGET");
-    for row in rows {
+
+    let display_rows: Vec<HumanRow> = rows.iter().map(HumanRow::from).collect();
+    let widths = ColumnWidths::for_rows(&display_rows);
+    if widths.table_width() <= width {
+        render_aligned(&display_rows, widths, out);
+    } else {
+        render_vertical(&display_rows, out);
+    }
+}
+
+struct HumanRow {
+    app_id: String,
+    name: String,
+    state: &'static str,
+    target: String,
+}
+
+impl From<&ListingRow<'_>> for HumanRow {
+    fn from(row: &ListingRow<'_>) -> Self {
         let (state, target) = match &row.identity {
             SteamListingIdentity::Positioned {
                 handle, position, ..
-            } => ("registered", format!("{handle} (#{position})")),
-            SteamListingIdentity::Unpositioned { handle, .. } => {
-                ("registered", format!("{handle} (no position)"))
-            }
+            } => (
+                "registered",
+                format!("{} (#{position})", human_display_value(handle)),
+            ),
+            SteamListingIdentity::Unpositioned { handle, .. } => (
+                "registered",
+                format!("{} (no position)", human_display_value(handle)),
+            ),
             SteamListingIdentity::Unregistered => ("unregistered", String::new()),
         };
-        let _ = writeln!(
-            out,
-            "{}\t{}\t{}\t{}",
-            row.title.app_id, row.title.name, state, target
+        HumanRow {
+            app_id: human_display_value(&row.title.app_id),
+            name: human_display_value(&row.title.name),
+            state,
+            target,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ColumnWidths {
+    app_id: usize,
+    name: usize,
+    state: usize,
+    target: usize,
+}
+
+impl ColumnWidths {
+    fn for_rows(rows: &[HumanRow]) -> Self {
+        let mut widths = ColumnWidths {
+            app_id: display_width("APP ID"),
+            name: display_width("NAME"),
+            state: display_width("STATE"),
+            target: display_width("TARGET"),
+        };
+        for row in rows {
+            widths.app_id = widths.app_id.max(display_width(&row.app_id));
+            widths.name = widths.name.max(display_width(&row.name));
+            widths.state = widths.state.max(display_width(row.state));
+            widths.target = widths.target.max(display_width(&row.target));
+        }
+        widths
+    }
+
+    fn table_width(self) -> usize {
+        self.app_id + self.name + self.state + self.target + 6
+    }
+}
+
+fn render_aligned(rows: &[HumanRow], widths: ColumnWidths, out: &mut dyn Write) {
+    let _ = writeln!(
+        out,
+        "{}  {}  {}  TARGET",
+        pad_display("APP ID", widths.app_id),
+        pad_display("NAME", widths.name),
+        pad_display("STATE", widths.state)
+    );
+    for row in rows {
+        let prefix = format!(
+            "{}  {}  {}",
+            pad_display(&row.app_id, widths.app_id),
+            pad_display(&row.name, widths.name),
+            pad_display(row.state, widths.state)
         );
+        if row.target.is_empty() {
+            let _ = writeln!(out, "{prefix}");
+        } else {
+            let _ = writeln!(out, "{prefix}  {}", row.target);
+        }
+    }
+}
+
+fn render_vertical(rows: &[HumanRow], out: &mut dyn Write) {
+    let _ = writeln!(out, "INSTALLED STEAM TITLES");
+    for row in rows {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "APP ID: {}", row.app_id);
+        let _ = writeln!(out, "NAME: {}", row.name);
+        let _ = writeln!(out, "STATE: {}", row.state);
+        if row.target.is_empty() {
+            let _ = writeln!(out, "TARGET:");
+        } else {
+            let _ = writeln!(out, "TARGET: {}", row.target);
+        }
     }
 }
 
@@ -373,21 +465,85 @@ mod tests {
         sort_rows(&mut rows);
 
         let mut out: Vec<u8> = Vec::new();
-        render_human(&rows, &mut out);
+        render_human(&rows, 80, &mut out);
         let text = String::from_utf8(out).unwrap();
         let mut lines = text.lines();
-        assert_eq!(
-            lines.next(),
-            Some("APP ID\tNAME\tSTATE\tTARGET"),
-            "a header leads every human render"
-        );
+        let header = lines.next().expect("header");
+        assert!(header.starts_with("APP ID  NAME"));
+        assert!(header.contains("  STATE  "));
+        assert!(header.ends_with("TARGET"));
+        assert!(!text.contains('\t'));
         assert!(text.contains("positioned_handle (#1)"));
         assert!(text.contains("unpositioned_handle (no position)"));
-        assert!(text.contains("300\tUnregistered Title\tunregistered\t"));
+        assert!(text.contains("300     Unregistered Title  unregistered"));
         assert!(
-            !text.contains("Unregistered Title\tunregistered\thandle"),
+            !text.contains("Unregistered Title  unregistered  handle"),
             "an unregistered row never carries a handle"
         );
+    }
+
+    #[test]
+    fn fitting_rows_align_with_the_header_by_display_column() {
+        let titles = vec![title("1", "A"), title("123456", "Longer")];
+        let mut diagnostics = Vec::new();
+        let mut e = emitter(&mut diagnostics);
+        let rows = resolve_rows(&titles, None, &mut e);
+        let mut out = Vec::new();
+        render_human(&rows, 80, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        let header_columns = [
+            lines[0].find("APP ID").unwrap(),
+            lines[0].find("NAME").unwrap(),
+            lines[0].find("STATE").unwrap(),
+        ];
+        for line in &lines[1..] {
+            assert_eq!(line.find("unregistered").unwrap(), header_columns[2]);
+        }
+        assert_eq!(lines[1].find('A').unwrap(), header_columns[1]);
+        assert_eq!(lines[2].find("Longer").unwrap(), header_columns[1]);
+        assert!(!text.contains('\t'));
+    }
+
+    #[test]
+    fn fitting_localized_rows_align_by_display_cells() {
+        let titles = vec![title("1", "界"), title("2", "e\u{301}")];
+        let mut diagnostics = Vec::new();
+        let mut e = emitter(&mut diagnostics);
+        let rows = resolve_rows(&titles, None, &mut e);
+        let mut out = Vec::new();
+        render_human(&rows, 80, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let name_column = display_width(&lines[0][..lines[0].find("NAME").unwrap()]);
+        let state_column = display_width(&lines[0][..lines[0].find("STATE").unwrap()]);
+        for (line, name) in lines[1..].iter().zip(["界", "e\u{301}"]) {
+            let name_start = line.find(name).unwrap();
+            let state_start = line.find("unregistered").unwrap();
+            assert_eq!(display_width(&line[..name_start]), name_column);
+            assert_eq!(display_width(&line[..state_start]), state_column);
+        }
+    }
+
+    #[test]
+    fn over_width_localized_and_control_values_use_complete_vertical_records() {
+        let name = "界界 e\u{301} title\tpart\nwith a deliberately long suffix";
+        let titles = vec![title("123456789", name), title("2", "Short")];
+        let mut diagnostics = Vec::new();
+        let mut e = emitter(&mut diagnostics);
+        let rows = resolve_rows(&titles, None, &mut e);
+        let mut out = Vec::new();
+        render_human(&rows, 40, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("INSTALLED STEAM TITLES\n\n"));
+        assert!(text.contains("APP ID: 123456789"));
+        assert!(text.contains("NAME: 界界 e\u{301} title\\tpart\\nwith a deliberately long suffix"));
+        assert!(text.contains("NAME: Short"));
+        assert!(text.contains("STATE: unregistered"));
+        assert!(text.contains("TARGET:\n"));
+        assert!(!text.contains('\t'));
+        assert!(!text.contains("..."));
     }
 
     #[test]
@@ -432,7 +588,7 @@ mod tests {
         let mut rows = resolve_rows(&titles, Some(&store), &mut e);
         sort_rows(&mut rows);
         let mut out: Vec<u8> = Vec::new();
-        render_human(&rows, &mut out);
+        render_human(&rows, 80, &mut out);
 
         // The snapshot still names exactly the one row it named before: a new,
         // unregistered title never appears in it, and the positioned title's
