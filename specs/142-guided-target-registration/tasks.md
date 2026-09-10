@@ -108,7 +108,7 @@
 - [x] T032 Run `/speckit-converge`, append and implement any remaining traceable work, or record a clean convergence result
 - [x] T033 Run `cargo xtask ci`, encoding, punctuation, mojibake, diff, dependency, and worktree checks
 - [x] T034 Commit, push the authorized feature branch, open a PR closing #398, and set the Project Stage to PR review
-- [ ] T035 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for all CI checks to pass
+- [x] T035 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for all CI checks to pass
 
 ---
 
