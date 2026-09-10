@@ -102,6 +102,10 @@ The guided command constructs the exact low-level reachability arguments and cal
 
 The stable identifier is unambiguous, survives listing reorder, and avoids shell quoting. Handles and names remain accepted inputs but are not copied into paste-ready commands.
 
+### 2026-09-09: Bind generated identifiers to their effective store
+
+A durable identifier is scoped by the local database containing it. Every next command therefore carries the effective `--local-db` path as one PowerShell-quoted argument. Omitting it could resolve the same number against an unrelated default store or make the handoff unusable when no default exists.
+
 ### 2026-09-09: Keep warm restart explicit
 
 Warm detection produces effect-free guidance and a `--restart-warm` rerun. That flag reuses S113's bounded close-and-retry flow. Automatically entering a wait would weaken deliberate operator selection.

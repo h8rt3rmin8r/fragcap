@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use common::{run, run_with_authorization};
@@ -35,6 +35,63 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for FixedAuthorization {
 fn controlled_environment() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn powershell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut characters = command.chars().peekable();
+    let mut quoted = false;
+    while let Some(character) = characters.next() {
+        match character {
+            '"' => quoted = !quoted,
+            '`' => {
+                let escaped = characters.next().expect("complete PowerShell escape");
+                word.push(match escaped {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    value => value,
+                });
+            }
+            value if value.is_whitespace() && !quoted => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            value => word.push(value),
+        }
+    }
+    assert!(
+        !quoted,
+        "generated command must close every quoted argument"
+    );
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+fn assert_next_command_selects_store(events: &str, subcommand: &str, target_id: i64, local: &Path) {
+    let command = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "calibration.guidance")
+        .filter_map(|event| event["next_command"].as_str().map(str::to_string))
+        .next_back()
+        .expect("one guided next command");
+    let matches = fragcap_cli::command()
+        .try_get_matches_from(powershell_words(&command))
+        .expect("generated next command parses");
+    let (actual_subcommand, arguments) = matches.subcommand().expect("generated subcommand");
+    assert_eq!(actual_subcommand, subcommand);
+    assert_eq!(arguments.get_one::<i64>("id"), Some(&target_id));
+    assert_eq!(
+        arguments
+            .get_one::<PathBuf>("local_db")
+            .map(PathBuf::as_path),
+        Some(local)
+    );
 }
 
 fn seed_target(local: &Path, with_current_routing: bool) -> i64 {
@@ -259,7 +316,9 @@ fn calibrate_target_inputs_are_mutually_exclusive() {
 #[test]
 fn current_exact_routing_emits_ready_guidance_without_session_effects() {
     let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
+    let store_dir = dir.path().join("custom store $fixture");
+    std::fs::create_dir(&store_dir).unwrap();
+    let local = store_dir.join("local.db");
     let bundle = dir.path().join("must-not-exist");
     seed_target(&local, true);
     let id_arg = STABLE_ID.to_string();
@@ -280,7 +339,7 @@ fn current_exact_routing_emits_ready_guidance_without_session_effects() {
     assert!(out.is_empty());
     assert!(events.contains("\"event\":\"calibration.guidance\""));
     assert!(events.contains("\"status\":\"ready\""));
-    assert!(events.contains(&format!("fragcap deep-capture --id {STABLE_ID} --launch")));
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
     assert!(!events.contains("deep_capture.authorization_plan"));
     assert!(!bundle.exists(), "ready guidance must not create a bundle");
 }
@@ -318,13 +377,8 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
     assert!(out.is_empty());
     let event: serde_json::Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
     assert_eq!(event["event"], "calibration.guidance");
-    let command = event["next_command"].as_str().unwrap();
-    let parsed = std::iter::once("fragcap")
-        .chain(command.split_whitespace().skip(1))
-        .collect::<Vec<_>>();
-    fragcap_cli::command()
-        .try_get_matches_from(parsed)
-        .expect("emitted durable handoff parses through the public command grammar");
+    assert!(event["next_command"].is_string());
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
 }
 
 #[test]
@@ -365,7 +419,7 @@ fn missing_routing_runs_one_controlled_reachability_attempt() {
     assert!(events.contains("\"protocol\":\"routing\""));
     assert!(events.contains("\"event\":\"calibration.guidance\""));
     assert!(events.contains("\"status\":\"completed\""));
-    assert!(events.contains(&format!("fragcap calibrate --id {STABLE_ID}")));
+    assert_next_command_selects_store(&events, "calibrate", STABLE_ID, &local);
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(row_id).unwrap();
@@ -427,17 +481,11 @@ fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handof
             serde_json::from_str(events.lines().next().unwrap()).unwrap();
         assert_eq!(event["topology"], expected_topology);
         if event["status"] == "ready" {
-            assert_eq!(
-                event["next_command"],
-                format!("fragcap deep-capture --id {stable_id} --launch")
-            );
+            assert_next_command_selects_store(&events, "deep-capture", stable_id, &local);
         } else {
             assert_eq!(expected_topology, "steam");
             assert_eq!(event["status"], "warm");
-            assert_eq!(
-                event["next_command"],
-                format!("fragcap calibrate --id {stable_id} --restart-warm")
-            );
+            assert_next_command_selects_store(&events, "calibrate", stable_id, &local);
         }
     }
 }
@@ -474,7 +522,8 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     assert!(events.contains("\"action\":\"operator-action\""));
     assert!(events.contains("\"observed_launch_case\":\"direct-exe-warm\""));
     assert!(events.contains("\"process_control\":\"none\""));
-    assert!(events.contains("fragcap calibrate --id 82001 --restart-warm"));
+    assert!(events.contains("--restart-warm"));
+    assert_next_command_selects_store(&events, "calibrate", 82_001, &local);
     assert!(!events.contains("deep_capture.restart_plan"));
 
     let (code, _out, events) = run(&[

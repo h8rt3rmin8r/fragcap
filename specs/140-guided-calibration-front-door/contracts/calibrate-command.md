@@ -28,15 +28,17 @@ The first S139 step delegates in-process to the existing equivalent:
 fragcap deep-capture --id <STABLE_ID> --launch --calibrate reachability --calibration-protocol routing --launch-case <EXACT_COLD_CASE>
 ```
 
-Selected bounds and authorization are preserved. On success, the next command is `fragcap calibrate --id <STABLE_ID>` so new evidence is reassessed.
+Selected bounds and authorization are preserved. On success, the next command is `fragcap calibrate --id <STABLE_ID> --local-db <EFFECTIVE_PATH>` so new evidence is reassessed against the same store.
 
 ### `ready`
 
-No session starts. The next command is `fragcap deep-capture --id <STABLE_ID> --launch`.
+No session starts. The next command is `fragcap deep-capture --id <STABLE_ID> --local-db <EFFECTIVE_PATH> --launch`.
 
 ### `operator-action`
 
-Without `--restart-warm`, no session starts. The next command is `fragcap calibrate --id <STABLE_ID> --restart-warm`. With it, the existing S113 confirmation, bounded wait, fresh resolution, authority comparison, and cold verification precede the low-level plan.
+Without `--restart-warm`, no session starts. The next command is `fragcap calibrate --id <STABLE_ID> --local-db <EFFECTIVE_PATH> --restart-warm`. With it, the existing S113 confirmation, bounded wait, fresh resolution, authority comparison, and cold verification precede the low-level plan.
+
+Every effective path is emitted as one PowerShell-quoted argument. A generated command must parse back to the same path and resolve the durable identifier from that store.
 
 ### `refused`
 

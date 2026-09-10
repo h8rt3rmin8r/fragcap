@@ -199,7 +199,7 @@ Reachability calibration runs without a certificate trust change. TLS calibratio
 
 A calibration proposal is a deterministic read-only projection that identifies a strict stored launch topology, reports whether caller-supplied process evidence proves a cold case, and names only useful exact reachability or protocol measurements. It applies no launch, trust, network, artifact, fact, or store effect.
 
-The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. It either runs one exact reachability proposal through the existing plan-bound executor or reports a durable next command for current, warm, or refused state. It does not register a target, select TLS or protocol work, or run more than one attempt.
+The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. It either runs one exact reachability proposal through the existing plan-bound executor or reports a durable next command for current, warm, or refused state. Each next command binds its durable identifier to the PowerShell-quoted effective local-store path. It does not register a target, select TLS or protocol work, or run more than one attempt.
 
 {: .matters }
 > Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.

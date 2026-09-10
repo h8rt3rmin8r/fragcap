@@ -78,7 +78,7 @@ An operator or local automation receives stable structured proposal, action, out
 - A warm restart interruption, decline, timeout, process-enumeration failure, target drift, or non-cold refreshed state retains the existing distinct terminal outcome.
 - A proposal containing zero steps with no current positive routing evidence is a refusal, not a readiness claim.
 - A proposal containing a TLS step is outside this slice and must be refused rather than executed.
-- Shell-sensitive target names never need quoting in the generated ordinary command because the durable stable identifier form is used.
+- Shell-sensitive target names never need quoting in a generated command because the durable stable identifier form is used. The effective local-store path is PowerShell-quoted independently.
 - Existing low-level `deep-capture --calibrate` invocations and their argument validation remain unchanged.
 
 ## Requirements
@@ -93,7 +93,7 @@ An operator or local automation receives stable structured proposal, action, out
 - **FR-006**: A missing, stale, legacy, mismatched, negative, or conflicting exact routing result MUST select at most the first proposed reachability step, and that step MUST use the routing protocol dimension.
 - **FR-007**: The selected step MUST execute by adapting into the existing low-level Deep Capture calibration command path, including its complete authorization plan, final target-authority recheck, prepared session authority, managed launch, bounded capture, cleanup, artifact, and append-only fact behavior.
 - **FR-008**: Reachability execution MUST never request certificate trust, HAR, TLS key-log, client-identity, TLS, or protocol calibration effects.
-- **FR-009**: Current exact positive routing evidence MUST select no calibration effect and MUST produce a paste-ready ordinary Deep Capture command addressed by durable stable identifier.
+- **FR-009**: Current exact positive routing evidence MUST select no calibration effect and MUST produce a paste-ready ordinary Deep Capture command addressed by durable stable identifier and bound to the effective local-store path.
 - **FR-010**: A warm proposal without `--restart-warm` MUST identify the observed case, required cold case, declared images, absence of process control, and a paste-ready rerun using `--restart-warm`.
 - **FR-011**: `--restart-warm` MUST reuse the existing operator-confirmed bounded normal-shutdown workflow, fresh target resolution, authority comparison, and cold-case verification; it MUST NOT close, signal, message, or terminate a process.
 - **FR-012**: Every proposal limitation MUST be reported before bundle allocation, certificate preparation, proxy startup, trust, routing, launch, Capture, artifact, or fact effects.
@@ -110,7 +110,7 @@ An operator or local automation receives stable structured proposal, action, out
 - **Guided calibration request**: One stored-target selector plus the small set of execution bounds and authorization input that can be passed to the existing reachability path.
 - **Guided calibration decision**: The S139 proposal projected into one stable CLI status, selected action, exact reason, and next command.
 - **Guided calibration action**: One of run reachability, request operator-owned warm restart, report ready for ordinary Deep Capture, or refuse before effects.
-- **Next command**: A paste-ready durable-identifier invocation that re-evaluates calibration or starts ordinary Deep Capture without embedding an unstable name or row index.
+- **Next command**: A paste-ready durable-identifier invocation that re-evaluates calibration or starts ordinary Deep Capture without embedding an unstable name or row index, and that preserves the PowerShell-quoted effective local-store path.
 
 ## Success Criteria
 
@@ -118,7 +118,7 @@ An operator or local automation receives stable structured proposal, action, out
 
 - **SC-001**: A registered cold target with missing routing evidence reaches one complete reachability authorization plan from one target argument and no manual case, phase, routing, family, or protocol input.
 - **SC-002**: Every no-effect state makes zero calls to session effect adapters and reports one deterministic action and reason.
-- **SC-003**: Every generated next command parses successfully and selects the same durable target identity.
+- **SC-003**: Every generated next command parses successfully and selects the same durable target identity from the same effective local store.
 - **SC-004**: All supported target topologies and all S139 routing-evidence reasons produce deterministic human and structured outcomes in offline tests.
 - **SC-005**: The complete repository verification gate passes with no new dependency, lockfile package, storage migration, prohibited process capability, or change to existing low-level calibration behavior.
 

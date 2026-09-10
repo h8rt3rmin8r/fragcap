@@ -2658,10 +2658,14 @@ impl TrustManager for WindowsCurrentUserTrustManager {
     }
 }
 
-pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
-    let path = paths::local_db_path(flag)
+pub(crate) fn local_store_path(flag: Option<&Path>) -> Result<PathBuf, CliError> {
+    paths::local_db_path(flag)
         .or_else(paths::default_local_db_path)
-        .ok_or_else(|| CliError::usage("no local store is available; pass --local-db"))?;
+        .ok_or_else(|| CliError::usage("no local store is available; pass --local-db"))
+}
+
+pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
+    let path = local_store_path(flag)?;
     if !path.is_file() {
         return Err(CliError::usage(format!(
             "the local target store {} does not exist; register a target before Deep Capture",

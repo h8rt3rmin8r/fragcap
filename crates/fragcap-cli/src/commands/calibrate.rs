@@ -2,6 +2,8 @@
 
 //! Guided reachability calibration for one already registered target.
 
+use std::path::Path;
+
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
@@ -35,7 +37,9 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
+    let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let store = deep_capture::open_local_store(args.local_db.as_deref())?;
+    let local_store_argument = quote_powershell_path(&local_store_path)?;
     let target = deep_capture::resolve_target_input(
         &store,
         args.selector.as_deref(),
@@ -76,8 +80,12 @@ pub fn run(
             cold_case,
             images,
         } => {
-            let next_command =
-                format!("fragcap calibrate --id {} --restart-warm", target.stable_id);
+            let next_command = target_command(
+                "calibrate",
+                target.stable_id,
+                &local_store_argument,
+                " --restart-warm",
+            );
             emit_guidance(
                 emitter,
                 &target,
@@ -183,9 +191,11 @@ pub fn run(
                 reason: Some("current-routing-evidence".to_string()),
                 images: readiness_images(&selected),
                 limitations: Vec::new(),
-                next_command: Some(format!(
-                    "fragcap deep-capture --id {} --launch",
-                    fresh_target.stable_id
+                next_command: Some(target_command(
+                    "deep-capture",
+                    fresh_target.stable_id,
+                    &local_store_argument,
+                    " --launch",
                 )),
             },
         );
@@ -285,13 +295,40 @@ pub fn run(
             }),
             images: readiness_images(&completed),
             limitations: limitation_messages(&completed),
-            next_command: Some(format!(
-                "fragcap calibrate --id {}",
-                completed_target.stable_id
+            next_command: Some(target_command(
+                "calibrate",
+                completed_target.stable_id,
+                &local_store_argument,
+                "",
             )),
         },
     );
     Ok(Exit::SUCCESS)
+}
+
+fn quote_powershell_path(path: &Path) -> Result<String, CliError> {
+    let value = path.to_str().ok_or_else(|| {
+        CliError::usage("the effective local store path cannot be represented in a next command")
+    })?;
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '`' => quoted.push_str("``"),
+            '"' => quoted.push_str("`\""),
+            '$' => quoted.push_str("`$"),
+            '\r' => quoted.push_str("`r"),
+            '\n' => quoted.push_str("`n"),
+            '\t' => quoted.push_str("`t"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    Ok(quoted)
+}
+
+fn target_command(verb: &str, target_id: i64, local_store: &str, suffix: &str) -> String {
+    format!("fragcap {verb} --id {target_id} --local-db {local_store}{suffix}")
 }
 
 fn build_proposal(

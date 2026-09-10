@@ -27,7 +27,7 @@ S140 adds transient CLI decision values only. It does not change SQLite, bundle,
 | images | Declared process image set | Warm guidance only |
 | limitations | Every S139 limitation | Preserved in proposal order |
 | process control | Whether fragcap controlled an existing process | Always `none` |
-| next command | Durable-identifier invocation | Ready, operator action, or completed run |
+| next command | Durable-identifier invocation bound to the effective local store | Ready, operator action, or completed run |
 
 ## State Transitions
 
@@ -49,4 +49,4 @@ No transition before `reachability-selected` allocates a bundle or prepares cert
 - `run-reachability` requires one first reachability step with routing protocol.
 - `ready` requires zero steps plus current exact positive routing evidence.
 - Any TLS step, protocol candidate, non-child routing, or non-IPv4 family is refused.
-- Generated commands use the decimal durable identifier.
+- Generated commands use the decimal durable identifier and a PowerShell-quoted effective local-store path.

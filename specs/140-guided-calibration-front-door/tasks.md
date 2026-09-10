@@ -147,3 +147,4 @@
 
 - [x] T035 Expose explicit no-process-control truth in warm human and JSON guidance per FR-010 (partial)
 - [x] T036 Emit stable terminal guided outcomes for delegated refusals and nonzero exits while preserving detailed Deep Capture events per FR-014 (partial)
+- [x] T037 Preserve the PowerShell-quoted effective local-store path in every generated next command and verify same-store durable identity resolution per SC-003 (review)
