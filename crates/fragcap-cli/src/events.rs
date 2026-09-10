@@ -153,6 +153,32 @@ pub enum Event {
         target_id: Option<i64>,
         continued: bool,
     },
+    /// One complete Steam client authoring plan, emitted before input.
+    CalibrationSteamClientPlan {
+        plan_id: String,
+        canonical_json: String,
+        target_id: i64,
+        steam_app_id: u32,
+        executable: String,
+        discovery_considered: u64,
+        discovery_produced: u64,
+        discovery_parse_failed: u64,
+        discovery_declined_by_user: u64,
+        discovery_considered_not_a_game: u64,
+        discovery_container_descended: u64,
+        discovery_container_descent_truncated: u64,
+        discovery_volume_skipped: u64,
+        discovery_access_error: u64,
+        discovery_warning_count: u64,
+    },
+    /// The terminal decision for one Steam client authoring plan.
+    CalibrationSteamClient {
+        plan_id: String,
+        status: String,
+        reason: String,
+        target_id: i64,
+        continued: bool,
+    },
     /// A guided calibration decision or terminal outcome.
     CalibrationGuidance {
         target_id: i64,
@@ -302,6 +328,8 @@ impl Event {
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
             Event::CalibrationRegistrationPlan { .. } => "calibration.registration_plan",
             Event::CalibrationRegistration { .. } => "calibration.registration",
+            Event::CalibrationSteamClientPlan { .. } => "calibration.steam_client_plan",
+            Event::CalibrationSteamClient { .. } => "calibration.steam_client",
             Event::CalibrationGuidance { .. } => "calibration.guidance",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
             Event::DeepCaptureRestart { .. } => "deep_capture.restart",
@@ -632,6 +660,72 @@ impl Event {
                     Some(target_id) => line.push_str(&target_id.to_string()),
                     None => line.push_str("null"),
                 }
+                line.push_str(",\"continued\":");
+                line.push_str(if *continued { "true" } else { "false" });
+            }
+            Event::CalibrationSteamClientPlan {
+                plan_id,
+                canonical_json,
+                target_id,
+                steam_app_id,
+                executable,
+                discovery_considered,
+                discovery_produced,
+                discovery_parse_failed,
+                discovery_declined_by_user,
+                discovery_considered_not_a_game,
+                discovery_container_descended,
+                discovery_container_descent_truncated,
+                discovery_volume_skipped,
+                discovery_access_error,
+                discovery_warning_count,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"canonical_json\":");
+                write_json_string(canonical_json, &mut line);
+                line.push_str(",\"target_id\":");
+                line.push_str(&target_id.to_string());
+                line.push_str(",\"steam_app_id\":");
+                line.push_str(&steam_app_id.to_string());
+                line.push_str(",\"executable\":");
+                write_json_string(executable, &mut line);
+                line.push_str(",\"discovery_considered\":");
+                line.push_str(&discovery_considered.to_string());
+                line.push_str(",\"discovery_produced\":");
+                line.push_str(&discovery_produced.to_string());
+                line.push_str(",\"discovery_parse_failed\":");
+                line.push_str(&discovery_parse_failed.to_string());
+                line.push_str(",\"discovery_declined_by_user\":");
+                line.push_str(&discovery_declined_by_user.to_string());
+                line.push_str(",\"discovery_considered_not_a_game\":");
+                line.push_str(&discovery_considered_not_a_game.to_string());
+                line.push_str(",\"discovery_container_descended\":");
+                line.push_str(&discovery_container_descended.to_string());
+                line.push_str(",\"discovery_container_descent_truncated\":");
+                line.push_str(&discovery_container_descent_truncated.to_string());
+                line.push_str(",\"discovery_volume_skipped\":");
+                line.push_str(&discovery_volume_skipped.to_string());
+                line.push_str(",\"discovery_access_error\":");
+                line.push_str(&discovery_access_error.to_string());
+                line.push_str(",\"discovery_warning_count\":");
+                line.push_str(&discovery_warning_count.to_string());
+            }
+            Event::CalibrationSteamClient {
+                plan_id,
+                status,
+                reason,
+                target_id,
+                continued,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+                line.push_str(",\"target_id\":");
+                line.push_str(&target_id.to_string());
                 line.push_str(",\"continued\":");
                 line.push_str(if *continued { "true" } else { "false" });
             }
@@ -1173,6 +1267,44 @@ mod tests {
         assert_eq!(registration["event"], "calibration.registration");
         assert_eq!(registration["target_id"], 42);
         assert_eq!(registration["continued"], true);
+
+        let steam_client_plan = Event::CalibrationSteamClientPlan {
+            plan_id: "steam-client-setup-v1:abcd".to_string(),
+            canonical_json: "{\"schema\":\"fragcap.steam-client-setup-plan.v1\"}".to_string(),
+            target_id: 42,
+            steam_app_id: 620,
+            executable: "portal2.exe".to_string(),
+            discovery_considered: 2,
+            discovery_produced: 1,
+            discovery_parse_failed: 1,
+            discovery_declined_by_user: 0,
+            discovery_considered_not_a_game: 0,
+            discovery_container_descended: 0,
+            discovery_container_descent_truncated: 0,
+            discovery_volume_skipped: 0,
+            discovery_access_error: 0,
+            discovery_warning_count: 1,
+        }
+        .render(now);
+        let steam_client_plan: serde_json::Value =
+            serde_json::from_str(&steam_client_plan).unwrap();
+        assert_eq!(steam_client_plan["event"], "calibration.steam_client_plan");
+        assert_eq!(steam_client_plan["steam_app_id"], 620);
+        assert_eq!(steam_client_plan["executable"], "portal2.exe");
+        assert_eq!(steam_client_plan["discovery_warning_count"], 1);
+
+        let steam_client = Event::CalibrationSteamClient {
+            plan_id: "steam-client-setup-v1:abcd".to_string(),
+            status: "applied".to_string(),
+            reason: "authored-client-persisted".to_string(),
+            target_id: 42,
+            continued: true,
+        }
+        .render(now);
+        let steam_client: serde_json::Value = serde_json::from_str(&steam_client).unwrap();
+        assert_eq!(steam_client["event"], "calibration.steam_client");
+        assert_eq!(steam_client["status"], "applied");
+        assert_eq!(steam_client["continued"], true);
 
         let guidance = Event::CalibrationGuidance {
             target_id: 75_000,

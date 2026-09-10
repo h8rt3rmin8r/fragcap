@@ -7,9 +7,9 @@ use std::sync::atomic::Ordering;
 
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
-    CandidateIdentity, CandidateTarget, CompatibilityAddressFamily, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, Selection,
-    Store, TargetEntry,
+    AuthorTargetClientOutcome, CandidateIdentity, CandidateTarget, CompatibilityAddressFamily,
+    CompatibilityLaunchCase, CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery,
+    DiscoveryAccount, Selection, Store, TargetEntry,
 };
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
@@ -43,6 +43,9 @@ struct Guidance {
 const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
 const REGISTRATION_OPERATION: &str = "register-candidate-v1";
 const REGISTRATION_PLAN_PREFIX: &str = "target-registration-v1:";
+const STEAM_CLIENT_PLAN_SCHEMA: &str = "fragcap.steam-client-setup-plan.v1";
+const STEAM_CLIENT_OPERATION: &str = "author-target-client-if-unchanged-v1";
+const STEAM_CLIENT_PLAN_PREFIX: &str = "steam-client-setup-v1:";
 
 #[derive(Clone, Debug)]
 struct RegistrationPlan {
@@ -52,6 +55,123 @@ struct RegistrationPlan {
     candidate: CandidateTarget,
     discovery_account: DiscoveryAccount,
     discovery_warning_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct SteamClientPlan {
+    id: String,
+    canonical: Value,
+    canonical_json: String,
+    target: TargetEntry,
+    app_id: u32,
+    executable: String,
+    discovery_account: DiscoveryAccount,
+    discovery_warning_count: usize,
+}
+
+impl SteamClientPlan {
+    fn new(
+        target: TargetEntry,
+        discovery: &Discovery,
+        local_store: &Path,
+    ) -> Result<Option<Self>, CliError> {
+        if target.launch_entries.is_some() {
+            return Ok(None);
+        }
+        let Some(app_id) = steam_app_id(&target) else {
+            return Ok(None);
+        };
+        if !discovery.account.is_conserved() {
+            return Err(CliError::failure(
+                "discovery accounting was not conserved; refusing Steam client setup",
+            ));
+        }
+        let candidates: Vec<_> = discovery
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.identity == CandidateIdentity::SteamAppId(app_id)
+                    && candidate.source_name == "steam"
+            })
+            .collect();
+        let [candidate] = candidates.as_slice() else {
+            return Ok(None);
+        };
+        let Some(target_root) = target.install_root.as_deref() else {
+            return Ok(None);
+        };
+        if candidate.install_root.as_deref() != Some(target_root) {
+            return Ok(None);
+        }
+        let Some(executable) = candidate.executable_hint.as_deref() else {
+            return Ok(None);
+        };
+        if !fragcap::targets::is_client_executable(executable) {
+            return Ok(None);
+        }
+
+        let canonical = steam_client_plan_value(
+            &target,
+            candidate,
+            discovery,
+            local_store,
+            app_id,
+            executable,
+        );
+        let canonical_json = serde_json::to_string(&canonical)
+            .expect("the Steam client plan contains only serializable values");
+        let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
+        Ok(Some(Self {
+            id: format!("{STEAM_CLIENT_PLAN_PREFIX}{digest}"),
+            canonical,
+            canonical_json,
+            target,
+            app_id,
+            executable: executable.to_string(),
+            discovery_account: discovery.account.clone(),
+            discovery_warning_count: discovery.warnings.len(),
+        }))
+    }
+
+    fn emit(&self, emitter: &mut Emitter) -> Result<(), CliError> {
+        emitter
+            .event_checked(&Event::CalibrationSteamClientPlan {
+                plan_id: self.id.clone(),
+                canonical_json: self.canonical_json.clone(),
+                target_id: self.target.stable_id,
+                steam_app_id: self.app_id,
+                executable: self.executable.clone(),
+                discovery_considered: self.discovery_account.considered,
+                discovery_produced: self.discovery_account.produced,
+                discovery_parse_failed: self.discovery_account.parse_failed,
+                discovery_declined_by_user: self.discovery_account.declined_by_user,
+                discovery_considered_not_a_game: self.discovery_account.considered_not_a_game,
+                discovery_container_descended: self.discovery_account.container_descended,
+                discovery_container_descent_truncated: self
+                    .discovery_account
+                    .container_descent_truncated,
+                discovery_volume_skipped: self.discovery_account.volume_skipped,
+                discovery_access_error: self.discovery_account.access_error,
+                discovery_warning_count: self.discovery_warning_count as u64,
+            })
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the Steam client setup plan: {error}"
+                ))
+            })?;
+        let rendered = serde_json::to_string_pretty(&self.canonical)
+            .expect("the Steam client plan contains only serializable values");
+        emitter
+            .required_human_checked(&format!(
+                "Steam client setup plan\n  plan id: {}\n{}\n",
+                self.id, rendered
+            ))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the Steam client setup plan: {error}"
+                ))
+            })
+    }
 }
 
 impl RegistrationPlan {
@@ -373,8 +493,12 @@ fn discover_for_calibration(
         let mut account = fragcap::targets::DiscoveryAccount::default();
         account.produce();
         let drifted = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT").is_some();
+        let steam_client_drift =
+            std::env::var_os("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_DRIFT").is_some();
         let ambiguous =
             std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS").is_some();
+        let steam_client_ambiguous =
+            std::env::var_os("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS").is_some();
         let mut candidates = vec![CandidateTarget {
             identity: CandidateIdentity::SteamAppId(75_000),
             display_name: if drifted {
@@ -389,7 +513,11 @@ fn discover_for_calibration(
             source_name: "steam".to_string(),
             install_root: Some("C:\\Games\\Sample Target".to_string()),
             folder_name: Some("Sample Target".to_string()),
-            executable_hint: Some("client.exe".to_string()),
+            executable_hint: Some(if steam_client_drift {
+                "changed-client.exe".to_string()
+            } else {
+                "client.exe".to_string()
+            }),
         }];
         if ambiguous {
             account.produce();
@@ -406,6 +534,21 @@ fn discover_for_calibration(
                 install_root: Some("C:\\Other Games\\Sample Target".to_string()),
                 folder_name: Some("Sample Target".to_string()),
                 executable_hint: Some("client.exe".to_string()),
+            });
+        }
+        if steam_client_ambiguous {
+            account.produce();
+            candidates.push(CandidateTarget {
+                identity: CandidateIdentity::SteamAppId(75_000),
+                display_name: "Conflicting Sample Target".to_string(),
+                fidelity: fragcap::profile::FidelityTier::Observed,
+                classification: fragcap::targets::TargetClassification::Game,
+                evidence: Vec::new(),
+                detection_scan: None,
+                source_name: "steam".to_string(),
+                install_root: Some("D:\\Games\\Sample Target".to_string()),
+                folder_name: Some("Sample Target".to_string()),
+                executable_hint: Some("other-client.exe".to_string()),
             });
         }
         return Ok(Discovery {
@@ -557,6 +700,104 @@ fn registration_plan_value(
         "predicted_stable_id": predicted_stable_id,
         "schema": REGISTRATION_PLAN_SCHEMA,
     }))
+}
+
+fn steam_client_plan_value(
+    target: &TargetEntry,
+    candidate: &CandidateTarget,
+    discovery: &Discovery,
+    local_store: &Path,
+    app_id: u32,
+    executable: &str,
+) -> Value {
+    let local_store = crate::commands::target_resolve::resolve_store_identity(local_store);
+    let mut evidence: Vec<_> = candidate
+        .evidence
+        .iter()
+        .map(|finding| {
+            json!({
+                "category": finding.category.as_str(),
+                "evidence": finding.evidence,
+                "fidelity": finding.fidelity.as_str(),
+                "product": finding.product,
+            })
+        })
+        .collect();
+    evidence.sort_by_key(|value| value.to_string());
+    let mut warnings = discovery.warnings.clone();
+    warnings.sort();
+    json!({
+        "candidate": {
+            "classification": candidate.classification.as_str(),
+            "detection_scan": candidate.detection_scan.map(|scan| scan.as_str()),
+            "display_name": candidate.display_name,
+            "evidence": evidence,
+            "executable_hint": candidate.executable_hint,
+            "fidelity": candidate.fidelity.as_str(),
+            "folder_name": candidate.folder_name,
+            "identity": candidate_identity_value(&candidate.identity),
+            "install_root": candidate.install_root,
+            "source": candidate.source_name,
+        },
+        "discovery": {
+            "account": {
+                "access_error": discovery.account.access_error,
+                "considered": discovery.account.considered,
+                "considered_not_a_game": discovery.account.considered_not_a_game,
+                "container_descended": discovery.account.container_descended,
+                "container_descent_truncated": discovery.account.container_descent_truncated,
+                "declined_by_user": discovery.account.declined_by_user,
+                "parse_failed": discovery.account.parse_failed,
+                "produced": discovery.account.produced,
+                "volume_skipped": discovery.account.volume_skipped,
+            },
+            "warnings": warnings,
+        },
+        "local_store": local_store.to_string_lossy(),
+        "no_effects": [
+            "no-process-control",
+            "no-process-launch",
+            "no-proxy-or-routing",
+            "no-session-authorization",
+            "no-system-trust-change",
+        ],
+        "operation": STEAM_CLIENT_OPERATION,
+        "proposed_executable": executable,
+        "resulting_launch_entries": fragcap::targets::resolved_client_launch(executable),
+        "schema": STEAM_CLIENT_PLAN_SCHEMA,
+        "steam_app_id": app_id,
+        "target": target_plan_value(target),
+    })
+}
+
+fn target_plan_value(target: &TargetEntry) -> Value {
+    json!({
+        "anchor": target.anchor,
+        "classification": target.classification.as_str(),
+        "classification_source": target.classification_source.as_str(),
+        "detection_scan": target.detection_scan.map(|scan| scan.as_str()),
+        "evidence": target.evidence,
+        "executable_hint": target.executable_hint,
+        "fidelity": target.fidelity.as_str(),
+        "folder_name": target.folder_name,
+        "handle": target.handle,
+        "id": target.id,
+        "install_root": target.install_root,
+        "launch_entries": target.launch_entries,
+        "name": target.name,
+        "provenance": target.provenance,
+        "stable_id": target.stable_id,
+    })
+}
+
+fn steam_app_id(target: &TargetEntry) -> Option<u32> {
+    let anchor = target.anchor.as_deref()?;
+    if fragcap::targets::identifier::canonicalize_anchor(anchor) != anchor {
+        return None;
+    }
+    let digits = anchor.strip_prefix("steam:")?;
+    let app_id = digits.parse::<u32>().ok()?;
+    (app_id > 0 && digits == app_id.to_string()).then_some(app_id)
 }
 
 fn candidate_identity(identity: &CandidateIdentity) -> String {
@@ -719,6 +960,283 @@ fn registration_outcome(
         })
 }
 
+fn prepare_steam_client(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    local_store_path: &Path,
+    store: &mut Store,
+    target: TargetEntry,
+) -> Result<TargetFrontDoor, CliError> {
+    if target.launch_entries.is_some() || steam_app_id(&target).is_none() {
+        return Ok(TargetFrontDoor::Ready(Box::new(target)));
+    }
+
+    let discovery = discover_for_calibration(args, store, emitter)?;
+    let Some(plan) = SteamClientPlan::new(target.clone(), &discovery, local_store_path)? else {
+        return Ok(TargetFrontDoor::Ready(Box::new(target)));
+    };
+    if emitter.is_json() && !args.authorize_stdin {
+        return Err(CliError::usage(
+            "JSON Steam client setup requires --authorize-stdin and the exact emitted plan identifier",
+        ));
+    }
+    if !args.authorize_stdin && !authorization.is_terminal() {
+        return Err(CliError::usage(
+            "Steam client setup requires an interactive terminal or --authorize-stdin",
+        ));
+    }
+
+    plan.emit(emitter)?;
+    let confirmation = match confirm_steam_client(args, authorization, emitter, &plan) {
+        Ok(confirmation) => confirmation,
+        Err(error) => {
+            let _ = steam_client_outcome(
+                emitter,
+                &plan,
+                "failed",
+                "steam-client-confirmation-failed",
+                false,
+            );
+            return Err(error);
+        }
+    };
+    match confirmation {
+        RegistrationConfirmation::Confirmed => {}
+        RegistrationConfirmation::Declined => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "declined",
+                "operator-declined-socket-holder-assertion",
+                false,
+            )?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Closed => {
+            steam_client_outcome(emitter, &plan, "closed", "steam-client-input-closed", false)?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Invalid => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "invalid",
+                "exact-steam-client-plan-id-not-supplied",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "Steam client confirmation did not match the exact current plan identifier; no target was changed",
+            ));
+        }
+        RegistrationConfirmation::Interrupted => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "interrupted",
+                "interrupt-before-steam-client-update",
+                false,
+            )?;
+            return Err(CliError::failure(
+                "Steam client setup was interrupted; no target was changed",
+            ));
+        }
+    }
+
+    let current_target = store
+        .target_by_stable_id(plan.target.stable_id)
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    let Some(current_target) = current_target else {
+        steam_client_outcome(
+            emitter,
+            &plan,
+            "drifted",
+            "target-missing-after-confirmation",
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the target changed after Steam client confirmation; review a fresh plan",
+        ));
+    };
+    let current_discovery = match discover_for_calibration(args, store, emitter) {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "drifted",
+                "discovery-unavailable-after-confirmation",
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    let current_plan = SteamClientPlan::new(current_target, &current_discovery, local_store_path)?;
+    let Some(current_plan) = current_plan else {
+        steam_client_outcome(
+            emitter,
+            &plan,
+            "drifted",
+            "steam-client-authority-not-reproduced",
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the Steam client authority changed after confirmation; review a fresh plan",
+        ));
+    };
+    if !constant_time_equal(
+        plan.canonical_json.as_bytes(),
+        current_plan.canonical_json.as_bytes(),
+    ) {
+        steam_client_outcome(
+            emitter,
+            &plan,
+            "drifted",
+            "steam-client-plan-changed-after-confirmation",
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the Steam client authority changed after confirmation; review a fresh plan",
+        ));
+    }
+
+    match store
+        .author_target_client_if_unchanged(&plan.target, &plan.executable)
+        .map_err(|error| CliError::failure(error.to_string()))?
+    {
+        AuthorTargetClientOutcome::Applied => {}
+        AuthorTargetClientOutcome::Changed => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "changed",
+                "target-changed-before-conditional-update",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the target changed before the Steam client update; review a fresh plan",
+            ));
+        }
+        AuthorTargetClientOutcome::Missing => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "changed",
+                "target-missing-before-conditional-update",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the target disappeared before the Steam client update; review a fresh plan",
+            ));
+        }
+    }
+
+    let updated = store
+        .target_by_stable_id(plan.target.stable_id)
+        .map_err(|error| CliError::failure(error.to_string()))?
+        .ok_or_else(|| CliError::failure("the authored Steam target could not be re-resolved"))?;
+    let mut expected = plan.target.clone();
+    expected.launch_entries = Some(fragcap::targets::resolved_client_launch(&plan.executable));
+    expected.fidelity = fragcap::profile::FidelityTier::Authored;
+    if updated != expected {
+        steam_client_outcome(
+            emitter,
+            &plan,
+            "failed",
+            "authored-target-verification-failed",
+            false,
+        )?;
+        return Err(CliError::failure(
+            "the authored Steam target did not match the confirmed result",
+        ));
+    }
+    steam_client_outcome(emitter, &plan, "applied", "authored-client-persisted", true)?;
+    Ok(TargetFrontDoor::Ready(Box::new(updated)))
+}
+
+fn confirm_steam_client(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    plan: &SteamClientPlan,
+) -> Result<RegistrationConfirmation, CliError> {
+    if !args.authorize_stdin {
+        emitter
+            .required_human_checked(&format!(
+                "Does {} hold the target's network sockets? [y/N] ",
+                plan.executable
+            ))
+            .map_err(|error| {
+                CliError::usage(format!("could not write the Steam client prompt: {error}"))
+            })?;
+    }
+    emitter.flush().map_err(|error| {
+        CliError::usage(format!(
+            "could not flush the Steam client setup plan before input: {error}"
+        ))
+    })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    let response = authorization
+        .read_response(&plan.id, args.authorize_stdin)
+        .map_err(|error| {
+            CliError::usage(format!("could not read Steam client confirmation: {error}"))
+        })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    if args.authorize_stdin {
+        if response.is_empty() {
+            return Ok(RegistrationConfirmation::Closed);
+        }
+        return Ok(if exact_plan_response(&response, &plan.id) {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Invalid
+        });
+    }
+    let Some(line) = response.strip_suffix(b"\n") else {
+        return Ok(RegistrationConfirmation::Closed);
+    };
+    let Ok(answer) = std::str::from_utf8(line) else {
+        return Ok(RegistrationConfirmation::Invalid);
+    };
+    Ok(
+        if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Declined
+        },
+    )
+}
+
+fn steam_client_outcome(
+    emitter: &mut Emitter,
+    plan: &SteamClientPlan,
+    status: &str,
+    reason: &str,
+    continued: bool,
+) -> Result<(), CliError> {
+    emitter
+        .event_checked(&Event::CalibrationSteamClient {
+            plan_id: plan.id.clone(),
+            status: status.to_string(),
+            reason: reason.to_string(),
+            target_id: plan.target.stable_id,
+            continued,
+        })
+        .and_then(|()| {
+            emitter.required_human_checked(&format!(
+                "Steam client setup: {status} ({reason}); target id: {}; calibration continued: {continued}\n",
+                plan.target.stable_id,
+            ))
+        })
+        .map_err(|error| {
+            CliError::usage(format!("could not write the Steam client outcome: {error}"))
+        })
+}
+
 pub fn run(
     args: &CalibrateArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
@@ -735,6 +1253,17 @@ pub fn run(
         emitter,
         &local_store_path,
         &mut store,
+    )? {
+        TargetFrontDoor::Ready(target) => *target,
+        TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+    };
+    let target = match prepare_steam_client(
+        args,
+        authorization,
+        emitter,
+        &local_store_path,
+        &mut store,
+        target,
     )? {
         TargetFrontDoor::Ready(target) => *target,
         TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
@@ -1710,6 +2239,96 @@ mod tests {
         assert!(!exact_plan_response(id.as_bytes(), id));
         assert!(!exact_plan_response(format!("{id}\r\n").as_bytes(), id));
         assert!(!exact_plan_response(b"target-registration-v1:def\n", id));
+    }
+
+    fn steam_target(launch_entries: Option<Value>) -> TargetEntry {
+        TargetEntry {
+            id: Some(7),
+            stable_id: fragcap::targets::identifier::anchored_id("steam:620"),
+            handle: "portal_2".to_string(),
+            name: "Portal 2".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::Platform,
+            fidelity: FidelityTier::Observed,
+            provenance: Some(json!({"source": "steam"})),
+            anchor: Some("steam:620".to_string()),
+            launch_entries,
+            install_root: Some(r"C:\Games\Portal 2".to_string()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: Some("Portal 2".to_string()),
+            executable_hint: Some("portal2.exe".to_string()),
+        }
+    }
+
+    #[test]
+    fn steam_client_plan_is_domain_separated_complete_and_field_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = steam_target(None);
+        let candidate = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
+        let observed = discovery(vec![candidate]);
+        let plan = SteamClientPlan::new(target.clone(), &observed, dir.path())
+            .unwrap()
+            .unwrap();
+        assert!(plan.id.starts_with(STEAM_CLIENT_PLAN_PREFIX));
+        assert_eq!(plan.canonical["target"]["stable_id"], target.stable_id);
+        assert_eq!(plan.canonical["steam_app_id"], 620);
+        assert_eq!(plan.canonical["proposed_executable"], "client.exe");
+        assert_eq!(plan.canonical["no_effects"].as_array().unwrap().len(), 5);
+        let mut changed_target = target;
+        changed_target.name = "Portal Two".to_string();
+        assert_ne!(
+            plan.id,
+            SteamClientPlan::new(changed_target, &observed, dir.path())
+                .unwrap()
+                .unwrap()
+                .id
+        );
+    }
+
+    #[test]
+    fn steam_client_plan_requires_absence_exact_identity_root_and_safe_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
+        assert!(SteamClientPlan::new(
+            steam_target(Some(resolved_client_launch("portal2.exe"))),
+            &discovery(vec![valid.clone()]),
+            dir.path(),
+        )
+        .unwrap()
+        .is_none());
+        assert!(SteamClientPlan::new(
+            steam_target(None),
+            &discovery(vec![
+                valid.clone(),
+                candidate(CandidateIdentity::SteamAppId(620), "Portal 2")
+            ]),
+            dir.path(),
+        )
+        .unwrap()
+        .is_none());
+        let mut wrong_root = valid.clone();
+        wrong_root.install_root = Some(r"D:\Games\Portal 2".to_string());
+        assert!(
+            SteamClientPlan::new(steam_target(None), &discovery(vec![wrong_root]), dir.path(),)
+                .unwrap()
+                .is_none()
+        );
+        for invalid in [
+            "",
+            " client.exe",
+            "../client.exe",
+            "client.exe --flag",
+            "https://client.exe",
+            "%command%",
+            "client.dll",
+        ] {
+            assert!(
+                !fragcap::targets::is_client_executable(invalid),
+                "accepted {invalid:?}"
+            );
+        }
+        assert!(fragcap::targets::is_client_executable("bin/client.EXE"));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::compatibility::{
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
@@ -36,6 +36,18 @@ use fragcap_profile::{
 /// tests), migrated to the current schema version.
 pub struct Store {
     conn: Connection,
+}
+
+/// Result of filling one absent launch declaration from an explicitly authored
+/// client assertion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorTargetClientOutcome {
+    /// The complete planned row still matched and the client was written.
+    Applied,
+    /// The target still exists but any part of it changed after review.
+    Changed,
+    /// The exact active stable identifier no longer exists.
+    Missing,
 }
 
 impl Store {
@@ -965,6 +977,63 @@ impl Store {
             params![id, json_text(launch_entries), fidelity.as_str()],
         )?;
         Ok(rows > 0)
+    }
+
+    /// Fill an absent launch declaration after an operator identifies the exact
+    /// socket-holding client.
+    ///
+    /// The immediate transaction closes the gap between comparing the complete
+    /// planned row and changing it. Existing launch evidence is never overwritten,
+    /// and the update changes only `launch_entries` and `fidelity`.
+    pub fn author_target_client_if_unchanged(
+        &mut self,
+        expected: &TargetEntry,
+        executable: &str,
+    ) -> Result<AuthorTargetClientOutcome, TargetsError> {
+        if expected.launch_entries.is_some() {
+            return Err(TargetsError::Model(
+                "target launch declaration is already present".to_string(),
+            ));
+        }
+        if !crate::is_client_executable(executable) {
+            return Err(TargetsError::Model(
+                "authored client executable must name one suitable Windows image".to_string(),
+            ));
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = tx
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
+                 FROM targets WHERE stable_id = ?1",
+                params![expected.stable_id],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()?;
+        let Some(current) = current else {
+            return Ok(AuthorTargetClientOutcome::Missing);
+        };
+        if current != *expected {
+            return Ok(AuthorTargetClientOutcome::Changed);
+        }
+
+        let launch_entries = crate::resolved_client_launch(executable);
+        tx.execute(
+            "UPDATE targets SET launch_entries = ?2, fidelity = ?3 WHERE stable_id = ?1",
+            params![
+                expected.stable_id,
+                json_text(&launch_entries),
+                FidelityTier::Authored.as_str()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(AuthorTargetClientOutcome::Applied)
     }
 
     /// Replace the listing snapshot with the ordered rows a listing just displayed.
@@ -2203,6 +2272,85 @@ mod tests {
         assert_eq!(after.fidelity, FidelityTier::Verified);
         assert!(!launch_is_unresolved(&after));
         assert_eq!(capture_readiness(&after), CaptureReadiness::Ready);
+    }
+
+    #[test]
+    fn authored_client_update_fills_only_an_absent_launch_declaration() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target(
+            "some_game",
+            Some("steam:42"),
+            FidelityTier::HeuristicUnverified,
+        );
+        entry.launch_entries = None;
+        entry.install_root = Some(r"C:\Games\Some Game".to_string());
+        let id = store.insert_target(&entry).expect("insert");
+        let expected = store.target(id).expect("read").expect("present");
+
+        assert_eq!(
+            store
+                .author_target_client_if_unchanged(&expected, "bin/game.exe")
+                .expect("author"),
+            AuthorTargetClientOutcome::Applied
+        );
+
+        let after = store.target(id).expect("read").expect("present");
+        let mut wanted = expected;
+        wanted.launch_entries = Some(crate::resolved_client_launch("bin/game.exe"));
+        wanted.fidelity = FidelityTier::Authored;
+        assert_eq!(after, wanted);
+    }
+
+    #[test]
+    fn authored_client_update_refuses_changed_missing_and_present_rows() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target(
+            "some_game",
+            Some("steam:42"),
+            FidelityTier::HeuristicUnverified,
+        );
+        entry.launch_entries = None;
+        let id = store.insert_target(&entry).expect("insert");
+        let expected = store.target(id).expect("read").expect("present");
+
+        let unsafe_error = store
+            .author_target_client_if_unchanged(&expected, "%command%")
+            .expect_err("command template must be refused");
+        assert!(unsafe_error
+            .to_string()
+            .contains("must name one suitable Windows image"));
+
+        let mut changed = expected.clone();
+        changed.name = "Changed".to_string();
+        assert!(store.update_target(&changed).expect("change"));
+        assert_eq!(
+            store
+                .author_target_client_if_unchanged(&expected, "game.exe")
+                .expect("author"),
+            AuthorTargetClientOutcome::Changed
+        );
+
+        let current = store.target(id).expect("read").expect("present");
+        assert!(store.delete_target(id).expect("delete"));
+        assert_eq!(
+            store
+                .author_target_client_if_unchanged(&current, "game.exe")
+                .expect("author"),
+            AuthorTargetClientOutcome::Missing
+        );
+
+        let present = sample_target("declared", Some("steam:43"), FidelityTier::Authored);
+        let present_id = store.insert_target(&present).expect("insert present");
+        let present = store
+            .target(present_id)
+            .expect("read present")
+            .expect("present");
+        let error = store
+            .author_target_client_if_unchanged(&present, "other.exe")
+            .expect_err("present declaration must be refused");
+        assert!(error
+            .to_string()
+            .contains("launch declaration is already present"));
     }
 
     #[test]

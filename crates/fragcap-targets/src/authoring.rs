@@ -65,6 +65,27 @@ pub fn resolved_client_launch(executable: &str) -> Value {
     json!([{ "executable": executable, "role": "client" }])
 }
 
+/// Whether a verbatim platform proposal names one suitable Windows executable
+/// image rather than a command template, URI, wildcard, or traversal.
+pub fn is_client_executable(executable: &str) -> bool {
+    if executable.trim().is_empty()
+        || executable.trim() != executable
+        || executable.contains(['\"', '\'', ';', '|', '&'])
+        || executable.contains("://")
+        || executable.chars().any(char::is_control)
+        || executable.contains(['*', '?', '<', '>', '%'])
+        || executable
+            .split(['/', '\\'])
+            .any(|component| component == "..")
+    {
+        return false;
+    }
+    executable
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|image| image.len() > 4 && image.to_ascii_lowercase().ends_with(".exe"))
+}
+
 /// Whether an entry's launch chain is unresolved, i.e. it carries the
 /// `socket_holder: "unresolved"` marker a `no` or `unsure` authoring answer wrote.
 /// A capture against such a target promotes it once it observes the real holder.
@@ -136,6 +157,23 @@ mod tests {
             Some(SocketHolderAnswer::Unsure)
         );
         assert_eq!(SocketHolderAnswer::parse("maybe"), None);
+    }
+
+    #[test]
+    fn client_executable_validation_refuses_commands_and_accepts_one_image_path() {
+        for invalid in [
+            "",
+            " client.exe",
+            "../client.exe",
+            "client.exe --flag",
+            "https://client.exe",
+            "%command%",
+            "*.exe",
+            "client.dll",
+        ] {
+            assert!(!is_client_executable(invalid), "accepted {invalid:?}");
+        }
+        assert!(is_client_executable("bin/client.EXE"));
     }
 
     #[test]
