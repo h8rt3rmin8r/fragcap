@@ -142,6 +142,10 @@ pub enum Event {
         reason: Option<String>,
         images: Vec<String>,
         limitations: Vec<String>,
+        requested_protocols: Vec<String>,
+        observed_protocols: Vec<String>,
+        completed_protocols: Vec<String>,
+        remaining_protocols: Vec<String>,
         process_control: String,
         next_command: Option<String>,
     },
@@ -557,6 +561,10 @@ impl Event {
                 reason,
                 images,
                 limitations,
+                requested_protocols,
+                observed_protocols,
+                completed_protocols,
+                remaining_protocols,
                 process_control,
                 next_command,
             } => {
@@ -580,6 +588,14 @@ impl Event {
                 write_json_strings(images, &mut line);
                 line.push_str("],\"limitations\":[");
                 write_json_strings(limitations, &mut line);
+                line.push_str("],\"requested_protocols\":[");
+                write_json_strings(requested_protocols, &mut line);
+                line.push_str("],\"observed_protocols\":[");
+                write_json_strings(observed_protocols, &mut line);
+                line.push_str("],\"completed_protocols\":[");
+                write_json_strings(completed_protocols, &mut line);
+                line.push_str("],\"remaining_protocols\":[");
+                write_json_strings(remaining_protocols, &mut line);
                 line.push_str("],\"process_control\":");
                 write_json_string(process_control, &mut line);
                 line.push_str(",\"next_command\":");
@@ -1048,6 +1064,10 @@ mod tests {
             reason: Some("missing".to_string()),
             images: vec!["client.exe".to_string()],
             limitations: Vec::new(),
+            requested_protocols: vec!["http1".to_string(), "https".to_string()],
+            observed_protocols: vec!["http1".to_string()],
+            completed_protocols: Vec::new(),
+            remaining_protocols: vec!["http1".to_string(), "https".to_string()],
             process_control: "none".to_string(),
             next_command: None,
         }
@@ -1058,6 +1078,16 @@ mod tests {
         assert_eq!(guidance["observed_launch_case"], serde_json::Value::Null);
         assert_eq!(guidance["selected_launch_case"], "direct-exe-cold");
         assert_eq!(guidance["limitations"], serde_json::json!([]));
+        assert_eq!(
+            guidance["requested_protocols"],
+            serde_json::json!(["http1", "https"])
+        );
+        assert_eq!(guidance["observed_protocols"], serde_json::json!(["http1"]));
+        assert_eq!(guidance["completed_protocols"], serde_json::json!([]));
+        assert_eq!(
+            guidance["remaining_protocols"],
+            serde_json::json!(["http1", "https"])
+        );
         assert_eq!(guidance["process_control"], "none");
         assert_eq!(guidance["next_command"], serde_json::Value::Null);
 

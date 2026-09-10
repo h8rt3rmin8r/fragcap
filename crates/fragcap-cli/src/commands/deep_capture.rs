@@ -2046,6 +2046,23 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
+    let outcome = run_with_outcome(args, authorization, emitter)?;
+    match outcome.terminal_error {
+        Some(error) => Err(error),
+        None => Ok(Exit::SUCCESS),
+    }
+}
+
+pub(crate) struct RunOutcome {
+    pub observations: Vec<deep_capture_api::CompatibilityObservation>,
+    pub terminal_error: Option<CliError>,
+}
+
+pub(crate) fn run_with_outcome(
+    args: &DeepCaptureArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+) -> Result<RunOutcome, CliError> {
     if !args.launch {
         return Err(CliError::usage(
             "Deep Capture requires --launch so scoped proxy configuration is owned by the session",
@@ -2176,7 +2193,10 @@ pub fn run(
     crate::orchestrator::install_interrupt_handler();
     if !authorize_plan(args, authorization, emitter, &authorization_plan)? {
         emitter.progress("Deep Capture declined; no effects were applied");
-        return Ok(Exit::SUCCESS);
+        return Ok(RunOutcome {
+            observations: Vec::new(),
+            terminal_error: None,
+        });
     }
     let current_target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
@@ -2420,7 +2440,10 @@ pub fn run(
         .into_session(adapters)
         .run_to_completion(authorization);
     if report.is_complete() {
-        Ok(Exit::SUCCESS)
+        Ok(RunOutcome {
+            observations: report.snapshot.observations,
+            terminal_error: None,
+        })
     } else {
         let detail = report
             .snapshot
@@ -2428,7 +2451,10 @@ pub fn run(
             .first()
             .map(|failure| failure.detail.clone())
             .unwrap_or_else(|| "Deep Capture completed with partial results".to_string());
-        Err(CliError::failure(detail))
+        Ok(RunOutcome {
+            observations: report.snapshot.observations,
+            terminal_error: Some(CliError::failure(detail)),
+        })
     }
 }
 
@@ -4646,6 +4672,8 @@ mod tests {
     fn calibration_classification_keeps_outcomes_distinct() {
         let mut client = observation();
         client.role = Some("client".to_string());
+        client.correlation_state = deep_capture_api::CorrelationState::Matched;
+        client.correlation_reason = "exact-flow-and-owner".to_string();
         assert_eq!(
             calibration_outcome(CalibrationPhase::Reachability, &[client.clone()]),
             CalibrationOutcome::ReachedClient

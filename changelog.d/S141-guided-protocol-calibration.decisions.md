@@ -1,0 +1,3 @@
+<!-- spec-impact: 15, 17.2.1, 25, 28.1 -->
+
+Automatic protocol candidates now require concrete terminal observations with matched final-client correlation, while operator candidates remain requests rather than evidence. Protocol fact derivation applies the same final-client boundary to protocol behavior, inspectability, and local-CA trust, and retains only the strongest directly observed same-session inspectability value per protocol. Post-session planning also refreshes process inventory and marks warm continuations with `--restart-warm`, preventing launcher traffic, unresolved correlation, stale cold-state assumptions, and expected handshake metadata from creating false target facts or unusable guidance.

@@ -50,8 +50,8 @@ pub use native::{
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,
     compatibility_owner_role, observation_is_correlated_to_final_client,
-    observation_proves_final_client_ca_acceptance, terminal_calibration_outcome,
-    validate_compatibility_prerequisites,
+    observation_proves_final_client_ca_acceptance, observed_protocol_candidates,
+    terminal_calibration_outcome, validate_compatibility_prerequisites,
 };
 pub use process::*;
 pub use proposal::*;

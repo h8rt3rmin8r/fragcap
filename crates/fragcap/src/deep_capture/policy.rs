@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::targets::{
     latest_applicable_fact, CompatibilityCase, CompatibilityFact, CompatibilityFactKey,
@@ -9,8 +9,8 @@ use crate::targets::{
 
 use super::{
     CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
-    CompatibilityObservation, DetectionState, InspectabilityState, LaunchCase, PreflightRefusal,
-    SessionMode, TrafficFamily,
+    CompatibilityObservation, CorrelationState, DetectionState, InspectabilityState, LaunchCase,
+    PreflightRefusal, SessionMode, TrafficFamily,
 };
 
 /// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
@@ -217,30 +217,35 @@ pub fn compatibility_fact_candidates(
     }
     if calibration != Some(CalibrationPhase::Reachability) {
         let phase = calibration.unwrap_or(CalibrationPhase::Tls);
-        let inspectability: BTreeSet<(CompatibilityProtocol, &str)> = observations
-            .iter()
-            .filter(|observation| {
-                classification_is_fact_eligible(&observation.classification)
-                    && selected_protocol.is_none_or(|selected| {
-                        compatibility_protocol_family(&observation.classification) == Some(selected)
-                    })
-            })
-            .filter_map(|observation| {
-                compatibility_protocol_family(&observation.classification).map(|protocol| {
-                    (
-                        protocol,
-                        compatibility_inspectability(&observation.classification),
-                    )
+        let mut inspectability: BTreeMap<CompatibilityProtocol, &'static str> = BTreeMap::new();
+        for observation in observations.iter().filter(|observation| {
+            observation_is_final_client(observation, controlled)
+                && classification_is_fact_eligible(&observation.classification)
+                && selected_protocol.is_none_or(|selected| {
+                    compatibility_protocol_family(&observation.classification) == Some(selected)
                 })
-            })
-            .collect();
+        }) {
+            let Some(protocol) = compatibility_protocol_family(&observation.classification) else {
+                continue;
+            };
+            let value = compatibility_inspectability(&observation.classification);
+            inspectability
+                .entry(protocol)
+                .and_modify(|current| {
+                    if inspectability_rank(value) > inspectability_rank(current) {
+                        *current = value;
+                    }
+                })
+                .or_insert(value);
+        }
         for (protocol, value) in inspectability {
             push(CompatibilityFactKey::Inspectability, value, phase, protocol);
         }
         let protocols: BTreeSet<(CompatibilityProtocol, &str)> = observations
             .iter()
             .filter(|observation| {
-                classification_is_fact_eligible(&observation.classification)
+                observation_is_final_client(observation, controlled)
+                    && classification_is_fact_eligible(&observation.classification)
                     && selected_protocol.is_none_or(|selected| {
                         compatibility_protocol_family(&observation.classification) == Some(selected)
                     })
@@ -287,6 +292,28 @@ fn compatibility_protocol_family(
     })
 }
 
+/// Return concrete protocol candidates observed on directly correlated final-client flows.
+pub fn observed_protocol_candidates(
+    observations: &[CompatibilityObservation],
+    controlled: bool,
+) -> Vec<CompatibilityProtocol> {
+    let mut protocols = observations
+        .iter()
+        .filter(|observation| observation_is_final_client(observation, controlled))
+        .filter(|observation| classification_is_fact_eligible(&observation.classification))
+        .filter_map(|observation| compatibility_protocol_family(&observation.classification))
+        .collect::<Vec<_>>();
+    protocols.sort_by_key(|protocol| protocol.as_str());
+    protocols.dedup();
+    protocols
+}
+
+fn observation_is_final_client(observation: &CompatibilityObservation, controlled: bool) -> bool {
+    (observation.correlation_state == CorrelationState::Matched
+        && observation_is_correlated_to_final_client(observation))
+        || (controlled && controlled_harness_client(observation))
+}
+
 fn compatibility_protocol(classification: &super::ProtocolClassification) -> &'static str {
     match classification.family() {
         TrafficFamily::Http1 | TrafficFamily::Http2 | TrafficFamily::Sse | TrafficFamily::Grpc => {
@@ -307,6 +334,14 @@ fn compatibility_inspectability(classification: &super::ProtocolClassification) 
         InspectabilityState::Full | InspectabilityState::DecryptedUnknown => "full",
         InspectabilityState::MetadataOnly | InspectabilityState::EncryptedOpaque => "metadata-only",
         InspectabilityState::PacketOnly | InspectabilityState::Unavailable => "unknown",
+    }
+}
+
+fn inspectability_rank(value: &str) -> u8 {
+    match value {
+        "full" => 2,
+        "metadata-only" => 1,
+        _ => 0,
     }
 }
 
@@ -433,7 +468,8 @@ pub fn observation_is_correlated_to_final_client(observation: &CompatibilityObse
 pub fn observation_proves_final_client_ca_acceptance(
     observation: &CompatibilityObservation,
 ) -> bool {
-    observation_is_correlated_to_final_client(observation)
+    observation.correlation_state == CorrelationState::Matched
+        && observation_is_correlated_to_final_client(observation)
         && classification_proves_tls(&observation.classification)
 }
 
@@ -557,6 +593,87 @@ mod launch_case_tests {
     }
 
     #[test]
+    fn observed_candidates_are_concrete_final_client_protocols_only() {
+        let http1 = correlated_client_observation();
+        let mut https = correlated_client_observation();
+        https.proxy_connection_id = "proxy-2".into();
+        https.classification = ProtocolClassification::new(
+            TrafficFamily::Https,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap();
+        let mut launcher = https.clone();
+        launcher.proxy_connection_id = "proxy-3".into();
+        launcher.role = Some("launcher".into());
+        let mut unknown = https.clone();
+        unknown.proxy_connection_id = "proxy-4".into();
+        unknown.classification = ProtocolClassification::new(
+            TrafficFamily::Unknown,
+            DetectionState::Unknown,
+            InspectabilityState::Unavailable,
+            None,
+        )
+        .unwrap();
+        let mut uncorrelated = https.clone();
+        uncorrelated.proxy_connection_id = "proxy-5".into();
+        uncorrelated.flow_id = None;
+
+        assert_eq!(
+            observed_protocol_candidates(
+                &[
+                    https.clone(),
+                    launcher,
+                    unknown,
+                    http1.clone(),
+                    uncorrelated,
+                    https,
+                    http1,
+                ],
+                false,
+            ),
+            vec![CompatibilityProtocol::Http1, CompatibilityProtocol::Https]
+        );
+    }
+
+    #[test]
+    fn unresolved_correlation_never_becomes_protocol_evidence() {
+        for state in [
+            super::super::CorrelationState::FlowOnly,
+            super::super::CorrelationState::Ambiguous,
+            super::super::CorrelationState::Unavailable,
+        ] {
+            let mut observation = correlated_client_observation();
+            observation.classification = ProtocolClassification::new(
+                TrafficFamily::Https,
+                DetectionState::Identified,
+                InspectabilityState::Full,
+                None,
+            )
+            .unwrap();
+            observation.correlation_state = state;
+            assert!(observed_protocol_candidates(&[observation.clone()], false).is_empty());
+            assert!(!observation_proves_final_client_ca_acceptance(&observation));
+            let facts = compatibility_fact_candidates(
+                LaunchCase::DirectExeCold.as_str(),
+                &[observation],
+                false,
+                Some(CalibrationPhase::Tls),
+                Some(CompatibilityProtocol::Https),
+            );
+            assert!(!facts.iter().any(|fact| {
+                matches!(
+                    fact.key,
+                    CompatibilityFactKey::ProtocolBehavior
+                        | CompatibilityFactKey::Inspectability
+                        | CompatibilityFactKey::TlsTrustBehavior
+                )
+            }));
+        }
+    }
+
+    #[test]
     fn processing_failures_never_promote_positive_compatibility_facts() {
         for reason in [
             ClassificationReason::ParserFailed,
@@ -616,6 +733,53 @@ mod launch_case_tests {
                     | CompatibilityFactKey::TlsTrustBehavior
             )
         }));
+    }
+
+    #[test]
+    fn launcher_protocol_observation_never_becomes_a_target_fact() {
+        let mut launcher = correlated_client_observation();
+        launcher.role = Some("launcher".into());
+        let facts = compatibility_fact_candidates(
+            LaunchCase::PublisherLauncherCold.as_str(),
+            &[launcher],
+            false,
+            Some(CalibrationPhase::Tls),
+            Some(CompatibilityProtocol::Http1),
+        );
+        assert!(!facts.iter().any(|fact| {
+            matches!(
+                fact.key,
+                CompatibilityFactKey::ProtocolBehavior
+                    | CompatibilityFactKey::Inspectability
+                    | CompatibilityFactKey::TlsTrustBehavior
+            )
+        }));
+    }
+
+    #[test]
+    fn strongest_final_client_inspectability_is_the_single_session_fact() {
+        let metadata = correlated_client_observation();
+        let mut full = metadata.clone();
+        full.classification = ProtocolClassification::new(
+            TrafficFamily::Http1,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap();
+        let facts = compatibility_fact_candidates(
+            LaunchCase::DirectExeCold.as_str(),
+            &[metadata, full],
+            false,
+            Some(CalibrationPhase::Tls),
+            Some(CompatibilityProtocol::Http1),
+        );
+        let inspectability = facts
+            .iter()
+            .filter(|fact| fact.key == CompatibilityFactKey::Inspectability)
+            .collect::<Vec<_>>();
+        assert_eq!(inspectability.len(), 1);
+        assert_eq!(inspectability[0].value, "full");
     }
 
     #[test]

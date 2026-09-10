@@ -136,6 +136,26 @@ fn seed_target(local: &Path, with_current_routing: bool) -> i64 {
     id
 }
 
+fn insert_protocol_fact(store: &mut Store, row_id: i64, protocol: CompatibilityProtocol) {
+    let mut fact = CompatibilityFact::new(
+        row_id,
+        CompatibilityFactKey::Inspectability,
+        "full",
+        CompatibilityEvidenceSource::UserConfirmed,
+    )
+    .expect("compatibility fact");
+    fact.launch_case = Some(CompatibilityLaunchCase::DirectExeCold);
+    fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    fact.proxy_backend = Some("fragcap-native".to_string());
+    fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+    fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+    fact.protocol = Some(protocol);
+    store
+        .insert_compatibility_fact(&fact)
+        .expect("insert compatibility fact");
+}
+
 #[cfg(windows)]
 fn seed_topology(
     local: &Path,
@@ -229,6 +249,7 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
         "--no-payload",
         "--authorize-stdin",
         "--restart-warm",
+        "--protocol",
     ] {
         assert!(
             help.contains(required),
@@ -246,6 +267,287 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
     ] {
         assert!(!help.contains(excluded), "help leaked {excluded}:\n{help}");
     }
+}
+
+#[test]
+fn protocol_candidates_are_repeatable_and_routing_is_refused_before_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("must-not-exist");
+    seed_target(&local, true);
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--protocol",
+        "https",
+        "--protocol",
+        "http1",
+        "--protocol",
+        "https",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code, 2,
+        "authorization is required for the selected attempt: {events}"
+    );
+    assert!(
+        events.contains("\"action\":\"run-protocol\""),
+        "events:\n{events}"
+    );
+    assert!(events.contains("\"requested_protocols\":[\"http1\",\"https\"]"));
+    assert!(!bundle.exists());
+
+    let (code, _out, err) = run(&[
+        "calibrate",
+        "--id",
+        "75000",
+        "--protocol",
+        "routing",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("invalid value 'routing'"), "refusal: {err}");
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn current_routing_without_candidates_reports_unknown_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{events}");
+    let guidance: serde_json::Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
+    assert_eq!(guidance["status"], "ready");
+    assert_eq!(guidance["reason"], "current-routing-evidence");
+    assert_eq!(guidance["requested_protocols"], serde_json::json!([]));
+    assert_eq!(guidance["observed_protocols"], serde_json::json!([]));
+    assert_eq!(guidance["completed_protocols"], serde_json::json!([]));
+    assert_eq!(guidance["remaining_protocols"], serde_json::json!([]));
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
+}
+
+#[test]
+fn current_positive_candidate_reports_requested_coverage_without_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("must-not-exist");
+    let row_id = seed_target(&local, true);
+    let mut store = Store::open(&local).unwrap();
+    insert_protocol_fact(&mut store, row_id, CompatibilityProtocol::Https);
+    drop(store);
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--protocol",
+        "https",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{events}");
+    let guidance: serde_json::Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
+    assert_eq!(guidance["status"], "requested-coverage-complete");
+    assert_eq!(
+        guidance["completed_protocols"],
+        serde_json::json!(["https"])
+    );
+    assert_eq!(guidance["remaining_protocols"], serde_json::json!([]));
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn missing_routing_carries_observed_protocols_into_one_continuation() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("reachability-with-candidates");
+    seed_target(&local, false);
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{events}");
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    let guidance: serde_json::Value = events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
+        .unwrap();
+    assert_eq!(guidance["observed_protocols"], serde_json::json!(["http1"]));
+    assert_eq!(
+        guidance["remaining_protocols"],
+        serde_json::json!(["http1"])
+    );
+    let command = guidance["next_command"].as_str().unwrap();
+    assert!(command.contains("--protocol http1"), "command: {command}");
+    let matches = fragcap_cli::command()
+        .try_get_matches_from(powershell_words(command))
+        .expect("generated continuation parses");
+    let (_, arguments) = matches.subcommand().unwrap();
+    assert_eq!(
+        arguments
+            .get_raw("protocol")
+            .unwrap()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        vec!["http1"]
+    );
+}
+
+#[test]
+fn current_routing_runs_one_controlled_protocol_attempt_and_reassesses_facts() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("protocol");
+    let row_id = seed_target(&local, true);
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--protocol",
+        "https",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{events}");
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert!(events.contains("\"action\":\"run-protocol\""));
+    assert!(events.contains("\"phase\":\"tls\""));
+    assert!(events.contains("\"protocol\":\"https\""));
+    let guidance: serde_json::Value = events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
+        .unwrap();
+    assert_eq!(guidance["status"], "completed", "events:\n{events}");
+    assert_eq!(
+        guidance["requested_protocols"],
+        serde_json::json!(["https"])
+    );
+    assert!(guidance["observed_protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|protocol| protocol == "https"));
+    assert!(guidance["completed_protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|protocol| protocol == "https"));
+
+    let store = Store::open(&local).unwrap();
+    let facts = store.compatibility_facts_for_target(row_id).unwrap();
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::Inspectability
+            && fact.value == "full"
+            && fact.protocol == Some(CompatibilityProtocol::Https)
+    }));
+}
+
+#[test]
+fn partial_protocol_attempt_reassesses_facts_but_never_claims_completion() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("partial-protocol");
+    seed_target(&local, true);
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--protocol",
+        "https",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 1, "events:\n{events}");
+    let guidance: serde_json::Value = events
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
+        .unwrap();
+    assert_eq!(guidance["status"], "failed");
+    assert_eq!(guidance["reason"], "delegated-session-terminal-failure");
+    assert_eq!(guidance["next_command"], serde_json::Value::Null);
+    assert_ne!(guidance["status"], "completed");
 }
 
 #[test]
@@ -728,6 +1030,7 @@ fn declined_and_wrong_authorization_never_claim_completion() {
     assert_eq!(code, 0, "guidance:\n{guidance}");
     assert!(guidance.contains("status=not-completed"));
     assert!(!guidance.contains("status=completed"));
+    assert!(guidance.contains("fragcap calibrate --id 75000"));
     assert!(!declined_bundle.exists());
 
     let invalid_dir = tempfile::tempdir().unwrap();
