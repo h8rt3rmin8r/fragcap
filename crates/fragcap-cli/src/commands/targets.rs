@@ -842,7 +842,7 @@ fn render_reconciliation_plan(plan: &fragcap::targets::ReconciliationPlan, out: 
 /// allowlist the cross-volume walk reads; it is seeded permissively on first run
 /// (FR-016a) and otherwise only read. This one composition backs both the `discover`
 /// inspection command and the hero listing's registration bootstrap (P-10, SC-006).
-fn compose_and_discover(
+pub(crate) fn compose_and_discover(
     catalog_db: &Path,
     local: &mut Store,
     steam_root_flag: Option<&Path>,

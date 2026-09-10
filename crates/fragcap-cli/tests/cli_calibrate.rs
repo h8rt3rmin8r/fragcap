@@ -22,6 +22,39 @@ struct FixedAuthorization {
     response: Vec<u8>,
 }
 
+struct EchoAuthorization {
+    calls: usize,
+}
+
+struct DriftAuthorization;
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for EchoAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(
+            exact,
+            "structured registration and session plans must be exact"
+        );
+        self.calls += 1;
+        Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for DriftAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(exact);
+        std::env::set_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT", "1");
+        Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
 impl fragcap_cli::DeepCaptureAuthorizationInput for FixedAuthorization {
     fn is_terminal(&self) -> bool {
         self.terminal
@@ -551,18 +584,23 @@ fn partial_protocol_attempt_reassesses_facts_but_never_claims_completion() {
 }
 
 #[test]
-fn calibrate_requires_one_registered_target_selector() {
+fn calibrate_reports_a_clean_stored_and_discovered_miss() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     Store::open(&local).expect("scratch local store");
     let (code, _out, err) = run(&[
         "calibrate",
         "missing-target",
+        "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
     ]);
     assert_eq!(code, 2);
-    assert!(err.contains("no target matches"), "refusal: {err}");
+    assert!(
+        err.contains("no stored or discovered target exactly matches"),
+        "refusal: {err}"
+    );
+    assert!(err.contains("considered 1, produced 1"), "refusal: {err}");
 }
 
 #[test]
@@ -613,6 +651,125 @@ fn calibrate_target_inputs_are_mutually_exclusive() {
         assert_eq!(code, 2, "stderr:\n{err}");
         assert!(err.contains("cannot be used with"), "stderr:\n{err}");
     }
+}
+
+#[test]
+fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
+    for (selector, json, response, expected_status, expected_code) in [
+        ("75000", false, b"no\n".to_vec(), "declined", 0),
+        ("75000", true, b"wrong-plan\n".to_vec(), "invalid", 2),
+        ("sample target", true, Vec::new(), "closed", 0),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.db");
+        let mut authorization = FixedAuthorization {
+            terminal: !json,
+            response,
+        };
+        let mut args = vec!["calibrate", selector, "--controlled-target", "--local-db"];
+        let local_text = local.to_string_lossy().into_owned();
+        args.push(&local_text);
+        if json {
+            args.splice(0..0, ["--json"]);
+            args.push("--authorize-stdin");
+        }
+        let (code, _out, events) = run_with_authorization(&args, &mut authorization);
+        assert_eq!(code, expected_code, "diagnostics:\n{events}");
+        assert!(
+            events.contains("Target registration plan")
+                || events.contains("calibration.registration_plan")
+        );
+        assert!(events.contains(expected_status), "diagnostics:\n{events}");
+        assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn confirmed_discovered_target_registers_once_then_preserves_unresolved_topology() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("must-not-exist");
+    let mut authorization = EchoAuthorization { calls: 0 };
+    let (code, out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "events:\n{events}");
+    assert!(out.is_empty());
+    assert_eq!(authorization.calls, 1, "only registration is authorized");
+    assert_eq!(events.matches("calibration.registration_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 0);
+    assert!(events.contains("\"status\":\"registered\""));
+    assert!(events.contains("\"continued\":true"));
+    assert!(events.contains("missing-launch-declaration"));
+    assert!(!bundle.exists());
+
+    let store = Store::open(&local).unwrap();
+    let target = store.target_by_anchor("steam:75000").unwrap().unwrap();
+    assert_eq!(store.targets().unwrap().len(), 1);
+    assert!(store
+        .compatibility_facts_for_target(target.id.unwrap())
+        .unwrap()
+        .is_empty());
+    drop(store);
+
+    let mut repeated_authorization = EchoAuthorization { calls: 0 };
+    let (repeated_code, _out, repeated_events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut repeated_authorization,
+    );
+    assert_eq!(repeated_code, 2, "events:\n{repeated_events}");
+    assert_eq!(repeated_authorization.calls, 1);
+    assert!(repeated_events.contains("\"status\":\"already-present\""));
+    assert_eq!(Store::open(&local).unwrap().targets().unwrap().len(), 1);
+}
+
+#[test]
+fn confirmed_registration_refuses_rediscovery_drift_before_writing_a_target() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT");
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let mut authorization = DriftAuthorization;
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT");
+    assert_eq!(code, 2, "events:\n{events}");
+    assert!(events.contains("\"status\":\"drifted\""));
+    assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
 }
 
 #[test]
