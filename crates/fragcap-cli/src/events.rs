@@ -130,6 +130,29 @@ pub enum Event {
         status: String,
         reason: String,
     },
+    /// One complete discovered-target registration plan, emitted before input.
+    CalibrationRegistrationPlan {
+        plan_id: String,
+        canonical_json: String,
+        discovery_considered: u64,
+        discovery_produced: u64,
+        discovery_parse_failed: u64,
+        discovery_declined_by_user: u64,
+        discovery_considered_not_a_game: u64,
+        discovery_container_descended: u64,
+        discovery_container_descent_truncated: u64,
+        discovery_volume_skipped: u64,
+        discovery_access_error: u64,
+        discovery_warning_count: u64,
+    },
+    /// The terminal decision for one discovered-target registration plan.
+    CalibrationRegistration {
+        plan_id: String,
+        status: String,
+        reason: String,
+        target_id: Option<i64>,
+        continued: bool,
+    },
     /// A guided calibration decision or terminal outcome.
     CalibrationGuidance {
         target_id: i64,
@@ -277,6 +300,8 @@ impl Event {
             Event::DeepCaptureAuthorization { .. } => "deep_capture.authorization",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
+            Event::CalibrationRegistrationPlan { .. } => "calibration.registration_plan",
+            Event::CalibrationRegistration { .. } => "calibration.registration",
             Event::CalibrationGuidance { .. } => "calibration.guidance",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
             Event::DeepCaptureRestart { .. } => "deep_capture.restart",
@@ -549,6 +574,66 @@ impl Event {
                 write_json_string(status, &mut line);
                 line.push_str(",\"reason\":");
                 write_json_string(reason, &mut line);
+            }
+            Event::CalibrationRegistrationPlan {
+                plan_id,
+                canonical_json,
+                discovery_considered,
+                discovery_produced,
+                discovery_parse_failed,
+                discovery_declined_by_user,
+                discovery_considered_not_a_game,
+                discovery_container_descended,
+                discovery_container_descent_truncated,
+                discovery_volume_skipped,
+                discovery_access_error,
+                discovery_warning_count,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"canonical_json\":");
+                write_json_string(canonical_json, &mut line);
+                line.push_str(",\"discovery_considered\":");
+                line.push_str(&discovery_considered.to_string());
+                line.push_str(",\"discovery_produced\":");
+                line.push_str(&discovery_produced.to_string());
+                line.push_str(",\"discovery_parse_failed\":");
+                line.push_str(&discovery_parse_failed.to_string());
+                line.push_str(",\"discovery_declined_by_user\":");
+                line.push_str(&discovery_declined_by_user.to_string());
+                line.push_str(",\"discovery_considered_not_a_game\":");
+                line.push_str(&discovery_considered_not_a_game.to_string());
+                line.push_str(",\"discovery_container_descended\":");
+                line.push_str(&discovery_container_descended.to_string());
+                line.push_str(",\"discovery_container_descent_truncated\":");
+                line.push_str(&discovery_container_descent_truncated.to_string());
+                line.push_str(",\"discovery_volume_skipped\":");
+                line.push_str(&discovery_volume_skipped.to_string());
+                line.push_str(",\"discovery_access_error\":");
+                line.push_str(&discovery_access_error.to_string());
+                line.push_str(",\"discovery_warning_count\":");
+                line.push_str(&discovery_warning_count.to_string());
+            }
+            Event::CalibrationRegistration {
+                plan_id,
+                status,
+                reason,
+                target_id,
+                continued,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+                line.push_str(",\"target_id\":");
+                match target_id {
+                    Some(target_id) => line.push_str(&target_id.to_string()),
+                    None => line.push_str("null"),
+                }
+                line.push_str(",\"continued\":");
+                line.push_str(if *continued { "true" } else { "false" });
             }
             Event::CalibrationGuidance {
                 target_id,
@@ -1052,6 +1137,42 @@ mod tests {
         .render(now);
         assert!(phase.contains("\"event\":\"deep_capture.calibration_phase\""));
         assert!(phase.contains("\"status\":\"metadata-only\""));
+
+        let registration_plan = Event::CalibrationRegistrationPlan {
+            plan_id: "target-registration-v1:abcd".to_string(),
+            canonical_json: "{\"schema\":\"fragcap.target-registration-plan.v1\"}".to_string(),
+            discovery_considered: 7,
+            discovery_produced: 1,
+            discovery_parse_failed: 1,
+            discovery_declined_by_user: 0,
+            discovery_considered_not_a_game: 1,
+            discovery_container_descended: 1,
+            discovery_container_descent_truncated: 1,
+            discovery_volume_skipped: 1,
+            discovery_access_error: 1,
+            discovery_warning_count: 2,
+        }
+        .render(now);
+        let registration_plan: serde_json::Value =
+            serde_json::from_str(&registration_plan).unwrap();
+        assert_eq!(registration_plan["event"], "calibration.registration_plan");
+        assert_eq!(registration_plan["plan_id"], "target-registration-v1:abcd");
+        assert_eq!(registration_plan["discovery_considered"], 7);
+        assert_eq!(registration_plan["discovery_access_error"], 1);
+        assert_eq!(registration_plan["discovery_warning_count"], 2);
+
+        let registration = Event::CalibrationRegistration {
+            plan_id: "target-registration-v1:abcd".to_string(),
+            status: "registered".to_string(),
+            reason: "confirmed".to_string(),
+            target_id: Some(42),
+            continued: true,
+        }
+        .render(now);
+        let registration: serde_json::Value = serde_json::from_str(&registration).unwrap();
+        assert_eq!(registration["event"], "calibration.registration");
+        assert_eq!(registration["target_id"], 42);
+        assert_eq!(registration["continued"], true);
 
         let guidance = Event::CalibrationGuidance {
             target_id: 75_000,

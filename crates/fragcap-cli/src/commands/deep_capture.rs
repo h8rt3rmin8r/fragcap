@@ -2745,18 +2745,7 @@ pub(crate) fn resolve_target_input(
     id: Option<i64>,
 ) -> Result<TargetEntry, CliError> {
     let selector = positional.or(explicit);
-    let selection = match (selector, id) {
-        (Some(selector), None) => resolve_positional(store, selector),
-        (None, Some(id)) => resolve_id(store, id),
-        _ => {
-            return Err(CliError::usage(
-                "exactly one of a target selector, --target, or --id is required",
-            ))
-        }
-    }
-    .map_err(|e| CliError::failure(e.to_string()))?;
-
-    match selection {
+    match select_target_input(store, positional, explicit, id)? {
         Selection::Resolved(t) => Ok(*t),
         Selection::NoMatch => Err(CliError::usage(target_resolve::no_match_message(
             store, selector,
@@ -2774,6 +2763,31 @@ pub(crate) fn resolve_target_input(
     }
 }
 
+/// Resolve the target selector without collapsing a clean miss into display text.
+///
+/// Guided calibration needs the typed `NoMatch` branch to decide whether installed
+/// target discovery is permitted. Every other caller keeps using
+/// [`resolve_target_input`], so the established diagnostics remain centralized.
+pub(crate) fn select_target_input(
+    store: &Store,
+    positional: Option<&str>,
+    explicit: Option<&str>,
+    id: Option<i64>,
+) -> Result<Selection, CliError> {
+    let selector = positional.or(explicit);
+    let selection = match (selector, id) {
+        (Some(selector), None) => resolve_positional(store, selector),
+        (None, Some(id)) => resolve_id(store, id),
+        _ => {
+            return Err(CliError::usage(
+                "exactly one of a target selector, --target, or --id is required",
+            ))
+        }
+    }
+    .map_err(|e| CliError::failure(e.to_string()))?;
+    Ok(selection)
+}
+
 fn loopback_bind_address(family: DeepCaptureProxyFamilyArg) -> SocketAddr {
     match family {
         DeepCaptureProxyFamilyArg::Ipv4 => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
@@ -2784,10 +2798,13 @@ fn loopback_bind_address(family: DeepCaptureProxyFamilyArg) -> SocketAddr {
 pub(crate) fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {
     let test_identity = target.handle == CONTROLLED_TARGET_HANDLE
         && target.stable_id == CONTROLLED_TARGET_STABLE_ID;
+    let discovered_test_identity = target.anchor.as_deref() == Some("steam:75000")
+        && target.stable_id == fragcap::targets::identifier::anchored_id("steam:75000")
+        && target.name == "Sample Target";
     let package_identity = target.handle == PACKAGE_CONTROLLED_TARGET_HANDLE
         && target.stable_id == PACKAGE_CONTROLLED_TARGET_STABLE_ID
         && target.anchor.as_deref() == Some("package:certification");
-    if test_identity || package_identity {
+    if test_identity || discovered_test_identity || package_identity {
         Ok(())
     } else {
         Err(CliError::usage(

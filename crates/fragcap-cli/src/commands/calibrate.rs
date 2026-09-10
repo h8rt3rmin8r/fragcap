@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Guided one-attempt calibration for one already registered target.
+//! Guided registration and one-attempt calibration for one exact target.
 
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
-    CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
-    CompatibilityRoutingStrategy, Store, TargetEntry,
+    CandidateIdentity, CandidateTarget, CompatibilityAddressFamily, CompatibilityLaunchCase,
+    CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, Selection,
+    Store, TargetEntry,
 };
+use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
 
 use crate::cli::{
     CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationArg, DeepCaptureCalibrationProtocolArg,
@@ -36,6 +40,685 @@ struct Guidance {
     next_command: Option<String>,
 }
 
+const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
+const REGISTRATION_OPERATION: &str = "register-candidate-v1";
+const REGISTRATION_PLAN_PREFIX: &str = "target-registration-v1:";
+
+#[derive(Clone, Debug)]
+struct RegistrationPlan {
+    id: String,
+    canonical: Value,
+    canonical_json: String,
+    candidate: CandidateTarget,
+    discovery_account: DiscoveryAccount,
+    discovery_warning_count: usize,
+}
+
+impl RegistrationPlan {
+    fn new(
+        candidate: CandidateTarget,
+        discovery: &Discovery,
+        local_store: &Path,
+    ) -> Result<Self, CliError> {
+        if !discovery.account.is_conserved() {
+            return Err(CliError::failure(
+                "discovery accounting was not conserved; refusing target registration",
+            ));
+        }
+        let canonical = registration_plan_value(&candidate, discovery, local_store)?;
+        let canonical_json = serde_json::to_string(&canonical)
+            .expect("the registration plan contains only serializable values");
+        let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
+        Ok(Self {
+            id: format!("{REGISTRATION_PLAN_PREFIX}{digest}"),
+            canonical,
+            canonical_json,
+            candidate,
+            discovery_account: discovery.account.clone(),
+            discovery_warning_count: discovery.warnings.len(),
+        })
+    }
+
+    fn emit(&self, emitter: &mut Emitter) -> Result<(), CliError> {
+        emitter
+            .event_checked(&Event::CalibrationRegistrationPlan {
+                plan_id: self.id.clone(),
+                canonical_json: self.canonical_json.clone(),
+                discovery_considered: self.discovery_account.considered,
+                discovery_produced: self.discovery_account.produced,
+                discovery_parse_failed: self.discovery_account.parse_failed,
+                discovery_declined_by_user: self.discovery_account.declined_by_user,
+                discovery_considered_not_a_game: self.discovery_account.considered_not_a_game,
+                discovery_container_descended: self.discovery_account.container_descended,
+                discovery_container_descent_truncated: self
+                    .discovery_account
+                    .container_descent_truncated,
+                discovery_volume_skipped: self.discovery_account.volume_skipped,
+                discovery_access_error: self.discovery_account.access_error,
+                discovery_warning_count: self.discovery_warning_count as u64,
+            })
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the target registration plan: {error}"
+                ))
+            })?;
+        let rendered = serde_json::to_string_pretty(&self.canonical)
+            .expect("the registration plan contains only serializable values");
+        emitter
+            .required_human_checked(&format!(
+                "Target registration plan\n  plan id: {}\n{}\n",
+                self.id, rendered
+            ))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the target registration plan: {error}"
+                ))
+            })
+    }
+}
+
+enum TargetFrontDoor {
+    Ready(Box<TargetEntry>),
+    Declined,
+}
+
+enum RegistrationConfirmation {
+    Confirmed,
+    Declined,
+    Closed,
+    Invalid,
+    Interrupted,
+}
+
+fn resolve_or_register_target(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    local_store_path: &Path,
+    store: &mut Store,
+) -> Result<TargetFrontDoor, CliError> {
+    match deep_capture::select_target_input(
+        store,
+        args.selector.as_deref(),
+        args.target.as_deref(),
+        args.id,
+    )? {
+        Selection::Resolved(target) => return Ok(TargetFrontDoor::Ready(target)),
+        Selection::Ambiguous(_) => {
+            return deep_capture::resolve_target_input(
+                store,
+                args.selector.as_deref(),
+                args.target.as_deref(),
+                args.id,
+            )
+            .map(|target| TargetFrontDoor::Ready(Box::new(target)))
+        }
+        Selection::NoMatch => {}
+    }
+
+    if args.id.is_some() {
+        return deep_capture::resolve_target_input(
+            store,
+            args.selector.as_deref(),
+            args.target.as_deref(),
+            args.id,
+        )
+        .map(|target| TargetFrontDoor::Ready(Box::new(target)));
+    }
+    if emitter.is_json() && !args.authorize_stdin {
+        return Err(CliError::usage(
+            "JSON target registration requires --authorize-stdin and the exact emitted plan identifier",
+        ));
+    }
+    if !args.authorize_stdin && !authorization.is_terminal() {
+        return Err(CliError::usage(
+            "target registration requires an interactive terminal or --authorize-stdin",
+        ));
+    }
+
+    let selector = args
+        .selector
+        .as_deref()
+        .or(args.target.as_deref())
+        .ok_or_else(|| {
+            CliError::usage("a positional target selector or --target is required for discovery")
+        })?;
+    let discovery = discover_for_calibration(args, store, emitter)?;
+    let candidate = select_discovery_candidate(selector, &discovery)?;
+    let plan = RegistrationPlan::new(candidate, &discovery, local_store_path)?;
+    plan.emit(emitter)?;
+    let confirmation = match confirm_registration(args, authorization, emitter, &plan) {
+        Ok(confirmation) => confirmation,
+        Err(error) => {
+            let _ = registration_outcome(
+                emitter,
+                &plan.id,
+                "failed",
+                "target registration confirmation could not be completed",
+                None,
+                false,
+            );
+            return Err(error);
+        }
+    };
+    match confirmation {
+        RegistrationConfirmation::Confirmed => {}
+        RegistrationConfirmation::Declined => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "declined",
+                "operator declined target registration",
+                None,
+                false,
+            )?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Closed => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "closed",
+                "target registration input closed before confirmation",
+                None,
+                false,
+            )?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Invalid => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "invalid",
+                "exact current registration plan identifier was not supplied",
+                None,
+                false,
+            )?;
+            return Err(CliError::usage(
+                "target registration confirmation did not match the exact current plan identifier; no target was registered",
+            ));
+        }
+        RegistrationConfirmation::Interrupted => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "interrupted",
+                "interrupt requested before target registration completed",
+                None,
+                false,
+            )?;
+            return Err(CliError::failure(
+                "target registration was interrupted; no target was registered",
+            ));
+        }
+    }
+
+    let current_discovery = match discover_for_calibration(args, store, emitter) {
+        Ok(discovery) => discovery,
+        Err(_) => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "drifted",
+                "discovered target authority could not be reproduced after confirmation",
+                None,
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the discovered target could not be reproduced after confirmation; review a fresh registration plan",
+            ));
+        }
+    };
+    let current_candidate = match select_discovery_candidate(selector, &current_discovery) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "drifted",
+                "discovered target selection changed after confirmation",
+                None,
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    let current_plan =
+        match RegistrationPlan::new(current_candidate, &current_discovery, local_store_path) {
+            Ok(plan) => plan,
+            Err(_) => {
+                registration_outcome(
+                    emitter,
+                    &plan.id,
+                    "drifted",
+                    "discovery accounting could not reproduce the confirmed authority",
+                    None,
+                    false,
+                )?;
+                return Err(CliError::usage(
+                "discovery accounting changed after confirmation; review a fresh registration plan",
+            ));
+            }
+        };
+    if !constant_time_equal(
+        plan.canonical_json.as_bytes(),
+        current_plan.canonical_json.as_bytes(),
+    ) {
+        registration_outcome(
+            emitter,
+            &plan.id,
+            "drifted",
+            "discovered target authority changed after confirmation",
+            None,
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the discovered target changed after confirmation; review a fresh registration plan",
+        ));
+    }
+
+    let inserted = match fragcap::targets::register_candidate(store, &plan.candidate) {
+        Ok(inserted) => inserted,
+        Err(error) => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "failed",
+                "the shared target registration operation failed",
+                None,
+                false,
+            )?;
+            return Err(CliError::failure(error.to_string()));
+        }
+    };
+    let target = match registered_candidate_target(store, &plan.candidate) {
+        Ok(target) => target,
+        Err(error) => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "failed",
+                "the registered target could not be resolved exactly",
+                None,
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    registration_outcome(
+        emitter,
+        &plan.id,
+        if inserted {
+            "registered"
+        } else {
+            "already-present"
+        },
+        if inserted {
+            "confirmed candidate registered through the shared target operation"
+        } else {
+            "confirmed candidate already had the same durable target identity"
+        },
+        Some(target.stable_id),
+        true,
+    )?;
+    Ok(TargetFrontDoor::Ready(Box::new(target)))
+}
+
+fn discover_for_calibration(
+    args: &CalibrateArgs,
+    store: &mut Store,
+    emitter: &mut Emitter,
+) -> Result<Discovery, CliError> {
+    if args.controlled_target {
+        let mut account = fragcap::targets::DiscoveryAccount::default();
+        account.produce();
+        let drifted = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT").is_some();
+        let ambiguous =
+            std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS").is_some();
+        let mut candidates = vec![CandidateTarget {
+            identity: CandidateIdentity::SteamAppId(75_000),
+            display_name: if drifted {
+                "Changed Sample Target".to_string()
+            } else {
+                "Sample Target".to_string()
+            },
+            fidelity: fragcap::profile::FidelityTier::Observed,
+            classification: fragcap::targets::TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+            source_name: "steam".to_string(),
+            install_root: Some("C:\\Games\\Sample Target".to_string()),
+            folder_name: Some("Sample Target".to_string()),
+            executable_hint: Some("client.exe".to_string()),
+        }];
+        if ambiguous {
+            account.produce();
+            candidates.push(CandidateTarget {
+                identity: CandidateIdentity::Path(
+                    "C:\\Other Games\\Sample Target\\client.exe".to_string(),
+                ),
+                display_name: "Sample Target".to_string(),
+                fidelity: fragcap::profile::FidelityTier::Observed,
+                classification: fragcap::targets::TargetClassification::Game,
+                evidence: Vec::new(),
+                detection_scan: None,
+                source_name: "filesystem".to_string(),
+                install_root: Some("C:\\Other Games\\Sample Target".to_string()),
+                folder_name: Some("Sample Target".to_string()),
+                executable_hint: Some("client.exe".to_string()),
+            });
+        }
+        return Ok(Discovery {
+            candidates,
+            account,
+            warnings: Vec::new(),
+        });
+    }
+
+    let catalog = match crate::commands::target_resolve::ensure_catalog_store(
+        args.catalog_db.as_deref(),
+    ) {
+        Ok(Some(path)) if path.is_file() => path,
+        Ok(Some(path)) => {
+            return Err(CliError::failure(format!(
+                "catalog store does not exist at {}; installed-target discovery was not attempted",
+                path.display()
+            )))
+        }
+        Ok(None) => {
+            let warning = "catalog store location is unavailable; installed-target discovery was not attempted";
+            emitter.warn(warning);
+            return Ok(Discovery {
+                warnings: vec![warning.to_string()],
+                ..Discovery::default()
+            });
+        }
+        Err(message) => {
+            emitter.warn(&message);
+            return Ok(Discovery {
+                warnings: vec![message],
+                ..Discovery::default()
+            });
+        }
+    };
+    let discovery = crate::commands::targets::compose_and_discover(&catalog, store, None)?;
+    for warning in &discovery.warnings {
+        emitter.warn(warning);
+    }
+    Ok(discovery)
+}
+
+fn select_discovery_candidate(
+    selector: &str,
+    discovery: &Discovery,
+) -> Result<CandidateTarget, CliError> {
+    let steam_id = selector.parse::<u32>().ok();
+    let folded_selector = selector.to_lowercase();
+    let matches: Vec<_> = discovery
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            steam_id.is_some_and(|appid| candidate.identity == CandidateIdentity::SteamAppId(appid))
+                || candidate.display_name.to_lowercase() == folded_selector
+        })
+        .cloned()
+        .collect();
+    match matches.as_slice() {
+        [candidate] => Ok(candidate.clone()),
+        [] => Err(CliError::usage(format!(
+            "no stored or discovered target exactly matches {selector:?}; discovery considered {}, produced {}, and reported {} warning(s)",
+            discovery.account.considered,
+            discovery.account.produced,
+            discovery.warnings.len(),
+        ))),
+        _ => {
+            let mut message = format!(
+                "the discovered selector is ambiguous ({} exact candidates match):",
+                matches.len()
+            );
+            for candidate in matches {
+                message.push_str(&format!(
+                    "\n  {}\t{}\t{}\t{}\t{}\t{}",
+                    candidate.source_name,
+                    candidate_identity(&candidate.identity),
+                    candidate.fidelity.as_str(),
+                    candidate.classification.as_str(),
+                    candidate.display_name,
+                    candidate.install_root.as_deref().unwrap_or("no-install-root"),
+                ));
+            }
+            message.push_str(&format!(
+                "\n  discovery considered {}, produced {}, and reported {} warning(s); no target was selected",
+                discovery.account.considered,
+                discovery.account.produced,
+                discovery.warnings.len(),
+            ));
+            Err(CliError::usage(message))
+        }
+    }
+}
+
+fn registration_plan_value(
+    candidate: &CandidateTarget,
+    discovery: &Discovery,
+    local_store: &Path,
+) -> Result<Value, CliError> {
+    let local_store = crate::commands::target_resolve::resolve_store_identity(local_store);
+    let mut evidence: Vec<_> = candidate
+        .evidence
+        .iter()
+        .map(|finding| {
+            json!({
+                "category": finding.category.as_str(),
+                "evidence": finding.evidence,
+                "fidelity": finding.fidelity.as_str(),
+                "product": finding.product,
+            })
+        })
+        .collect();
+    evidence.sort_by_key(|value| value.to_string());
+    let mut warnings = discovery.warnings.clone();
+    warnings.sort();
+    let predicted_stable_id = match candidate.identity {
+        CandidateIdentity::SteamAppId(appid) => Some(fragcap::targets::identifier::anchored_id(
+            &format!("steam:{appid}"),
+        )),
+        CandidateIdentity::Path(_) => None,
+    };
+    Ok(json!({
+        "candidate": {
+            "classification": candidate.classification.as_str(),
+            "detection_scan": candidate.detection_scan.map(|scan| scan.as_str()),
+            "display_name": candidate.display_name,
+            "evidence": evidence,
+            "executable_hint": candidate.executable_hint,
+            "fidelity": candidate.fidelity.as_str(),
+            "folder_name": candidate.folder_name,
+            "identity": candidate_identity_value(&candidate.identity),
+            "install_root": candidate.install_root,
+            "source": candidate.source_name,
+        },
+        "discovery": {
+            "account": {
+                "access_error": discovery.account.access_error,
+                "considered": discovery.account.considered,
+                "considered_not_a_game": discovery.account.considered_not_a_game,
+                "container_descended": discovery.account.container_descended,
+                "container_descent_truncated": discovery.account.container_descent_truncated,
+                "declined_by_user": discovery.account.declined_by_user,
+                "parse_failed": discovery.account.parse_failed,
+                "produced": discovery.account.produced,
+                "volume_skipped": discovery.account.volume_skipped,
+            },
+            "warnings": warnings,
+        },
+        "local_store": local_store.to_string_lossy(),
+        "operation": REGISTRATION_OPERATION,
+        "predicted_stable_id": predicted_stable_id,
+        "schema": REGISTRATION_PLAN_SCHEMA,
+    }))
+}
+
+fn candidate_identity(identity: &CandidateIdentity) -> String {
+    match identity {
+        CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
+        CandidateIdentity::Path(path) => path.clone(),
+    }
+}
+
+fn candidate_identity_value(identity: &CandidateIdentity) -> Value {
+    match identity {
+        CandidateIdentity::SteamAppId(appid) => json!({"kind": "steam-app-id", "value": appid}),
+        CandidateIdentity::Path(path) => json!({"kind": "path", "value": path}),
+    }
+}
+
+fn confirm_registration(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    plan: &RegistrationPlan,
+) -> Result<RegistrationConfirmation, CliError> {
+    if !args.authorize_stdin {
+        emitter
+            .required_human_checked(&format!("Register exact target plan {}? [y/N] ", plan.id))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the target registration prompt: {error}"
+                ))
+            })?;
+    }
+    emitter.flush().map_err(|error| {
+        CliError::usage(format!(
+            "could not flush the target registration plan before input: {error}"
+        ))
+    })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    let response = authorization
+        .read_response(&plan.id, args.authorize_stdin)
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not read target registration confirmation: {error}"
+            ))
+        })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    if args.authorize_stdin {
+        if response.is_empty() {
+            return Ok(RegistrationConfirmation::Closed);
+        }
+        return Ok(if exact_plan_response(&response, &plan.id) {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Invalid
+        });
+    }
+    let Some(line) = response.strip_suffix(b"\n") else {
+        return Ok(RegistrationConfirmation::Closed);
+    };
+    let Ok(answer) = std::str::from_utf8(line) else {
+        return Ok(RegistrationConfirmation::Invalid);
+    };
+    Ok(
+        if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Declined
+        },
+    )
+}
+
+fn exact_plan_response(response: &[u8], expected: &str) -> bool {
+    let Some(candidate) = response.strip_suffix(b"\n") else {
+        return false;
+    };
+    constant_time_equal(candidate, expected.as_bytes())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && left.ct_eq(right).unwrap_u8() == 1
+}
+
+fn registered_candidate_target(
+    store: &Store,
+    candidate: &CandidateTarget,
+) -> Result<TargetEntry, CliError> {
+    let identity_target = match &candidate.identity {
+        CandidateIdentity::SteamAppId(appid) => {
+            let anchor =
+                fragcap::targets::identifier::canonicalize_anchor(&format!("steam:{appid}"));
+            store
+                .target_by_anchor(&anchor)
+                .map_err(|error| CliError::failure(error.to_string()))?
+                .ok_or_else(|| {
+                    CliError::failure(
+                        "registration completed but its exact anchored target could not be resolved",
+                    )
+                })
+        }
+        CandidateIdentity::Path(_) => {
+            let root = candidate.install_root.as_deref().ok_or_else(|| {
+                CliError::failure("a path candidate registration has no install-root authority")
+            })?;
+            let matches: Vec<_> = store
+                .targets()
+                .map_err(|error| CliError::failure(error.to_string()))?
+                .into_iter()
+                .filter(|target| target.install_root.as_deref() == Some(root))
+                .collect();
+            match matches.as_slice() {
+                [target] => Ok(target.clone()),
+                [] => Err(CliError::failure(
+                    "registration completed but its exact path target could not be resolved",
+                )),
+                _ => Err(CliError::failure(
+                    "registration produced conflicting targets for one exact install root",
+                )),
+            }
+        }
+    }?;
+    store
+        .target_by_stable_id(identity_target.stable_id)
+        .map_err(|error| CliError::failure(error.to_string()))?
+        .ok_or_else(|| {
+            CliError::failure(
+                "registration completed but its durable target identity could not be resolved",
+            )
+        })
+}
+
+fn registration_outcome(
+    emitter: &mut Emitter,
+    plan_id: &str,
+    status: &str,
+    reason: &str,
+    target_id: Option<i64>,
+    continued: bool,
+) -> Result<(), CliError> {
+    emitter
+        .event_checked(&Event::CalibrationRegistration {
+            plan_id: plan_id.to_string(),
+            status: status.to_string(),
+            reason: reason.to_string(),
+            target_id,
+            continued,
+        })
+        .and_then(|()| {
+            emitter.required_human_checked(&format!(
+                "Target registration: {status} ({reason}); target id: {}; calibration continued: {continued}\n",
+                target_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
+            ))
+        })
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not write the target registration outcome: {error}"
+            ))
+        })
+}
+
 pub fn run(
     args: &CalibrateArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
@@ -43,14 +726,19 @@ pub fn run(
 ) -> Result<Exit, CliError> {
     let requested_protocols = normalize_protocol_args(&args.protocol);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
-    let store = deep_capture::open_local_store(args.local_db.as_deref())?;
+    let mut store = Store::open(&local_store_path)
+        .map_err(|error| CliError::failure(format!("cannot open local store: {error}")))?;
     let local_store_argument = quote_powershell_path(&local_store_path)?;
-    let target = deep_capture::resolve_target_input(
-        &store,
-        args.selector.as_deref(),
-        args.target.as_deref(),
-        args.id,
-    )?;
+    let target = match resolve_or_register_target(
+        args,
+        authorization,
+        emitter,
+        &local_store_path,
+        &mut store,
+    )? {
+        TargetFrontDoor::Ready(target) => *target,
+        TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+    };
     if args.controlled_target {
         deep_capture::require_controlled_target(&target)?;
     }
@@ -119,6 +807,7 @@ pub fn run(
             }
             let mut restart_args = low_level_args(
                 args,
+                target.stable_id,
                 None,
                 deep_capture_api::CalibrationPhase::Reachability,
                 CompatibilityProtocol::Routing,
@@ -155,6 +844,7 @@ pub fn run(
 
     let resolver_args = low_level_args(
         args,
+        target.stable_id,
         None,
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
@@ -260,6 +950,7 @@ pub fn run(
     };
     let low_level = low_level_args(
         args,
+        fresh_target.stable_id,
         Some(launch_case_arg(step.case.launch_case)),
         step.phase,
         step.case.protocol,
@@ -694,6 +1385,7 @@ fn process_snapshot(controlled: bool) -> deep_capture_api::CalibrationProcessSna
 
 fn low_level_args(
     args: &CalibrateArgs,
+    target_stable_id: i64,
     launch_case: Option<DeepCaptureLaunchCaseArg>,
     phase: deep_capture_api::CalibrationPhase,
     protocol: CompatibilityProtocol,
@@ -704,9 +1396,9 @@ fn low_level_args(
     };
     let calibration_protocol = protocol_arg(protocol)?;
     Ok(DeepCaptureArgs {
-        selector: args.selector.clone(),
-        target: args.target.clone(),
-        id: args.id,
+        selector: None,
+        target: None,
+        id: Some(target_stable_id),
         catalog_db: args.catalog_db.clone(),
         local_db: args.local_db.clone(),
         launch: true,
@@ -864,7 +1556,161 @@ fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance
 mod tests {
     use super::*;
     use fragcap::profile::FidelityTier;
-    use fragcap::targets::{resolved_client_launch, ClassificationSource, TargetClassification};
+    use fragcap::targets::{
+        resolved_client_launch, ClassificationSource, DiscoveryAccount, TargetClassification,
+    };
+
+    fn candidate(identity: CandidateIdentity, name: &str) -> CandidateTarget {
+        CandidateTarget {
+            identity,
+            display_name: name.to_string(),
+            fidelity: FidelityTier::Observed,
+            classification: TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+            source_name: "steam".to_string(),
+            install_root: Some(format!("C:\\Games\\{name}")),
+            folder_name: Some(name.to_string()),
+            executable_hint: Some("client.exe".to_string()),
+        }
+    }
+
+    fn discovery(candidates: Vec<CandidateTarget>) -> Discovery {
+        Discovery {
+            account: DiscoveryAccount {
+                considered: candidates.len() as u64,
+                produced: candidates.len() as u64,
+                ..DiscoveryAccount::default()
+            },
+            candidates,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stored_row_resolution_remains_authoritative_before_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("local.db")).unwrap();
+        let entry = TargetEntry {
+            id: None,
+            stable_id: 75_000,
+            handle: "stored-target".to_string(),
+            name: "Stored Target".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(resolved_client_launch("stored.exe")),
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        store.insert_target(&entry).unwrap();
+        store
+            .write_listing_snapshot(&[(entry.stable_id, &entry.handle)])
+            .unwrap();
+        let selection = deep_capture::select_target_input(&store, Some("1"), None, None).unwrap();
+        let Selection::Resolved(target) = selection else {
+            panic!("the stored listing row must resolve before discovery")
+        };
+        assert_eq!(target.stable_id, entry.stable_id);
+    }
+
+    #[test]
+    fn exact_candidate_selection_distinguishes_identity_name_ambiguity_and_miss() {
+        let portal = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
+        let other = candidate(CandidateIdentity::SteamAppId(400), "Portal");
+        assert_eq!(
+            select_discovery_candidate("620", &discovery(vec![portal.clone(), other.clone()]))
+                .unwrap(),
+            portal
+        );
+        assert_eq!(
+            select_discovery_candidate("portal", &discovery(vec![portal.clone(), other.clone()]))
+                .unwrap(),
+            other
+        );
+        let unicode = candidate(CandidateIdentity::SteamAppId(999), "Élan");
+        assert_eq!(
+            select_discovery_candidate("élan", &discovery(vec![unicode.clone()])).unwrap(),
+            unicode
+        );
+        assert!(
+            select_discovery_candidate("port", &discovery(vec![portal.clone()]))
+                .unwrap_err()
+                .message()
+                .contains("exactly matches")
+        );
+        let duplicate = candidate(
+            CandidateIdentity::Path("D:\\Games\\Portal".to_string()),
+            "Portal 2",
+        );
+        let error = select_discovery_candidate("portal 2", &discovery(vec![portal, duplicate]))
+            .unwrap_err();
+        assert!(error.message().contains("2 exact candidates"));
+        assert!(error.message().contains("no target was selected"));
+    }
+
+    #[test]
+    fn registration_plan_is_deterministic_domain_separated_and_field_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("local.db");
+        let first = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
+        let observed = discovery(vec![first.clone()]);
+        let same = RegistrationPlan::new(first.clone(), &observed, &store).unwrap();
+        assert_eq!(
+            same.id,
+            RegistrationPlan::new(first.clone(), &observed, &store)
+                .unwrap()
+                .id
+        );
+        assert!(same.id.starts_with(REGISTRATION_PLAN_PREFIX));
+        assert_eq!(same.canonical["discovery"]["account"]["considered"], 1);
+        assert_ne!(
+            same.id,
+            RegistrationPlan::new(
+                candidate(CandidateIdentity::SteamAppId(620), "Portal Two"),
+                &observed,
+                &store,
+            )
+            .unwrap()
+            .id
+        );
+        assert_ne!(
+            same.id,
+            RegistrationPlan::new(first.clone(), &observed, &dir.path().join("other.db"))
+                .unwrap()
+                .id
+        );
+        let incomplete = Discovery {
+            account: DiscoveryAccount {
+                considered: 2,
+                produced: 1,
+                access_error: 1,
+                ..DiscoveryAccount::default()
+            },
+            candidates: vec![first],
+            warnings: vec!["one root was inaccessible".to_string()],
+        };
+        assert_ne!(
+            same.id,
+            RegistrationPlan::new(incomplete.candidates[0].clone(), &incomplete, &store,)
+                .unwrap()
+                .id
+        );
+    }
+
+    #[test]
+    fn exact_registration_input_requires_the_identifier_and_one_lf() {
+        let id = "target-registration-v1:abc";
+        assert!(exact_plan_response(format!("{id}\n").as_bytes(), id));
+        assert!(!exact_plan_response(id.as_bytes(), id));
+        assert!(!exact_plan_response(format!("{id}\r\n").as_bytes(), id));
+        assert!(!exact_plan_response(b"target-registration-v1:def\n", id));
+    }
 
     #[test]
     fn unavailable_process_inventory_remains_a_typed_no_step_limitation() {

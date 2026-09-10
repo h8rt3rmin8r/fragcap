@@ -572,11 +572,14 @@ pub struct DeepCaptureArgs {
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
 pub struct CalibrateArgs {
-    /// A stored target: an exact handle, a case-insensitive name, or a row number.
+    /// A stored target, or an exact installed name or Steam app id on a stored miss.
+    ///
+    /// A bare integer first addresses the current stored-target row. Only a clean
+    /// stored miss permits the same value to match an exact discovered Steam app id.
     #[arg(value_name = "SELECTOR")]
     pub selector: Option<String>,
 
-    /// The explicit-flag form of the stored-target selector.
+    /// The explicit-flag form of the target selector.
     #[arg(long)]
     pub target: Option<String>,
 

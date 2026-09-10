@@ -627,7 +627,7 @@ fn same_store_file(a: &Path, b: &Path) -> bool {
 }
 
 /// The canonical identity of a store path, resolving as much as exists.
-fn resolve_store_identity(path: &Path) -> PathBuf {
+pub(crate) fn resolve_store_identity(path: &Path) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {
         return canonical;
     }
