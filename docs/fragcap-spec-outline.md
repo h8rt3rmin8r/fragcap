@@ -396,6 +396,7 @@ per-answer local-destination enforcement, and additive routing-policy evidence.
 It closes Native Deep Capture milestone 3 without claiming Deep Capture
 completion before the final #334 gate.
 S139 adds a stable pure guided-calibration proposal authority over resolved targets, supplied process snapshots, exact S121 evidence, and concrete protocol candidates. It applies conservative route and family defaults, preserves every uncertain state as a typed no-effect result, and leaves guided CLI execution and parent issue #380 open.
+S140 adds `fragcap calibrate` as a bounded existing-target reachability front door. One query-only process snapshot and retained exact facts feed S139; the command either delegates one plan-bound reachability attempt or emits durable ready, warm, or refused guidance without session effects. TLS and protocol guidance, registration, multi-attempt execution, and workflow persistence remain in #380.
 S123 adds bounded process lifecycle collection and a versioned process trace.
 Managed launch, ETW creation and exit, query snapshots, stage transitions,
 packet-derived socket ownership, watcher loss, and terminal state reconcile by

@@ -247,6 +247,7 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
         Some(
             "capture"
                 | "deep-capture"
+                | "calibrate"
                 | "__controlled-target"
                 | "__build-identity"
                 | "replay"
@@ -289,6 +290,7 @@ fn dispatch(
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::DeepCapture(args) => commands::deep_capture::run(&args, authorization, emitter),
+        Command::Calibrate(args) => commands::calibrate::run(&args, authorization, emitter),
         Command::Bundle(args) => commands::bundle::run(&args, out),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),

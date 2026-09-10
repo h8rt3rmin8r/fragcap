@@ -1,0 +1,2 @@
+<!-- spec-impact: 15, 17.2.1, 25, 28.1 -->
+S140 keeps guided execution narrower than parent issue #380: one query-only process snapshot feeds the S139 proposal, and only the first exact reachability case may reach the existing plan-bound executor. Current evidence and warm or invalid state remain effect-free by default. Every generated durable identifier remains bound to its effective local store through a PowerShell-quoted path. TLS and protocol guidance, automatic registration, multi-attempt execution, and workflow persistence remain deferred.
