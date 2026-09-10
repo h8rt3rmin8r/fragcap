@@ -79,6 +79,7 @@ fn seed_target(local: &Path, with_current_routing: bool) -> i64 {
     id
 }
 
+#[cfg(windows)]
 fn seed_topology(
     local: &Path,
     stable_id: i64,
@@ -118,6 +119,7 @@ fn seed_topology(
     row_id
 }
 
+#[cfg(windows)]
 fn insert_routing_fact(
     store: &mut Store,
     row_id: i64,
@@ -376,6 +378,7 @@ fn missing_routing_runs_one_controlled_reachability_attempt() {
 }
 
 #[test]
+#[cfg(windows)]
 fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff() {
     for (stable_id, handle, anchor, launches, launch_case, expected_topology) in [
         (
@@ -536,6 +539,7 @@ fn malformed_topology_reports_all_typed_limitations_before_effects() {
 }
 
 #[test]
+#[cfg(windows)]
 fn every_non_positive_routing_state_preserves_the_proposal_reason() {
     for (index, expected, configure) in [
         (0_i64, "missing", 0_u8),
