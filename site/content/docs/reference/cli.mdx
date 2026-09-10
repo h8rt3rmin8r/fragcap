@@ -171,30 +171,32 @@ certificate-pinning, QUIC, and launch limits.
 
 ### `calibrate`
 
-Guide one already registered target toward current Deep Capture routing evidence. The command reads the target, process image inventory, and retained compatibility facts before proposing one next action. Current positive evidence starts no session and points to ordinary Deep Capture. A warm target starts no session unless `--restart-warm` explicitly selects the existing operator-owned close-and-retry workflow. Any selected measurement is limited to one reachability attempt and retains the complete Deep Capture authorization boundary. Generated commands carry the effective local-store path as one PowerShell-quoted argument so their durable identifier resolves against the same store.
+Guide one already registered target through current Deep Capture reachability and one protocol attempt per invocation. The command reads the target, process image inventory, and retained compatibility facts before proposing one next action. Repeatable `--protocol` values request measurements and do not constitute evidence. Missing route evidence selects reachability first. Current route evidence permits one separately authorized protocol attempt. Concrete final-client observations are carried into a new paste-ready command, then current exact facts decide completed and remaining coverage. A warm target starts no session unless `--restart-warm` explicitly selects the existing operator-owned close-and-retry workflow. Generated commands carry the effective local-store path as one PowerShell-quoted argument so their durable identifier resolves against the same store.
 
 ```powershell
 fragcap calibrate sample-target
+fragcap calibrate --id 42 --protocol https
 fragcap calibrate --id 42 --restart-warm
 ```
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
-| `--authorize-stdin` | open | `false` | all | Read the exact emitted authorization plan identifier from standard input for a selected reachability attempt. Conflicts with `--restart-warm`. |
-| `--bundle` | open | none | all | Select the session bundle directory for a selected reachability attempt. |
+| `--authorize-stdin` | open | `false` | all | Read the exact emitted authorization plan identifier from standard input for the selected attempt. Conflicts with `--restart-warm`. |
+| `--bundle` | open | none | all | Select the session bundle directory for the selected attempt. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
-| `-d`, `--duration` | open | none | all | Bound the selected reachability observation duration. |
+| `-d`, `--duration` | open | none | all | Bound the selected observation duration. |
 | `--id` | open | none | all | Select a stored target by durable identifier. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop the selected attempt after this many captured bytes. |
 | `--max-packets` | open | none | all | Stop the selected attempt after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes during the selected attempt. |
+| `--protocol` | `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Request one concrete protocol measurement after reachability. Repeat for more than one candidate; one invocation still runs at most one attempt. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, take a fresh process snapshot, and measure the selected cold launch. Conflicts with `--authorize-stdin`. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--wait` | open | none | all | Set the target acquisition timeout for the selected attempt. |
 
-`calibrate` does not register targets, select TLS or protocol calibration, perform multiple attempts, or bypass Deep Capture plan authorization. Ambiguous, invalid, and unavailable proposals report typed limitations before effects and do not invent a next command.
+`calibrate` does not register targets, perform multiple attempts internally, persist workflow state, or bypass Deep Capture plan authorization. A request, an observation, and a current exact compatibility fact remain separate. Ambiguous, invalid, and unavailable proposals report typed limitations before effects and do not invent a next command.
 
 ### `replay`
 

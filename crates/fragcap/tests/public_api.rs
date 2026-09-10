@@ -5,13 +5,14 @@
 use std::path::PathBuf;
 
 use fragcap::deep_capture::api::{
-    propose_calibration, AdapterSetBuilder, CalibrationProcessSnapshot, CalibrationProposal,
-    CalibrationProposalRequest, CalibrationTopologyKind, CancellationToken, ClassificationReason,
-    CompatibilityAddressFamily, CompatibilityApplicability, CompatibilityCase,
-    CompatibilityEvidenceSource, CompatibilityFreshness, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, LaunchCase, ResourceKind,
-    SessionConfigBuilder, SessionMode, StoredCompatibilityFact, TargetsError, TrustError,
-    DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS,
+    observed_protocol_candidates, propose_calibration, AdapterSetBuilder,
+    CalibrationProcessSnapshot, CalibrationProposal, CalibrationProposalRequest,
+    CalibrationTopologyKind, CancellationToken, ClassificationReason, CompatibilityAddressFamily,
+    CompatibilityApplicability, CompatibilityCase, CompatibilityEvidenceSource,
+    CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy, LaunchCase, ResourceKind, SessionConfigBuilder, SessionMode,
+    StoredCompatibilityFact, TargetsError, TrustError, DEEP_CAPTURE_API_VERSION,
+    STABLE_API_EXPORTS,
 };
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{ClassificationSource, TargetClassification, TargetEntry};
@@ -22,7 +23,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 #[test]
 fn version_one_inventory_is_curated_and_sorted() {
     assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 137);
+    assert_eq!(STABLE_API_EXPORTS.len(), 138);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
@@ -45,6 +46,7 @@ fn version_one_inventory_is_curated_and_sorted() {
         "TerminalReport",
         "TrafficFamily",
         "TrustError",
+        "observed_protocol_candidates",
         "propose_calibration",
     ] {
         assert!(
@@ -65,6 +67,11 @@ fn version_one_inventory_is_curated_and_sorted() {
             "implementation detail leaked into stable inventory: {implementation_detail}"
         );
     }
+}
+
+#[test]
+fn observed_protocol_candidate_policy_is_available_through_the_stable_module() {
+    assert!(observed_protocol_candidates(&[], false).is_empty());
 }
 
 #[test]

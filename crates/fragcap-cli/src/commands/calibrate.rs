@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Guided reachability calibration for one already registered target.
+//! Guided one-attempt calibration for one already registered target.
 
 use std::path::Path;
 
@@ -12,7 +12,7 @@ use fragcap::targets::{
 
 use crate::cli::{
     CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationArg, DeepCaptureCalibrationProtocolArg,
-    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg,
+    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, GuidedCalibrationProtocolArg,
 };
 use crate::commands::deep_capture;
 use crate::emit::Emitter;
@@ -29,6 +29,10 @@ struct Guidance {
     reason: Option<String>,
     images: Vec<String>,
     limitations: Vec<String>,
+    requested_protocols: Vec<String>,
+    observed_protocols: Vec<String>,
+    completed_protocols: Vec<String>,
+    remaining_protocols: Vec<String>,
     next_command: Option<String>,
 }
 
@@ -37,6 +41,7 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
+    let requested_protocols = normalize_protocol_args(&args.protocol);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let store = deep_capture::open_local_store(args.local_db.as_deref())?;
     let local_store_argument = quote_powershell_path(&local_store_path)?;
@@ -50,7 +55,7 @@ pub fn run(
         deep_capture::require_controlled_target(&target)?;
     }
     let snapshot = process_snapshot(args.controlled_target);
-    let proposal = build_proposal(&store, &target, snapshot.clone())?;
+    let proposal = build_proposal(&store, &target, snapshot.clone(), &requested_protocols)?;
     if !proposal.limitations.is_empty() {
         let limitations = limitation_messages(&proposal);
         emit_guidance(
@@ -65,6 +70,10 @@ pub fn run(
                 reason: Some("proposal-limitations".to_string()),
                 images: readiness_images(&proposal),
                 limitations: limitations.clone(),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: Vec::new(),
+                completed_protocols: Vec::new(),
+                remaining_protocols: protocol_names(&requested_protocols),
                 next_command: None,
             },
         );
@@ -80,11 +89,11 @@ pub fn run(
             cold_case,
             images,
         } => {
-            let next_command = target_command(
-                "calibrate",
+            let next_command = calibrate_command(
                 target.stable_id,
                 &local_store_argument,
-                " --restart-warm",
+                true,
+                &requested_protocols,
             );
             emit_guidance(
                 emitter,
@@ -98,13 +107,22 @@ pub fn run(
                     reason: Some("declared-process-image-present".to_string()),
                     images: images.clone(),
                     limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: Vec::new(),
+                    completed_protocols: Vec::new(),
+                    remaining_protocols: protocol_names(&requested_protocols),
                     next_command: Some(next_command),
                 },
             );
             if !args.restart_warm {
                 return Ok(Exit::SUCCESS);
             }
-            let mut restart_args = low_level_args(args, None);
+            let mut restart_args = low_level_args(
+                args,
+                None,
+                deep_capture_api::CalibrationPhase::Reachability,
+                CompatibilityProtocol::Routing,
+            )?;
             restart_args.restart_warm = true;
             deep_capture::prepare_warm_restart(&restart_args, &store, emitter)?;
         }
@@ -122,6 +140,10 @@ pub fn run(
                     reason: Some("launch-readiness-unavailable".to_string()),
                     images: readiness_images(&proposal),
                     limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: Vec::new(),
+                    completed_protocols: Vec::new(),
+                    remaining_protocols: protocol_names(&requested_protocols),
                     next_command: None,
                 },
             );
@@ -131,15 +153,25 @@ pub fn run(
         }
     }
 
-    let mut low_level = low_level_args(args, None);
+    let resolver_args = low_level_args(
+        args,
+        None,
+        deep_capture_api::CalibrationPhase::Reachability,
+        CompatibilityProtocol::Routing,
+    )?;
     let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
-    let fresh_target = deep_capture::resolve_target(&fresh_store, &low_level)?;
+    let fresh_target = deep_capture::resolve_target(&fresh_store, &resolver_args)?;
     let fresh_snapshot = if args.restart_warm {
         process_snapshot(args.controlled_target)
     } else {
         snapshot
     };
-    let selected = build_proposal(&fresh_store, &fresh_target, fresh_snapshot.clone())?;
+    let selected = build_proposal(
+        &fresh_store,
+        &fresh_target,
+        fresh_snapshot.clone(),
+        &requested_protocols,
+    )?;
     if !selected.limitations.is_empty() {
         let limitations = limitation_messages(&selected);
         emit_guidance(
@@ -154,6 +186,10 @@ pub fn run(
                 reason: Some("proposal-limitations".to_string()),
                 images: readiness_images(&selected),
                 limitations: limitations.clone(),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: Vec::new(),
+                completed_protocols: Vec::new(),
+                remaining_protocols: protocol_names(&requested_protocols),
                 next_command: None,
             },
         );
@@ -179,18 +215,29 @@ pub fn run(
             &current,
         )
         .map_err(|refusal| CliError::usage(refusal.to_string()))?;
+        let (completed_protocols, remaining_protocols) =
+            coverage_from_proposal(&selected, &requested_protocols);
+        let (status, reason) = if requested_protocols.is_empty() {
+            ("ready", "current-routing-evidence")
+        } else {
+            ("requested-coverage-complete", "current-protocol-evidence")
+        };
         emit_guidance(
             emitter,
             &fresh_target,
             Guidance {
                 topology: topology(&selected),
                 action: "ready",
-                status: "ready",
+                status,
                 observed_launch_case: None,
                 selected_launch_case: Some(launch_case.as_str().to_string()),
-                reason: Some("current-routing-evidence".to_string()),
+                reason: Some(reason.to_string()),
                 images: readiness_images(&selected),
                 limitations: Vec::new(),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: Vec::new(),
+                completed_protocols: protocol_names(&completed_protocols),
+                remaining_protocols: protocol_names(&remaining_protocols),
                 next_command: Some(target_command(
                     "deep-capture",
                     fresh_target.stable_id,
@@ -201,104 +248,151 @@ pub fn run(
         );
         return Ok(Exit::SUCCESS);
     }
-    if selected.steps.len() != 1 {
-        return Err(CliError::usage(
-            "guided calibration selected more than one attempt; no session was started",
-        ));
-    }
     let step = &selected.steps[0];
-    if step.phase != deep_capture_api::CalibrationPhase::Reachability
-        || step.case.protocol != CompatibilityProtocol::Routing
-    {
+    if !valid_guided_step(step) {
         return Err(CliError::usage(
             "guided calibration selected an unsupported phase or protocol; no session was started",
         ));
     }
-    low_level.launch_case = Some(launch_case_arg(step.case.launch_case));
+    let action = match step.phase {
+        deep_capture_api::CalibrationPhase::Reachability => "run-reachability",
+        deep_capture_api::CalibrationPhase::Tls => "run-protocol",
+    };
+    let low_level = low_level_args(
+        args,
+        Some(launch_case_arg(step.case.launch_case)),
+        step.phase,
+        step.case.protocol,
+    )?;
+    let (completed_protocols, remaining_protocols) =
+        coverage_from_proposal(&selected, &requested_protocols);
     emit_guidance(
         emitter,
         &fresh_target,
         Guidance {
             topology: topology(&selected),
-            action: "run-reachability",
+            action,
             status: "selected",
             observed_launch_case: None,
             selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
             reason: Some(step.reason.as_str().to_string()),
             images: readiness_images(&selected),
             limitations: Vec::new(),
+            requested_protocols: protocol_names(&requested_protocols),
+            observed_protocols: Vec::new(),
+            completed_protocols: protocol_names(&completed_protocols),
+            remaining_protocols: protocol_names(&remaining_protocols),
             next_command: None,
         },
     );
     drop(fresh_store);
-    let exit = match deep_capture::run(&low_level, authorization, emitter) {
-        Ok(exit) => exit,
+    let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
+        Ok(outcome) => outcome,
         Err(error) => {
             emit_guidance(
                 emitter,
                 &fresh_target,
                 Guidance {
                     topology: topology(&selected),
-                    action: "run-reachability",
+                    action,
                     status: "failed",
                     observed_launch_case: None,
                     selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
                     reason: Some("delegated-session-error".to_string()),
                     images: readiness_images(&selected),
                     limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: Vec::new(),
+                    completed_protocols: protocol_names(&completed_protocols),
+                    remaining_protocols: protocol_names(&remaining_protocols),
                     next_command: None,
                 },
             );
             return Err(error);
         }
     };
-    if exit != Exit::SUCCESS {
-        emit_guidance(
-            emitter,
-            &fresh_target,
-            Guidance {
-                topology: topology(&selected),
-                action: "run-reachability",
-                status: "failed",
-                observed_launch_case: None,
-                selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-                reason: Some("delegated-session-nonzero".to_string()),
-                images: readiness_images(&selected),
-                limitations: Vec::new(),
-                next_command: None,
-            },
-        );
-        return Ok(exit);
-    }
-
+    let observed_protocols = deep_capture_api::observed_protocol_candidates(
+        &outcome.observations,
+        args.controlled_target,
+    );
+    let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
     let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
     let completed_target = deep_capture::resolve_target(&completed_store, &low_level)?;
-    let completed = build_proposal(&completed_store, &completed_target, fresh_snapshot)?;
-    let (completed_status, completed_reason) =
-        completion_outcome(&completed, step.case.launch_case);
+    let completed = build_proposal(
+        &completed_store,
+        &completed_target,
+        fresh_snapshot,
+        &all_protocols,
+    )?;
+    let (completed_protocols, remaining_protocols) =
+        coverage_from_proposal(&completed, &all_protocols);
+    let (completed_status, completed_reason) = if outcome.terminal_error.is_some() {
+        ("failed", "delegated-session-terminal-failure")
+    } else {
+        completion_outcome_for_step(
+            &completed,
+            step.phase,
+            step.case.launch_case,
+            step.case.protocol,
+            &completed_protocols,
+        )
+    };
+    let route_still_required = completed
+        .steps
+        .first()
+        .is_some_and(|step| step.phase == deep_capture_api::CalibrationPhase::Reachability);
+    let next_command = if outcome.terminal_error.is_none() && completed.limitations.is_empty() {
+        if route_still_required {
+            Some(calibrate_command(
+                completed_target.stable_id,
+                &local_store_argument,
+                false,
+                &all_protocols,
+            ))
+        } else if remaining_protocols.is_empty() {
+            Some(target_command(
+                "deep-capture",
+                completed_target.stable_id,
+                &local_store_argument,
+                " --launch",
+            ))
+        } else {
+            Some(calibrate_command(
+                completed_target.stable_id,
+                &local_store_argument,
+                false,
+                &remaining_protocols,
+            ))
+        }
+    } else {
+        None
+    };
     emit_guidance(
         emitter,
         &completed_target,
         Guidance {
             topology: topology(&completed),
-            action: "run-reachability",
+            action,
             status: completed_status,
             observed_launch_case: None,
             selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
             reason: Some(completed_reason.to_string()),
             images: readiness_images(&completed),
             limitations: limitation_messages(&completed),
-            next_command: Some(target_command(
-                "calibrate",
-                completed_target.stable_id,
-                &local_store_argument,
-                "",
-            )),
+            requested_protocols: protocol_names(&requested_protocols),
+            observed_protocols: protocol_names(&observed_protocols),
+            completed_protocols: protocol_names(&completed_protocols),
+            remaining_protocols: protocol_names(&remaining_protocols),
+            next_command,
         },
     );
-    Ok(Exit::SUCCESS)
+    match outcome.terminal_error {
+        Some(error) => Err(error),
+        None => Ok(Exit::SUCCESS),
+    }
 }
 
+#[cfg(test)]
 fn completion_outcome(
     proposal: &deep_capture_api::CalibrationProposal,
     attempted_launch_case: CompatibilityLaunchCase,
@@ -317,6 +411,55 @@ fn completion_outcome(
     )
 }
 
+fn completion_outcome_for_step(
+    proposal: &deep_capture_api::CalibrationProposal,
+    phase: deep_capture_api::CalibrationPhase,
+    attempted_launch_case: CompatibilityLaunchCase,
+    attempted_protocol: CompatibilityProtocol,
+    completed_protocols: &[CompatibilityProtocol],
+) -> (&'static str, &'static str) {
+    if !proposal.limitations.is_empty() {
+        return ("refused", "post-session-proposal-limitations");
+    }
+    let ready_launch_case = match proposal.readiness {
+        deep_capture_api::CalibrationLaunchReadiness::Ready { launch_case, .. } => launch_case,
+        _ => return ("not-completed", "post-session-launch-not-ready"),
+    };
+    if ready_launch_case != attempted_launch_case {
+        return (
+            "not-completed",
+            "attempt-produced-no-current-positive-evidence",
+        );
+    }
+    match phase {
+        deep_capture_api::CalibrationPhase::Reachability => {
+            let route_still_required = proposal
+                .steps
+                .first()
+                .is_some_and(|step| step.phase == deep_capture_api::CalibrationPhase::Reachability);
+            if route_still_required {
+                (
+                    "not-completed",
+                    "attempt-produced-no-current-positive-evidence",
+                )
+            } else {
+                ("completed", "current-routing-evidence-recorded")
+            }
+        }
+        deep_capture_api::CalibrationPhase::Tls => {
+            if completed_protocols.contains(&attempted_protocol) {
+                ("completed", "current-protocol-evidence-recorded")
+            } else {
+                (
+                    "not-completed",
+                    "attempt-produced-no-current-positive-evidence",
+                )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 fn completion_outcome_from_state(
     has_limitations: bool,
     ready_launch_case: Option<CompatibilityLaunchCase>,
@@ -363,10 +506,113 @@ fn target_command(verb: &str, target_id: i64, local_store: &str, suffix: &str) -
     format!("fragcap {verb} --id {target_id} --local-db {local_store}{suffix}")
 }
 
+fn calibrate_command(
+    target_id: i64,
+    local_store: &str,
+    restart_warm: bool,
+    protocols: &[CompatibilityProtocol],
+) -> String {
+    let mut suffix = if restart_warm {
+        " --restart-warm".to_string()
+    } else {
+        String::new()
+    };
+    for protocol in protocols {
+        suffix.push_str(" --protocol ");
+        suffix.push_str(protocol.as_str());
+    }
+    target_command("calibrate", target_id, local_store, &suffix)
+}
+
+fn normalize_protocol_args(values: &[GuidedCalibrationProtocolArg]) -> Vec<CompatibilityProtocol> {
+    let mut protocols = values
+        .iter()
+        .copied()
+        .map(guided_protocol)
+        .collect::<Vec<_>>();
+    protocols.sort_by_key(|protocol| protocol.as_str());
+    protocols.dedup();
+    protocols
+}
+
+fn guided_protocol(value: GuidedCalibrationProtocolArg) -> CompatibilityProtocol {
+    match value {
+        GuidedCalibrationProtocolArg::Http1 => CompatibilityProtocol::Http1,
+        GuidedCalibrationProtocolArg::Https => CompatibilityProtocol::Https,
+        GuidedCalibrationProtocolArg::Http2 => CompatibilityProtocol::Http2,
+        GuidedCalibrationProtocolArg::Websocket => CompatibilityProtocol::WebSocket,
+        GuidedCalibrationProtocolArg::Sse => CompatibilityProtocol::Sse,
+        GuidedCalibrationProtocolArg::Grpc => CompatibilityProtocol::Grpc,
+        GuidedCalibrationProtocolArg::GenericTcp => CompatibilityProtocol::GenericTcp,
+        GuidedCalibrationProtocolArg::NonHttpTls => CompatibilityProtocol::NonHttpTls,
+        GuidedCalibrationProtocolArg::Socks5Tcp => CompatibilityProtocol::Socks5Tcp,
+        GuidedCalibrationProtocolArg::Socks5Udp => CompatibilityProtocol::Socks5Udp,
+        GuidedCalibrationProtocolArg::GenericUdp => CompatibilityProtocol::GenericUdp,
+        GuidedCalibrationProtocolArg::Quic => CompatibilityProtocol::Quic,
+        GuidedCalibrationProtocolArg::Http3 => CompatibilityProtocol::Http3,
+    }
+}
+
+fn merge_protocols(
+    left: &[CompatibilityProtocol],
+    right: &[CompatibilityProtocol],
+) -> Vec<CompatibilityProtocol> {
+    let mut protocols = left.iter().chain(right).copied().collect::<Vec<_>>();
+    protocols.sort_by_key(|protocol| protocol.as_str());
+    protocols.dedup();
+    protocols
+}
+
+fn protocol_names(protocols: &[CompatibilityProtocol]) -> Vec<String> {
+    protocols
+        .iter()
+        .map(|protocol| protocol.as_str().to_string())
+        .collect()
+}
+
+fn coverage_from_proposal(
+    proposal: &deep_capture_api::CalibrationProposal,
+    requested: &[CompatibilityProtocol],
+) -> (Vec<CompatibilityProtocol>, Vec<CompatibilityProtocol>) {
+    let mut remaining = proposal
+        .steps
+        .iter()
+        .filter(|step| step.phase == deep_capture_api::CalibrationPhase::Tls)
+        .map(|step| step.case.protocol)
+        .chain(
+            proposal
+                .deferred_protocols
+                .iter()
+                .map(|deferred| deferred.protocol),
+        )
+        .collect::<Vec<_>>();
+    remaining.sort_by_key(|protocol| protocol.as_str());
+    remaining.dedup();
+    let completed = requested
+        .iter()
+        .copied()
+        .filter(|protocol| !remaining.contains(protocol))
+        .collect();
+    (completed, remaining)
+}
+
+fn valid_guided_step(step: &deep_capture_api::CalibrationProposalStep) -> bool {
+    match step.phase {
+        deep_capture_api::CalibrationPhase::Reachability => {
+            step.case.protocol == CompatibilityProtocol::Routing
+        }
+        deep_capture_api::CalibrationPhase::Tls => !matches!(
+            step.case.protocol,
+            CompatibilityProtocol::Routing | CompatibilityProtocol::NotApplicable
+        ),
+    }
+}
+
 fn build_proposal(
     store: &Store,
     target: &TargetEntry,
     snapshot: deep_capture_api::CalibrationProcessSnapshot,
+    protocols: &[CompatibilityProtocol],
 ) -> Result<deep_capture_api::CalibrationProposal, CliError> {
     let facts = store
         .compatibility_facts_for_target(required_row_id(target)?)
@@ -380,6 +626,7 @@ fn build_proposal(
     .with_process_snapshot(snapshot)
     .with_routing_strategy(CompatibilityRoutingStrategy::ChildEnvironment)
     .with_address_family(CompatibilityAddressFamily::Ipv4)
+    .with_protocol_candidates(protocols.iter().copied())
     .with_facts(facts);
     Ok(deep_capture_api::propose_calibration(&request))
 }
@@ -405,8 +652,15 @@ fn process_snapshot(controlled: bool) -> deep_capture_api::CalibrationProcessSna
 fn low_level_args(
     args: &CalibrateArgs,
     launch_case: Option<DeepCaptureLaunchCaseArg>,
-) -> DeepCaptureArgs {
-    DeepCaptureArgs {
+    phase: deep_capture_api::CalibrationPhase,
+    protocol: CompatibilityProtocol,
+) -> Result<DeepCaptureArgs, CliError> {
+    let calibration = match phase {
+        deep_capture_api::CalibrationPhase::Reachability => DeepCaptureCalibrationArg::Reachability,
+        deep_capture_api::CalibrationPhase::Tls => DeepCaptureCalibrationArg::Tls,
+    };
+    let calibration_protocol = protocol_arg(protocol)?;
+    Ok(DeepCaptureArgs {
         selector: args.selector.clone(),
         target: args.target.clone(),
         id: args.id,
@@ -424,8 +678,8 @@ fn low_level_args(
         legacy_trust_ca: false,
         legacy_yes: false,
         restart_warm: false,
-        calibrate: Some(DeepCaptureCalibrationArg::Reachability),
-        calibration_protocol: Some(DeepCaptureCalibrationProtocolArg::Routing),
+        calibrate: Some(calibration),
+        calibration_protocol: Some(calibration_protocol),
         launch_case,
         har: false,
         key_log: false,
@@ -434,7 +688,33 @@ fn low_level_args(
         proxy_family: DeepCaptureProxyFamilyArg::Ipv4,
         proxy_bypass: Vec::new(),
         controlled_target: args.controlled_target,
-    }
+    })
+}
+
+fn protocol_arg(
+    value: CompatibilityProtocol,
+) -> Result<DeepCaptureCalibrationProtocolArg, CliError> {
+    Ok(match value {
+        CompatibilityProtocol::Routing => DeepCaptureCalibrationProtocolArg::Routing,
+        CompatibilityProtocol::Http1 => DeepCaptureCalibrationProtocolArg::Http1,
+        CompatibilityProtocol::Https => DeepCaptureCalibrationProtocolArg::Https,
+        CompatibilityProtocol::Http2 => DeepCaptureCalibrationProtocolArg::Http2,
+        CompatibilityProtocol::WebSocket => DeepCaptureCalibrationProtocolArg::Websocket,
+        CompatibilityProtocol::Sse => DeepCaptureCalibrationProtocolArg::Sse,
+        CompatibilityProtocol::Grpc => DeepCaptureCalibrationProtocolArg::Grpc,
+        CompatibilityProtocol::GenericTcp => DeepCaptureCalibrationProtocolArg::GenericTcp,
+        CompatibilityProtocol::NonHttpTls => DeepCaptureCalibrationProtocolArg::NonHttpTls,
+        CompatibilityProtocol::Socks5Tcp => DeepCaptureCalibrationProtocolArg::Socks5Tcp,
+        CompatibilityProtocol::Socks5Udp => DeepCaptureCalibrationProtocolArg::Socks5Udp,
+        CompatibilityProtocol::GenericUdp => DeepCaptureCalibrationProtocolArg::GenericUdp,
+        CompatibilityProtocol::Quic => DeepCaptureCalibrationProtocolArg::Quic,
+        CompatibilityProtocol::Http3 => DeepCaptureCalibrationProtocolArg::Http3,
+        CompatibilityProtocol::NotApplicable => {
+            return Err(CliError::usage(
+                "guided calibration selected no concrete protocol",
+            ))
+        }
+    })
 }
 
 fn launch_case_arg(value: CompatibilityLaunchCase) -> DeepCaptureLaunchCaseArg {
@@ -510,11 +790,15 @@ fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance
         reason: guidance.reason.clone(),
         images: guidance.images.clone(),
         limitations: guidance.limitations.clone(),
+        requested_protocols: guidance.requested_protocols.clone(),
+        observed_protocols: guidance.observed_protocols.clone(),
+        completed_protocols: guidance.completed_protocols.clone(),
+        remaining_protocols: guidance.remaining_protocols.clone(),
         process_control: "none".to_string(),
         next_command: guidance.next_command.clone(),
     });
     emitter.progress(&format!(
-        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} process_control=none next_command={}",
+        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} process_control=none next_command={}",
         target.handle,
         target.stable_id,
         guidance.topology.as_deref().unwrap_or("unavailable"),
@@ -525,6 +809,10 @@ fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance
         guidance.reason.as_deref().unwrap_or("none"),
         if guidance.images.is_empty() { "none".to_string() } else { guidance.images.join(",") },
         if guidance.limitations.is_empty() { "none".to_string() } else { guidance.limitations.join("; ") },
+        if guidance.requested_protocols.is_empty() { "none".to_string() } else { guidance.requested_protocols.join(",") },
+        if guidance.observed_protocols.is_empty() { "none".to_string() } else { guidance.observed_protocols.join(",") },
+        if guidance.completed_protocols.is_empty() { "none".to_string() } else { guidance.completed_protocols.join(",") },
+        if guidance.remaining_protocols.is_empty() { "none".to_string() } else { guidance.remaining_protocols.join(",") },
         guidance.next_command.as_deref().unwrap_or("none"),
     ));
 }
@@ -561,6 +849,7 @@ mod tests {
             &store,
             &target,
             deep_capture_api::CalibrationProcessSnapshot::unavailable("snapshot failed"),
+            &[],
         )
         .unwrap();
         assert!(proposal.steps.is_empty());

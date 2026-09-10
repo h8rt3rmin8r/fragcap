@@ -628,6 +628,12 @@ pub struct CalibrateArgs {
     #[arg(long, conflicts_with = "authorize_stdin")]
     pub restart_warm: bool,
 
+    /// A concrete protocol to measure after reachability, repeatable.
+    ///
+    /// This requests a measurement and is never compatibility evidence by itself.
+    #[arg(long, value_enum)]
+    pub protocol: Vec<GuidedCalibrationProtocolArg>,
+
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
     pub controlled_target: bool,
@@ -666,6 +672,24 @@ pub enum DeepCaptureCalibrationArg {
     Reachability,
     /// Measure TLS trust behavior after reachability has been established.
     Tls,
+}
+
+/// Concrete protocol candidate accepted by the guided calibration front door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum GuidedCalibrationProtocolArg {
+    Http1,
+    Https,
+    Http2,
+    Websocket,
+    Sse,
+    Grpc,
+    GenericTcp,
+    NonHttpTls,
+    Socks5Tcp,
+    Socks5Udp,
+    GenericUdp,
+    Quic,
+    Http3,
 }
 
 /// Exact protocol dimension for one compatibility calibration.

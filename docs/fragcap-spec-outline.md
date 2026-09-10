@@ -227,7 +227,7 @@ from the original brief.
 
 ## 15. Targets And Compatibility Evidence
 
-The single local target store, source and fidelity model, resolution order, discovery signatures, and append-only Deep Capture compatibility facts. Compatibility calibration and reuse are exact over launch, route, address family, protocol, backend and product versions, and available target version; legacy and conflicting rows remain visible history. A pure guided proposal authority derives strict stored launch topology, requires caller-proven cold state, and selects only useful exact reachability or protocol measurements without effects. Unknown targets can produce initial evidence only through an explicit compatibility calibration, while `targets show` remains read-only and never selects an aggregate verdict.
+The single local target store, source and fidelity model, resolution order, discovery signatures, and append-only Deep Capture compatibility facts. Compatibility calibration and reuse are exact over launch, route, address family, protocol, backend and product versions, and available target version; legacy and conflicting rows remain visible history. A pure guided proposal authority derives strict stored launch topology, requires caller-proven cold state, and selects only useful exact reachability or protocol measurements without effects. Guided protocol candidates are requests until concrete final-client observations and current exact fact reassessment prove otherwise. Unknown targets can produce initial evidence only through an explicit compatibility calibration, while `targets show` remains read-only and never selects an aggregate verdict.
 
 ## 16. Steam Integration
 
@@ -397,6 +397,7 @@ It closes Native Deep Capture milestone 3 without claiming Deep Capture
 completion before the final #334 gate.
 S139 adds a stable pure guided-calibration proposal authority over resolved targets, supplied process snapshots, exact S121 evidence, and concrete protocol candidates. It applies conservative route and family defaults, preserves every uncertain state as a typed no-effect result, and leaves guided CLI execution and parent issue #380 open.
 S140 adds `fragcap calibrate` as a bounded existing-target reachability front door. One query-only process snapshot and retained exact facts feed S139; the command either delegates one plan-bound reachability attempt or emits durable ready, warm, or refused guidance without session effects. TLS and protocol guidance, registration, multi-attempt execution, and workflow persistence remain in #380.
+S141 extends that front door through one plan-bound protocol attempt per invocation. Repeatable candidates remain measurement requests, automatic continuations admit only concrete final-client observations, exact facts are re-read before coverage is reported, and unresolved candidates travel in the next command rather than workflow storage. Registration, internal multi-attempt execution, resume, persistence, and completion remain in #380.
 S123 adds bounded process lifecycle collection and a versioned process trace.
 Managed launch, ETW creation and exit, query snapshots, stage transitions,
 packet-derived socket ownership, watcher loss, and terminal state reconcile by
