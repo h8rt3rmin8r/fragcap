@@ -9,8 +9,8 @@ use crate::targets::{
 
 use super::{
     CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
-    CompatibilityObservation, DetectionState, InspectabilityState, LaunchCase, PreflightRefusal,
-    SessionMode, TrafficFamily,
+    CompatibilityObservation, CorrelationState, DetectionState, InspectabilityState, LaunchCase,
+    PreflightRefusal, SessionMode, TrafficFamily,
 };
 
 /// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
@@ -309,7 +309,8 @@ pub fn observed_protocol_candidates(
 }
 
 fn observation_is_final_client(observation: &CompatibilityObservation, controlled: bool) -> bool {
-    observation_is_correlated_to_final_client(observation)
+    (observation.correlation_state == CorrelationState::Matched
+        && observation_is_correlated_to_final_client(observation))
         || (controlled && controlled_harness_client(observation))
 }
 
@@ -633,6 +634,34 @@ mod launch_case_tests {
             ),
             vec![CompatibilityProtocol::Http1, CompatibilityProtocol::Https]
         );
+    }
+
+    #[test]
+    fn unresolved_correlation_never_becomes_protocol_evidence() {
+        for state in [
+            super::super::CorrelationState::FlowOnly,
+            super::super::CorrelationState::Ambiguous,
+            super::super::CorrelationState::Unavailable,
+        ] {
+            let mut observation = correlated_client_observation();
+            observation.correlation_state = state;
+            assert!(observed_protocol_candidates(&[observation.clone()], false).is_empty());
+            let facts = compatibility_fact_candidates(
+                LaunchCase::DirectExeCold.as_str(),
+                &[observation],
+                false,
+                Some(CalibrationPhase::Tls),
+                Some(CompatibilityProtocol::Http1),
+            );
+            assert!(!facts.iter().any(|fact| {
+                matches!(
+                    fact.key,
+                    CompatibilityFactKey::ProtocolBehavior
+                        | CompatibilityFactKey::Inspectability
+                        | CompatibilityFactKey::TlsTrustBehavior
+                )
+            }));
+        }
     }
 
     #[test]

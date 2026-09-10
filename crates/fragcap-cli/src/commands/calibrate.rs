@@ -574,6 +574,14 @@ fn coverage_from_proposal(
     proposal: &deep_capture_api::CalibrationProposal,
     requested: &[CompatibilityProtocol],
 ) -> (Vec<CompatibilityProtocol>, Vec<CompatibilityProtocol>) {
+    if !proposal.limitations.is_empty()
+        || !matches!(
+            &proposal.readiness,
+            deep_capture_api::CalibrationLaunchReadiness::Ready { .. }
+        )
+    {
+        return (Vec::new(), merge_protocols(&[], requested));
+    }
     let mut remaining = proposal
         .steps
         .iter()
@@ -860,6 +868,10 @@ mod tests {
         assert_eq!(
             completion_outcome(&proposal, CompatibilityLaunchCase::DirectExeCold),
             ("refused", "post-session-proposal-limitations")
+        );
+        assert_eq!(
+            coverage_from_proposal(&proposal, &[CompatibilityProtocol::Https]),
+            (Vec::new(), vec![CompatibilityProtocol::Https])
         );
     }
 
