@@ -468,7 +468,8 @@ pub fn observation_is_correlated_to_final_client(observation: &CompatibilityObse
 pub fn observation_proves_final_client_ca_acceptance(
     observation: &CompatibilityObservation,
 ) -> bool {
-    observation_is_correlated_to_final_client(observation)
+    observation.correlation_state == CorrelationState::Matched
+        && observation_is_correlated_to_final_client(observation)
         && classification_proves_tls(&observation.classification)
 }
 
@@ -644,14 +645,22 @@ mod launch_case_tests {
             super::super::CorrelationState::Unavailable,
         ] {
             let mut observation = correlated_client_observation();
+            observation.classification = ProtocolClassification::new(
+                TrafficFamily::Https,
+                DetectionState::Identified,
+                InspectabilityState::Full,
+                None,
+            )
+            .unwrap();
             observation.correlation_state = state;
             assert!(observed_protocol_candidates(&[observation.clone()], false).is_empty());
+            assert!(!observation_proves_final_client_ca_acceptance(&observation));
             let facts = compatibility_fact_candidates(
                 LaunchCase::DirectExeCold.as_str(),
                 &[observation],
                 false,
                 Some(CalibrationPhase::Tls),
-                Some(CompatibilityProtocol::Http1),
+                Some(CompatibilityProtocol::Https),
             );
             assert!(!facts.iter().any(|fact| {
                 matches!(

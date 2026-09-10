@@ -318,10 +318,11 @@ pub fn run(
     let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
     let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
     let completed_target = deep_capture::resolve_target(&completed_store, &low_level)?;
+    let completed_snapshot = process_snapshot(args.controlled_target);
     let completed = build_proposal(
         &completed_store,
         &completed_target,
-        fresh_snapshot,
+        completed_snapshot,
         &all_protocols,
     )?;
     let (completed_protocols, remaining_protocols) =
@@ -337,36 +338,14 @@ pub fn run(
             &completed_protocols,
         )
     };
-    let route_still_required = completed
-        .steps
-        .first()
-        .is_some_and(|step| step.phase == deep_capture_api::CalibrationPhase::Reachability);
-    let next_command = if outcome.terminal_error.is_none() && completed.limitations.is_empty() {
-        if route_still_required {
-            Some(calibrate_command(
-                completed_target.stable_id,
-                &local_store_argument,
-                false,
-                &all_protocols,
-            ))
-        } else if remaining_protocols.is_empty() {
-            Some(target_command(
-                "deep-capture",
-                completed_target.stable_id,
-                &local_store_argument,
-                " --launch",
-            ))
-        } else {
-            Some(calibrate_command(
-                completed_target.stable_id,
-                &local_store_argument,
-                false,
-                &remaining_protocols,
-            ))
-        }
-    } else {
-        None
-    };
+    let next_command = continuation_command(
+        &completed,
+        outcome.terminal_error.is_none(),
+        completed_target.stable_id,
+        &local_store_argument,
+        &all_protocols,
+        &remaining_protocols,
+    );
     emit_guidance(
         emitter,
         &completed_target,
@@ -522,6 +501,62 @@ fn calibrate_command(
         suffix.push_str(protocol.as_str());
     }
     target_command("calibrate", target_id, local_store, &suffix)
+}
+
+fn continuation_command(
+    proposal: &deep_capture_api::CalibrationProposal,
+    session_succeeded: bool,
+    target_id: i64,
+    local_store: &str,
+    all_protocols: &[CompatibilityProtocol],
+    remaining_protocols: &[CompatibilityProtocol],
+) -> Option<String> {
+    if !session_succeeded || !proposal.limitations.is_empty() {
+        return None;
+    }
+    if matches!(
+        proposal.readiness,
+        deep_capture_api::CalibrationLaunchReadiness::OperatorAction { .. }
+    ) {
+        let protocols = if remaining_protocols.is_empty() {
+            all_protocols
+        } else {
+            remaining_protocols
+        };
+        return Some(calibrate_command(target_id, local_store, true, protocols));
+    }
+    if !matches!(
+        proposal.readiness,
+        deep_capture_api::CalibrationLaunchReadiness::Ready { .. }
+    ) {
+        return None;
+    }
+    let route_still_required = proposal
+        .steps
+        .first()
+        .is_some_and(|step| step.phase == deep_capture_api::CalibrationPhase::Reachability);
+    if route_still_required {
+        Some(calibrate_command(
+            target_id,
+            local_store,
+            false,
+            all_protocols,
+        ))
+    } else if remaining_protocols.is_empty() {
+        Some(target_command(
+            "deep-capture",
+            target_id,
+            local_store,
+            " --launch",
+        ))
+    } else {
+        Some(calibrate_command(
+            target_id,
+            local_store,
+            false,
+            remaining_protocols,
+        ))
+    }
 }
 
 fn normalize_protocol_args(values: &[GuidedCalibrationProtocolArg]) -> Vec<CompatibilityProtocol> {
@@ -906,6 +941,56 @@ mod tests {
                 CompatibilityLaunchCase::DirectExeCold,
             ),
             ("not-completed", "post-session-launch-not-ready")
+        );
+    }
+
+    #[test]
+    fn warm_post_session_proposal_requires_restart_in_continuation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("local.db")).unwrap();
+        let mut target = TargetEntry {
+            id: None,
+            stable_id: 90_002,
+            handle: "warm-fixture".to_string(),
+            name: "Warm Fixture".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(resolved_client_launch("fixture.exe")),
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        target.id = Some(store.insert_target(&target).unwrap());
+        let proposal = build_proposal(
+            &store,
+            &target,
+            deep_capture_api::CalibrationProcessSnapshot::complete(["fixture.exe"]),
+            &[CompatibilityProtocol::Https],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            proposal.readiness,
+            deep_capture_api::CalibrationLaunchReadiness::OperatorAction { .. }
+        ));
+        assert_eq!(
+            continuation_command(
+                &proposal,
+                true,
+                target.stable_id,
+                "local.db",
+                &[CompatibilityProtocol::Https],
+                &[CompatibilityProtocol::Https],
+            )
+            .as_deref(),
+            Some(
+                "fragcap calibrate --id 90002 --local-db local.db --restart-warm --protocol https"
+            )
         );
     }
 }

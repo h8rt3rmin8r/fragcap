@@ -4672,6 +4672,8 @@ mod tests {
     fn calibration_classification_keeps_outcomes_distinct() {
         let mut client = observation();
         client.role = Some("client".to_string());
+        client.correlation_state = deep_capture_api::CorrelationState::Matched;
+        client.correlation_reason = "exact-flow-and-owner".to_string();
         assert_eq!(
             calibration_outcome(CalibrationPhase::Reachability, &[client.clone()]),
             CalibrationOutcome::ReachedClient
