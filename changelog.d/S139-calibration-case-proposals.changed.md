@@ -1,0 +1,2 @@
+<!-- spec-impact: 15, 17.2.1, 25, 28.1 -->
+Deep Capture's stable Rust API can now derive deterministic, read-only calibration case proposals from a resolved target, supplied process state, exact compatibility evidence, and observed protocol candidates. Proposals distinguish strict launch topology and warm or uncertain states, put reachability before protocol work, and explain every useful retest without applying effects.
