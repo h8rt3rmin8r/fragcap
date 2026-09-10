@@ -1,0 +1,2 @@
+<!-- spec-impact: 15, 17.2.1, 25, 28.1 -->
+Operators can now run `fragcap calibrate` for an existing target. It uses current process and compatibility facts to run at most one exact, fully authorized reachability measurement or report a durable ready, warm, or refused next step without session effects.

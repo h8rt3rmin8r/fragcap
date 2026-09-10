@@ -608,6 +608,8 @@ S133 closes #375 at the target-discovery integrity boundary and deliberately sup
 
 S139 closes #392 at the pure guided-calibration proposal boundary and deliberately splits XL parent #380 at its reusable policy seam. One stable deterministic facade operation derives strict Steam, direct, or ordered publisher topology from a resolved target, requires caller-supplied complete process evidence before declaring a cold case, applies child-environment and IPv4 defaults, and proposes only useful exact S121 reachability or protocol work with typed limitations and evidence reasons. It performs no target resolution, process enumeration, launch, trust, network, artifact, fact, store, schema, or ordinary-eligibility effect. S139 adds no dependency or package change, and #380 remains open for guided execution.
 
+S140 closes #394 at the bounded guided reachability front-door boundary. `fragcap calibrate` resolves one existing target, obtains one complete query-only Tool Help image snapshot, consumes S139, and either delegates one exact reachability case through the unchanged plan-bound executor or emits stable ready, warm, or refused guidance without session effects. Warm restart remains explicit and reuses S113; durable next commands always use `--id`. S140 adds no dependency, package, schema, trust-policy, ordinary-eligibility, TLS-selection, multi-attempt, automatic-registration, or workflow-persistence change, and #380 remains open.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

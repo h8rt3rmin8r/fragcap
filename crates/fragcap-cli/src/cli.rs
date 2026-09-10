@@ -51,6 +51,7 @@ Commands:
   Capture:
     capture       Capture a target's traffic (--target or --process)
     deep-capture  Capture plus scoped local proxy inspection
+    calibrate     Measure scoped proxy reachability for a stored target
     replay        Run a capture file back (not yet implemented)
 
   Targets:
@@ -140,6 +141,12 @@ pub enum Command {
     /// writes a session bundle containing packet truth, application records,
     /// proxy and process sidecars, compatibility facts, and cleanup status.
     DeepCapture(Box<DeepCaptureArgs>),
+    /// Measure whether scoped proxy routing reaches a stored target.
+    ///
+    /// Selects at most one reachability measurement from current target,
+    /// process, and compatibility facts. Warm targets receive effect-free
+    /// guidance unless `--restart-warm` is selected explicitly.
+    Calibrate(Box<CalibrateArgs>),
     /// Manage completed Deep Capture bundle evidence.
     Bundle(BundleArgs),
     /// Internal controlled target used by the Deep Capture verification harness.
@@ -555,6 +562,71 @@ pub struct DeepCaptureArgs {
     /// DNS inputs both include descendants. The complete-bypass wildcard is refused.
     #[arg(long, value_name = "RULE")]
     pub proxy_bypass: Vec<String>,
+
+    /// Run the deterministic controlled target harness.
+    #[arg(long, hide = true)]
+    pub controlled_target: bool,
+}
+
+/// Arguments to the guided reachability calibration front door.
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
+pub struct CalibrateArgs {
+    /// A stored target: an exact handle, a case-insensitive name, or a row number.
+    #[arg(value_name = "SELECTOR")]
+    pub selector: Option<String>,
+
+    /// The explicit-flag form of the stored-target selector.
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// Select a stored target by its durable stable identifier.
+    #[arg(long)]
+    pub id: Option<i64>,
+
+    /// The shipped catalog store consulted while resolving target context.
+    #[arg(long)]
+    pub catalog_db: Option<PathBuf>,
+
+    /// The local store holding registered targets and compatibility facts.
+    #[arg(long)]
+    pub local_db: Option<PathBuf>,
+
+    /// The bundle directory for the selected reachability attempt.
+    #[arg(long)]
+    pub bundle: Option<PathBuf>,
+
+    /// The reachability observation duration bound.
+    #[arg(short = 'd', long, value_parser = parse_duration)]
+    pub duration: Option<Duration>,
+
+    /// How long to wait for the selected target launch.
+    #[arg(long, value_parser = parse_duration)]
+    pub wait: Option<Duration>,
+
+    /// Stop after this many captured packets.
+    #[arg(long)]
+    pub max_packets: Option<u64>,
+
+    /// Stop after this many captured bytes.
+    #[arg(long, value_parser = parse_size)]
+    pub max_bytes: Option<u64>,
+
+    /// A capture interface, repeatable.
+    #[arg(short = 'i', long)]
+    pub interface: Vec<String>,
+
+    /// Write metadata only, no packet payloads.
+    #[arg(long)]
+    pub no_payload: bool,
+
+    /// Read the exact emitted authorization plan identifier from standard input.
+    #[arg(long, conflicts_with = "restart_warm")]
+    pub authorize_stdin: bool,
+
+    /// Wait for operator-owned normal shutdown before measuring the cold launch.
+    #[arg(long, conflicts_with = "authorize_stdin")]
+    pub restart_warm: bool,
 
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
@@ -1293,5 +1365,24 @@ mod tests {
             args.proxy_bypass,
             [".example.com,192.0.2.0/24", "[2001:db8::1]:443"]
         );
+    }
+
+    #[test]
+    fn guided_calibration_defaults_are_bounded_and_effect_minimal() {
+        let cli = Cli::try_parse_from(["fragcap", "calibrate", "target"]).expect("parse");
+        let Some(Command::Calibrate(args)) = cli.command else {
+            panic!("expected calibrate command");
+        };
+        assert_eq!(args.selector.as_deref(), Some("target"));
+        assert!(args.bundle.is_none());
+        assert!(args.duration.is_none());
+        assert!(args.wait.is_none());
+        assert!(args.max_packets.is_none());
+        assert!(args.max_bytes.is_none());
+        assert!(args.interface.is_empty());
+        assert!(!args.no_payload);
+        assert!(!args.authorize_stdin);
+        assert!(!args.restart_warm);
+        assert!(!args.controlled_target);
     }
 }

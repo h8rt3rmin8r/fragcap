@@ -130,6 +130,21 @@ pub enum Event {
         status: String,
         reason: String,
     },
+    /// A guided calibration decision or terminal outcome.
+    CalibrationGuidance {
+        target_id: i64,
+        target: String,
+        topology: Option<String>,
+        action: String,
+        status: String,
+        observed_launch_case: Option<String>,
+        selected_launch_case: Option<String>,
+        reason: Option<String>,
+        images: Vec<String>,
+        limitations: Vec<String>,
+        process_control: String,
+        next_command: Option<String>,
+    },
     /// An explicit warm-to-cold plan, emitted before the operator acts.
     DeepCaptureRestartPlan {
         target: String,
@@ -258,6 +273,7 @@ impl Event {
             Event::DeepCaptureAuthorization { .. } => "deep_capture.authorization",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
+            Event::CalibrationGuidance { .. } => "calibration.guidance",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
             Event::DeepCaptureRestart { .. } => "deep_capture.restart",
             Event::DeepCaptureProxyStarted { .. } => "deep_capture.proxy_started",
@@ -530,6 +546,45 @@ impl Event {
                 line.push_str(",\"reason\":");
                 write_json_string(reason, &mut line);
             }
+            Event::CalibrationGuidance {
+                target_id,
+                target,
+                topology,
+                action,
+                status,
+                observed_launch_case,
+                selected_launch_case,
+                reason,
+                images,
+                limitations,
+                process_control,
+                next_command,
+            } => {
+                line.push_str(",\"target_id\":");
+                line.push_str(&target_id.to_string());
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+                line.push_str(",\"topology\":");
+                write_optional_json_string(topology.as_deref(), &mut line);
+                line.push_str(",\"action\":");
+                write_json_string(action, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"observed_launch_case\":");
+                write_optional_json_string(observed_launch_case.as_deref(), &mut line);
+                line.push_str(",\"selected_launch_case\":");
+                write_optional_json_string(selected_launch_case.as_deref(), &mut line);
+                line.push_str(",\"reason\":");
+                write_optional_json_string(reason.as_deref(), &mut line);
+                line.push_str(",\"images\":[");
+                write_json_strings(images, &mut line);
+                line.push_str("],\"limitations\":[");
+                write_json_strings(limitations, &mut line);
+                line.push_str("],\"process_control\":");
+                write_json_string(process_control, &mut line);
+                line.push_str(",\"next_command\":");
+                write_optional_json_string(next_command.as_deref(), &mut line);
+            }
             Event::DeepCaptureRestartPlan {
                 target,
                 warm_case,
@@ -798,6 +853,22 @@ impl Event {
     }
 }
 
+fn write_optional_json_string(value: Option<&str>, out: &mut String) {
+    match value {
+        Some(value) => write_json_string(value, out),
+        None => out.push_str("null"),
+    }
+}
+
+fn write_json_strings(values: &[String], out: &mut String) {
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_json_string(value, out);
+    }
+}
+
 /// Format a `SystemTime` as an RFC3339 UTC timestamp with a `Z` suffix and
 /// second resolution.
 ///
@@ -965,6 +1036,30 @@ mod tests {
         .render(now);
         assert!(phase.contains("\"event\":\"deep_capture.calibration_phase\""));
         assert!(phase.contains("\"status\":\"metadata-only\""));
+
+        let guidance = Event::CalibrationGuidance {
+            target_id: 75_000,
+            target: "sample-target".to_string(),
+            topology: Some("direct".to_string()),
+            action: "run-reachability".to_string(),
+            status: "selected".to_string(),
+            observed_launch_case: None,
+            selected_launch_case: Some("direct-exe-cold".to_string()),
+            reason: Some("missing".to_string()),
+            images: vec!["client.exe".to_string()],
+            limitations: Vec::new(),
+            process_control: "none".to_string(),
+            next_command: None,
+        }
+        .render(now);
+        let guidance: serde_json::Value = serde_json::from_str(&guidance).unwrap();
+        assert_eq!(guidance["event"], "calibration.guidance");
+        assert_eq!(guidance["target_id"], 75_000);
+        assert_eq!(guidance["observed_launch_case"], serde_json::Value::Null);
+        assert_eq!(guidance["selected_launch_case"], "direct-exe-cold");
+        assert_eq!(guidance["limitations"], serde_json::json!([]));
+        assert_eq!(guidance["process_control"], "none");
+        assert_eq!(guidance["next_command"], serde_json::Value::Null);
 
         let restart_plan = Event::DeepCaptureRestartPlan {
             target: "sample-target".to_string(),

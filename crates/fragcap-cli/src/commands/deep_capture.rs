@@ -103,7 +103,7 @@ fn compatibility_address_family(value: DeepCaptureProxyFamilyArg) -> Compatibili
     }
 }
 
-fn current_compatibility_case(
+pub(crate) fn current_compatibility_case(
     launch_case: CompatibilityLaunchCase,
     family: DeepCaptureProxyFamilyArg,
     protocol: CompatibilityProtocol,
@@ -120,7 +120,7 @@ fn current_compatibility_case(
     }
 }
 
-fn library_launch_case(value: CompatibilityLaunchCase) -> deep_capture_api::LaunchCase {
+pub(crate) fn library_launch_case(value: CompatibilityLaunchCase) -> deep_capture_api::LaunchCase {
     use deep_capture_api::LaunchCase;
     match value {
         CompatibilityLaunchCase::SteamProtocolWarm => LaunchCase::SteamProtocolWarm,
@@ -728,6 +728,17 @@ fn run_warm_restart(
     Ok(Some(context))
 }
 
+/// Apply the existing bounded operator-owned warm-to-cold workflow without
+/// starting a Deep Capture session. The guided calibration command calls this
+/// only after its proposal reports an exact warm launch case.
+pub(crate) fn prepare_warm_restart(
+    args: &DeepCaptureArgs,
+    store: &Store,
+    emitter: &mut Emitter,
+) -> Result<(), CliError> {
+    run_warm_restart(args, store, emitter).map(|_| ())
+}
+
 struct LibraryTargetAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     store: Rc<RefCell<Store>>,
@@ -776,7 +787,7 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
                 "resolved target has no local row id",
             )
         })?;
-        let launch_case = effective_launch_case(&target, self.args.controlled_target)
+        let launch_case = selected_launch_case(&target, self.args)
             .map_err(|error| library_refusal("launch-case", error))?;
         let mut current_authority = AuthorizationTargetAuthority::from_target(&target, launch_case);
         if self.args.controlled_target {
@@ -1999,7 +2010,7 @@ fn validate_authorization_target(
     if args.controlled_target {
         require_controlled_target(&target)?;
     }
-    let launch_case = effective_launch_case(&target, args.controlled_target)?;
+    let launch_case = selected_launch_case(&target, args)?;
     if args
         .launch_case
         .map(CompatibilityLaunchCase::from)
@@ -2647,7 +2658,7 @@ impl TrustManager for WindowsCurrentUserTrustManager {
     }
 }
 
-fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
+pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
     let path = paths::local_db_path(flag)
         .or_else(paths::default_local_db_path)
         .ok_or_else(|| CliError::usage("no local store is available; pass --local-db"))?;
@@ -2685,9 +2696,26 @@ fn validate_bundle_root(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn resolve_target(store: &Store, args: &DeepCaptureArgs) -> Result<TargetEntry, CliError> {
-    let selector = args.selector.as_deref().or(args.target.as_deref());
-    let selection = match (selector, args.id) {
+pub(crate) fn resolve_target(
+    store: &Store,
+    args: &DeepCaptureArgs,
+) -> Result<TargetEntry, CliError> {
+    resolve_target_input(
+        store,
+        args.selector.as_deref(),
+        args.target.as_deref(),
+        args.id,
+    )
+}
+
+pub(crate) fn resolve_target_input(
+    store: &Store,
+    positional: Option<&str>,
+    explicit: Option<&str>,
+    id: Option<i64>,
+) -> Result<TargetEntry, CliError> {
+    let selector = positional.or(explicit);
+    let selection = match (selector, id) {
         (Some(selector), None) => resolve_positional(store, selector),
         (None, Some(id)) => resolve_id(store, id),
         _ => {
@@ -2723,7 +2751,7 @@ fn loopback_bind_address(family: DeepCaptureProxyFamilyArg) -> SocketAddr {
     }
 }
 
-fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {
+pub(crate) fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {
     let test_identity = target.handle == CONTROLLED_TARGET_HANDLE
         && target.stable_id == CONTROLLED_TARGET_STABLE_ID;
     let package_identity = target.handle == PACKAGE_CONTROLLED_TARGET_HANDLE
@@ -2840,6 +2868,20 @@ fn effective_launch_case(
     }
 }
 
+fn selected_launch_case(
+    target: &TargetEntry,
+    args: &DeepCaptureArgs,
+) -> Result<CompatibilityLaunchCase, CliError> {
+    if args.controlled_target {
+        Ok(args
+            .launch_case
+            .map(CompatibilityLaunchCase::from)
+            .unwrap_or(effective_launch_case(target, true)?))
+    } else {
+        effective_launch_case(target, false)
+    }
+}
+
 fn steam_launch_case(steam_running: bool) -> CompatibilityLaunchCase {
     if steam_running {
         CompatibilityLaunchCase::SteamProtocolWarm
@@ -2868,6 +2910,21 @@ fn process_image_is_running(image: &str) -> Result<bool, CliError> {
 
 #[cfg(windows)]
 fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
+    let observed = process_image_snapshot()?;
+    Ok(images
+        .iter()
+        .map(|image| {
+            observed
+                .iter()
+                .any(|observed| observed.eq_ignore_ascii_case(image))
+        })
+        .collect())
+}
+
+/// Return one complete query-only process image inventory. The Tool Help handle
+/// represents the snapshot itself and never grants rights to a target process.
+#[cfg(windows)]
+pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
     };
@@ -2876,7 +2933,7 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
         TH32CS_SNAPPROCESS,
     };
 
-    let mut running = vec![false; images.len()];
+    let mut images = Vec::new();
 
     // This is a handle to a read-only process snapshot, not to any process. It
     // supplies the image names needed to distinguish a cold launch from a warm
@@ -2908,11 +2965,7 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
         let observed = String::from_utf16_lossy(&entry.szExeFile[..end]);
-        for (index, image) in images.iter().enumerate() {
-            if observed.eq_ignore_ascii_case(image) {
-                running[index] = true;
-            }
-        }
+        images.push(observed);
         // SAFETY: the same live snapshot and initialized entry remain valid.
         if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
             // SAFETY: read immediately after the failed enumeration call.
@@ -2920,7 +2973,7 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
             // SAFETY: the snapshot handle is closed exactly once before returning.
             unsafe { CloseHandle(snapshot) };
             if code == ERROR_NO_MORE_FILES {
-                return Ok(running);
+                return Ok(images);
             }
             return Err(CliError::failure(format!(
                 "cannot finish enumerating processes while checking the declared target chain: {}",
@@ -2948,6 +3001,13 @@ fn process_image_is_running(_image: &str) -> Result<bool, CliError> {
 fn process_images_running(_images: &[String]) -> Result<Vec<bool>, CliError> {
     Err(CliError::usage(
         "Deep Capture managed publisher launch is only supported on Windows",
+    ))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
+    Err(CliError::usage(
+        "guided calibration process inventory is only supported on Windows",
     ))
 }
 

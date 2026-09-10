@@ -24,6 +24,7 @@ fn help_lists_the_grouped_command_surface() {
     for command in [
         "capture",
         "deep-capture",
+        "calibrate",
         "replay",
         "targets",
         "technologies",
@@ -45,6 +46,13 @@ fn help_lists_the_grouped_command_surface() {
             "`--help` still lists retired command `{gone}`:\n{out}"
         );
     }
+}
+
+#[test]
+fn calibrate_accepts_only_one_target_input() {
+    let (code, _out, err) = run(&["calibrate", "target", "--id", "7"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("cannot be used with"), "parser refusal: {err}");
 }
 
 const FOOTER: &str = "Run `fragcap --help` to see all commands.";

@@ -10,6 +10,7 @@
 
 pub mod build_identity;
 pub mod bundle;
+pub mod calibrate;
 pub mod capture;
 pub mod catalog;
 pub mod deep_capture;
