@@ -45,9 +45,9 @@ parsed -> stored-selection
       -> exact-candidate -> registration-plan-emitted
           -> declined-or-invalid
           -> confirmed -> rediscovery
-              -> drifted
+              -> drifted -> exact changed-selection diagnostic
               -> unchanged -> shared-registration
-                  -> durable-target-resolved -> existing-guided-calibration
+                  -> durable-target-resolved -> stable-id guided-calibration
 ```
 
 No transition before shared registration inserts a target row. No registration transition authorizes a later session effect.
@@ -59,6 +59,6 @@ No transition before shared registration inserts a target row. No registration t
 - The plan binds the effective store path rather than the raw optional flag.
 - Interactive affirmative input is a complete case-insensitive `y` or `yes` line; every other response declines.
 - Structured input is exact plan id plus one newline and constant-time compared.
-- Revalidation recomputes the plan from a new discovery result and requires equality.
+- Revalidation recomputes the plan from a new discovery result, preserves exact no-match or ambiguity details, and requires equality.
 - Steam result lookup uses the canonical anchor. Path result lookup uses exact install root and requires one result.
-- Durable handoff invokes the existing guided implementation without mutating its proposal, authorization, or one-session behavior.
+- Durable handoff clears the discovery selector and invokes every existing guided resolver with the recovered stable identifier without mutating proposal, authorization, or one-session behavior.

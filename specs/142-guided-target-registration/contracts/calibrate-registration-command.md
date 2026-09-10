@@ -39,7 +39,7 @@ If calibration later selects an effectful attempt, its existing S134 plan is emi
 
 ## Revalidation and Persistence
 
-After affirmative confirmation, discovery is run again. The selected candidate must reproduce the same canonical plan. Drift emits `calibration.registration` with `status=drifted` and performs no target insert.
+After affirmative confirmation, discovery is run again. The selected candidate must reproduce the same canonical plan. Drift emits `calibration.registration` with `status=drifted` and performs no target insert. A changed selector result retains its exact no-match or complete ambiguity diagnostic.
 
 An unchanged candidate is passed alone to `fragcap::targets::register_candidate`. The command then resolves the resulting stored entry by canonical Steam anchor or exact path install root. `registered` and `already-present` are both idempotent success outcomes only when that exact target can be recovered.
 
@@ -57,7 +57,7 @@ No outcome field claims launch topology, routing, inspectability, calibration re
 
 ## Continuation
 
-After durable resolution, the command enters the unchanged S139-S141 proposal flow with the stable id. Existing `calibration.guidance` and low-level events retain their meanings. Because the shared registration operation intentionally stores discovery candidates without launch entries, a new row reaches the existing `missing-launch-declaration` limitation rather than receiving fabricated launch authority. A later authoritative target remains subject to its own current Deep Capture plan authorization.
+After durable resolution, the command clears the original discovery selector and enters every S139-S141 resolution and delegated attempt by stable id. Existing `calibration.guidance` and low-level events retain their meanings. Because the shared registration operation intentionally stores discovery candidates without launch entries, a new row reaches the existing `missing-launch-declaration` limitation rather than receiving fabricated launch authority. A later authoritative target remains subject to its own current Deep Capture plan authorization.
 
 ## Compatibility
 

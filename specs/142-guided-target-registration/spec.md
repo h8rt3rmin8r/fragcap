@@ -97,10 +97,10 @@ After registration, the same command resolves the resulting stored row by durabl
 - **FR-011**: Interactive registration MUST require an affirmative complete line and MUST default to decline on empty, negative, invalid, incomplete, closed, or interrupted input.
 - **FR-012**: JSON execution MUST require `--authorize-stdin`; structured registration MUST accept only the exact current plan identifier followed by one newline using constant-time comparison.
 - **FR-013**: Registration confirmation MUST be separate from and MUST NOT authorize any later Deep Capture plan, trust change, launch, proxy, capture, artifact, or compatibility-fact effect.
-- **FR-014**: After confirmation and before persistence, the command MUST repeat discovery and require byte-equivalent canonical candidate authority and destination authority.
+- **FR-014**: After confirmation and before persistence, the command MUST repeat discovery, preserve exact no-match or ambiguity diagnostics, and require byte-equivalent canonical candidate authority and destination authority.
 - **FR-015**: Only the confirmed unchanged candidate MAY be passed to the existing `register_candidate` operation; S142 MUST NOT add a storage shape, source-specific insert, or bulk persistence path.
 - **FR-016**: Registration MUST remain idempotent. A same-identity row created concurrently MAY be reused, while a conflicting or unresolvable post-write identity MUST refuse continuation.
-- **FR-017**: After successful or idempotent registration, the command MUST resolve the stored row by the resulting durable stable identifier and continue through the existing S139-S141 guided path.
+- **FR-017**: After successful or idempotent registration, the command MUST replace the original discovery selector with the resulting durable stable identifier for every downstream resolution and continue through the existing S139-S141 guided path.
 - **FR-018**: A candidate with unsupported or unresolved launch topology MUST retain the existing typed proposal limitation; S142 MUST NOT synthesize launch authority from discovery hints.
 - **FR-019**: Human output MUST state candidate identity, destination store, registration decision, resulting stable target identity, and whether calibration continued.
 - **FR-020**: Machine-readable output MUST add stable registration-plan and registration-outcome events without changing existing guidance or low-level event meanings.

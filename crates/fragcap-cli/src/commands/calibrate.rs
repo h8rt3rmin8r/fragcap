@@ -271,18 +271,16 @@ fn resolve_or_register_target(
     };
     let current_candidate = match select_discovery_candidate(selector, &current_discovery) {
         Ok(candidate) => candidate,
-        Err(_) => {
+        Err(error) => {
             registration_outcome(
                 emitter,
                 &plan.id,
                 "drifted",
-                "discovered target authority could not be reproduced after confirmation",
+                "discovered target selection changed after confirmation",
                 None,
                 false,
             )?;
-            return Err(CliError::usage(
-                "the discovered target could not be reproduced after confirmation; review a fresh registration plan",
-            ));
+            return Err(error);
         }
     };
     let current_plan =
@@ -375,23 +373,43 @@ fn discover_for_calibration(
         let mut account = fragcap::targets::DiscoveryAccount::default();
         account.produce();
         let drifted = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT").is_some();
-        return Ok(Discovery {
-            candidates: vec![CandidateTarget {
-                identity: CandidateIdentity::SteamAppId(75_000),
-                display_name: if drifted {
-                    "Changed Sample Target".to_string()
-                } else {
-                    "Sample Target".to_string()
-                },
+        let ambiguous =
+            std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS").is_some();
+        let mut candidates = vec![CandidateTarget {
+            identity: CandidateIdentity::SteamAppId(75_000),
+            display_name: if drifted {
+                "Changed Sample Target".to_string()
+            } else {
+                "Sample Target".to_string()
+            },
+            fidelity: fragcap::profile::FidelityTier::Observed,
+            classification: fragcap::targets::TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+            source_name: "steam".to_string(),
+            install_root: Some("C:\\Games\\Sample Target".to_string()),
+            folder_name: Some("Sample Target".to_string()),
+            executable_hint: Some("client.exe".to_string()),
+        }];
+        if ambiguous {
+            account.produce();
+            candidates.push(CandidateTarget {
+                identity: CandidateIdentity::Path(
+                    "C:\\Other Games\\Sample Target\\client.exe".to_string(),
+                ),
+                display_name: "Sample Target".to_string(),
                 fidelity: fragcap::profile::FidelityTier::Observed,
                 classification: fragcap::targets::TargetClassification::Game,
                 evidence: Vec::new(),
                 detection_scan: None,
-                source_name: "steam".to_string(),
-                install_root: Some("C:\\Games\\Sample Target".to_string()),
+                source_name: "filesystem".to_string(),
+                install_root: Some("C:\\Other Games\\Sample Target".to_string()),
                 folder_name: Some("Sample Target".to_string()),
                 executable_hint: Some("client.exe".to_string()),
-            }],
+            });
+        }
+        return Ok(Discovery {
+            candidates,
             account,
             warnings: Vec::new(),
         });
@@ -789,6 +807,7 @@ pub fn run(
             }
             let mut restart_args = low_level_args(
                 args,
+                target.stable_id,
                 None,
                 deep_capture_api::CalibrationPhase::Reachability,
                 CompatibilityProtocol::Routing,
@@ -825,6 +844,7 @@ pub fn run(
 
     let resolver_args = low_level_args(
         args,
+        target.stable_id,
         None,
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
@@ -930,6 +950,7 @@ pub fn run(
     };
     let low_level = low_level_args(
         args,
+        fresh_target.stable_id,
         Some(launch_case_arg(step.case.launch_case)),
         step.phase,
         step.case.protocol,
@@ -1364,6 +1385,7 @@ fn process_snapshot(controlled: bool) -> deep_capture_api::CalibrationProcessSna
 
 fn low_level_args(
     args: &CalibrateArgs,
+    target_stable_id: i64,
     launch_case: Option<DeepCaptureLaunchCaseArg>,
     phase: deep_capture_api::CalibrationPhase,
     protocol: CompatibilityProtocol,
@@ -1374,9 +1396,9 @@ fn low_level_args(
     };
     let calibration_protocol = protocol_arg(protocol)?;
     Ok(DeepCaptureArgs {
-        selector: args.selector.clone(),
-        target: args.target.clone(),
-        id: args.id,
+        selector: None,
+        target: None,
+        id: Some(target_stable_id),
         catalog_db: args.catalog_db.clone(),
         local_db: args.local_db.clone(),
         launch: true,
