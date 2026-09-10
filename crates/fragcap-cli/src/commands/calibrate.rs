@@ -274,11 +274,8 @@ pub fn run(
     let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
     let completed_target = deep_capture::resolve_target(&completed_store, &low_level)?;
     let completed = build_proposal(&completed_store, &completed_target, fresh_snapshot)?;
-    let completed_status = if completed.steps.is_empty() {
-        "completed"
-    } else {
-        "not-completed"
-    };
+    let (completed_status, completed_reason) =
+        completion_outcome(&completed, step.case.launch_case);
     emit_guidance(
         emitter,
         &completed_target,
@@ -288,11 +285,7 @@ pub fn run(
             status: completed_status,
             observed_launch_case: None,
             selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-            reason: Some(if completed.steps.is_empty() {
-                "current-routing-evidence-recorded".to_string()
-            } else {
-                "attempt-produced-no-current-positive-evidence".to_string()
-            }),
+            reason: Some(completed_reason.to_string()),
             images: readiness_images(&completed),
             limitations: limitation_messages(&completed),
             next_command: Some(target_command(
@@ -304,6 +297,45 @@ pub fn run(
         },
     );
     Ok(Exit::SUCCESS)
+}
+
+fn completion_outcome(
+    proposal: &deep_capture_api::CalibrationProposal,
+    attempted_launch_case: CompatibilityLaunchCase,
+) -> (&'static str, &'static str) {
+    let ready_launch_case = match proposal.readiness {
+        deep_capture_api::CalibrationLaunchReadiness::Ready { launch_case, .. } => {
+            Some(launch_case)
+        }
+        _ => None,
+    };
+    completion_outcome_from_state(
+        !proposal.limitations.is_empty(),
+        ready_launch_case,
+        proposal.steps.is_empty(),
+        attempted_launch_case,
+    )
+}
+
+fn completion_outcome_from_state(
+    has_limitations: bool,
+    ready_launch_case: Option<CompatibilityLaunchCase>,
+    has_no_steps: bool,
+    attempted_launch_case: CompatibilityLaunchCase,
+) -> (&'static str, &'static str) {
+    if has_limitations {
+        return ("refused", "post-session-proposal-limitations");
+    }
+    match ready_launch_case {
+        Some(launch_case) if launch_case == attempted_launch_case && has_no_steps => {
+            ("completed", "current-routing-evidence-recorded")
+        }
+        Some(_) => (
+            "not-completed",
+            "attempt-produced-no-current-positive-evidence",
+        ),
+        _ => ("not-completed", "post-session-launch-not-ready"),
+    }
 }
 
 fn quote_powershell_path(path: &Path) -> Result<String, CliError> {
@@ -535,6 +567,44 @@ mod tests {
         assert_eq!(
             limitation_messages(&proposal),
             ["process-inventory-unavailable: snapshot failed (candidates: fixture.exe)"]
+        );
+        assert_eq!(
+            completion_outcome(&proposal, CompatibilityLaunchCase::DirectExeCold),
+            ("refused", "post-session-proposal-limitations")
+        );
+    }
+
+    #[test]
+    fn completion_requires_ready_state_for_the_attempted_launch_case() {
+        assert_eq!(
+            completion_outcome_from_state(
+                false,
+                Some(CompatibilityLaunchCase::DirectExeCold),
+                true,
+                CompatibilityLaunchCase::DirectExeCold,
+            ),
+            ("completed", "current-routing-evidence-recorded")
+        );
+        assert_eq!(
+            completion_outcome_from_state(
+                false,
+                Some(CompatibilityLaunchCase::DirectExeCold),
+                true,
+                CompatibilityLaunchCase::SteamProtocolCold,
+            ),
+            (
+                "not-completed",
+                "attempt-produced-no-current-positive-evidence"
+            )
+        );
+        assert_eq!(
+            completion_outcome_from_state(
+                false,
+                None,
+                true,
+                CompatibilityLaunchCase::DirectExeCold,
+            ),
+            ("not-completed", "post-session-launch-not-ready")
         );
     }
 }

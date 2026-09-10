@@ -23,5 +23,6 @@ cargo xtask ci
 - No automatic registration, trust, TLS, or protocol calibration path exists.
 - No-effect states return before bundle or authority preparation.
 - Reachability delegates to the existing S134-authorized path.
+- Post-session target changes, malformed declarations, limitations, warm state, and unavailable readiness cannot produce a completed claim.
 - Generated commands use durable identifiers, preserve the effective local-store path, and quote that path as one PowerShell argument.
 - Issue #394 closes on merge while parent #380 remains open.

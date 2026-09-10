@@ -48,5 +48,6 @@ No transition before `reachability-selected` allocates a bundle or prepares cert
 - S139 receives a complete process list or unavailable snapshot, never a fabricated empty list.
 - `run-reachability` requires one first reachability step with routing protocol.
 - `ready` requires zero steps plus current exact positive routing evidence.
+- Post-session `completed` requires zero steps, no limitations, and ready state for the exact attempted launch case.
 - Any TLS step, protocol candidate, non-child routing, or non-IPv4 family is refused.
 - Generated commands use the decimal durable identifier and a PowerShell-quoted effective local-store path.

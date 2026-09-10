@@ -28,7 +28,7 @@ The first S139 step delegates in-process to the existing equivalent:
 fragcap deep-capture --id <STABLE_ID> --launch --calibrate reachability --calibration-protocol routing --launch-case <EXACT_COLD_CASE>
 ```
 
-Selected bounds and authorization are preserved. On success, the next command is `fragcap calibrate --id <STABLE_ID> --local-db <EFFECTIVE_PATH>` so new evidence is reassessed against the same store.
+Selected bounds and authorization are preserved. On success, the next command is `fragcap calibrate --id <STABLE_ID> --local-db <EFFECTIVE_PATH>` so new evidence is reassessed against the same store. The terminal attempt is `completed` only when that reassessment is limitation-free, retains ready state for the attempted launch case, and selects no further step. Changed, malformed, warm, unavailable, or otherwise non-ready launch authority remains `refused` or `not-completed`.
 
 ### `ready`
 

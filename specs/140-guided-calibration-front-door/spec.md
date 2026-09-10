@@ -98,6 +98,7 @@ An operator or local automation receives stable structured proposal, action, out
 - **FR-011**: `--restart-warm` MUST reuse the existing operator-confirmed bounded normal-shutdown workflow, fresh target resolution, authority comparison, and cold-case verification; it MUST NOT close, signal, message, or terminate a process.
 - **FR-012**: Every proposal limitation MUST be reported before bundle allocation, certificate preparation, proxy startup, trust, routing, launch, Capture, artifact, or fact effects.
 - **FR-013**: A zero-step proposal MUST be classified as ready only when current exact positive routing evidence for the proposed case is present; every other zero-step state MUST refuse with a stable reason.
+- **FR-013a**: Post-session completion MUST require a limitation-free proposal whose ready launch case matches the attempted case and whose exact current routing evidence suppresses every further step; changed, malformed, warm, unavailable, or otherwise non-ready launch authority MUST remain refused or not completed.
 - **FR-014**: Human and JSON modes MUST expose stable proposal, action, outcome, and next-command facts without suppressing existing detailed Deep Capture events.
 - **FR-015**: JSON execution MUST retain the existing same-process `--authorize-stdin` exact-plan-identifier requirement, and no blanket confirmation flag may be introduced.
 - **FR-016**: A successful reachability attempt MUST recommend another `fragcap calibrate --id <ID>` evaluation so the newly appended fact is read before ordinary Deep Capture is recommended.
