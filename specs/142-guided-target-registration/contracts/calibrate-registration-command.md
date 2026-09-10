@@ -8,7 +8,7 @@ fragcap calibrate --target <SELECTOR> [OPTIONS]
 fragcap calibrate --id <STABLE_ID> [OPTIONS]
 ```
 
-The visible argument surface is unchanged. `--id` remains stored-only. A positional or `--target` stored miss triggers current installed-game discovery. A numeric stored miss is interpreted as a Steam application identifier; other tokens match candidate display names case-insensitively and exactly.
+The visible argument surface is unchanged. `--id` remains stored-only. A positional or `--target` stored miss triggers current installed-game discovery. A numeric stored miss is interpreted as a Steam application identifier; other tokens match candidate display names with Unicode-aware case folding and exact equality.
 
 ## Selection
 
@@ -26,8 +26,10 @@ No fuzzy, substring, folder, executable-hint, predicted-handle, or path-prefix s
 
 - `plan_id`
 - `canonical_json`
+- every `discovery_*` account field
+- `discovery_warning_count`
 
-The canonical object contains schema, operation, effective local store, predicted stable id, and the complete selected candidate projection. Human output renders the same authority before input.
+The canonical object contains schema, operation, effective local store, predicted stable id, the complete selected candidate projection, every conserved discovery count, and the discovery warnings. Human output renders the same authority before input. The machine event also exposes every count and the warning count as top-level scalar fields.
 
 ## Confirmation
 

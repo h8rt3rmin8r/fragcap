@@ -6,7 +6,7 @@
 
 ## Summary
 
-Extend `fragcap calibrate` with a stored-first resolution adapter that falls back to the existing S133 discovery composition only on a clean miss. One exact Steam application identifier or candidate display name produces a complete domain-separated registration plan. Human input defaults to decline; structured input must return the exact plan identifier. The command repeats discovery after confirmation, passes only the unchanged candidate to `register_candidate`, resolves the resulting row by durable identifier, and enters the unchanged S139-S141 proposal path. Because discovery candidates intentionally store no launch entries, a new row retains the existing missing-declaration limitation rather than promoting a hint into authority. Ambiguity, discovery loss, drift, and the separate later Deep Capture authorization remain explicit.
+Extend `fragcap calibrate` with a stored-first resolution adapter that falls back to the existing S133 discovery composition only on a clean miss. One exact Steam application identifier or Unicode-aware case-insensitive candidate display name produces a complete domain-separated registration plan that binds the conserved discovery account and warnings. Human input defaults to decline; structured input must return the exact plan identifier. The command repeats discovery after confirmation, passes only the unchanged candidate to `register_candidate`, resolves the resulting row by durable identifier, and enters the unchanged S139-S141 proposal path. Because discovery candidates intentionally store no launch entries, a new row retains the existing missing-declaration limitation rather than promoting a hint into authority. Ambiguity, discovery loss, drift, and the separate later Deep Capture authorization remain explicit.
 
 ## Technical Context
 
@@ -92,11 +92,11 @@ A resolved or ambiguous stored result is final. Discovery runs only for `Selecti
 
 ### 2026-09-10: Match only exact observed namespaces
 
-An exact Steam application identifier or case-insensitive display name is sufficient to offer a choice. Predicted handles, folder names, executable hints, path fragments, and fuzzy matches are excluded because they are not the namespace the operator supplied.
+An exact Steam application identifier or Unicode-aware case-insensitive display name is sufficient to offer a choice. Predicted handles, folder names, executable hints, path fragments, and fuzzy matches are excluded because they are not the namespace the operator supplied.
 
 ### 2026-09-10: Bind registration like an authorization plan without merging consent
 
-The plan uses deterministic canonical JSON, BLAKE3 domain separation, and exact structured comparison. Human confirmation remains yes/no because the complete plan is already displayed. Its identifier and response are independent from the later S134 Deep Capture plan and response.
+The plan uses deterministic canonical JSON, BLAKE3 domain separation, and exact structured comparison. It binds the complete candidate together with every conserved discovery count and warning, preventing an incomplete scan from disappearing on the successful path. Human confirmation remains yes/no because the complete plan is already displayed. Its identifier and response are independent from the later S134 Deep Capture plan and response.
 
 ### 2026-09-10: Repeat discovery before persistence
 

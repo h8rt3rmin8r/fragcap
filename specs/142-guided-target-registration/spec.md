@@ -29,7 +29,7 @@ An operator can pass the same one-game argument to `fragcap calibrate` whether t
 
 ### User Story 2 - Confirm One Exact Registration (Priority: P2)
 
-Before a target row is written, the operator sees the candidate's observed identity, display name, source, fidelity, classification, install root, executable hint, evidence, and the exact durable identity that registration will create when one is derivable. Interactive mode defaults to decline. Structured mode requires the exact emitted registration-plan identifier. After confirmation, discovery is repeated and the complete candidate authority must still match before the existing one-path registration operation may run.
+Before a target row is written, the operator sees the candidate's observed identity, display name, source, fidelity, classification, install root, executable hint, evidence, the complete conserved discovery account and warnings, and the exact durable identity that registration will create when one is derivable. Interactive mode defaults to decline. Structured mode requires the exact emitted registration-plan identifier. After confirmation, discovery is repeated and the complete candidate plus discovery authority must still match before the existing one-path registration operation may run.
 
 **Why this priority**: Registration changes the durable target store and can otherwise turn an ambiguous or stale discovery observation into long-lived false authority.
 
@@ -86,13 +86,13 @@ After registration, the same command resolves the resulting stored row by durabl
 
 - **FR-001**: The command MUST attempt existing stored-target resolution before any discovery and MUST preserve every resolved and ambiguous stored result unchanged.
 - **FR-002**: The command MUST run the existing bounded discovery composition only after a clean stored no-match.
-- **FR-003**: Discovery selection MUST accept only one exact Steam application identifier or one exact case-insensitive display name and MUST NOT use fuzzy, substring, inferred-handle, folder, executable-hint, or path-prefix matching.
+- **FR-003**: Discovery selection MUST accept only one exact Steam application identifier or one exact Unicode-aware case-insensitive display name and MUST NOT use fuzzy, substring, inferred-handle, folder, executable-hint, or path-prefix matching.
 - **FR-004**: A bare numeric selector MUST retain stored listing-row precedence and MAY become a Steam application identifier only after that row resolution returns no match.
 - **FR-005**: `--id` MUST remain a stored durable-identifier selector and MUST NOT invent an identifier for an unregistered path candidate.
 - **FR-006**: Every discovery ambiguity MUST list all exact matches with source, observed identity, display name, fidelity, classification, and install root where available, then exit with no target registration or session effect.
 - **FR-007**: Discovery failure, incomplete coverage, warnings, and conservation counts MUST remain visible and MUST NOT be collapsed into an ordinary no-match.
-- **FR-008**: The registration proposal MUST bind the complete selected `CandidateTarget`, effective local-store path, registration operation version, and the predicted anchored stable identifier when one exists.
-- **FR-009**: The registration plan identifier MUST be a versioned domain-separated BLAKE3 digest of deterministic canonical JSON and MUST change when any bound candidate or destination field changes.
+- **FR-008**: The registration proposal MUST bind the complete selected `CandidateTarget`, conserved discovery account and warnings, effective local-store path, registration operation version, and the predicted anchored stable identifier when one exists.
+- **FR-009**: The registration plan identifier MUST be a versioned domain-separated BLAKE3 digest of deterministic canonical JSON and MUST change when any bound candidate, discovery, or destination field changes.
 - **FR-010**: The complete registration proposal MUST be emitted and flushed before confirmation input is read.
 - **FR-011**: Interactive registration MUST require an affirmative complete line and MUST default to decline on empty, negative, invalid, incomplete, closed, or interrupted input.
 - **FR-012**: JSON execution MUST require `--authorize-stdin`; structured registration MUST accept only the exact current plan identifier followed by one newline using constant-time comparison.

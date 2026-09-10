@@ -714,6 +714,10 @@ fn confirmed_discovered_target_registers_once_then_preserves_unresolved_topology
     assert_eq!(authorization.calls, 1, "only registration is authorized");
     assert_eq!(events.matches("calibration.registration_plan").count(), 1);
     assert_eq!(events.matches("deep_capture.authorization_plan").count(), 0);
+    assert!(events.contains("\"discovery_considered\":1"));
+    assert!(events.contains("\"discovery_produced\":1"));
+    assert!(events.contains("\"discovery_access_error\":0"));
+    assert!(events.contains("\"discovery_warning_count\":0"));
     assert!(events.contains("\"status\":\"registered\""));
     assert!(events.contains("\"continued\":true"));
     assert!(events.contains("missing-launch-declaration"));

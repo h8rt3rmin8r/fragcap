@@ -8,7 +8,8 @@ use std::sync::atomic::Ordering;
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     CandidateIdentity, CandidateTarget, CompatibilityAddressFamily, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery, Selection, Store, TargetEntry,
+    CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, Selection,
+    Store, TargetEntry,
 };
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
@@ -49,11 +50,22 @@ struct RegistrationPlan {
     canonical: Value,
     canonical_json: String,
     candidate: CandidateTarget,
+    discovery_account: DiscoveryAccount,
+    discovery_warning_count: usize,
 }
 
 impl RegistrationPlan {
-    fn new(candidate: CandidateTarget, local_store: &Path) -> Result<Self, CliError> {
-        let canonical = registration_plan_value(&candidate, local_store)?;
+    fn new(
+        candidate: CandidateTarget,
+        discovery: &Discovery,
+        local_store: &Path,
+    ) -> Result<Self, CliError> {
+        if !discovery.account.is_conserved() {
+            return Err(CliError::failure(
+                "discovery accounting was not conserved; refusing target registration",
+            ));
+        }
+        let canonical = registration_plan_value(&candidate, discovery, local_store)?;
         let canonical_json = serde_json::to_string(&canonical)
             .expect("the registration plan contains only serializable values");
         let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
@@ -62,6 +74,8 @@ impl RegistrationPlan {
             canonical,
             canonical_json,
             candidate,
+            discovery_account: discovery.account.clone(),
+            discovery_warning_count: discovery.warnings.len(),
         })
     }
 
@@ -70,6 +84,18 @@ impl RegistrationPlan {
             .event_checked(&Event::CalibrationRegistrationPlan {
                 plan_id: self.id.clone(),
                 canonical_json: self.canonical_json.clone(),
+                discovery_considered: self.discovery_account.considered,
+                discovery_produced: self.discovery_account.produced,
+                discovery_parse_failed: self.discovery_account.parse_failed,
+                discovery_declined_by_user: self.discovery_account.declined_by_user,
+                discovery_considered_not_a_game: self.discovery_account.considered_not_a_game,
+                discovery_container_descended: self.discovery_account.container_descended,
+                discovery_container_descent_truncated: self
+                    .discovery_account
+                    .container_descent_truncated,
+                discovery_volume_skipped: self.discovery_account.volume_skipped,
+                discovery_access_error: self.discovery_account.access_error,
+                discovery_warning_count: self.discovery_warning_count as u64,
             })
             .map_err(|error| {
                 CliError::usage(format!(
@@ -159,7 +185,7 @@ fn resolve_or_register_target(
         })?;
     let discovery = discover_for_calibration(args, store, emitter)?;
     let candidate = select_discovery_candidate(selector, &discovery)?;
-    let plan = RegistrationPlan::new(candidate, local_store_path)?;
+    let plan = RegistrationPlan::new(candidate, &discovery, local_store_path)?;
     plan.emit(emitter)?;
     let confirmation = match confirm_registration(args, authorization, emitter, &plan) {
         Ok(confirmation) => confirmation,
@@ -227,9 +253,23 @@ fn resolve_or_register_target(
         }
     }
 
-    let current_candidate = match discover_for_calibration(args, store, emitter)
-        .and_then(|discovery| select_discovery_candidate(selector, &discovery))
-    {
+    let current_discovery = match discover_for_calibration(args, store, emitter) {
+        Ok(discovery) => discovery,
+        Err(_) => {
+            registration_outcome(
+                emitter,
+                &plan.id,
+                "drifted",
+                "discovered target authority could not be reproduced after confirmation",
+                None,
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the discovered target could not be reproduced after confirmation; review a fresh registration plan",
+            ));
+        }
+    };
+    let current_candidate = match select_discovery_candidate(selector, &current_discovery) {
         Ok(candidate) => candidate,
         Err(_) => {
             registration_outcome(
@@ -245,7 +285,23 @@ fn resolve_or_register_target(
             ));
         }
     };
-    let current_plan = RegistrationPlan::new(current_candidate, local_store_path)?;
+    let current_plan =
+        match RegistrationPlan::new(current_candidate, &current_discovery, local_store_path) {
+            Ok(plan) => plan,
+            Err(_) => {
+                registration_outcome(
+                    emitter,
+                    &plan.id,
+                    "drifted",
+                    "discovery accounting could not reproduce the confirmed authority",
+                    None,
+                    false,
+                )?;
+                return Err(CliError::usage(
+                "discovery accounting changed after confirmation; review a fresh registration plan",
+            ));
+            }
+        };
     if !constant_time_equal(
         plan.canonical_json.as_bytes(),
         current_plan.canonical_json.as_bytes(),
@@ -379,12 +435,13 @@ fn select_discovery_candidate(
     discovery: &Discovery,
 ) -> Result<CandidateTarget, CliError> {
     let steam_id = selector.parse::<u32>().ok();
+    let folded_selector = selector.to_lowercase();
     let matches: Vec<_> = discovery
         .candidates
         .iter()
         .filter(|candidate| {
             steam_id.is_some_and(|appid| candidate.identity == CandidateIdentity::SteamAppId(appid))
-                || candidate.display_name.eq_ignore_ascii_case(selector)
+                || candidate.display_name.to_lowercase() == folded_selector
         })
         .cloned()
         .collect();
@@ -425,6 +482,7 @@ fn select_discovery_candidate(
 
 fn registration_plan_value(
     candidate: &CandidateTarget,
+    discovery: &Discovery,
     local_store: &Path,
 ) -> Result<Value, CliError> {
     let local_store = crate::commands::target_resolve::resolve_store_identity(local_store);
@@ -441,6 +499,8 @@ fn registration_plan_value(
         })
         .collect();
     evidence.sort_by_key(|value| value.to_string());
+    let mut warnings = discovery.warnings.clone();
+    warnings.sort();
     let predicted_stable_id = match candidate.identity {
         CandidateIdentity::SteamAppId(appid) => Some(fragcap::targets::identifier::anchored_id(
             &format!("steam:{appid}"),
@@ -459,6 +519,20 @@ fn registration_plan_value(
             "identity": candidate_identity_value(&candidate.identity),
             "install_root": candidate.install_root,
             "source": candidate.source_name,
+        },
+        "discovery": {
+            "account": {
+                "access_error": discovery.account.access_error,
+                "considered": discovery.account.considered,
+                "considered_not_a_game": discovery.account.considered_not_a_game,
+                "container_descended": discovery.account.container_descended,
+                "container_descent_truncated": discovery.account.container_descent_truncated,
+                "declined_by_user": discovery.account.declined_by_user,
+                "parse_failed": discovery.account.parse_failed,
+                "produced": discovery.account.produced,
+                "volume_skipped": discovery.account.volume_skipped,
+            },
+            "warnings": warnings,
         },
         "local_store": local_store.to_string_lossy(),
         "operation": REGISTRATION_OPERATION,
@@ -1537,6 +1611,11 @@ mod tests {
                 .unwrap(),
             other
         );
+        let unicode = candidate(CandidateIdentity::SteamAppId(999), "Élan");
+        assert_eq!(
+            select_discovery_candidate("élan", &discovery(vec![unicode.clone()])).unwrap(),
+            unicode
+        );
         assert!(
             select_discovery_candidate("port", &discovery(vec![portal.clone()]))
                 .unwrap_err()
@@ -1558,16 +1637,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("local.db");
         let first = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
-        let same = RegistrationPlan::new(first.clone(), &store).unwrap();
+        let observed = discovery(vec![first.clone()]);
+        let same = RegistrationPlan::new(first.clone(), &observed, &store).unwrap();
         assert_eq!(
             same.id,
-            RegistrationPlan::new(first.clone(), &store).unwrap().id
+            RegistrationPlan::new(first.clone(), &observed, &store)
+                .unwrap()
+                .id
         );
         assert!(same.id.starts_with(REGISTRATION_PLAN_PREFIX));
+        assert_eq!(same.canonical["discovery"]["account"]["considered"], 1);
         assert_ne!(
             same.id,
             RegistrationPlan::new(
                 candidate(CandidateIdentity::SteamAppId(620), "Portal Two"),
+                &observed,
                 &store,
             )
             .unwrap()
@@ -1575,7 +1659,23 @@ mod tests {
         );
         assert_ne!(
             same.id,
-            RegistrationPlan::new(first, &dir.path().join("other.db"))
+            RegistrationPlan::new(first.clone(), &observed, &dir.path().join("other.db"))
+                .unwrap()
+                .id
+        );
+        let incomplete = Discovery {
+            account: DiscoveryAccount {
+                considered: 2,
+                produced: 1,
+                access_error: 1,
+                ..DiscoveryAccount::default()
+            },
+            candidates: vec![first],
+            warnings: vec!["one root was inaccessible".to_string()],
+        };
+        assert_ne!(
+            same.id,
+            RegistrationPlan::new(incomplete.candidates[0].clone(), &incomplete, &store,)
                 .unwrap()
                 .id
         );

@@ -14,13 +14,13 @@
 
 ## Decision: Select by exact application identifier or exact display name
 
-**Rationale**: These are directly observed candidate fields and cover the parent issue's installed-game entry cases. Requiring uniqueness makes ambiguity visible.
+**Rationale**: These are directly observed candidate fields and cover the parent issue's installed-game entry cases. Requiring uniqueness makes ambiguity visible. Display-name equality uses the same Unicode-aware lowercase fold as stored-target name resolution, so non-ASCII titles do not regress at the discovery boundary.
 
 **Alternatives considered**: Substring/fuzzy matching, inferred handles, executable hints, folder names, or path prefixes. All can silently choose the wrong title or source.
 
-## Decision: Use a domain-separated canonical registration plan
+## Decision: Bind discovery completeness in a domain-separated canonical registration plan
 
-**Rationale**: The CLI already depends directly on `blake3`, `subtle`, and `serde_json` for S134 plan authorization. A `target-registration-v1:` prefix and sorted canonical object bind exact candidate and destination authority without a new dependency.
+**Rationale**: The CLI already depends directly on `blake3`, `subtle`, and `serde_json` for S134 plan authorization. A `target-registration-v1:` prefix and sorted canonical object bind the exact candidate, conserved discovery account and warnings, and destination authority without a new dependency. This prevents a successful candidate from concealing incomplete discovery that could have missed an ambiguity.
 
 **Alternatives considered**: A bare `--yes`, candidate index, or name echo. None binds the complete current preview. Reusing the Deep Capture plan identifier would merge distinct authorities.
 
