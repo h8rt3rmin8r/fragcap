@@ -106,7 +106,7 @@
 - [x] T030 Run the S140 quickstart, complete a requirement-to-test audit, and mark all checklists and tasks complete in `specs/140-guided-calibration-front-door/`
 - [x] T031 Run `/speckit-converge`, append and implement any remaining traceable work, or record a clean convergence result
 - [x] T032 Run `cargo xtask ci`, encoding, punctuation, mojibake, diff, dependency, and worktree checks
-- [ ] T033 Commit, push the authorized feature branch, open a PR closing #394, and set the Project Stage to PR review
+- [x] T033 Commit, push the authorized feature branch, open a PR closing #394, and set the Project Stage to PR review
 - [ ] T034 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for all CI checks to pass
 
 ---
