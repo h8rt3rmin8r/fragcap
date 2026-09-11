@@ -1078,12 +1078,12 @@ impl Store {
     ///
     /// The complete target row remains the optimistic authority. Only a set of
     /// at least two Windows client candidates is eligible, and the selected
-    /// executable must occur exactly once. Publisher chains and Steam targets
-    /// are never collapsed through this operation.
+    /// complete launch entry must occur exactly once. Publisher chains and Steam
+    /// targets are never collapsed through this operation.
     pub fn select_target_client_if_unchanged(
         &mut self,
         expected: &TargetEntry,
-        executable: &str,
+        selected: &LaunchEntry,
     ) -> Result<AuthorTargetClientOutcome, TargetsError> {
         if expected
             .anchor
@@ -1105,15 +1105,11 @@ impl Store {
                     .to_string(),
             ));
         }
-        if !crate::is_client_executable(executable)
-            || candidates
-                .iter()
-                .filter(|entry| entry.executable() == executable)
-                .count()
-                != 1
+        if !crate::is_client_executable(selected.executable())
+            || candidates.iter().filter(|entry| *entry == selected).count() != 1
         {
             return Err(TargetsError::Model(
-                "selected client must name exactly one current stored candidate".to_string(),
+                "selected client must exactly match one current stored candidate".to_string(),
             ));
         }
 
@@ -1139,11 +1135,7 @@ impl Store {
             return Ok(AuthorTargetClientOutcome::Changed);
         }
 
-        let selected = candidates
-            .into_iter()
-            .find(|entry| entry.executable() == executable)
-            .expect("validated exact selected candidate");
-        let launch_entries = serde_json::Value::Array(vec![launch_entry_value(&selected)]);
+        let launch_entries = serde_json::Value::Array(vec![crate::launch_entry_value(selected)]);
         tx.execute(
             "UPDATE targets SET launch_entries = ?2, fidelity = ?3 WHERE stable_id = ?1",
             params![
@@ -1641,28 +1633,6 @@ impl Store {
 /// Serialize a carried-whole JSON value to its stored text.
 fn json_text(v: &serde_json::Value) -> String {
     v.to_string()
-}
-
-fn launch_entry_value(entry: &LaunchEntry) -> serde_json::Value {
-    let mut value = serde_json::Map::new();
-    value.insert(
-        "executable".to_string(),
-        serde_json::json!(entry.executable()),
-    );
-    for (key, field) in [
-        ("os", &entry.os),
-        ("osarch", &entry.osarch),
-        ("launch_type", &entry.launch_type),
-        ("beta_branch", &entry.beta_branch),
-        ("arguments", &entry.arguments),
-        ("description", &entry.description),
-        ("role", &entry.role),
-    ] {
-        if let Some(field) = field {
-            value.insert(key.to_string(), serde_json::json!(field));
-        }
-    }
-    serde_json::Value::Object(value)
 }
 
 /// Read one `signature` row into a [`Signature`]. Enum parsing that can fail is
@@ -3181,7 +3151,7 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let mut expected = sample_target("ambiguous_client", None, FidelityTier::Observed);
         expected.launch_entries = Some(serde_json::json!([
-            {"executable":"first.exe","role":"client"},
+            {"executable":"second.exe","arguments":"--first","role":"client"},
             {
                 "executable":"second.exe",
                 "os":"windows",
@@ -3193,10 +3163,21 @@ mod tests {
                 "role":"client"
             }
         ]));
+        let candidates = crate::entry_windows_launch_entries(&expected);
+        let first = candidates
+            .iter()
+            .find(|entry| entry.arguments.as_deref() == Some("--first"))
+            .unwrap()
+            .clone();
+        let second = candidates
+            .iter()
+            .find(|entry| entry.arguments.as_deref() == Some("--profile exact"))
+            .unwrap()
+            .clone();
         let mut steam = expected.clone();
         steam.anchor = Some("steam:85".to_string());
         assert!(store
-            .select_target_client_if_unchanged(&steam, "second.exe")
+            .select_target_client_if_unchanged(&steam, &second)
             .unwrap_err()
             .to_string()
             .contains("cannot rewrite a Steam target"));
@@ -3206,7 +3187,7 @@ mod tests {
             {"executable":"second.exe","role":"client"}
         ]));
         assert!(store
-            .select_target_client_if_unchanged(&publisher, "second.exe")
+            .select_target_client_if_unchanged(&publisher, &second)
             .unwrap_err()
             .to_string()
             .contains("client-only Windows declarations"));
@@ -3217,7 +3198,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .select_target_client_if_unchanged(&expected, "second.exe")
+                .select_target_client_if_unchanged(&expected, &second)
                 .unwrap(),
             AuthorTargetClientOutcome::Applied
         );
@@ -3241,7 +3222,7 @@ mod tests {
         assert_eq!(selected.fidelity, FidelityTier::Authored);
         assert_eq!(
             store
-                .select_target_client_if_unchanged(&expected, "first.exe")
+                .select_target_client_if_unchanged(&expected, &first)
                 .unwrap(),
             AuthorTargetClientOutcome::Changed
         );

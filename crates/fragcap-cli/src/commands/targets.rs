@@ -1115,6 +1115,9 @@ fn discovery_identity(candidate: &fragcap::targets::CandidateTarget) -> String {
     match &candidate.identity {
         CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
         CandidateIdentity::Path(path) => path.clone(),
+        CandidateIdentity::LaunchEntry(entry) => {
+            fragcap::targets::launch_entry_value(entry).to_string()
+        }
     }
 }
 

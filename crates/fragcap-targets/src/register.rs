@@ -223,6 +223,11 @@ pub fn register_candidate(
             Some(identifier::canonicalize_anchor(&format!("steam:{appid}")))
         }
         CandidateIdentity::Path(_) => None,
+        CandidateIdentity::LaunchEntry(_) => {
+            return Err(TargetsError::Model(
+                "a stored launch-entry choice is not a registrable discovery identity".to_string(),
+            ));
+        }
     };
     // Carried explicitly by the candidate rather than derived from `identity`: a
     // Steam candidate's identity is its app id, not a path, so deriving from
@@ -253,6 +258,7 @@ pub fn register_candidate(
     let exe_stem = match &candidate.identity {
         CandidateIdentity::Path(path) => path_stem(path),
         CandidateIdentity::SteamAppId(_) => None,
+        CandidateIdentity::LaunchEntry(_) => None,
     };
     let index = existing.len() as u64 + 1;
     let base = handle::derive_handle(&candidate.display_name, exe_stem.as_deref(), index);

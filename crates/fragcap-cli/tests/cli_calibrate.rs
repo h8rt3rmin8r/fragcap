@@ -1676,8 +1676,8 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
         provenance: None,
         anchor: None,
         launch_entries: Some(serde_json::json!([
-            {"executable":"first-client.exe","role":"client"},
-            {"executable":"second-client.exe","role":"client"}
+            {"executable":"shared-client.exe","arguments":"--first","role":"client"},
+            {"executable":"shared-client.exe","arguments":"--second","role":"client"}
         ])),
         install_root: Some("C:\\Games\\Ambiguous".to_string()),
         evidence: None,
@@ -1702,7 +1702,12 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
     assert!(!choices.contains("calibration.stored_client_plan"));
     let selected = calibration_choices(&choices)
         .into_iter()
-        .find(|choice| choice["executable_hint"] == "second-client.exe")
+        .find(|choice| {
+            choice["identity"]
+                .as_str()
+                .and_then(|identity| serde_json::from_str::<serde_json::Value>(identity).ok())
+                .is_some_and(|identity| identity["arguments"] == "--second")
+        })
         .and_then(|choice| choice["id"].as_str().map(str::to_string))
         .unwrap();
 
@@ -1739,7 +1744,11 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
     let canonical: serde_json::Value =
         serde_json::from_str(plan_event["canonical_json"].as_str().unwrap()).unwrap();
     assert_eq!(canonical["target"]["stable_id"], 85_001);
-    assert_eq!(canonical["proposed_executable"], "second-client.exe");
+    assert_eq!(canonical["proposed_executable"], "shared-client.exe");
+    assert_eq!(
+        canonical["resulting_launch_entries"][0]["arguments"],
+        "--second"
+    );
     assert_eq!(canonical["resulting_launch_entries"][0]["role"], "client");
     assert_eq!(
         canonical["operation"],
@@ -1753,7 +1762,11 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
         .unwrap();
     assert_eq!(
         selected_target.launch_entries,
-        Some(resolved_client_launch("second-client.exe"))
+        Some(serde_json::json!([{
+            "executable":"shared-client.exe",
+            "arguments":"--second",
+            "role":"client"
+        }]))
     );
     assert_eq!(selected_target.fidelity, FidelityTier::Authored);
 }

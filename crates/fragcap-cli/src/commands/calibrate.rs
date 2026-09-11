@@ -14,7 +14,8 @@ use fragcap::targets::{
     CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase, CalibrationWorkflowState,
     CalibrationWorkflowUpdateOutcome, CandidateIdentity, CandidateTarget,
     CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
-    CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, Selection, Store, TargetEntry,
+    CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, LaunchEntry, Selection, Store,
+    TargetEntry,
 };
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
@@ -196,11 +197,13 @@ struct StoredClientPlan {
     canonical: Value,
     canonical_json: String,
     target: TargetEntry,
-    executable: String,
+    launch_entry: LaunchEntry,
 }
 
 impl StoredClientPlan {
-    fn new(target: TargetEntry, executable: String, local_store: &Path) -> Self {
+    fn new(target: TargetEntry, launch_entry: LaunchEntry, local_store: &Path) -> Self {
+        let resulting_launch_entries =
+            Value::Array(vec![fragcap::targets::launch_entry_value(&launch_entry)]);
         let canonical = json!({
             "local_store": crate::commands::target_resolve::resolve_store_identity(local_store).to_string_lossy(),
             "no_effects": [
@@ -211,8 +214,8 @@ impl StoredClientPlan {
                 "no-system-trust-change",
             ],
             "operation": STORED_CLIENT_OPERATION,
-            "proposed_executable": executable,
-            "resulting_launch_entries": fragcap::targets::resolved_client_launch(&executable),
+            "proposed_executable": launch_entry.executable(),
+            "resulting_launch_entries": resulting_launch_entries,
             "schema": STORED_CLIENT_PLAN_SCHEMA,
             "target": target_plan_value(&target),
         });
@@ -224,7 +227,7 @@ impl StoredClientPlan {
             canonical,
             canonical_json,
             target,
-            executable,
+            launch_entry,
         }
     }
 
@@ -234,7 +237,7 @@ impl StoredClientPlan {
                 plan_id: self.id.clone(),
                 canonical_json: self.canonical_json.clone(),
                 target_id: self.target.stable_id,
-                executable: self.executable.clone(),
+                executable: self.launch_entry.executable().to_string(),
             })
             .map_err(|error| {
                 CliError::usage(format!(
@@ -1083,6 +1086,7 @@ fn registration_plan_value(
             &format!("steam:{appid}"),
         )),
         CandidateIdentity::Path(_) => None,
+        CandidateIdentity::LaunchEntry(_) => None,
     };
     Ok(json!({
         "candidate": {
@@ -1220,6 +1224,9 @@ fn candidate_identity(identity: &CandidateIdentity) -> String {
     match identity {
         CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
         CandidateIdentity::Path(path) => path.clone(),
+        CandidateIdentity::LaunchEntry(entry) => {
+            fragcap::targets::launch_entry_value(entry).to_string()
+        }
     }
 }
 
@@ -1227,6 +1234,10 @@ fn candidate_identity_value(identity: &CandidateIdentity) -> Value {
     match identity {
         CandidateIdentity::SteamAppId(appid) => json!({"kind": "steam-app-id", "value": appid}),
         CandidateIdentity::Path(path) => json!({"kind": "path", "value": path}),
+        CandidateIdentity::LaunchEntry(entry) => json!({
+            "kind": "stored-launch-entry",
+            "value": fragcap::targets::launch_entry_value(entry),
+        }),
     }
 }
 
@@ -1336,6 +1347,9 @@ fn registered_candidate_target(
                 )),
             }
         }
+        CandidateIdentity::LaunchEntry(_) => Err(CliError::failure(
+            "a stored launch-entry choice cannot enter target registration",
+        )),
     }?;
     store
         .target_by_stable_id(identity_target.stable_id)
@@ -1668,7 +1682,7 @@ fn stored_client_candidates(target: &TargetEntry) -> Vec<CandidateTarget> {
     launches
         .into_iter()
         .map(|entry| CandidateTarget {
-            identity: CandidateIdentity::Path(entry.executable().to_string()),
+            identity: CandidateIdentity::LaunchEntry(entry.clone()),
             display_name: target.name.clone(),
             fidelity: target.fidelity,
             classification: target.classification,
@@ -1717,11 +1731,15 @@ fn prepare_stored_client(
         candidate_selection,
         emitter,
     )?;
-    let executable = selected
-        .executable_hint
-        .clone()
-        .ok_or_else(|| CliError::failure("stored client choice lost its executable"))?;
-    let plan = StoredClientPlan::new(target.clone(), executable, local_store_path);
+    let launch_entry = match &selected.identity {
+        CandidateIdentity::LaunchEntry(entry) => entry.clone(),
+        _ => {
+            return Err(CliError::failure(
+                "stored client choice lost its launch authority",
+            ))
+        }
+    };
+    let plan = StoredClientPlan::new(target.clone(), launch_entry, local_store_path);
     if emitter.is_json() && !args.authorize_stdin {
         return Err(CliError::usage(
             "JSON stored client selection requires --authorize-stdin and the exact emitted plan identifier",
@@ -1836,11 +1854,15 @@ fn prepare_stored_client(
             "the stored client choices changed after confirmation; review a fresh plan",
         ));
     };
-    let current_executable = current_candidate
-        .executable_hint
-        .clone()
-        .expect("stored client candidates always name an executable");
-    let current_plan = StoredClientPlan::new(current, current_executable, local_store_path);
+    let current_launch_entry = match &current_candidate.identity {
+        CandidateIdentity::LaunchEntry(entry) => entry.clone(),
+        _ => {
+            return Err(CliError::failure(
+                "reproduced stored client choice lost its launch authority",
+            ));
+        }
+    };
+    let current_plan = StoredClientPlan::new(current, current_launch_entry, local_store_path);
     if !constant_time_equal(
         plan.canonical_json.as_bytes(),
         current_plan.canonical_json.as_bytes(),
@@ -1859,7 +1881,7 @@ fn prepare_stored_client(
     let persistence = stored_client_persistence_result(
         emitter,
         &plan,
-        store.select_target_client_if_unchanged(&plan.target, &plan.executable),
+        store.select_target_client_if_unchanged(&plan.target, &plan.launch_entry),
     )?;
     match persistence {
         AuthorTargetClientOutcome::Applied => {}
@@ -1894,7 +1916,9 @@ fn prepare_stored_client(
         store.target_by_stable_id(plan.target.stable_id),
     )?;
     let mut expected = plan.target.clone();
-    expected.launch_entries = Some(fragcap::targets::resolved_client_launch(&plan.executable));
+    expected.launch_entries = Some(Value::Array(vec![fragcap::targets::launch_entry_value(
+        &plan.launch_entry,
+    )]));
     expected.fidelity = fragcap::profile::FidelityTier::Authored;
     if updated != expected {
         stored_client_outcome(
@@ -1922,7 +1946,7 @@ fn confirm_stored_client(
         emitter
             .required_human_checked(&format!(
                 "Does {} hold the target's network sockets? [y/N] ",
-                plan.executable
+                plan.launch_entry.executable()
             ))
             .map_err(|error| {
                 CliError::usage(format!("could not write the stored client prompt: {error}"))

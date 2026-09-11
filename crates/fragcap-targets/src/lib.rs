@@ -85,7 +85,7 @@ pub use export::export;
 pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
 pub use hint_provider::{
     entry_windows_clients, entry_windows_launch_entries, entry_windows_launch_paths,
-    HintDatabaseProvider,
+    launch_entry_value, HintDatabaseProvider,
 };
 #[cfg(feature = "net")]
 pub use http_catalog::HttpCatalog;
