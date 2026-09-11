@@ -63,10 +63,11 @@ use emit::{Emitter, Format, Verbosity};
 
 pub use exit::{CliError, Exit};
 
-/// Injectable input boundary for the one-shot Deep Capture plan decision.
+/// Injectable input boundary for ordered, separately authorized plans.
 ///
 /// This is public only so tier-1 tests and embedders can exercise the command
-/// without spawning a terminal. Production uses standard input.
+/// without spawning a terminal. Production uses one standard-input line for
+/// each registration, setup, restart, or Deep Capture plan encountered.
 #[doc(hidden)]
 pub trait DeepCaptureAuthorizationInput {
     fn is_terminal(&self) -> bool;

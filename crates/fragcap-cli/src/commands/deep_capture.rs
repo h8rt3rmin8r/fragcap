@@ -280,10 +280,10 @@ fn authorization_outcome(
         })
 }
 
-fn refuse_interrupted_authorization(
+fn interrupted_authorization_requested(
     emitter: &mut Emitter,
     plan: &AuthorizationPlan,
-) -> Result<(), CliError> {
+) -> Result<bool, CliError> {
     if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
         authorization_outcome(
             emitter,
@@ -291,12 +291,30 @@ fn refuse_interrupted_authorization(
             "interrupted",
             "interrupt requested before authorization completed",
         )?;
-        Err(CliError::failure(
-            "Deep Capture authorization was interrupted; no effects were applied",
-        ))
+        Ok(true)
     } else {
-        Ok(())
+        Ok(false)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorizationDecision {
+    Authorized,
+    Declined,
+    Interrupted,
+}
+
+fn emit_interrupted_authorization(
+    emitter: &mut Emitter,
+    plan: &AuthorizationPlan,
+) -> Result<AuthorizationDecision, CliError> {
+    authorization_outcome(
+        emitter,
+        plan,
+        "interrupted",
+        "authorization input was interrupted before completion",
+    )?;
+    Ok(AuthorizationDecision::Interrupted)
 }
 
 fn authorize_plan(
@@ -304,9 +322,11 @@ fn authorize_plan(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
     plan: &AuthorizationPlan,
-) -> Result<bool, CliError> {
+) -> Result<AuthorizationDecision, CliError> {
     plan.emit(emitter)?;
-    refuse_interrupted_authorization(emitter, plan)?;
+    if interrupted_authorization_requested(emitter, plan)? {
+        return Ok(AuthorizationDecision::Interrupted);
+    }
     if args.authorize_stdin {
         emitter.flush().map_err(|error| {
             CliError::usage(format!(
@@ -315,6 +335,9 @@ fn authorize_plan(
         })?;
         let response = match authorization.read_response(&plan.id, true) {
             Ok(response) => response,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                return emit_interrupted_authorization(emitter, plan);
+            }
             Err(error) => {
                 authorization_outcome(emitter, plan, "invalid", "authorization input failed")?;
                 return Err(CliError::usage(format!(
@@ -322,9 +345,11 @@ fn authorize_plan(
                 )));
             }
         };
-        refuse_interrupted_authorization(emitter, plan)?;
+        if interrupted_authorization_requested(emitter, plan)? {
+            return Ok(AuthorizationDecision::Interrupted);
+        }
         if authorization_answer_is_exact(&response, &plan.id) {
-            return Ok(true);
+            return Ok(AuthorizationDecision::Authorized);
         }
         let status = if response.is_empty() {
             "closed"
@@ -356,6 +381,9 @@ fn authorize_plan(
     })?;
     let response = match authorization.read_response(&plan.id, false) {
         Ok(response) => response,
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            return emit_interrupted_authorization(emitter, plan);
+        }
         Err(error) => {
             authorization_outcome(emitter, plan, "invalid", "authorization input failed")?;
             return Err(CliError::usage(format!(
@@ -363,10 +391,12 @@ fn authorize_plan(
             )));
         }
     };
-    refuse_interrupted_authorization(emitter, plan)?;
+    if interrupted_authorization_requested(emitter, plan)? {
+        return Ok(AuthorizationDecision::Interrupted);
+    }
     if response.is_empty() {
         authorization_outcome(emitter, plan, "closed", "authorization input closed")?;
-        return Ok(false);
+        return Ok(AuthorizationDecision::Declined);
     }
     let Some(answer) = complete_authorization_line(&response) else {
         authorization_outcome(
@@ -375,13 +405,13 @@ fn authorize_plan(
             "closed",
             "authorization input closed before a complete line",
         )?;
-        return Ok(false);
+        return Ok(AuthorizationDecision::Declined);
     };
     if calibration_answer_is_affirmative(answer) {
-        Ok(true)
+        Ok(AuthorizationDecision::Authorized)
     } else {
         authorization_outcome(emitter, plan, "declined", "operator declined exact plan")?;
-        Ok(false)
+        Ok(AuthorizationDecision::Declined)
     }
 }
 
@@ -2055,7 +2085,16 @@ pub fn run(
 
 pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
+    pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunDisposition {
+    Declined,
+    Completed,
+    Interrupted,
+    Failed,
 }
 
 pub(crate) fn run_with_outcome(
@@ -2191,12 +2230,25 @@ pub(crate) fn run_with_outcome(
         &prepared_authority,
     )?;
     crate::orchestrator::install_interrupt_handler();
-    if !authorize_plan(args, authorization, emitter, &authorization_plan)? {
-        emitter.progress("Deep Capture declined; no effects were applied");
-        return Ok(RunOutcome {
-            observations: Vec::new(),
-            terminal_error: None,
-        });
+    match authorize_plan(args, authorization, emitter, &authorization_plan)? {
+        AuthorizationDecision::Authorized => {}
+        AuthorizationDecision::Declined => {
+            emitter.progress("Deep Capture declined; no effects were applied");
+            return Ok(RunOutcome {
+                observations: Vec::new(),
+                disposition: RunDisposition::Declined,
+                terminal_error: None,
+            });
+        }
+        AuthorizationDecision::Interrupted => {
+            return Ok(RunOutcome {
+                observations: Vec::new(),
+                disposition: RunDisposition::Interrupted,
+                terminal_error: Some(CliError::failure(
+                    "Deep Capture authorization was interrupted; no effects were applied",
+                )),
+            });
+        }
     }
     let current_target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
@@ -2442,9 +2494,16 @@ pub(crate) fn run_with_outcome(
     if report.is_complete() {
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            disposition: RunDisposition::Completed,
             terminal_error: None,
         })
     } else {
+        let disposition =
+            if report.snapshot.outcome == deep_capture_api::SessionOutcome::Interrupted {
+                RunDisposition::Interrupted
+            } else {
+                RunDisposition::Failed
+            };
         let detail = report
             .snapshot
             .failures
@@ -2453,6 +2512,7 @@ pub(crate) fn run_with_outcome(
             .unwrap_or_else(|| "Deep Capture completed with partial results".to_string());
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            disposition,
             terminal_error: Some(CliError::failure(detail)),
         })
     }
@@ -2701,7 +2761,7 @@ pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
     Store::open(&path).map_err(|e| CliError::failure(format!("cannot open local store: {e}")))
 }
 
-fn validate_bundle_root(path: &Path) -> Result<(), CliError> {
+pub(crate) fn validate_bundle_root(path: &Path) -> Result<(), CliError> {
     if !path.exists() {
         return Ok(());
     }

@@ -1,0 +1,2 @@
+<!-- spec-impact: 17.2.1, 28.1 -->
+S144 deliberately replaces S141's process-exit boundary with finite in-process orchestration while retaining separate authorization and fresh authority per session. One reachability plus thirteen concrete protocol cases is the closed bound; decline, drift, interruption, failure, partial evidence, warm state, limitations, repetition, and bundle collision stop before later effects. Workflow persistence, resume, non-Steam topology authoring, and parent issue #380 completion remain later work.

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Guided registration and one-attempt calibration for one exact target.
+//! Guided registration and bounded calibration sequencing for one exact target.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use fragcap::deep_capture::api as deep_capture_api;
@@ -38,6 +40,102 @@ struct Guidance {
     completed_protocols: Vec<String>,
     remaining_protocols: Vec<String>,
     next_command: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct AttemptProgress {
+    number: u64,
+    phase: deep_capture_api::CalibrationPhase,
+    protocol: CompatibilityProtocol,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ExactAttemptCase {
+    phase: &'static str,
+    launch_case: CompatibilityLaunchCase,
+    proxy_backend: String,
+    proxy_backend_version: String,
+    routing_strategy: CompatibilityRoutingStrategy,
+    address_family: CompatibilityAddressFamily,
+    protocol: CompatibilityProtocol,
+    fragcap_version: String,
+    target_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SequenceTargetAuthority {
+    row_id: Option<i64>,
+    stable_id: i64,
+    handle: String,
+    name: String,
+    anchor: Option<String>,
+    install_root: Option<String>,
+    launch_entries: Option<Value>,
+}
+
+impl SequenceTargetAuthority {
+    fn from_target(target: &TargetEntry) -> Self {
+        Self {
+            row_id: target.id,
+            stable_id: target.stable_id,
+            handle: target.handle.clone(),
+            name: target.name.clone(),
+            anchor: target.anchor.clone(),
+            install_root: target.install_root.clone(),
+            launch_entries: target.launch_entries.clone(),
+        }
+    }
+
+    fn matches(&self, target: &TargetEntry) -> bool {
+        self == &Self::from_target(target)
+    }
+}
+
+impl ExactAttemptCase {
+    fn from_step(step: &deep_capture_api::CalibrationProposalStep) -> Self {
+        Self {
+            phase: step.phase.as_str(),
+            launch_case: step.case.launch_case,
+            proxy_backend: step.case.proxy_backend.clone(),
+            proxy_backend_version: step.case.proxy_backend_version.clone(),
+            routing_strategy: step.case.routing_strategy,
+            address_family: step.case.address_family,
+            protocol: step.case.protocol,
+            fragcap_version: step.case.fragcap_version.clone(),
+            target_version: step.case.target_version.clone(),
+        }
+    }
+}
+
+const GUIDED_CONCRETE_PROTOCOLS: [CompatibilityProtocol; 13] = [
+    CompatibilityProtocol::Http1,
+    CompatibilityProtocol::Https,
+    CompatibilityProtocol::Http2,
+    CompatibilityProtocol::WebSocket,
+    CompatibilityProtocol::Sse,
+    CompatibilityProtocol::Grpc,
+    CompatibilityProtocol::GenericTcp,
+    CompatibilityProtocol::NonHttpTls,
+    CompatibilityProtocol::Socks5Tcp,
+    CompatibilityProtocol::Socks5Udp,
+    CompatibilityProtocol::GenericUdp,
+    CompatibilityProtocol::Quic,
+    CompatibilityProtocol::Http3,
+];
+const MAX_GUIDED_ATTEMPTS: usize = GUIDED_CONCRETE_PROTOCOLS.len() + 1;
+
+fn guided_sequence_interrupted(interrupt: &AtomicBool) -> bool {
+    interrupt.load(Ordering::Relaxed)
+}
+
+fn no_progress_reason(attempted_count: usize, inserted: bool) -> Option<&'static str> {
+    if attempted_count >= MAX_GUIDED_ATTEMPTS {
+        Some("attempt-bound-exhausted")
+    } else if !inserted {
+        Some("attempt-case-already-executed")
+    } else {
+        None
+    }
 }
 
 const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
@@ -1368,6 +1466,7 @@ pub fn run(
     if args.controlled_target {
         deep_capture::require_controlled_target(&target)?;
     }
+    let sequence_target_authority = SequenceTargetAuthority::from_target(&target);
     let snapshot = process_snapshot(args.controlled_target);
     let proposal = build_proposal(&store, &target, snapshot.clone(), &requested_protocols)?;
     if !proposal.limitations.is_empty() {
@@ -1475,216 +1574,506 @@ pub fn run(
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
     )?;
-    let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
-    let fresh_target = deep_capture::resolve_target(&fresh_store, &resolver_args)?;
-    let fresh_snapshot = if args.restart_warm {
-        process_snapshot(args.controlled_target)
-    } else {
-        snapshot
-    };
-    let selected = build_proposal(
-        &fresh_store,
-        &fresh_target,
-        fresh_snapshot.clone(),
-        &requested_protocols,
-    )?;
-    if !selected.limitations.is_empty() {
-        let limitations = limitation_messages(&selected);
-        emit_guidance(
-            emitter,
-            &fresh_target,
-            Guidance {
-                topology: topology(&selected),
-                action: "refused",
-                status: "refused",
-                observed_launch_case: None,
-                selected_launch_case: None,
-                reason: Some("proposal-limitations".to_string()),
-                images: readiness_images(&selected),
-                limitations: limitations.clone(),
-                requested_protocols: protocol_names(&requested_protocols),
-                observed_protocols: Vec::new(),
-                completed_protocols: Vec::new(),
-                remaining_protocols: protocol_names(&requested_protocols),
-                next_command: None,
-            },
-        );
-        return Err(CliError::usage(format!(
-            "guided calibration cannot select an attempt: {}",
-            limitations.join("; ")
-        )));
-    }
-    if selected.steps.is_empty() {
-        let launch_case = ready_launch_case(&selected)?;
-        let current = deep_capture::current_compatibility_case(
-            launch_case,
-            DeepCaptureProxyFamilyArg::Ipv4,
-            CompatibilityProtocol::Routing,
-        );
-        deep_capture_api::validate_compatibility_prerequisites(
-            deep_capture_api::SessionMode::Capture,
-            args.controlled_target,
-            &fresh_store
-                .compatibility_facts_for_target(required_row_id(&fresh_target)?)
-                .map_err(|error| CliError::failure(error.to_string()))?,
-            deep_capture::library_launch_case(launch_case),
-            &current,
-        )
-        .map_err(|refusal| CliError::usage(refusal.to_string()))?;
-        let (completed_protocols, remaining_protocols) =
-            coverage_from_proposal(&selected, &requested_protocols);
-        let (status, reason) = if requested_protocols.is_empty() {
-            ("ready", "current-routing-evidence")
-        } else {
-            ("requested-coverage-complete", "current-protocol-evidence")
+    let mut observed_protocols = Vec::new();
+    let mut attempted = HashSet::new();
+    let (mut last_completed_protocols, mut last_remaining_protocols) =
+        coverage_from_proposal(&proposal, &requested_protocols);
+
+    loop {
+        if guided_sequence_interrupted(&crate::orchestrator::INTERRUPT) {
+            return Err(CliError::usage(
+                "guided calibration was interrupted before the next attempt; no later effects were applied",
+            ));
+        }
+        let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
+        let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
+        let fresh_target = match deep_capture::resolve_target(&fresh_store, &resolver_args) {
+            Ok(target) => target,
+            Err(error) => {
+                emit_guidance(
+                    emitter,
+                    &target,
+                    Guidance {
+                        topology: None,
+                        action: "refused",
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: None,
+                        reason: Some("target-authority-unavailable".to_string()),
+                        images: Vec::new(),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&last_completed_protocols),
+                        remaining_protocols: protocol_names(&last_remaining_protocols),
+                        next_command: None,
+                    },
+                );
+                return Err(error);
+            }
         };
-        emit_guidance(
-            emitter,
+        if !sequence_target_authority.matches(&fresh_target) {
+            emit_guidance(
+                emitter,
+                &target,
+                Guidance {
+                    topology: None,
+                    action: "refused",
+                    status: "refused",
+                    observed_launch_case: None,
+                    selected_launch_case: None,
+                    reason: Some("target-authority-drift".to_string()),
+                    images: Vec::new(),
+                    limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: Vec::new(),
+                    remaining_protocols: protocol_names(&all_protocols),
+                    next_command: None,
+                },
+            );
+            return Err(CliError::usage(
+                "the target authority changed during guided calibration; review a fresh sequence",
+            ));
+        }
+        let selected = build_proposal(
+            &fresh_store,
             &fresh_target,
-            Guidance {
-                topology: topology(&selected),
-                action: "ready",
-                status,
-                observed_launch_case: None,
-                selected_launch_case: Some(launch_case.as_str().to_string()),
-                reason: Some(reason.to_string()),
-                images: readiness_images(&selected),
-                limitations: Vec::new(),
-                requested_protocols: protocol_names(&requested_protocols),
-                observed_protocols: Vec::new(),
-                completed_protocols: protocol_names(&completed_protocols),
-                remaining_protocols: protocol_names(&remaining_protocols),
-                next_command: Some(target_command(
-                    "deep-capture",
-                    fresh_target.stable_id,
-                    &local_store_argument,
-                    " --launch",
-                )),
-            },
+            process_snapshot(args.controlled_target),
+            &all_protocols,
+        )?;
+        let (completed_protocols, remaining_protocols) =
+            coverage_from_proposal(&selected, &all_protocols);
+
+        if !selected.limitations.is_empty() {
+            let limitations = limitation_messages(&selected);
+            emit_guidance(
+                emitter,
+                &fresh_target,
+                Guidance {
+                    topology: topology(&selected),
+                    action: "refused",
+                    status: "refused",
+                    observed_launch_case: None,
+                    selected_launch_case: None,
+                    reason: Some("proposal-limitations".to_string()),
+                    images: readiness_images(&selected),
+                    limitations: limitations.clone(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: protocol_names(&completed_protocols),
+                    remaining_protocols: protocol_names(&remaining_protocols),
+                    next_command: None,
+                },
+            );
+            return Err(CliError::usage(format!(
+                "guided calibration cannot select an attempt: {}",
+                limitations.join("; ")
+            )));
+        }
+
+        match &selected.readiness {
+            deep_capture_api::CalibrationLaunchReadiness::OperatorAction {
+                observed_case,
+                cold_case,
+                images,
+            } => {
+                emit_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action: "operator-action",
+                        status: "warm",
+                        observed_launch_case: Some(observed_case.as_str().to_string()),
+                        selected_launch_case: Some(cold_case.as_str().to_string()),
+                        reason: Some("declared-process-image-present".to_string()),
+                        images: images.clone(),
+                        limitations: Vec::new(),
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command: Some(calibrate_command(
+                            fresh_target.stable_id,
+                            &local_store_argument,
+                            true,
+                            &all_protocols,
+                        )),
+                    },
+                );
+                return Ok(Exit::SUCCESS);
+            }
+            deep_capture_api::CalibrationLaunchReadiness::Ready { .. } => {}
+            _ => {
+                emit_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action: "refused",
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: None,
+                        reason: Some("launch-readiness-unavailable".to_string()),
+                        images: readiness_images(&selected),
+                        limitations: Vec::new(),
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command: None,
+                    },
+                );
+                return Err(CliError::usage(
+                    "guided calibration could not determine an exact launch case",
+                ));
+            }
+        }
+
+        if selected.steps.is_empty() {
+            let launch_case = ready_launch_case(&selected)?;
+            let current = deep_capture::current_compatibility_case(
+                launch_case,
+                DeepCaptureProxyFamilyArg::Ipv4,
+                CompatibilityProtocol::Routing,
+            );
+            deep_capture_api::validate_compatibility_prerequisites(
+                deep_capture_api::SessionMode::Capture,
+                args.controlled_target,
+                &fresh_store
+                    .compatibility_facts_for_target(required_row_id(&fresh_target)?)
+                    .map_err(|error| CliError::failure(error.to_string()))?,
+                deep_capture::library_launch_case(launch_case),
+                &current,
+            )
+            .map_err(|refusal| CliError::usage(refusal.to_string()))?;
+            let (status, reason) = if all_protocols.is_empty() {
+                ("ready", "current-routing-evidence")
+            } else if requested_protocols.is_empty() {
+                ("observed-coverage-complete", "current-protocol-evidence")
+            } else {
+                ("requested-coverage-complete", "current-protocol-evidence")
+            };
+            emit_guidance(
+                emitter,
+                &fresh_target,
+                Guidance {
+                    topology: topology(&selected),
+                    action: "ready",
+                    status,
+                    observed_launch_case: None,
+                    selected_launch_case: Some(launch_case.as_str().to_string()),
+                    reason: Some(reason.to_string()),
+                    images: readiness_images(&selected),
+                    limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: protocol_names(&completed_protocols),
+                    remaining_protocols: protocol_names(&remaining_protocols),
+                    next_command: Some(target_command(
+                        "deep-capture",
+                        fresh_target.stable_id,
+                        &local_store_argument,
+                        " --launch",
+                    )),
+                },
+            );
+            return Ok(Exit::SUCCESS);
+        }
+
+        let step = selected.steps[0].clone();
+        if !valid_guided_step(&step) {
+            return Err(CliError::usage(
+                "guided calibration selected an unsupported phase or protocol; no session was started",
+            ));
+        }
+        let action = match step.phase {
+            deep_capture_api::CalibrationPhase::Reachability => "run-reachability",
+            deep_capture_api::CalibrationPhase::Tls => "run-protocol",
+        };
+        let next_command = continuation_command(
+            &selected,
+            true,
+            fresh_target.stable_id,
+            &local_store_argument,
+            &all_protocols,
+            &remaining_protocols,
         );
-        return Ok(Exit::SUCCESS);
-    }
-    let step = &selected.steps[0];
-    if !valid_guided_step(step) {
-        return Err(CliError::usage(
-            "guided calibration selected an unsupported phase or protocol; no session was started",
-        ));
-    }
-    let action = match step.phase {
-        deep_capture_api::CalibrationPhase::Reachability => "run-reachability",
-        deep_capture_api::CalibrationPhase::Tls => "run-protocol",
-    };
-    let low_level = low_level_args(
-        args,
-        fresh_target.stable_id,
-        Some(launch_case_arg(step.case.launch_case)),
-        step.phase,
-        step.case.protocol,
-    )?;
-    let (completed_protocols, remaining_protocols) =
-        coverage_from_proposal(&selected, &requested_protocols);
-    emit_guidance(
-        emitter,
-        &fresh_target,
-        Guidance {
-            topology: topology(&selected),
-            action,
-            status: "selected",
-            observed_launch_case: None,
-            selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-            reason: Some(step.reason.as_str().to_string()),
-            images: readiness_images(&selected),
-            limitations: Vec::new(),
-            requested_protocols: protocol_names(&requested_protocols),
-            observed_protocols: Vec::new(),
-            completed_protocols: protocol_names(&completed_protocols),
-            remaining_protocols: protocol_names(&remaining_protocols),
-            next_command: None,
-        },
-    );
-    drop(fresh_store);
-    let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
-        Ok(outcome) => outcome,
-        Err(error) => {
+        let key = ExactAttemptCase::from_step(&step);
+        let attempted_count = attempted.len();
+        let inserted = attempted_count < MAX_GUIDED_ATTEMPTS && attempted.insert(key);
+        let no_progress_reason = no_progress_reason(attempted_count, inserted);
+        if let Some(no_progress_reason) = no_progress_reason {
             emit_guidance(
                 emitter,
                 &fresh_target,
                 Guidance {
                     topology: topology(&selected),
                     action,
-                    status: "failed",
+                    status: "no-progress",
                     observed_launch_case: None,
                     selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-                    reason: Some("delegated-session-error".to_string()),
+                    reason: Some(no_progress_reason.to_string()),
                     images: readiness_images(&selected),
                     limitations: Vec::new(),
                     requested_protocols: protocol_names(&requested_protocols),
-                    observed_protocols: Vec::new(),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: protocol_names(&completed_protocols),
+                    remaining_protocols: protocol_names(&remaining_protocols),
+                    next_command,
+                },
+            );
+            return Ok(Exit::SUCCESS);
+        }
+        let attempt_number = attempted.len();
+        let progress = AttemptProgress {
+            number: attempt_number as u64,
+            phase: step.phase,
+            protocol: step.case.protocol,
+        };
+        let mut low_level = low_level_args(
+            args,
+            fresh_target.stable_id,
+            Some(launch_case_arg(step.case.launch_case)),
+            step.phase,
+            step.case.protocol,
+        )?;
+        low_level.bundle = attempt_bundle(
+            args.bundle.as_deref(),
+            attempt_number,
+            step.phase,
+            step.case.protocol,
+        )?;
+        if let Some(bundle) = low_level.bundle.as_deref() {
+            if let Err(error) = deep_capture::validate_bundle_root(bundle) {
+                emit_attempt_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action,
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                        reason: Some("bundle-destination-refused".to_string()),
+                        images: readiness_images(&selected),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command,
+                    },
+                    progress,
+                );
+                return Err(error);
+            }
+        }
+        emit_attempt_guidance(
+            emitter,
+            &fresh_target,
+            Guidance {
+                topology: topology(&selected),
+                action,
+                status: "selected",
+                observed_launch_case: None,
+                selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                reason: Some(step.reason.as_str().to_string()),
+                images: readiness_images(&selected),
+                limitations: Vec::new(),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: protocol_names(&observed_protocols),
+                completed_protocols: protocol_names(&completed_protocols),
+                remaining_protocols: protocol_names(&remaining_protocols),
+                next_command: None,
+            },
+            progress,
+        );
+        drop(fresh_store);
+        let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let refused = error.exit() == Exit::USAGE;
+                emit_attempt_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action,
+                        status: if refused { "refused" } else { "failed" },
+                        observed_launch_case: None,
+                        selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                        reason: Some(
+                            if refused {
+                                "delegated-session-refused"
+                            } else {
+                                "delegated-session-error"
+                            }
+                            .to_string(),
+                        ),
+                        images: readiness_images(&selected),
+                        limitations: Vec::new(),
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command: None,
+                    },
+                    progress,
+                );
+                return Err(error);
+            }
+        };
+        let newly_observed = deep_capture_api::observed_protocol_candidates(
+            &outcome.observations,
+            args.controlled_target,
+        );
+        observed_protocols = merge_protocols(&observed_protocols, &newly_observed);
+        let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
+        let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
+        let completed_target = match deep_capture::resolve_target(&completed_store, &low_level) {
+            Ok(target) => target,
+            Err(error) => {
+                emit_attempt_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action,
+                        status: "failed",
+                        observed_launch_case: None,
+                        selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                        reason: Some("post-session-target-unavailable".to_string()),
+                        images: readiness_images(&selected),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command: None,
+                    },
+                    progress,
+                );
+                return Err(error);
+            }
+        };
+        if !sequence_target_authority.matches(&completed_target) {
+            emit_attempt_guidance(
+                emitter,
+                &target,
+                Guidance {
+                    topology: topology(&selected),
+                    action,
+                    status: "refused",
+                    observed_launch_case: None,
+                    selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                    reason: Some("target-authority-drift".to_string()),
+                    images: readiness_images(&selected),
+                    limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
                     completed_protocols: protocol_names(&completed_protocols),
                     remaining_protocols: protocol_names(&remaining_protocols),
                     next_command: None,
                 },
+                progress,
             );
+            return Err(CliError::usage(
+                "the target authority changed during guided calibration; review a fresh sequence",
+            ));
+        }
+        let completed = match build_proposal(
+            &completed_store,
+            &completed_target,
+            process_snapshot(args.controlled_target),
+            &all_protocols,
+        ) {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                emit_attempt_guidance(
+                    emitter,
+                    &completed_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action,
+                        status: "failed",
+                        observed_launch_case: None,
+                        selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                        reason: Some("post-session-proposal-unavailable".to_string()),
+                        images: readiness_images(&selected),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command: None,
+                    },
+                    progress,
+                );
+                return Err(error);
+            }
+        };
+        let (completed_protocols, remaining_protocols) =
+            coverage_from_proposal(&completed, &all_protocols);
+        last_completed_protocols = completed_protocols.clone();
+        last_remaining_protocols = remaining_protocols.clone();
+        let (completed_status, completed_reason) = match outcome.disposition {
+            deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
+            deep_capture::RunDisposition::Interrupted => {
+                ("interrupted", "delegated-session-interrupted")
+            }
+            deep_capture::RunDisposition::Failed => {
+                ("failed", "delegated-session-terminal-failure")
+            }
+            deep_capture::RunDisposition::Completed => completion_outcome_for_step(
+                &completed,
+                step.phase,
+                step.case.launch_case,
+                step.case.protocol,
+                &completed_protocols,
+            ),
+        };
+        let next_command = continuation_command(
+            &completed,
+            outcome.disposition != deep_capture::RunDisposition::Failed,
+            completed_target.stable_id,
+            &local_store_argument,
+            &all_protocols,
+            &remaining_protocols,
+        );
+        emit_attempt_guidance(
+            emitter,
+            &completed_target,
+            Guidance {
+                topology: topology(&completed),
+                action,
+                status: completed_status,
+                observed_launch_case: None,
+                selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                reason: Some(completed_reason.to_string()),
+                images: readiness_images(&completed),
+                limitations: limitation_messages(&completed),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: protocol_names(&observed_protocols),
+                completed_protocols: protocol_names(&completed_protocols),
+                remaining_protocols: protocol_names(&remaining_protocols),
+                next_command,
+            },
+            progress,
+        );
+        if let Some(error) = outcome.terminal_error {
             return Err(error);
         }
-    };
-    let observed_protocols = deep_capture_api::observed_protocol_candidates(
-        &outcome.observations,
-        args.controlled_target,
-    );
-    let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
-    let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
-    let completed_target = deep_capture::resolve_target(&completed_store, &low_level)?;
-    let completed_snapshot = process_snapshot(args.controlled_target);
-    let completed = build_proposal(
-        &completed_store,
-        &completed_target,
-        completed_snapshot,
-        &all_protocols,
-    )?;
-    let (completed_protocols, remaining_protocols) =
-        coverage_from_proposal(&completed, &all_protocols);
-    let (completed_status, completed_reason) = if outcome.terminal_error.is_some() {
-        ("failed", "delegated-session-terminal-failure")
-    } else {
-        completion_outcome_for_step(
-            &completed,
-            step.phase,
-            step.case.launch_case,
-            step.case.protocol,
-            &completed_protocols,
-        )
-    };
-    let next_command = continuation_command(
-        &completed,
-        outcome.terminal_error.is_none(),
-        completed_target.stable_id,
-        &local_store_argument,
-        &all_protocols,
-        &remaining_protocols,
-    );
-    emit_guidance(
-        emitter,
-        &completed_target,
-        Guidance {
-            topology: topology(&completed),
-            action,
-            status: completed_status,
-            observed_launch_case: None,
-            selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-            reason: Some(completed_reason.to_string()),
-            images: readiness_images(&completed),
-            limitations: limitation_messages(&completed),
-            requested_protocols: protocol_names(&requested_protocols),
-            observed_protocols: protocol_names(&observed_protocols),
-            completed_protocols: protocol_names(&completed_protocols),
-            remaining_protocols: protocol_names(&remaining_protocols),
-            next_command,
-        },
-    );
-    match outcome.terminal_error {
-        Some(error) => Err(error),
-        None => Ok(Exit::SUCCESS),
+        match outcome.disposition {
+            deep_capture::RunDisposition::Completed if completed_status == "completed" => {}
+            deep_capture::RunDisposition::Failed => {
+                return Err(CliError::failure(
+                    "guided calibration session failed without a terminal error",
+                ));
+            }
+            _ => return Ok(Exit::SUCCESS),
+        }
     }
 }
 
@@ -2052,6 +2441,35 @@ fn low_level_args(
     })
 }
 
+fn attempt_bundle(
+    base: Option<&Path>,
+    attempt: usize,
+    phase: deep_capture_api::CalibrationPhase,
+    protocol: CompatibilityProtocol,
+) -> Result<Option<PathBuf>, CliError> {
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    if attempt == 1 {
+        return Ok(Some(base.to_path_buf()));
+    }
+    let file_name = base.file_name().ok_or_else(|| {
+        CliError::usage(format!(
+            "the guided calibration bundle path {} cannot identify a sibling destination",
+            base.display()
+        ))
+    })?;
+    let mut sibling = file_name.to_os_string();
+    sibling.push(format!(
+        "-attempt-{attempt:02}-{}-{}",
+        phase.as_str(),
+        protocol.as_str()
+    ));
+    Ok(Some(
+        base.parent().unwrap_or_else(|| Path::new("")).join(sibling),
+    ))
+}
+
 fn protocol_arg(
     value: CompatibilityProtocol,
 ) -> Result<DeepCaptureCalibrationProtocolArg, CliError> {
@@ -2140,6 +2558,24 @@ fn limitation_messages(proposal: &deep_capture_api::CalibrationProposal) -> Vec<
 }
 
 fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance) {
+    emit_guidance_with_attempt(emitter, target, guidance, None);
+}
+
+fn emit_attempt_guidance(
+    emitter: &mut Emitter,
+    target: &TargetEntry,
+    guidance: Guidance,
+    attempt: AttemptProgress,
+) {
+    emit_guidance_with_attempt(emitter, target, guidance, Some(attempt));
+}
+
+fn emit_guidance_with_attempt(
+    emitter: &mut Emitter,
+    target: &TargetEntry,
+    guidance: Guidance,
+    attempt: Option<AttemptProgress>,
+) {
     emitter.event(&Event::CalibrationGuidance {
         target_id: target.stable_id,
         target: target.handle.clone(),
@@ -2157,9 +2593,13 @@ fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance
         remaining_protocols: guidance.remaining_protocols.clone(),
         process_control: "none".to_string(),
         next_command: guidance.next_command.clone(),
+        attempt: attempt.map(|value| value.number),
+        maximum_attempts: attempt.map(|_| MAX_GUIDED_ATTEMPTS as u64),
+        phase: attempt.map(|value| value.phase.as_str().to_string()),
+        protocol: attempt.map(|value| value.protocol.as_str().to_string()),
     });
     emitter.progress(&format!(
-        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} process_control=none next_command={}",
+        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} process_control=none next_command={}",
         target.handle,
         target.stable_id,
         guidance.topology.as_deref().unwrap_or("unavailable"),
@@ -2174,6 +2614,10 @@ fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance
         if guidance.observed_protocols.is_empty() { "none".to_string() } else { guidance.observed_protocols.join(",") },
         if guidance.completed_protocols.is_empty() { "none".to_string() } else { guidance.completed_protocols.join(",") },
         if guidance.remaining_protocols.is_empty() { "none".to_string() } else { guidance.remaining_protocols.join(",") },
+        attempt.map(|value| value.number.to_string()).unwrap_or_else(|| "none".to_string()),
+        attempt.map(|_| MAX_GUIDED_ATTEMPTS.to_string()).unwrap_or_else(|| "none".to_string()),
+        attempt.map(|value| value.phase.as_str()).unwrap_or("none"),
+        attempt.map(|value| value.protocol.as_str()).unwrap_or("none"),
         guidance.next_command.as_deref().unwrap_or("none"),
     ));
 }
@@ -2621,5 +3065,120 @@ mod tests {
                 "fragcap calibrate --id 90002 --local-db local.db --restart-warm --protocol https"
             )
         );
+    }
+
+    #[test]
+    fn supported_attempt_bound_is_one_reachability_plus_every_concrete_protocol() {
+        assert_eq!(GUIDED_CONCRETE_PROTOCOLS.len(), 13);
+        assert_eq!(MAX_GUIDED_ATTEMPTS, 14);
+        assert_eq!(
+            no_progress_reason(MAX_GUIDED_ATTEMPTS, false),
+            Some("attempt-bound-exhausted")
+        );
+        assert_eq!(
+            no_progress_reason(1, false),
+            Some("attempt-case-already-executed")
+        );
+        assert_eq!(no_progress_reason(1, true), None);
+
+        let interrupt = AtomicBool::new(false);
+        assert!(!guided_sequence_interrupted(&interrupt));
+        interrupt.store(true, Ordering::Relaxed);
+        assert!(guided_sequence_interrupted(&interrupt));
+    }
+
+    #[test]
+    fn explicit_attempt_bundles_preserve_the_first_path_and_use_safe_siblings() {
+        let base = Path::new("C:\\evidence\\calibration.bundle");
+        assert_eq!(
+            attempt_bundle(
+                Some(base),
+                1,
+                deep_capture_api::CalibrationPhase::Reachability,
+                CompatibilityProtocol::Routing
+            )
+            .unwrap(),
+            Some(base.to_path_buf())
+        );
+        assert_eq!(
+            attempt_bundle(
+                Some(base),
+                2,
+                deep_capture_api::CalibrationPhase::Tls,
+                CompatibilityProtocol::Https
+            )
+            .unwrap(),
+            Some(PathBuf::from(
+                "C:\\evidence\\calibration.bundle-attempt-02-tls-https"
+            ))
+        );
+        assert_eq!(
+            attempt_bundle(
+                None,
+                2,
+                deep_capture_api::CalibrationPhase::Tls,
+                CompatibilityProtocol::Https
+            )
+            .unwrap(),
+            None
+        );
+        assert!(attempt_bundle(
+            Some(Path::new("/")),
+            2,
+            deep_capture_api::CalibrationPhase::Tls,
+            CompatibilityProtocol::Https
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exact_attempt_identity_refuses_a_second_insertion() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("local.db")).unwrap();
+        let mut target = TargetEntry {
+            id: None,
+            stable_id: 90_003,
+            handle: "attempt-fixture".to_string(),
+            name: "Attempt Fixture".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(resolved_client_launch("fixture.exe")),
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        target.id = Some(store.insert_target(&target).unwrap());
+        let proposal = build_proposal(
+            &store,
+            &target,
+            deep_capture_api::CalibrationProcessSnapshot::complete(Vec::<String>::new()),
+            &[],
+        )
+        .unwrap();
+        let key = ExactAttemptCase::from_step(&proposal.steps[0]);
+        let mut attempted = HashSet::new();
+        assert!(attempted.insert(key.clone()));
+        assert!(!attempted.insert(key));
+        assert_eq!(attempted.len(), 1);
+    }
+
+    #[test]
+    fn sequence_target_authority_detects_launch_and_install_drift() {
+        let target = steam_target(Some(resolved_client_launch("client.exe")));
+        let authority = SequenceTargetAuthority::from_target(&target);
+        assert!(authority.matches(&target));
+
+        let mut changed_launch = target.clone();
+        changed_launch.launch_entries = Some(resolved_client_launch("other.exe"));
+        assert!(!authority.matches(&changed_launch));
+
+        let mut changed_root = target.clone();
+        changed_root.install_root = Some("C:\\Other".to_string());
+        assert!(!authority.matches(&changed_root));
     }
 }

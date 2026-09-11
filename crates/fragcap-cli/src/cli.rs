@@ -141,11 +141,11 @@ pub enum Command {
     /// writes a session bundle containing packet truth, application records,
     /// proxy and process sidecars, compatibility facts, and cleanup status.
     DeepCapture(Box<DeepCaptureArgs>),
-    /// Measure whether scoped proxy routing reaches a stored target.
+    /// Guide a target through bounded Deep Capture calibration.
     ///
-    /// Selects at most one reachability measurement from current target,
-    /// process, and compatibility facts. Warm targets receive effect-free
-    /// guidance unless `--restart-warm` is selected explicitly.
+    /// Runs each useful reachability or protocol case under a fresh plan and
+    /// separate confirmation. Warm targets receive effect-free guidance unless
+    /// `--restart-warm` is selected explicitly.
     Calibrate(Box<CalibrateArgs>),
     /// Manage completed Deep Capture bundle evidence.
     Bundle(BundleArgs),
@@ -568,7 +568,7 @@ pub struct DeepCaptureArgs {
     pub controlled_target: bool,
 }
 
-/// Arguments to the guided reachability calibration front door.
+/// Arguments to the bounded guided calibration front door.
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
 pub struct CalibrateArgs {
@@ -595,11 +595,11 @@ pub struct CalibrateArgs {
     #[arg(long)]
     pub local_db: Option<PathBuf>,
 
-    /// The bundle directory for the selected reachability attempt.
+    /// The first attempt bundle; later attempts use deterministic siblings.
     #[arg(long)]
     pub bundle: Option<PathBuf>,
 
-    /// The reachability observation duration bound.
+    /// The observation duration bound for every selected attempt.
     #[arg(short = 'd', long, value_parser = parse_duration)]
     pub duration: Option<Duration>,
 
@@ -634,6 +634,7 @@ pub struct CalibrateArgs {
     /// A concrete protocol to measure after reachability, repeatable.
     ///
     /// This requests a measurement and is never compatibility evidence by itself.
+    /// Every useful case retains its own current authorization plan.
     #[arg(long, value_enum)]
     pub protocol: Vec<GuidedCalibrationProtocolArg>,
 

@@ -197,6 +197,10 @@ pub enum Event {
         remaining_protocols: Vec<String>,
         process_control: String,
         next_command: Option<String>,
+        attempt: Option<u64>,
+        maximum_attempts: Option<u64>,
+        phase: Option<String>,
+        protocol: Option<String>,
     },
     /// An explicit warm-to-cold plan, emitted before the operator acts.
     DeepCaptureRestartPlan {
@@ -746,6 +750,10 @@ impl Event {
                 remaining_protocols,
                 process_control,
                 next_command,
+                attempt,
+                maximum_attempts,
+                phase,
+                protocol,
             } => {
                 line.push_str(",\"target_id\":");
                 line.push_str(&target_id.to_string());
@@ -779,6 +787,14 @@ impl Event {
                 write_json_string(process_control, &mut line);
                 line.push_str(",\"next_command\":");
                 write_optional_json_string(next_command.as_deref(), &mut line);
+                line.push_str(",\"attempt\":");
+                write_optional_u64(*attempt, &mut line);
+                line.push_str(",\"maximum_attempts\":");
+                write_optional_u64(*maximum_attempts, &mut line);
+                line.push_str(",\"phase\":");
+                write_optional_json_string(phase.as_deref(), &mut line);
+                line.push_str(",\"protocol\":");
+                write_optional_json_string(protocol.as_deref(), &mut line);
             }
             Event::DeepCaptureRestartPlan {
                 target,
@@ -1055,6 +1071,13 @@ fn write_optional_json_string(value: Option<&str>, out: &mut String) {
     }
 }
 
+fn write_optional_u64(value: Option<u64>, out: &mut String) {
+    match value {
+        Some(value) => out.push_str(&value.to_string()),
+        None => out.push_str("null"),
+    }
+}
+
 fn write_json_strings(values: &[String], out: &mut String) {
     for (index, value) in values.iter().enumerate() {
         if index > 0 {
@@ -1323,6 +1346,10 @@ mod tests {
             remaining_protocols: vec!["http1".to_string(), "https".to_string()],
             process_control: "none".to_string(),
             next_command: None,
+            attempt: Some(2),
+            maximum_attempts: Some(14),
+            phase: Some("tls".to_string()),
+            protocol: Some("https".to_string()),
         }
         .render(now);
         let guidance: serde_json::Value = serde_json::from_str(&guidance).unwrap();
@@ -1343,6 +1370,10 @@ mod tests {
         );
         assert_eq!(guidance["process_control"], "none");
         assert_eq!(guidance["next_command"], serde_json::Value::Null);
+        assert_eq!(guidance["attempt"], 2);
+        assert_eq!(guidance["maximum_attempts"], 14);
+        assert_eq!(guidance["phase"], "tls");
+        assert_eq!(guidance["protocol"], "https");
 
         let restart_plan = Event::DeepCaptureRestartPlan {
             target: "sample-target".to_string(),
