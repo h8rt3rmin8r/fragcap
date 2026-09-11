@@ -34,6 +34,10 @@ struct AcceptThenDeclineAuthorization {
     calls: usize,
 }
 
+struct AcceptThenInterruptAuthorization {
+    calls: usize,
+}
+
 struct SecondPlanTargetDriftAuthorization {
     calls: usize,
     local: PathBuf,
@@ -102,6 +106,25 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for AcceptThenDeclineAuthorizati
         } else {
             b"no\n".to_vec()
         })
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for AcceptThenInterruptAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(exact);
+        self.calls += 1;
+        if self.calls == 1 {
+            Ok(format!("{plan_id}\n").into_bytes())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "controlled authorization interrupt",
+            ))
+        }
     }
 }
 
@@ -1898,6 +1921,51 @@ fn declining_a_later_plan_stops_before_its_bundle_or_fact_effects() {
     assert!(!facts
         .iter()
         .any(|fact| fact.key == CompatibilityFactKey::Inspectability));
+}
+
+#[test]
+fn interrupting_a_later_authorization_retains_interrupted_guidance() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("interrupt-sequence");
+    seed_target(&local, false);
+    let mut authorization = AcceptThenInterruptAuthorization { calls: 0 };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 1, "events:\n{events}");
+    assert_eq!(authorization.calls, 2);
+    assert!(events.contains("\"status\":\"interrupted\""));
+    assert!(events.contains("\"reason\":\"delegated-session-interrupted\""));
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(!dir
+        .path()
+        .join("interrupt-sequence-attempt-02-tls-http1")
+        .exists());
 }
 
 #[test]

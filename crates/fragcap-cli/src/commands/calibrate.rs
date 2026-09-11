@@ -1576,6 +1576,8 @@ pub fn run(
     )?;
     let mut observed_protocols = Vec::new();
     let mut attempted = HashSet::new();
+    let (mut last_completed_protocols, mut last_remaining_protocols) =
+        coverage_from_proposal(&proposal, &requested_protocols);
 
     loop {
         if guided_sequence_interrupted(&crate::orchestrator::INTERRUPT) {
@@ -1584,8 +1586,32 @@ pub fn run(
             ));
         }
         let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
-        let fresh_target = deep_capture::resolve_target(&fresh_store, &resolver_args)?;
         let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
+        let fresh_target = match deep_capture::resolve_target(&fresh_store, &resolver_args) {
+            Ok(target) => target,
+            Err(error) => {
+                emit_guidance(
+                    emitter,
+                    &target,
+                    Guidance {
+                        topology: None,
+                        action: "refused",
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: None,
+                        reason: Some("target-authority-unavailable".to_string()),
+                        images: Vec::new(),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&last_completed_protocols),
+                        remaining_protocols: protocol_names(&last_remaining_protocols),
+                        next_command: None,
+                    },
+                );
+                return Err(error);
+            }
+        };
         if !sequence_target_authority.matches(&fresh_target) {
             emit_guidance(
                 emitter,
@@ -1990,6 +2016,8 @@ pub fn run(
         };
         let (completed_protocols, remaining_protocols) =
             coverage_from_proposal(&completed, &all_protocols);
+        last_completed_protocols = completed_protocols.clone();
+        last_remaining_protocols = remaining_protocols.clone();
         let (completed_status, completed_reason) = match outcome.disposition {
             deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
             deep_capture::RunDisposition::Interrupted => {
