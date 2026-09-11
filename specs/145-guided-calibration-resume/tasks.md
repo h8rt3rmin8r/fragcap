@@ -167,7 +167,7 @@ consumers.
   or record a clean convergence result
 - [x] T037 Run `cargo xtask ci`, encoding, punctuation, mojibake, diff, dependency, and
   worktree checks
-- [ ] T038 Commit, push the authorized branch, open a PR closing the S145 child issue,
+- [x] T038 Commit, push the authorized branch, open a PR closing the S145 child issue,
   and set Project Stage to PR review
 - [ ] T039 Resolve every first-round review finding, trigger at most one `@Codex review`
   second round, resolve every second-round finding, and wait for all CI checks to pass
