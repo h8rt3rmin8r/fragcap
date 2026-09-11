@@ -282,6 +282,7 @@ fn validate_test_source(source: &str, function: &str, platform: &str) -> Result<
     if platform != "windows" {
         return Err("reference has invalid platform");
     }
+    let source = super::threat_model::strip_rust_comments(source);
     let declarations = [format!("fn {function}("), format!("async fn {function}(")];
     let mut attributes = Vec::new();
     for line in source.lines() {
@@ -461,6 +462,12 @@ mod tests {
         )
         .is_err());
         assert!(validate_test_source("#[test]\nfn broad() {}", "broad", "windows").is_err());
+        assert!(validate_test_source(
+            "/*\n#[test]\n#[cfg(windows)]\nfn commented_out() {}\n*/",
+            "commented_out",
+            "windows"
+        )
+        .is_err());
     }
 
     #[test]

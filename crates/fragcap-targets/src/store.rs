@@ -1139,7 +1139,11 @@ impl Store {
             return Ok(AuthorTargetClientOutcome::Changed);
         }
 
-        let launch_entries = crate::resolved_client_launch(executable);
+        let selected = candidates
+            .into_iter()
+            .find(|entry| entry.executable() == executable)
+            .expect("validated exact selected candidate");
+        let launch_entries = serde_json::Value::Array(vec![launch_entry_value(&selected)]);
         tx.execute(
             "UPDATE targets SET launch_entries = ?2, fidelity = ?3 WHERE stable_id = ?1",
             params![
@@ -1637,6 +1641,28 @@ impl Store {
 /// Serialize a carried-whole JSON value to its stored text.
 fn json_text(v: &serde_json::Value) -> String {
     v.to_string()
+}
+
+fn launch_entry_value(entry: &LaunchEntry) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert(
+        "executable".to_string(),
+        serde_json::json!(entry.executable()),
+    );
+    for (key, field) in [
+        ("os", &entry.os),
+        ("osarch", &entry.osarch),
+        ("launch_type", &entry.launch_type),
+        ("beta_branch", &entry.beta_branch),
+        ("arguments", &entry.arguments),
+        ("description", &entry.description),
+        ("role", &entry.role),
+    ] {
+        if let Some(field) = field {
+            value.insert(key.to_string(), serde_json::json!(field));
+        }
+    }
+    serde_json::Value::Object(value)
 }
 
 /// Read one `signature` row into a [`Signature`]. Enum parsing that can fail is
@@ -3156,7 +3182,16 @@ mod tests {
         let mut expected = sample_target("ambiguous_client", None, FidelityTier::Observed);
         expected.launch_entries = Some(serde_json::json!([
             {"executable":"first.exe","role":"client"},
-            {"executable":"second.exe","role":"client"}
+            {
+                "executable":"second.exe",
+                "os":"windows",
+                "osarch":"64",
+                "launch_type":"default",
+                "beta_branch":"preview",
+                "arguments":"--profile exact",
+                "description":"Selected configuration",
+                "role":"client"
+            }
         ]));
         let mut steam = expected.clone();
         steam.anchor = Some("steam:85".to_string());
@@ -3192,7 +3227,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             selected.launch_entries,
-            Some(crate::resolved_client_launch("second.exe"))
+            Some(serde_json::json!([{
+                "executable":"second.exe",
+                "os":"windows",
+                "osarch":"64",
+                "launch_type":"default",
+                "beta_branch":"preview",
+                "arguments":"--profile exact",
+                "description":"Selected configuration",
+                "role":"client"
+            }]))
         );
         assert_eq!(selected.fidelity, FidelityTier::Authored);
         assert_eq!(

@@ -387,8 +387,24 @@ fn entry_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
                 continue;
             };
             le.os = item.get("os").and_then(|v| v.as_str()).map(str::to_string);
+            le.osarch = item
+                .get("osarch")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.launch_type = item
+                .get("launch_type")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.beta_branch = item
+                .get("beta_branch")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             le.arguments = item
                 .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.description = item
+                .get("description")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             le.role = item
