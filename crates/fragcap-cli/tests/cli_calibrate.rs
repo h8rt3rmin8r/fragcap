@@ -1269,6 +1269,40 @@ fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
 }
 
 #[test]
+fn invalid_registration_plan_returns_to_the_same_calibration_store() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let mut authorization = FixedAuthorization {
+        terminal: false,
+        response: b"wrong-plan\n".to_vec(),
+    };
+    let (code, _out, err) = run_with_authorization(
+        &[
+            "calibrate",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "diagnostic:\n{err}");
+    assert!(
+        err.contains("no target was registered"),
+        "diagnostic:\n{err}"
+    );
+    assert!(
+        err.contains("Next command:  fragcap calibrate \"75000\" --local-db \"")
+            && err.contains("local.db\" --proxy-family ipv4"),
+        "registration refusal must preserve the calibration path: {err}"
+    );
+    assert!(!err.contains("fragcap deep-capture"), "diagnostic:\n{err}");
+    assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
+}
+
+#[test]
 fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();

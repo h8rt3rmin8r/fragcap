@@ -2,7 +2,17 @@
 
 //! One authority for the embedded Deep Capture journey and its pasteable commands.
 
-use crate::exit::CliError;
+use std::path::{Path, PathBuf};
+
+use clap::ValueEnum;
+
+use crate::{
+    cli::{
+        CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationProtocolArg,
+        DeepCaptureProxyFamilyArg,
+    },
+    exit::CliError,
+};
 
 pub(crate) const ROOT_LONG_HELP: &str = r#"First Deep Capture session:
   1. Check the environment:      fragcap doctor
@@ -146,6 +156,95 @@ pub(crate) enum TargetReference<'a> {
 pub(crate) enum WorkflowVerb {
     Calibrate,
     DeepCapture,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CalibrationCommandContext {
+    catalog_db: Option<PathBuf>,
+    local_db: Option<PathBuf>,
+    launch_case: Option<String>,
+    routing_strategy: Option<String>,
+    proxy_family: Option<String>,
+    protocols: Vec<String>,
+}
+
+impl CalibrationCommandContext {
+    pub(crate) fn for_calibrate(args: &CalibrateArgs, effective_local_db: Option<PathBuf>) -> Self {
+        Self {
+            catalog_db: args.catalog_db.clone(),
+            local_db: effective_local_db.or_else(|| args.local_db.clone()),
+            launch_case: args.launch_case.as_ref().map(value_name),
+            routing_strategy: args.routing_strategy.as_ref().map(value_name),
+            proxy_family: Some(value_name(
+                args.proxy_family
+                    .as_ref()
+                    .unwrap_or(&DeepCaptureProxyFamilyArg::Ipv4),
+            )),
+            protocols: args.protocol.iter().map(value_name).collect(),
+        }
+    }
+
+    pub(crate) fn for_deep_capture(
+        args: &DeepCaptureArgs,
+        effective_local_db: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            catalog_db: args.catalog_db.clone(),
+            local_db: effective_local_db.or_else(|| args.local_db.clone()),
+            launch_case: args.launch_case.as_ref().map(value_name),
+            routing_strategy: None,
+            proxy_family: Some(value_name(&args.proxy_family)),
+            protocols: args
+                .calibration_protocol
+                .iter()
+                .filter(|protocol| **protocol != DeepCaptureCalibrationProtocolArg::Routing)
+                .map(value_name)
+                .collect(),
+        }
+    }
+
+    fn append_to(&self, command: &mut String) {
+        append_path_option(command, "--catalog-db", self.catalog_db.as_deref());
+        append_path_option(command, "--local-db", self.local_db.as_deref());
+        append_value_option(command, "--launch-case", self.launch_case.as_deref());
+        append_value_option(
+            command,
+            "--routing-strategy",
+            self.routing_strategy.as_deref(),
+        );
+        append_value_option(command, "--proxy-family", self.proxy_family.as_deref());
+        for protocol in &self.protocols {
+            append_value_option(command, "--protocol", Some(protocol));
+        }
+    }
+}
+
+fn value_name<T: ValueEnum>(value: &T) -> String {
+    value
+        .to_possible_value()
+        .expect("every CLI value enum variant has a possible value")
+        .get_name()
+        .to_string()
+}
+
+fn append_path_option(command: &mut String, flag: &str, path: Option<&Path>) {
+    let Some(path) = path.and_then(Path::to_str) else {
+        return;
+    };
+    command.push(' ');
+    command.push_str(flag);
+    command.push(' ');
+    command.push_str(&quote_powershell_argument(path));
+}
+
+fn append_value_option(command: &mut String, flag: &str, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    command.push(' ');
+    command.push_str(flag);
+    command.push(' ');
+    command.push_str(value);
 }
 
 #[cfg(test)]
@@ -305,13 +404,20 @@ pub(crate) fn target_reference<'a>(
         .or_else(|| id.map(TargetReference::Id))
 }
 
-pub(crate) fn calibration_command(target: TargetReference<'_>) -> String {
-    match target {
+pub(crate) fn calibration_command(
+    target: TargetReference<'_>,
+    context: Option<&CalibrationCommandContext>,
+) -> String {
+    let mut command = match target {
         TargetReference::Selector(selector) => {
             format!("fragcap calibrate {}", quote_powershell_argument(selector))
         }
         TargetReference::Id(id) => format!("fragcap calibrate --id {id}"),
+    };
+    if let Some(context) = context {
+        context.append_to(&mut command);
     }
+    command
 }
 
 pub(crate) fn deep_capture_command(target: TargetReference<'_>) -> String {
@@ -327,6 +433,7 @@ pub(crate) fn deep_capture_command(target: TargetReference<'_>) -> String {
 pub(crate) fn next_command(
     category: FirstRunRefusal,
     target: Option<TargetReference<'_>>,
+    calibration_context: Option<&CalibrationCommandContext>,
 ) -> String {
     match category {
         FirstRunRefusal::Environment => "fragcap doctor".to_string(),
@@ -334,12 +441,17 @@ pub(crate) fn next_command(
         FirstRunRefusal::Launch | FirstRunRefusal::Compatibility | FirstRunRefusal::Calibration => {
             target.map_or_else(
                 || "fragcap calibrate \"<installed game>\"".to_string(),
-                calibration_command,
+                |value| calibration_command(value, calibration_context),
             )
         }
         FirstRunRefusal::Process => target.map_or_else(
             || "fragcap calibrate \"<installed game>\" --restart-warm".to_string(),
-            |value| format!("{} --restart-warm", calibration_command(value)),
+            |value| {
+                format!(
+                    "{} --restart-warm",
+                    calibration_command(value, calibration_context)
+                )
+            },
         ),
         FirstRunRefusal::Recovery => "fragcap doctor --fix".to_string(),
         FirstRunRefusal::Bundle => target.map_or_else(
@@ -365,6 +477,8 @@ pub(crate) fn classify_pre_session_refusal(message: &str) -> Option<FirstRunRefu
     let message = message.to_ascii_lowercase();
     if message.contains("recovery") || message.contains("prior deep capture") {
         Some(FirstRunRefusal::Recovery)
+    } else if message.contains("registration") && message.contains("plan") {
+        Some(FirstRunRefusal::Calibration)
     } else if message.contains("compatibility") || message.contains("protocol") {
         Some(FirstRunRefusal::Compatibility)
     } else if message.contains("bundle") {
@@ -393,26 +507,33 @@ pub(crate) fn actionable_error(
     target: Option<TargetReference<'_>>,
     fallback: Option<FirstRunRefusal>,
     verb: WorkflowVerb,
+    calibration_context: Option<&CalibrationCommandContext>,
 ) -> CliError {
     if error.message().contains("Next command:") || error.message().contains("Next commands:") {
         return error;
     }
     if error.message().contains("selector is ambiguous") {
-        return ambiguous_target_error(error, verb);
+        return ambiguous_target_error(error, verb, calibration_context);
     }
     let Some(category) = classify_pre_session_refusal(error.message()).or(fallback) else {
         return error;
     };
-    with_next_command(error, next_command(category, target))
+    with_next_command(error, next_command(category, target, calibration_context))
 }
 
-fn ambiguous_target_error(error: CliError, verb: WorkflowVerb) -> CliError {
+fn ambiguous_target_error(
+    error: CliError,
+    verb: WorkflowVerb,
+    calibration_context: Option<&CalibrationCommandContext>,
+) -> CliError {
     let commands: Vec<_> = error
         .message()
         .lines()
         .filter_map(|line| line.trim().split('\t').nth(1)?.parse::<i64>().ok())
         .map(|id| match verb {
-            WorkflowVerb::Calibrate => format!("fragcap calibrate --id {id}"),
+            WorkflowVerb::Calibrate => {
+                calibration_command(TargetReference::Id(id), calibration_context)
+            }
             WorkflowVerb::DeepCapture => format!("fragcap deep-capture --id {id} --launch"),
         })
         .collect();
@@ -496,7 +617,7 @@ mod tests {
                 !FIRST_RUN_REFUSALS[..index].contains(category),
                 "duplicate refusal category {category:?}"
             );
-            let command = next_command(*category, Some(TargetReference::Selector("My Game")));
+            let command = next_command(*category, Some(TargetReference::Selector("My Game")), None);
             assert!(
                 registered.contains(command.as_str()),
                 "refusal category {category:?} has an unregistered next command: {command}"
@@ -506,6 +627,7 @@ mod tests {
                 Some(TargetReference::Selector("My Game")),
                 Some(*category),
                 WorkflowVerb::Calibrate,
+                None,
             );
             assert_eq!(
                 error.message().matches("Next command:").count(),
@@ -523,7 +645,7 @@ mod tests {
     #[test]
     fn dynamic_target_commands_preserve_one_argument() {
         assert_eq!(
-            calibration_command(TargetReference::Selector("Pokémon \"Élan\" `$HOME")),
+            calibration_command(TargetReference::Selector("Pokémon \"Élan\" `$HOME"), None,),
             "fragcap calibrate \"Pokémon `\"Élan`\" ```$HOME\""
         );
         assert_eq!(
@@ -531,7 +653,7 @@ mod tests {
             "fragcap deep-capture \"My Game\" --launch"
         );
         assert_eq!(
-            calibration_command(TargetReference::Id(123)),
+            calibration_command(TargetReference::Id(123), None),
             "fragcap calibrate --id 123"
         );
         assert_eq!(
@@ -548,6 +670,7 @@ mod tests {
             None,
             None,
             WorkflowVerb::Calibrate,
+            None,
         );
         assert!(calibrate.message().contains("fragcap calibrate --id 76001"));
         assert!(calibrate.message().contains("fragcap calibrate --id 76002"));
@@ -556,6 +679,7 @@ mod tests {
             None,
             None,
             WorkflowVerb::DeepCapture,
+            None,
         );
         assert!(deep_capture
             .message()
@@ -571,5 +695,58 @@ mod tests {
             .expect("first durable Deep Capture choice parses");
         Cli::try_parse_from(["fragcap", "deep-capture", "--id", "76002", "--launch"])
             .expect("second durable Deep Capture choice parses");
+    }
+
+    #[test]
+    fn calibration_guidance_preserves_exact_store_and_case() {
+        let context = CalibrationCommandContext {
+            catalog_db: None,
+            local_db: Some(PathBuf::from(r"C:\Stores\targets one.db")),
+            launch_case: Some("direct-exe-cold".to_string()),
+            routing_strategy: Some("child-environment".to_string()),
+            proxy_family: Some("ipv6".to_string()),
+            protocols: vec!["https".to_string()],
+        };
+        let command = calibration_command(TargetReference::Id(75_000), Some(&context));
+        assert_eq!(
+            command,
+            "fragcap calibrate --id 75000 --local-db \"C:\\Stores\\targets one.db\" --launch-case direct-exe-cold --routing-strategy child-environment --proxy-family ipv6 --protocol https"
+        );
+        Cli::try_parse_from([
+            "fragcap",
+            "calibrate",
+            "--id",
+            "75000",
+            "--local-db",
+            r"C:\Stores\targets one.db",
+            "--launch-case",
+            "direct-exe-cold",
+            "--routing-strategy",
+            "child-environment",
+            "--proxy-family",
+            "ipv6",
+            "--protocol",
+            "https",
+        ])
+        .expect("exact-case calibration continuation parses");
+    }
+
+    #[test]
+    fn registration_plan_refusal_returns_to_calibration() {
+        let error = actionable_error(
+            CliError::usage(
+                "target registration confirmation did not match the exact current plan identifier; no target was registered",
+            ),
+            Some(TargetReference::Selector("Portal 2")),
+            None,
+            WorkflowVerb::Calibrate,
+            None,
+        );
+        assert!(error
+            .message()
+            .contains("Next command:  fragcap calibrate \"Portal 2\""));
+        assert!(!error.message().contains("fragcap deep-capture"));
+        Cli::try_parse_from(["fragcap", "calibrate", "Portal 2"])
+            .expect("registration retry parses");
     }
 }

@@ -2228,6 +2228,8 @@ pub fn run(
         return Err(if emitter.is_json() {
             error
         } else {
+            let command_context =
+                crate::workflow_help::CalibrationCommandContext::for_calibrate(args, None);
             crate::workflow_help::actionable_error(
                 error,
                 crate::workflow_help::target_reference(
@@ -2237,6 +2239,7 @@ pub fn run(
                 ),
                 Some(crate::workflow_help::FirstRunRefusal::Calibration),
                 crate::workflow_help::WorkflowVerb::Calibrate,
+                Some(&command_context),
             )
         });
     }
@@ -2245,6 +2248,8 @@ pub fn run(
             if emitter.is_json() {
                 error
             } else {
+                let command_context =
+                    crate::workflow_help::CalibrationCommandContext::for_calibrate(args, None);
                 crate::workflow_help::actionable_error(
                     error,
                     crate::workflow_help::target_reference(
@@ -2254,6 +2259,7 @@ pub fn run(
                     ),
                     Some(crate::workflow_help::FirstRunRefusal::Calibration),
                     crate::workflow_help::WorkflowVerb::Calibrate,
+                    Some(&command_context),
                 )
             }
         })?;
@@ -2351,6 +2357,11 @@ pub fn run(
             if emitter.is_json() {
                 error
             } else {
+                let command_context =
+                    crate::workflow_help::CalibrationCommandContext::for_calibrate(
+                        args,
+                        Some(local_store_path.clone()),
+                    );
                 crate::workflow_help::actionable_error(
                     error,
                     crate::workflow_help::target_reference(
@@ -2360,6 +2371,7 @@ pub fn run(
                     ),
                     None,
                     crate::workflow_help::WorkflowVerb::Calibrate,
+                    Some(&command_context),
                 )
             }
         })?;

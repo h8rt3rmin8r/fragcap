@@ -788,6 +788,8 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
         "--launch",
         "--local-db",
         local.to_str().unwrap(),
+        "--proxy-family",
+        "ipv6",
         "--bundle",
         bundle.to_str().unwrap(),
     ]);
@@ -798,8 +800,8 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
     );
     assert!(
         err.contains(&format!(
-            "Next command:  fragcap calibrate --id {target_id}"
-        )),
+            "Next command:  fragcap calibrate --id {target_id} --local-db \""
+        )) && err.contains("local.db\" --proxy-family ipv6"),
         "the compatibility refusal provides the exact guided next step: {err}"
     );
 }
