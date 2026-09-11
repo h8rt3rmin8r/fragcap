@@ -2097,6 +2097,35 @@ pub(crate) enum RunDisposition {
     Failed,
 }
 
+fn require_prior_recovery_settled_at(root: &Path) -> Result<(), CliError> {
+    let root = root.canonicalize().map_err(|error| {
+        CliError::failure(format!(
+            "cannot inspect prior Deep Capture sessions: {error}"
+        ))
+    })?;
+    let pending = crate::doctor::fix::pending_deep_capture_recovery(&root).map_err(|errors| {
+        CliError::failure(format!(
+            "cannot prove prior Deep Capture sessions are settled; run `fragcap doctor --fix`: {}",
+            errors.join("; ")
+        ))
+    })?;
+    if pending.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::usage(format!(
+            "prior Deep Capture recovery is required before a new plan can be authorized; run `fragcap doctor --fix`: {}",
+            pending.join("; ")
+        )))
+    }
+}
+
+pub(crate) fn require_prior_recovery_settled() -> Result<(), CliError> {
+    match paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
+        Some(root) => require_prior_recovery_settled_at(&root),
+        None => Ok(()),
+    }
+}
+
 pub(crate) fn run_with_outcome(
     args: &DeepCaptureArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
@@ -2173,25 +2202,7 @@ pub(crate) fn run_with_outcome(
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
     validate_bundle_root(&bundle)?;
-    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
-        let root = root.canonicalize().map_err(|error| {
-            CliError::failure(format!(
-                "cannot inspect prior Deep Capture sessions: {error}"
-            ))
-        })?;
-        let pending = crate::doctor::fix::pending_deep_capture_recovery(&root).map_err(|errors| {
-            CliError::failure(format!(
-                "cannot prove prior Deep Capture sessions are settled; run `fragcap doctor --fix`: {}",
-                errors.join("; ")
-            ))
-        })?;
-        if !pending.is_empty() {
-            return Err(CliError::usage(format!(
-                "prior Deep Capture recovery is required before a new plan can be authorized; run `fragcap doctor --fix`: {}",
-                pending.join("; ")
-            )));
-        }
-    }
+    require_prior_recovery_settled()?;
     deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
     let mut target_authority =
@@ -4496,6 +4507,43 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prior_recovery_gate_reports_an_interrupted_session_before_new_work() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("interrupted-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = crate::doctor::fix::register_session_owner(root.path(), &bundle)
+            .expect("register owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "session-ca",
+                ResourceKind::Trust,
+                "thumbprint",
+                "session:session",
+                "remove-current-user-root",
+                ResourceState::Applied,
+                "trusted",
+            ))
+            .expect("applied");
+        drop(journal);
+        drop(lease);
+
+        let error = require_prior_recovery_settled_at(root.path())
+            .expect_err("pending recovery must stop new work");
+        assert_eq!(error.exit(), Exit::USAGE);
+        assert!(error.message().contains("fragcap doctor --fix"));
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("unchanged journal");
+        assert_eq!(prefix.latest()["session-ca"].state, ResourceState::Applied);
+    }
 
     fn authorization_target() -> AuthorizationTargetAuthority {
         AuthorizationTargetAuthority {

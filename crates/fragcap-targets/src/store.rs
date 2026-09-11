@@ -23,10 +23,17 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
-    MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, MIGRATE_9_TO_10, SCHEMA_VERSION,
+    DDL, MIGRATE_10_TO_11, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5,
+    MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, MIGRATE_9_TO_10,
+    SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
+use crate::workflow::{
+    decode_case_keys, decode_protocols, encode_case_keys, encode_protocols,
+    CalibrationTargetAuthority, CalibrationWorkflow, CalibrationWorkflowCheckpoint,
+    CalibrationWorkflowPhase, CalibrationWorkflowState, CalibrationWorkflowUpdateOutcome,
+    CALIBRATION_WORKFLOW_RECORD_VERSION,
+};
 use crate::TargetsError;
 use fragcap_profile::{
     FidelityTier, Signature, SignatureCategory, SignatureConfidence, SignatureKind,
@@ -176,6 +183,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 10i64)?;
             tx.commit()?;
             version = 10;
+        }
+
+        if version == 10 {
+            // 10 -> 11: add target-bound durable guided-calibration progress. The
+            // table starts empty, so no intent, evidence, or effect is invented.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_10_TO_11)?;
+            tx.pragma_update(None, "user_version", 11i64)?;
+            tx.commit()?;
+            version = 11;
         }
 
         if version != SCHEMA_VERSION {
@@ -1106,6 +1123,169 @@ impl Store {
         Ok(n.max(0) as usize)
     }
 
+    // --- Guided calibration workflows (slice S145) ---------------------------
+
+    /// Create one target-bound workflow before its first effectful attempt.
+    pub fn create_calibration_workflow(
+        &mut self,
+        target: &TargetEntry,
+        requested_protocols: &[CompatibilityProtocol],
+        now: u64,
+    ) -> Result<CalibrationWorkflow, TargetsError> {
+        let target_id = target.id.ok_or_else(|| {
+            TargetsError::Model(
+                "a calibration workflow requires a persisted target row".to_string(),
+            )
+        })?;
+        let checkpoint = CalibrationWorkflowCheckpoint {
+            requested_protocols: crate::workflow::canonical_protocols(requested_protocols)?,
+            observed_protocols: Vec::new(),
+            completed_protocols: Vec::new(),
+            remaining_protocols: crate::workflow::canonical_protocols(requested_protocols)?,
+            attempted_case_keys: Vec::new(),
+            attempt_ordinal: 0,
+            attempt_phase: None,
+            attempt_protocol: None,
+            attempt_key: None,
+            state: CalibrationWorkflowState::Ready,
+            pause_reason: None,
+        };
+        checkpoint.validate()?;
+        let now = i64::try_from(now).map_err(|_| {
+            TargetsError::Model("calibration workflow timestamp exceeds SQLite range".to_string())
+        })?;
+        let authority = CalibrationTargetAuthority::from_target(target);
+        let transaction = self.conn.transaction()?;
+        transaction.execute(
+            "INSERT INTO calibration_workflows
+                (record_version, target_id, target_stable_id, target_handle,
+                 target_name, target_classification, target_classification_source,
+                 target_fidelity, target_provenance, target_anchor,
+                 target_install_root, target_launch_entries, target_evidence,
+                 target_detection_scan, target_folder_name, target_executable_hint,
+                 requested_protocols, observed_protocols,
+                 completed_protocols, remaining_protocols, attempted_case_keys,
+                 attempt_ordinal, attempt_phase, attempt_protocol, attempt_key,
+                 state, pause_reason, revision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 0, NULL,
+                     NULL, NULL, ?22, NULL, 1, ?23, ?23)",
+            params![
+                CALIBRATION_WORKFLOW_RECORD_VERSION,
+                target_id,
+                authority.stable_id,
+                authority.handle,
+                authority.name,
+                authority.classification.as_str(),
+                authority.classification_source.as_str(),
+                authority.fidelity.as_str(),
+                authority.provenance.as_ref().map(json_text),
+                authority.anchor,
+                authority.install_root,
+                authority.launch_entries.as_ref().map(json_text),
+                authority.evidence.as_ref().map(json_text),
+                authority.detection_scan.map(DetectionScan::as_str),
+                authority.folder_name,
+                authority.executable_hint,
+                encode_protocols(&checkpoint.requested_protocols)?,
+                encode_protocols(&checkpoint.observed_protocols)?,
+                encode_protocols(&checkpoint.completed_protocols)?,
+                encode_protocols(&checkpoint.remaining_protocols)?,
+                encode_case_keys(&checkpoint.attempted_case_keys)?,
+                checkpoint.state.as_str(),
+                now,
+            ],
+        )?;
+        let id = transaction.last_insert_rowid();
+        let workflow =
+            calibration_workflow_from_connection(&transaction, id)?.ok_or_else(|| {
+                TargetsError::Model("created calibration workflow disappeared".to_string())
+            })?;
+        transaction.commit()?;
+        Ok(workflow)
+    }
+
+    /// Read one workflow by its store-local identity and validate every stored token.
+    pub fn calibration_workflow(
+        &self,
+        id: i64,
+    ) -> Result<Option<CalibrationWorkflow>, TargetsError> {
+        if id <= 0 {
+            return Err(TargetsError::Model(
+                "calibration workflow identifier must be positive".to_string(),
+            ));
+        }
+        calibration_workflow_from_connection(&self.conn, id)
+    }
+
+    /// Replace one checkpoint only while its expected revision is still current.
+    pub fn update_calibration_workflow(
+        &mut self,
+        id: i64,
+        expected_revision: u64,
+        checkpoint: &CalibrationWorkflowCheckpoint,
+        now: u64,
+    ) -> Result<CalibrationWorkflowUpdateOutcome, TargetsError> {
+        checkpoint.validate()?;
+        let now = i64::try_from(now).map_err(|_| {
+            TargetsError::Model("calibration workflow timestamp exceeds SQLite range".to_string())
+        })?;
+        let expected_revision = i64::try_from(expected_revision).map_err(|_| {
+            TargetsError::Model("calibration workflow revision exceeds SQLite range".to_string())
+        })?;
+        let transaction = self.conn.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE calibration_workflows
+             SET requested_protocols = ?1, observed_protocols = ?2,
+                 completed_protocols = ?3, remaining_protocols = ?4,
+                 attempted_case_keys = ?5, attempt_ordinal = ?6, attempt_phase = ?7,
+                 attempt_protocol = ?8, attempt_key = ?9, state = ?10,
+                 pause_reason = ?11, revision = revision + 1,
+                 updated_at = MAX(updated_at, ?12)
+             WHERE id = ?13 AND revision = ?14",
+            params![
+                encode_protocols(&checkpoint.requested_protocols)?,
+                encode_protocols(&checkpoint.observed_protocols)?,
+                encode_protocols(&checkpoint.completed_protocols)?,
+                encode_protocols(&checkpoint.remaining_protocols)?,
+                encode_case_keys(&checkpoint.attempted_case_keys)?,
+                checkpoint.attempt_ordinal as i64,
+                checkpoint.attempt_phase.map(|value| value.as_str()),
+                checkpoint.attempt_protocol.map(|value| value.as_str()),
+                checkpoint.attempt_key.as_deref(),
+                checkpoint.state.as_str(),
+                checkpoint.pause_reason.map(|value| value.as_str()),
+                now,
+                id,
+                expected_revision,
+            ],
+        )?;
+        if changed == 1 {
+            let workflow =
+                calibration_workflow_from_connection(&transaction, id)?.ok_or_else(|| {
+                    TargetsError::Model("updated calibration workflow disappeared".to_string())
+                })?;
+            transaction.commit()?;
+            return Ok(CalibrationWorkflowUpdateOutcome::Applied(Box::new(
+                workflow,
+            )));
+        }
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM calibration_workflows WHERE id = ?1",
+                params![id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        transaction.commit()?;
+        Ok(if exists {
+            CalibrationWorkflowUpdateOutcome::Changed
+        } else {
+            CalibrationWorkflowUpdateOutcome::Missing
+        })
+    }
+
     // --- Deep Capture compatibility facts (issue #217) ------------------------
 
     /// Append one Deep Capture compatibility fact for a registered target.
@@ -1460,6 +1640,148 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
     })())
 }
 
+fn calibration_workflow_from_connection(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<CalibrationWorkflow>, TargetsError> {
+    connection
+        .query_row(
+            "SELECT id, record_version, target_id, target_stable_id,
+                    target_handle, target_name, target_classification,
+                    target_classification_source, target_fidelity,
+                    target_provenance, target_anchor, target_install_root,
+                    target_launch_entries, target_evidence, target_detection_scan,
+                    target_folder_name, target_executable_hint,
+                    requested_protocols, observed_protocols,
+                    completed_protocols, remaining_protocols,
+                    attempted_case_keys, attempt_ordinal, attempt_phase,
+                    attempt_protocol, attempt_key, state, pause_reason, revision,
+                    created_at, updated_at
+             FROM calibration_workflows WHERE id = ?1",
+            params![id],
+            read_calibration_workflow_row,
+        )
+        .optional()?
+        .transpose()
+}
+
+fn read_calibration_workflow_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Result<CalibrationWorkflow, TargetsError>> {
+    let id: i64 = row.get(0)?;
+    let record_version: i64 = row.get(1)?;
+    let target_id: i64 = row.get(2)?;
+    let target_stable_id: i64 = row.get(3)?;
+    let target_handle: String = row.get(4)?;
+    let target_name: String = row.get(5)?;
+    let target_classification: String = row.get(6)?;
+    let target_classification_source: String = row.get(7)?;
+    let target_fidelity: String = row.get(8)?;
+    let target_provenance: Option<String> = row.get(9)?;
+    let target_anchor: Option<String> = row.get(10)?;
+    let target_install_root: Option<String> = row.get(11)?;
+    let target_launch_entries: Option<String> = row.get(12)?;
+    let target_evidence: Option<String> = row.get(13)?;
+    let target_detection_scan: Option<String> = row.get(14)?;
+    let target_folder_name: Option<String> = row.get(15)?;
+    let target_executable_hint: Option<String> = row.get(16)?;
+    let requested_protocols: String = row.get(17)?;
+    let observed_protocols: String = row.get(18)?;
+    let completed_protocols: String = row.get(19)?;
+    let remaining_protocols: String = row.get(20)?;
+    let attempted_case_keys: String = row.get(21)?;
+    let attempt_ordinal: i64 = row.get(22)?;
+    let attempt_phase: Option<String> = row.get(23)?;
+    let attempt_protocol: Option<String> = row.get(24)?;
+    let attempt_key: Option<String> = row.get(25)?;
+    let state: String = row.get(26)?;
+    let pause_reason: Option<String> = row.get(27)?;
+    let revision: i64 = row.get(28)?;
+    let created_at: i64 = row.get(29)?;
+    let updated_at: i64 = row.get(30)?;
+
+    Ok((|| {
+        if record_version != CALIBRATION_WORKFLOW_RECORD_VERSION {
+            return Err(TargetsError::Model(format!(
+                "unsupported calibration workflow record version {record_version}"
+            )));
+        }
+        let checkpoint = CalibrationWorkflowCheckpoint {
+            requested_protocols: decode_protocols(&requested_protocols)?,
+            observed_protocols: decode_protocols(&observed_protocols)?,
+            completed_protocols: decode_protocols(&completed_protocols)?,
+            remaining_protocols: decode_protocols(&remaining_protocols)?,
+            attempted_case_keys: decode_case_keys(&attempted_case_keys)?,
+            attempt_ordinal: u64::try_from(attempt_ordinal).map_err(|_| {
+                TargetsError::Model("negative calibration attempt ordinal".to_string())
+            })?,
+            attempt_phase: attempt_phase
+                .as_deref()
+                .map(CalibrationWorkflowPhase::parse)
+                .transpose()?,
+            attempt_protocol: attempt_protocol
+                .as_deref()
+                .map(CompatibilityProtocol::parse)
+                .transpose()?,
+            attempt_key,
+            state: CalibrationWorkflowState::parse(&state)?,
+            pause_reason: pause_reason
+                .as_deref()
+                .map(crate::workflow::CalibrationPauseReason::parse)
+                .transpose()?,
+        };
+        checkpoint.validate()?;
+        Ok(CalibrationWorkflow {
+            id,
+            record_version,
+            target_id,
+            target: CalibrationTargetAuthority {
+                stable_id: target_stable_id,
+                handle: target_handle,
+                name: target_name,
+                classification: TargetClassification::parse(&target_classification)?,
+                classification_source: ClassificationSource::parse(&target_classification_source)?,
+                fidelity: FidelityTier::parse(&target_fidelity).ok_or_else(|| {
+                    TargetsError::Model(format!(
+                        "unknown calibration target fidelity {target_fidelity:?}"
+                    ))
+                })?,
+                provenance: parse_json_opt(target_provenance)?,
+                anchor: target_anchor,
+                install_root: target_install_root,
+                launch_entries: parse_json_opt(target_launch_entries)?,
+                evidence: parse_json_opt(target_evidence)?,
+                detection_scan: target_detection_scan
+                    .as_deref()
+                    .map(DetectionScan::parse)
+                    .transpose()?,
+                folder_name: target_folder_name,
+                executable_hint: target_executable_hint,
+            },
+            requested_protocols: checkpoint.requested_protocols,
+            observed_protocols: checkpoint.observed_protocols,
+            completed_protocols: checkpoint.completed_protocols,
+            remaining_protocols: checkpoint.remaining_protocols,
+            attempted_case_keys: checkpoint.attempted_case_keys,
+            attempt_ordinal: checkpoint.attempt_ordinal,
+            attempt_phase: checkpoint.attempt_phase,
+            attempt_protocol: checkpoint.attempt_protocol,
+            attempt_key: checkpoint.attempt_key,
+            state: checkpoint.state,
+            pause_reason: checkpoint.pause_reason,
+            revision: u64::try_from(revision).map_err(|_| {
+                TargetsError::Model("invalid calibration workflow revision".to_string())
+            })?,
+            created_at: u64::try_from(created_at).map_err(|_| {
+                TargetsError::Model("invalid calibration workflow creation time".to_string())
+            })?,
+            updated_at: u64::try_from(updated_at).map_err(|_| {
+                TargetsError::Model("invalid calibration workflow update time".to_string())
+            })?,
+        })
+    })())
+}
+
 /// Read one `deep_capture_facts` row into a [`CompatibilityFact`]. Enum parsing
 /// that can fail is deferred so the rusqlite closure stays infallible in column
 /// reads; CHECK constraints make those failures unreachable unless schema and
@@ -1701,6 +2023,8 @@ mod tests {
         conn.execute_batch(DDL).expect("apply DDL");
         conn.execute_batch("ALTER TABLE games DROP COLUMN appinfo_change_number;")
             .expect("drop column to simulate v1");
+        conn.execute_batch("DROP TABLE calibration_workflows;")
+            .expect("drop v11 table to simulate v1");
         conn.execute_batch("DROP TABLE target_id_aliases; DROP TABLE targets;")
             .expect("drop v3 tables to simulate v1");
         conn.execute_batch("DROP TABLE volume_eligibility;")
@@ -1800,6 +2124,176 @@ mod tests {
     }
 
     #[test]
+    fn a_v10_store_gains_empty_calibration_workflows_without_changing_targets() {
+        let store = Store::open_in_memory().expect("store");
+        let conn = store.conn;
+        conn.execute_batch("DROP TABLE calibration_workflows;")
+            .expect("restore v10 shape");
+        conn.pragma_update(None, "user_version", 10i64)
+            .expect("stamp v10");
+        conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source, fidelity)
+             VALUES (145, 's145_target', 'S145 Target', 'game', 'user', 'authored')",
+            [],
+        )
+        .expect("insert v10 target");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let target = store
+            .target_by_handle("s145_target")
+            .expect("query")
+            .expect("target survives");
+        assert_eq!(target.stable_id, 145);
+        assert!(store
+            .calibration_workflow(1)
+            .expect("workflow query")
+            .is_none());
+    }
+
+    #[test]
+    fn calibration_workflow_round_trips_and_revisions_conditionally() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target("workflow_target", Some("steam:145"), FidelityTier::Authored);
+        entry.provenance = Some(serde_json::json!({"source":"operator"}));
+        entry.install_root = Some("C:\\Games\\Workflow".to_string());
+        entry.evidence = Some(serde_json::json!({"verified":true}));
+        entry.detection_scan = Some(DetectionScan::Complete);
+        entry.folder_name = Some("Workflow".to_string());
+        entry.executable_hint = Some("game.exe".to_string());
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("workflow_target")
+            .expect("query")
+            .expect("target");
+        let workflow = store
+            .create_calibration_workflow(
+                &target,
+                &[CompatibilityProtocol::Https, CompatibilityProtocol::Http1],
+                100,
+            )
+            .expect("create workflow");
+        assert_eq!(workflow.id, 1);
+        assert_eq!(workflow.revision, 1);
+        assert_eq!(workflow.state, CalibrationWorkflowState::Ready);
+        assert!(workflow.target.matches(&target));
+        assert_eq!(
+            workflow.target,
+            CalibrationTargetAuthority::from_target(&target)
+        );
+        assert_eq!(
+            workflow.requested_protocols,
+            vec![CompatibilityProtocol::Http1, CompatibilityProtocol::Https]
+        );
+
+        let in_flight = CalibrationWorkflowCheckpoint {
+            requested_protocols: workflow.requested_protocols.clone(),
+            observed_protocols: Vec::new(),
+            completed_protocols: Vec::new(),
+            remaining_protocols: workflow.remaining_protocols.clone(),
+            attempted_case_keys: vec!["case-1".to_string()],
+            attempt_ordinal: 1,
+            attempt_phase: Some(CalibrationWorkflowPhase::Tls),
+            attempt_protocol: Some(CompatibilityProtocol::Https),
+            attempt_key: Some("case-1".to_string()),
+            state: CalibrationWorkflowState::InFlight,
+            pause_reason: None,
+        };
+        let applied = store
+            .update_calibration_workflow(workflow.id, workflow.revision, &in_flight, 101)
+            .expect("update");
+        let CalibrationWorkflowUpdateOutcome::Applied(updated) = applied else {
+            panic!("expected applied checkpoint");
+        };
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.attempt_ordinal, 1);
+        assert_eq!(updated.state, CalibrationWorkflowState::InFlight);
+
+        assert_eq!(
+            store
+                .update_calibration_workflow(workflow.id, workflow.revision, &in_flight, 102)
+                .expect("stale update"),
+            CalibrationWorkflowUpdateOutcome::Changed
+        );
+    }
+
+    #[test]
+    fn calibration_workflow_cascades_and_refuses_corrupt_protocol_order() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("workflow_target", None, FidelityTier::Authored);
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("workflow_target")
+            .expect("query")
+            .expect("target");
+        let workflow = store
+            .create_calibration_workflow(
+                &target,
+                &[CompatibilityProtocol::Http1, CompatibilityProtocol::Https],
+                100,
+            )
+            .expect("create workflow");
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_workflows SET requested_protocols = ?1 WHERE id = ?2",
+                params![r#"["https","http1"]"#, workflow.id],
+            )
+            .expect("inject non-canonical set");
+        assert!(matches!(
+            store.calibration_workflow(workflow.id),
+            Err(TargetsError::Model(_))
+        ));
+
+        assert!(store
+            .delete_target(target.id.expect("row id"))
+            .expect("delete target after corruption"));
+        assert!(store
+            .calibration_workflow(workflow.id)
+            .expect("workflow query")
+            .is_none());
+    }
+
+    #[test]
+    fn calibration_workflow_refuses_an_unsupported_record_version() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("workflow_version", None, FidelityTier::Authored);
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("workflow_version")
+            .expect("query")
+            .expect("target");
+        let workflow = store
+            .create_calibration_workflow(&target, &[], 100)
+            .expect("create workflow");
+
+        store
+            .conn
+            .pragma_update(None, "ignore_check_constraints", true)
+            .expect("permit corrupt-version fixture");
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_workflows SET record_version = 2 WHERE id = ?1",
+                params![workflow.id],
+            )
+            .expect("inject unsupported version");
+        store
+            .conn
+            .pragma_update(None, "ignore_check_constraints", false)
+            .expect("restore constraint enforcement");
+
+        let err = store
+            .calibration_workflow(workflow.id)
+            .expect_err("unsupported versions remain unreadable");
+        assert!(
+            err.to_string()
+                .contains("unsupported calibration workflow record version 2"),
+            "error={err}"
+        );
+    }
+
+    #[test]
     fn a_v6_store_gains_the_coverage_column_and_reads_it_as_no_scan_recorded() {
         // The migration is additive: an existing row keeps every value and reads the
         // new column as NULL, which is exactly "no scan is recorded". Nothing is
@@ -1812,7 +2306,8 @@ mod tests {
             "ALTER TABLE targets DROP COLUMN detection_scan;
              ALTER TABLE targets DROP COLUMN folder_name;
              ALTER TABLE targets DROP COLUMN executable_hint;
-             DROP TABLE deep_capture_facts;",
+             DROP TABLE deep_capture_facts;
+             DROP TABLE calibration_workflows;",
         )
         .expect("drop columns");
         conn.pragma_update(None, "user_version", 6i64)
@@ -1850,7 +2345,8 @@ mod tests {
         conn.execute_batch(
             "ALTER TABLE targets DROP COLUMN folder_name;
              ALTER TABLE targets DROP COLUMN executable_hint;
-             DROP TABLE deep_capture_facts;",
+             DROP TABLE deep_capture_facts;
+             DROP TABLE calibration_workflows;",
         )
         .expect("drop columns");
         conn.pragma_update(None, "user_version", 7i64)
@@ -1883,7 +2379,7 @@ mod tests {
         // writes one. Backfilling would fabricate compatibility (P-9).
         let store = Store::open_in_memory().expect("store");
         let conn = store.conn;
-        conn.execute_batch("DROP TABLE deep_capture_facts;")
+        conn.execute_batch("DROP TABLE deep_capture_facts; DROP TABLE calibration_workflows;")
             .expect("drop v9 table");
         conn.pragma_update(None, "user_version", 8i64)
             .expect("stamp v8");
@@ -1920,7 +2416,8 @@ mod tests {
         conn.execute_batch(
             "ALTER TABLE deep_capture_facts DROP COLUMN routing_strategy;
              ALTER TABLE deep_capture_facts DROP COLUMN address_family;
-             ALTER TABLE deep_capture_facts DROP COLUMN protocol_family;",
+             ALTER TABLE deep_capture_facts DROP COLUMN protocol_family;
+             DROP TABLE calibration_workflows;",
         )
         .expect("restore v9 shape");
         conn.pragma_update(None, "user_version", 9_i64)

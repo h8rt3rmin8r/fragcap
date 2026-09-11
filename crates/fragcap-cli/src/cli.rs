@@ -570,7 +570,7 @@ pub struct DeepCaptureArgs {
 
 /// Arguments to the bounded guided calibration front door.
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
+#[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id", "resume"])))]
 pub struct CalibrateArgs {
     /// A stored target, or an exact installed name or Steam app id on a stored miss.
     ///
@@ -586,6 +586,14 @@ pub struct CalibrateArgs {
     /// Select a stored target by its durable stable identifier.
     #[arg(long)]
     pub id: Option<i64>,
+
+    /// Resume one exact workflow from the effective local store.
+    #[arg(long, value_name = "WORKFLOW_ID", conflicts_with = "protocol")]
+    pub resume: Option<i64>,
+
+    /// Record operator-owned work and exit without starting a session.
+    #[arg(long, value_enum, requires = "resume")]
+    pub pause_for: Option<GuidedCalibrationPauseArg>,
 
     /// The shipped catalog store consulted while resolving target context.
     #[arg(long)]
@@ -694,6 +702,16 @@ pub enum GuidedCalibrationProtocolArg {
     GenericUdp,
     Quic,
     Http3,
+}
+
+/// An operator-owned reason for pausing a durable calibration workflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum GuidedCalibrationPauseArg {
+    Login,
+    Eula,
+    Gameplay,
+    Shutdown,
+    Interrupted,
 }
 
 /// Exact protocol dimension for one compatibility calibration.
@@ -1411,6 +1429,8 @@ mod tests {
         assert!(!args.no_payload);
         assert!(!args.authorize_stdin);
         assert!(!args.restart_warm);
+        assert!(args.resume.is_none());
+        assert!(args.pause_for.is_none());
         assert!(!args.controlled_target);
     }
 }

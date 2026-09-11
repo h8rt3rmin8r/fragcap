@@ -10,9 +10,11 @@ use std::sync::{Mutex, OnceLock};
 use common::{run, run_with_authorization};
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
-    resolved_client_launch, ClassificationSource, CompatibilityAddressFamily,
-    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, Store, TargetClassification, TargetEntry,
+    resolved_client_launch, CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase,
+    CalibrationWorkflowState, CalibrationWorkflowUpdateOutcome, ClassificationSource,
+    CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
+    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy, Store, TargetClassification, TargetEntry,
 };
 
 const STABLE_ID: i64 = 75_000;
@@ -27,6 +29,10 @@ struct EchoAuthorization {
 }
 
 struct RecordingEchoAuthorization {
+    plan_ids: Vec<String>,
+}
+
+struct RecordingDeclineAuthorization {
     plan_ids: Vec<String>,
 }
 
@@ -90,6 +96,18 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for RecordingEchoAuthorization {
         assert!(exact);
         self.plan_ids.push(plan_id.to_string());
         Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for RecordingDeclineAuthorization {
+    fn is_terminal(&self) -> bool {
+        true
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(!exact);
+        self.plan_ids.push(plan_id.to_string());
+        Ok(b"no\n".to_vec())
     }
 }
 
@@ -306,7 +324,23 @@ fn assert_next_command_selects_store(events: &str, subcommand: &str, target_id: 
         .expect("generated next command parses");
     let (actual_subcommand, arguments) = matches.subcommand().expect("generated subcommand");
     assert_eq!(actual_subcommand, subcommand);
-    assert_eq!(arguments.get_one::<i64>("id"), Some(&target_id));
+    if subcommand == "calibrate" {
+        let workflow_id = *arguments
+            .get_one::<i64>("resume")
+            .expect("calibration continuation selects one workflow");
+        let store = Store::open(local).expect("continuation store");
+        assert_eq!(
+            store
+                .calibration_workflow(workflow_id)
+                .expect("workflow query")
+                .expect("workflow")
+                .target
+                .stable_id,
+            target_id
+        );
+    } else {
+        assert_eq!(arguments.get_one::<i64>("id"), Some(&target_id));
+    }
     assert_eq!(
         arguments
             .get_one::<PathBuf>("local_db")
@@ -489,6 +523,8 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
         "SELECTOR",
         "--target",
         "--id",
+        "--resume",
+        "--pause-for",
         "--bundle",
         "--duration",
         "--wait",
@@ -516,6 +552,290 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
     ] {
         assert!(!help.contains(excluded), "help leaked {excluded}:\n{help}");
     }
+}
+
+#[test]
+fn resume_is_an_explicit_mutually_exclusive_workflow_selector() {
+    for args in [
+        vec!["calibrate", "sample-target", "--resume", "1"],
+        vec!["calibrate", "--id", "75000", "--resume", "1"],
+        vec!["calibrate", "--resume", "1", "--protocol", "https"],
+    ] {
+        let (code, _out, err) = run(&args);
+        assert_eq!(code, 2, "args={args:?} stderr={err}");
+    }
+    let (code, _out, err) = run(&["calibrate", "--pause-for", "login"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--resume"), "stderr={err}");
+}
+
+#[test]
+fn resume_refuses_a_missing_workflow_without_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let (code, _out, err) = run(&[
+        "calibrate",
+        "--resume",
+        "404",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "stderr={err}");
+    assert!(
+        err.contains("workflow 404 does not exist in the selected local store"),
+        "stderr={err}"
+    );
+    assert!(!err.contains("authorization_plan"), "stderr={err}");
+}
+
+#[test]
+fn resume_requires_a_positive_workflow_identifier() {
+    let (code, _out, err) = run(&["calibrate", "--resume", "0"]);
+    assert_eq!(code, 2, "stderr={err}");
+    assert!(
+        err.contains("workflow identifier must be positive"),
+        "stderr={err}"
+    );
+
+    let (code, _out, err) = run(&["calibrate", "--resume", "-1"]);
+    assert_eq!(code, 2, "stderr={err}");
+}
+
+#[test]
+fn completed_workflow_is_durable_and_resume_is_a_no_effect_status_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{events}");
+    let guidance: serde_json::Value = events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "calibration.guidance")
+        .unwrap();
+    let workflow_id = guidance["workflow_id"].as_i64().expect("workflow id");
+    assert_eq!(guidance["workflow_state"], "completed");
+    assert_eq!(guidance["workflow_revision"], 2);
+    assert!(guidance["resume_command"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("--resume {workflow_id}")));
+
+    let (code, _out, resumed) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        &workflow_id.to_string(),
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{resumed}");
+    assert!(resumed.contains("\"status\":\"workflow-complete\""));
+    assert!(!resumed.contains("deep_capture.authorization_plan"));
+}
+
+#[test]
+fn resume_reassesses_current_facts_and_suppresses_completed_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let mut store = Store::open(&local).unwrap();
+    let target = store.target_by_stable_id(STABLE_ID).unwrap().unwrap();
+    let workflow = store
+        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .unwrap();
+    insert_protocol_fact(
+        &mut store,
+        target.id.expect("stored target row"),
+        CompatibilityProtocol::Https,
+    );
+    drop(store);
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        &workflow.id.to_string(),
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{events}");
+    assert!(events.contains("\"workflow_state\":\"completed\""));
+    assert!(events.contains("\"reason\":\"current-protocol-evidence\""));
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    assert!(!events.contains("deep_capture.session"));
+}
+
+#[test]
+fn explicit_operator_pauses_are_durable_and_effect_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let mut store = Store::open(&local).unwrap();
+    let target = store.target_by_stable_id(STABLE_ID).unwrap().unwrap();
+    let workflow_id = store
+        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .unwrap()
+        .id;
+    drop(store);
+
+    for reason in ["login", "eula", "gameplay", "shutdown", "interrupted"] {
+        let (code, _out, events) = run(&[
+            "--json",
+            "calibrate",
+            "--resume",
+            &workflow_id.to_string(),
+            "--pause-for",
+            reason,
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "reason={reason} events:\n{events}");
+        assert!(events.contains(&format!("\"pause_reason\":\"{reason}\"")));
+        assert!(events.contains("\"workflow_state\":\"paused\""));
+        assert!(!events.contains("deep_capture.authorization_plan"));
+        assert!(!events.contains("deep_capture.session"));
+    }
+}
+
+#[test]
+fn a_completed_workflow_cannot_be_changed_back_to_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let (_, _, initial) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    let workflow_id = initial
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "calibration.guidance")
+        .and_then(|event| event["workflow_id"].as_i64())
+        .unwrap();
+
+    let (code, _out, err) = run(&[
+        "calibrate",
+        "--resume",
+        &workflow_id.to_string(),
+        "--pause-for",
+        "login",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "stderr={err}");
+    assert!(
+        err.contains("completed calibration workflow"),
+        "stderr={err}"
+    );
+    let store = Store::open(&local).unwrap();
+    assert_eq!(
+        store
+            .calibration_workflow(workflow_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        CalibrationWorkflowState::Completed
+    );
+}
+
+#[test]
+fn an_in_flight_checkpoint_resumes_as_an_effect_free_interruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let mut store = Store::open(&local).unwrap();
+    let target = store.target_by_stable_id(STABLE_ID).unwrap().unwrap();
+    let workflow = store
+        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .unwrap();
+    let checkpoint = CalibrationWorkflowCheckpoint {
+        requested_protocols: workflow.requested_protocols.clone(),
+        observed_protocols: Vec::new(),
+        completed_protocols: Vec::new(),
+        remaining_protocols: workflow.remaining_protocols.clone(),
+        attempted_case_keys: vec!["case-1".to_string()],
+        attempt_ordinal: 1,
+        attempt_phase: Some(CalibrationWorkflowPhase::Tls),
+        attempt_protocol: Some(CompatibilityProtocol::Https),
+        attempt_key: Some("case-1".to_string()),
+        state: CalibrationWorkflowState::InFlight,
+        pause_reason: None,
+    };
+    assert!(matches!(
+        store
+            .update_calibration_workflow(workflow.id, workflow.revision, &checkpoint, 101)
+            .unwrap(),
+        CalibrationWorkflowUpdateOutcome::Applied(_)
+    ));
+    drop(store);
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        &workflow.id.to_string(),
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{events}");
+    assert!(events.contains("\"workflow_state\":\"paused\""));
+    assert!(events.contains("\"pause_reason\":\"interrupted\""));
+    assert!(events.contains("\"reason\":\"prior-process-interrupted\""));
+    assert!(!events.contains("deep_capture.authorization_plan"));
+}
+
+#[test]
+fn changed_target_authority_refuses_a_durable_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let mut store = Store::open(&local).unwrap();
+    let mut target = store.target_by_stable_id(STABLE_ID).unwrap().unwrap();
+    let workflow = store
+        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .unwrap();
+    target.name = "Changed Target".to_string();
+    assert!(store.update_target(&target).unwrap());
+    drop(store);
+
+    let (code, _out, err) = run(&[
+        "calibrate",
+        "--resume",
+        &workflow.id.to_string(),
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "stderr={err}");
+    assert!(err.contains("target authority changed"), "stderr={err}");
+    let store = Store::open(&local).unwrap();
+    assert_eq!(
+        store
+            .calibration_workflow(workflow.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        CalibrationWorkflowState::Refused
+    );
 }
 
 #[test]
@@ -1386,6 +1706,25 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
     assert_eq!(event["event"], "calibration.guidance");
     assert!(event["next_command"].is_string());
     assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
+
+    let (code, out, human) = run(&[
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr:\n{human}");
+    assert!(out.is_empty());
+    assert!(human.contains("workflow_id="), "stderr:\n{human}");
+    assert!(human.contains("workflow_revision="), "stderr:\n{human}");
+    assert!(
+        human.contains("workflow_state=completed"),
+        "stderr:\n{human}"
+    );
+    assert!(human.contains("pause_reason=none"), "stderr:\n{human}");
+    assert!(human.contains("resume_command=fragcap calibrate --resume"));
 }
 
 #[test]
@@ -1529,6 +1868,8 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     assert!(events.contains("\"action\":\"operator-action\""));
     assert!(events.contains("\"observed_launch_case\":\"direct-exe-warm\""));
     assert!(events.contains("\"process_control\":\"none\""));
+    assert!(events.contains("\"workflow_state\":\"paused\""));
+    assert!(events.contains("\"pause_reason\":\"shutdown\""));
     assert!(events.contains("--restart-warm"));
     assert_next_command_selects_store(&events, "calibrate", 82_001, &local);
     assert!(!events.contains("deep_capture.restart_plan"));
@@ -1536,8 +1877,8 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     let (code, _out, events) = run(&[
         "--json",
         "calibrate",
-        "--id",
-        "82001",
+        "--resume",
+        "1",
         "--restart-warm",
         "--local-db",
         local.to_str().unwrap(),
@@ -1546,6 +1887,13 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     assert!(events.contains("deep_capture.restart_plan"));
     assert!(events.contains("operator-close step requires a terminal"));
     assert!(!events.contains("deep_capture.authorization_plan"));
+    let workflow = Store::open(&local)
+        .unwrap()
+        .calibration_workflow(1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(workflow.state, CalibrationWorkflowState::Paused);
+    assert_eq!(workflow.pause_reason.unwrap().as_str(), "shutdown");
 }
 
 #[test]
@@ -1735,7 +2083,7 @@ fn declined_and_wrong_authorization_never_claim_completion() {
     assert_eq!(code, 0, "guidance:\n{guidance}");
     assert!(guidance.contains("status=declined"));
     assert!(!guidance.contains("status=completed"));
-    assert!(guidance.contains("fragcap calibrate --id 75000"));
+    assert!(guidance.contains("fragcap calibrate --resume"));
     assert!(!declined_bundle.exists());
 
     let invalid_dir = tempfile::tempdir().unwrap();
@@ -2112,4 +2460,80 @@ fn omitted_bundle_uses_a_distinct_default_session_root_for_every_attempt() {
         assert!(bundle.join("manifest.json").is_file());
         assert!(bundles[index + 1..].iter().all(|other| other != bundle));
     }
+}
+
+#[test]
+fn a_paused_workflow_resumes_with_a_fresh_plan_and_durable_bundle_ordinal() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("resumed-workflow");
+    seed_target(&local, true);
+    let mut decline = RecordingDeclineAuthorization {
+        plan_ids: Vec::new(),
+    };
+    let (code, _out, first_events) = run_with_authorization(
+        &[
+            "calibrate",
+            "--id",
+            "75000",
+            "--protocol",
+            "https",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut decline,
+    );
+    assert_eq!(code, 0, "events:\n{first_events}");
+    let first_plan = decline.plan_ids.first().cloned().expect("first plan");
+    let store = Store::open(&local).unwrap();
+    let workflow = store.calibration_workflow(1).unwrap().unwrap();
+    let workflow_id = workflow.id;
+    assert_eq!(workflow.state, CalibrationWorkflowState::Paused);
+    assert_eq!(workflow.pause_reason.unwrap().as_str(), "authorization");
+    drop(store);
+
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    let mut resume_authorization = RecordingEchoAuthorization {
+        plan_ids: Vec::new(),
+    };
+    let (code, _out, resumed_events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--resume",
+            &workflow_id.to_string(),
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut resume_authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{resumed_events}");
+    assert!(!resume_authorization.plan_ids.is_empty());
+    assert!(resume_authorization
+        .plan_ids
+        .iter()
+        .all(|plan| plan != &first_plan));
+    assert!(dir
+        .path()
+        .join("resumed-workflow-attempt-02-tls-https")
+        .join("manifest.json")
+        .is_file());
+    assert!(resumed_events.contains("\"workflow_state\":\"completed\""));
 }
