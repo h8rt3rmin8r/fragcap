@@ -847,6 +847,7 @@ fn calibrate_target_inputs_are_mutually_exclusive() {
 
 #[test]
 fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
+    let _environment = controlled_environment().lock().unwrap();
     for (selector, json, response, expected_status, expected_code) in [
         ("75000", false, b"no\n".to_vec(), "declined", 0),
         ("75000", true, b"wrong-plan\n".to_vec(), "invalid", 2),
