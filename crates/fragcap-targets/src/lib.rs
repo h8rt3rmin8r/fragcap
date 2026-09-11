@@ -54,6 +54,7 @@ pub mod sources;
 pub mod store;
 pub mod targets_export;
 pub mod volume;
+pub mod workflow;
 
 pub use authoring::{
     is_client_executable, launch_entries_for, launch_is_unresolved, observed_executable,
@@ -123,6 +124,11 @@ pub use store::{AuthorTargetClientOutcome, Store};
 pub use targets_export::{export_targets, import_targets};
 pub use volume::{
     DriveType, EligibilityReason, FixtureInventory, Volume, VolumeEligibility, VolumeInventory,
+};
+pub use workflow::{
+    CalibrationPauseReason, CalibrationTargetAuthority, CalibrationWorkflow,
+    CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase, CalibrationWorkflowState,
+    CalibrationWorkflowUpdateOutcome, CALIBRATION_WORKFLOW_RECORD_VERSION,
 };
 
 use std::fmt;

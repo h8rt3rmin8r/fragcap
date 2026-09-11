@@ -201,6 +201,11 @@ pub enum Event {
         maximum_attempts: Option<u64>,
         phase: Option<String>,
         protocol: Option<String>,
+        workflow_id: Option<i64>,
+        workflow_revision: Option<u64>,
+        workflow_state: Option<String>,
+        pause_reason: Option<String>,
+        resume_command: Box<Option<String>>,
     },
     /// An explicit warm-to-cold plan, emitted before the operator acts.
     DeepCaptureRestartPlan {
@@ -754,6 +759,11 @@ impl Event {
                 maximum_attempts,
                 phase,
                 protocol,
+                workflow_id,
+                workflow_revision,
+                workflow_state,
+                pause_reason,
+                resume_command,
             } => {
                 line.push_str(",\"target_id\":");
                 line.push_str(&target_id.to_string());
@@ -795,6 +805,16 @@ impl Event {
                 write_optional_json_string(phase.as_deref(), &mut line);
                 line.push_str(",\"protocol\":");
                 write_optional_json_string(protocol.as_deref(), &mut line);
+                line.push_str(",\"workflow_id\":");
+                write_optional_i64(*workflow_id, &mut line);
+                line.push_str(",\"workflow_revision\":");
+                write_optional_u64(*workflow_revision, &mut line);
+                line.push_str(",\"workflow_state\":");
+                write_optional_json_string(workflow_state.as_deref(), &mut line);
+                line.push_str(",\"pause_reason\":");
+                write_optional_json_string(pause_reason.as_deref(), &mut line);
+                line.push_str(",\"resume_command\":");
+                write_optional_json_string(resume_command.as_deref(), &mut line);
             }
             Event::DeepCaptureRestartPlan {
                 target,
@@ -1078,6 +1098,13 @@ fn write_optional_u64(value: Option<u64>, out: &mut String) {
     }
 }
 
+fn write_optional_i64(value: Option<i64>, out: &mut String) {
+    match value {
+        Some(value) => out.push_str(&value.to_string()),
+        None => out.push_str("null"),
+    }
+}
+
 fn write_json_strings(values: &[String], out: &mut String) {
     for (index, value) in values.iter().enumerate() {
         if index > 0 {
@@ -1350,6 +1377,11 @@ mod tests {
             maximum_attempts: Some(14),
             phase: Some("tls".to_string()),
             protocol: Some("https".to_string()),
+            workflow_id: Some(17),
+            workflow_revision: Some(4),
+            workflow_state: Some("paused".to_string()),
+            pause_reason: Some("gameplay".to_string()),
+            resume_command: Box::new(Some("fragcap calibrate --resume 17".to_string())),
         }
         .render(now);
         let guidance: serde_json::Value = serde_json::from_str(&guidance).unwrap();
@@ -1374,6 +1406,11 @@ mod tests {
         assert_eq!(guidance["maximum_attempts"], 14);
         assert_eq!(guidance["phase"], "tls");
         assert_eq!(guidance["protocol"], "https");
+        assert_eq!(guidance["workflow_id"], 17);
+        assert_eq!(guidance["workflow_revision"], 4);
+        assert_eq!(guidance["workflow_state"], "paused");
+        assert_eq!(guidance["pause_reason"], "gameplay");
+        assert_eq!(guidance["resume_command"], "fragcap calibrate --resume 17");
 
         let restart_plan = Event::DeepCaptureRestartPlan {
             target: "sample-target".to_string(),

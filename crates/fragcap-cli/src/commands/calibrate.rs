@@ -6,19 +6,23 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
-    AuthorTargetClientOutcome, CandidateIdentity, CandidateTarget, CompatibilityAddressFamily,
-    CompatibilityLaunchCase, CompatibilityProtocol, CompatibilityRoutingStrategy, Discovery,
-    DiscoveryAccount, Selection, Store, TargetEntry,
+    AuthorTargetClientOutcome, CalibrationPauseReason, CalibrationWorkflow,
+    CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase, CalibrationWorkflowState,
+    CalibrationWorkflowUpdateOutcome, CandidateIdentity, CandidateTarget,
+    CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, Selection, Store, TargetEntry,
 };
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 use crate::cli::{
     CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationArg, DeepCaptureCalibrationProtocolArg,
-    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, GuidedCalibrationProtocolArg,
+    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, GuidedCalibrationPauseArg,
+    GuidedCalibrationProtocolArg,
 };
 use crate::commands::deep_capture;
 use crate::emit::Emitter;
@@ -104,6 +108,21 @@ impl ExactAttemptCase {
             fragcap_version: step.case.fragcap_version.clone(),
             target_version: step.case.target_version.clone(),
         }
+    }
+
+    fn durable_key(&self) -> String {
+        json!({
+            "address_family": self.address_family.as_str(),
+            "fragcap_version": self.fragcap_version,
+            "launch_case": self.launch_case.as_str(),
+            "phase": self.phase,
+            "protocol": self.protocol.as_str(),
+            "proxy_backend": self.proxy_backend,
+            "proxy_backend_version": self.proxy_backend_version,
+            "routing_strategy": self.routing_strategy.as_str(),
+            "target_version": self.target_version,
+        })
+        .to_string()
     }
 }
 
@@ -1437,31 +1456,120 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let requested_protocols = normalize_protocol_args(&args.protocol);
+    if args.resume.is_some_and(|workflow_id| workflow_id <= 0) {
+        return Err(CliError::usage(
+            "calibration workflow identifier must be positive",
+        ));
+    }
+    let mut requested_protocols = normalize_protocol_args(&args.protocol);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let mut store = Store::open(&local_store_path)
         .map_err(|error| CliError::failure(format!("cannot open local store: {error}")))?;
     let local_store_argument = quote_powershell_path(&local_store_path)?;
-    let target = match resolve_or_register_target(
-        args,
-        authorization,
-        emitter,
-        &local_store_path,
-        &mut store,
-    )? {
-        TargetFrontDoor::Ready(target) => *target,
-        TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
-    };
-    let target = match prepare_steam_client(
-        args,
-        authorization,
-        emitter,
-        &local_store_path,
-        &mut store,
-        target,
-    )? {
-        TargetFrontDoor::Ready(target) => *target,
-        TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+    let (target, mut workflow) = if let Some(workflow_id) = args.resume {
+        let mut workflow = store
+            .calibration_workflow(workflow_id)
+            .map_err(|error| {
+                CliError::failure(format!("cannot read calibration workflow: {error}"))
+            })?
+            .ok_or_else(|| {
+                CliError::usage(format!(
+                    "calibration workflow {workflow_id} does not exist in the selected local store"
+                ))
+            })?;
+        let target = store
+            .target_by_stable_id(workflow.target.stable_id)
+            .map_err(|error| CliError::failure(format!("cannot resolve workflow target: {error}")))?
+            .ok_or_else(|| {
+                CliError::usage(format!(
+                    "calibration workflow {workflow_id} no longer has a target"
+                ))
+            })?;
+        if !workflow.target.matches(&target) {
+            let checkpoint =
+                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Refused, None);
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            return Err(CliError::usage(format!(
+                "calibration workflow {workflow_id} target authority changed; start a fresh workflow"
+            )));
+        }
+        if workflow.state == CalibrationWorkflowState::Refused {
+            return Err(CliError::usage(format!(
+                "calibration workflow {workflow_id} was refused and cannot start another session"
+            )));
+        }
+        requested_protocols = workflow.requested_protocols.clone();
+        if workflow.state == CalibrationWorkflowState::InFlight {
+            let checkpoint = checkpoint_from_workflow(
+                &workflow,
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Interrupted),
+            );
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
+                emitter,
+                &target,
+                &workflow,
+                &local_store_argument,
+                workflow_status_guidance(&workflow, "interrupted", "prior-process-interrupted"),
+            );
+            return Ok(Exit::SUCCESS);
+        }
+        if workflow.state == CalibrationWorkflowState::Completed && args.pause_for.is_some() {
+            return Err(CliError::usage(
+                "a completed calibration workflow cannot be paused",
+            ));
+        }
+        if let Some(pause) = args.pause_for {
+            let checkpoint = checkpoint_from_workflow(
+                &workflow,
+                CalibrationWorkflowState::Paused,
+                Some(pause_reason(pause)),
+            );
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
+                emitter,
+                &target,
+                &workflow,
+                &local_store_argument,
+                workflow_status_guidance(&workflow, "paused", "operator-selected-pause"),
+            );
+            return Ok(Exit::SUCCESS);
+        }
+        if workflow.state == CalibrationWorkflowState::Paused {
+            let checkpoint =
+                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Ready, None);
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+        }
+        (target, workflow)
+    } else {
+        let target = match resolve_or_register_target(
+            args,
+            authorization,
+            emitter,
+            &local_store_path,
+            &mut store,
+        )? {
+            TargetFrontDoor::Ready(target) => *target,
+            TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+        };
+        let target = match prepare_steam_client(
+            args,
+            authorization,
+            emitter,
+            &local_store_path,
+            &mut store,
+            target,
+        )? {
+            TargetFrontDoor::Ready(target) => *target,
+            TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+        };
+        let workflow = store
+            .create_calibration_workflow(&target, &requested_protocols, workflow_now())
+            .map_err(|error| {
+                CliError::failure(format!("cannot create calibration workflow: {error}"))
+            })?;
+        (target, workflow)
     };
     if args.controlled_target {
         deep_capture::require_controlled_target(&target)?;
@@ -1469,11 +1577,49 @@ pub fn run(
     let sequence_target_authority = SequenceTargetAuthority::from_target(&target);
     let snapshot = process_snapshot(args.controlled_target);
     let proposal = build_proposal(&store, &target, snapshot.clone(), &requested_protocols)?;
-    if !proposal.limitations.is_empty() {
-        let limitations = limitation_messages(&proposal);
-        emit_guidance(
+    if workflow.state == CalibrationWorkflowState::Completed {
+        let all_protocols = merge_protocols(&requested_protocols, &workflow.observed_protocols);
+        let (completed_protocols, remaining_protocols) =
+            coverage_from_proposal(&proposal, &all_protocols);
+        emit_workflow_guidance(
             emitter,
             &target,
+            &workflow,
+            &local_store_argument,
+            Guidance {
+                topology: topology(&proposal),
+                action: "ready",
+                status: if remaining_protocols.is_empty() {
+                    "workflow-complete"
+                } else {
+                    "workflow-complete-current-gap"
+                },
+                observed_launch_case: None,
+                selected_launch_case: ready_launch_case(&proposal)
+                    .ok()
+                    .map(|value| value.as_str().to_string()),
+                reason: Some("completed-workflow-status-check".to_string()),
+                images: readiness_images(&proposal),
+                limitations: limitation_messages(&proposal),
+                requested_protocols: protocol_names(&requested_protocols),
+                observed_protocols: protocol_names(&workflow.observed_protocols),
+                completed_protocols: protocol_names(&completed_protocols),
+                remaining_protocols: protocol_names(&remaining_protocols),
+                next_command: None,
+            },
+        );
+        return Ok(Exit::SUCCESS);
+    }
+    if !proposal.limitations.is_empty() {
+        let limitations = limitation_messages(&proposal);
+        let checkpoint =
+            checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Refused, None);
+        apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+        emit_workflow_guidance(
+            emitter,
+            &target,
+            &workflow,
+            &local_store_argument,
             Guidance {
                 topology: topology(&proposal),
                 action: "refused",
@@ -1484,9 +1630,9 @@ pub fn run(
                 images: readiness_images(&proposal),
                 limitations: limitations.clone(),
                 requested_protocols: protocol_names(&requested_protocols),
-                observed_protocols: Vec::new(),
-                completed_protocols: Vec::new(),
-                remaining_protocols: protocol_names(&requested_protocols),
+                observed_protocols: protocol_names(&workflow.observed_protocols),
+                completed_protocols: protocol_names(&workflow.completed_protocols),
+                remaining_protocols: protocol_names(&workflow.remaining_protocols),
                 next_command: None,
             },
         );
@@ -1502,15 +1648,21 @@ pub fn run(
             cold_case,
             images,
         } => {
-            let next_command = calibrate_command(
-                target.stable_id,
-                &local_store_argument,
-                true,
-                &requested_protocols,
+            let next_command = format!(
+                "{} --restart-warm",
+                calibration_resume_command(workflow.id, &local_store_argument)
             );
-            emit_guidance(
+            let checkpoint = checkpoint_from_workflow(
+                &workflow,
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Shutdown),
+            );
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&proposal),
                     action: "operator-action",
@@ -1521,15 +1673,18 @@ pub fn run(
                     images: images.clone(),
                     limitations: Vec::new(),
                     requested_protocols: protocol_names(&requested_protocols),
-                    observed_protocols: Vec::new(),
-                    completed_protocols: Vec::new(),
-                    remaining_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&workflow.observed_protocols),
+                    completed_protocols: protocol_names(&workflow.completed_protocols),
+                    remaining_protocols: protocol_names(&workflow.remaining_protocols),
                     next_command: Some(next_command),
                 },
             );
             if !args.restart_warm {
                 return Ok(Exit::SUCCESS);
             }
+            let checkpoint =
+                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Ready, None);
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
             let mut restart_args = low_level_args(
                 args,
                 target.stable_id,
@@ -1542,9 +1697,14 @@ pub fn run(
         }
         deep_capture_api::CalibrationLaunchReadiness::Ready { .. } => {}
         _ => {
-            emit_guidance(
+            let checkpoint =
+                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Refused, None);
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&proposal),
                     action: "refused",
@@ -1555,9 +1715,9 @@ pub fn run(
                     images: readiness_images(&proposal),
                     limitations: Vec::new(),
                     requested_protocols: protocol_names(&requested_protocols),
-                    observed_protocols: Vec::new(),
-                    completed_protocols: Vec::new(),
-                    remaining_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&workflow.observed_protocols),
+                    completed_protocols: protocol_names(&workflow.completed_protocols),
+                    remaining_protocols: protocol_names(&workflow.remaining_protocols),
                     next_command: None,
                 },
             );
@@ -1574,25 +1734,59 @@ pub fn run(
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
     )?;
-    let mut observed_protocols = Vec::new();
-    let mut attempted = HashSet::new();
+    let mut observed_protocols = workflow.observed_protocols.clone();
+    let mut attempted = workflow
+        .attempted_case_keys
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
     let (mut last_completed_protocols, mut last_remaining_protocols) =
         coverage_from_proposal(&proposal, &requested_protocols);
 
     loop {
         if guided_sequence_interrupted(&crate::orchestrator::INTERRUPT) {
+            let checkpoint = checkpoint_from_workflow(
+                &workflow,
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Interrupted),
+            );
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
+                emitter,
+                &target,
+                &workflow,
+                &local_store_argument,
+                workflow_status_guidance(
+                    &workflow,
+                    "interrupted",
+                    "sequence-interrupted-before-attempt",
+                ),
+            );
             return Err(CliError::usage(
                 "guided calibration was interrupted before the next attempt; no later effects were applied",
             ));
         }
-        let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
+        let mut fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
         let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
         let fresh_target = match deep_capture::resolve_target(&fresh_store, &resolver_args) {
             Ok(target) => target,
             Err(error) => {
-                emit_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &last_completed_protocols,
+                    &last_remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(CalibrationPauseReason::Failure),
+                    None,
+                );
+                apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+                emit_workflow_guidance(
                     emitter,
                     &target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: None,
                         action: "refused",
@@ -1613,9 +1807,22 @@ pub fn run(
             }
         };
         if !sequence_target_authority.matches(&fresh_target) {
-            emit_guidance(
+            let checkpoint = progress_checkpoint(
+                &workflow,
+                &requested_protocols,
+                &observed_protocols,
+                &[],
+                &all_protocols,
+                CalibrationWorkflowState::Refused,
+                None,
+                None,
+            );
+            apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: None,
                     action: "refused",
@@ -1647,9 +1854,22 @@ pub fn run(
 
         if !selected.limitations.is_empty() {
             let limitations = limitation_messages(&selected);
-            emit_guidance(
+            let checkpoint = progress_checkpoint(
+                &workflow,
+                &requested_protocols,
+                &observed_protocols,
+                &completed_protocols,
+                &remaining_protocols,
+                CalibrationWorkflowState::Refused,
+                None,
+                None,
+            );
+            apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &fresh_target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&selected),
                     action: "refused",
@@ -1678,9 +1898,22 @@ pub fn run(
                 cold_case,
                 images,
             } => {
-                emit_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(CalibrationPauseReason::Shutdown),
+                    None,
+                );
+                apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+                emit_workflow_guidance(
                     emitter,
                     &fresh_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action: "operator-action",
@@ -1694,11 +1927,9 @@ pub fn run(
                         observed_protocols: protocol_names(&observed_protocols),
                         completed_protocols: protocol_names(&completed_protocols),
                         remaining_protocols: protocol_names(&remaining_protocols),
-                        next_command: Some(calibrate_command(
-                            fresh_target.stable_id,
-                            &local_store_argument,
-                            true,
-                            &all_protocols,
+                        next_command: Some(format!(
+                            "{} --restart-warm",
+                            calibration_resume_command(workflow.id, &local_store_argument)
                         )),
                     },
                 );
@@ -1706,9 +1937,22 @@ pub fn run(
             }
             deep_capture_api::CalibrationLaunchReadiness::Ready { .. } => {}
             _ => {
-                emit_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Refused,
+                    None,
+                    None,
+                );
+                apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+                emit_workflow_guidance(
                     emitter,
                     &fresh_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action: "refused",
@@ -1755,9 +1999,22 @@ pub fn run(
             } else {
                 ("requested-coverage-complete", "current-protocol-evidence")
             };
-            emit_guidance(
+            let checkpoint = progress_checkpoint(
+                &workflow,
+                &requested_protocols,
+                &observed_protocols,
+                &completed_protocols,
+                &remaining_protocols,
+                CalibrationWorkflowState::Completed,
+                None,
+                None,
+            );
+            apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &fresh_target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&selected),
                     action: "ready",
@@ -1792,22 +2049,31 @@ pub fn run(
             deep_capture_api::CalibrationPhase::Reachability => "run-reachability",
             deep_capture_api::CalibrationPhase::Tls => "run-protocol",
         };
-        let next_command = continuation_command(
-            &selected,
-            true,
-            fresh_target.stable_id,
+        let next_command = Some(calibration_resume_command(
+            workflow.id,
             &local_store_argument,
-            &all_protocols,
-            &remaining_protocols,
-        );
-        let key = ExactAttemptCase::from_step(&step);
-        let attempted_count = attempted.len();
-        let inserted = attempted_count < MAX_GUIDED_ATTEMPTS && attempted.insert(key);
+        ));
+        let key = ExactAttemptCase::from_step(&step).durable_key();
+        let attempted_count = workflow.attempt_ordinal as usize;
+        let inserted = attempted_count < MAX_GUIDED_ATTEMPTS && attempted.insert(key.clone());
         let no_progress_reason = no_progress_reason(attempted_count, inserted);
         if let Some(no_progress_reason) = no_progress_reason {
-            emit_guidance(
+            let checkpoint = progress_checkpoint(
+                &workflow,
+                &requested_protocols,
+                &observed_protocols,
+                &completed_protocols,
+                &remaining_protocols,
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Failure),
+                None,
+            );
+            apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+            emit_workflow_guidance(
                 emitter,
                 &fresh_target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&selected),
                     action,
@@ -1826,7 +2092,7 @@ pub fn run(
             );
             return Ok(Exit::SUCCESS);
         }
-        let attempt_number = attempted.len();
+        let attempt_number = workflow.attempt_ordinal as usize + 1;
         let progress = AttemptProgress {
             number: attempt_number as u64,
             phase: step.phase,
@@ -1847,9 +2113,22 @@ pub fn run(
         )?;
         if let Some(bundle) = low_level.bundle.as_deref() {
             if let Err(error) = deep_capture::validate_bundle_root(bundle) {
-                emit_attempt_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(CalibrationPauseReason::Failure),
+                    None,
+                );
+                apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+                emit_attempt_workflow_guidance(
                     emitter,
                     &fresh_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action,
@@ -1870,9 +2149,22 @@ pub fn run(
                 return Err(error);
             }
         }
-        emit_attempt_guidance(
+        let checkpoint = progress_checkpoint(
+            &workflow,
+            &requested_protocols,
+            &observed_protocols,
+            &completed_protocols,
+            &remaining_protocols,
+            CalibrationWorkflowState::InFlight,
+            None,
+            Some((progress.number, step.phase, step.case.protocol, key)),
+        );
+        apply_workflow_checkpoint(&mut fresh_store, &mut workflow, checkpoint)?;
+        emit_attempt_workflow_guidance(
             emitter,
             &fresh_target,
+            &workflow,
+            &local_store_argument,
             Guidance {
                 topology: topology(&selected),
                 action,
@@ -1895,9 +2187,32 @@ pub fn run(
             Ok(outcome) => outcome,
             Err(error) => {
                 let refused = error.exit() == Exit::USAGE;
-                emit_attempt_guidance(
+                let mut terminal_store = deep_capture::open_local_store(args.local_db.as_deref())?;
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(if refused {
+                        CalibrationPauseReason::Authorization
+                    } else {
+                        CalibrationPauseReason::Failure
+                    }),
+                    None,
+                );
+                let checkpoint = if refused {
+                    retry_current_case(&workflow, checkpoint)
+                } else {
+                    checkpoint
+                };
+                apply_workflow_checkpoint(&mut terminal_store, &mut workflow, checkpoint)?;
+                emit_attempt_workflow_guidance(
                     emitter,
                     &fresh_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action,
@@ -1931,13 +2246,26 @@ pub fn run(
         );
         observed_protocols = merge_protocols(&observed_protocols, &newly_observed);
         let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
-        let completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
+        let mut completed_store = deep_capture::open_local_store(args.local_db.as_deref())?;
         let completed_target = match deep_capture::resolve_target(&completed_store, &low_level) {
             Ok(target) => target,
             Err(error) => {
-                emit_attempt_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(CalibrationPauseReason::Failure),
+                    None,
+                );
+                apply_workflow_checkpoint(&mut completed_store, &mut workflow, checkpoint)?;
+                emit_attempt_workflow_guidance(
                     emitter,
                     &fresh_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action,
@@ -1959,9 +2287,22 @@ pub fn run(
             }
         };
         if !sequence_target_authority.matches(&completed_target) {
-            emit_attempt_guidance(
+            let checkpoint = progress_checkpoint(
+                &workflow,
+                &requested_protocols,
+                &observed_protocols,
+                &completed_protocols,
+                &remaining_protocols,
+                CalibrationWorkflowState::Refused,
+                None,
+                None,
+            );
+            apply_workflow_checkpoint(&mut completed_store, &mut workflow, checkpoint)?;
+            emit_attempt_workflow_guidance(
                 emitter,
                 &target,
+                &workflow,
+                &local_store_argument,
                 Guidance {
                     topology: topology(&selected),
                     action,
@@ -1991,9 +2332,22 @@ pub fn run(
         ) {
             Ok(proposal) => proposal,
             Err(error) => {
-                emit_attempt_guidance(
+                let checkpoint = progress_checkpoint(
+                    &workflow,
+                    &requested_protocols,
+                    &observed_protocols,
+                    &completed_protocols,
+                    &remaining_protocols,
+                    CalibrationWorkflowState::Paused,
+                    Some(CalibrationPauseReason::Failure),
+                    None,
+                );
+                apply_workflow_checkpoint(&mut completed_store, &mut workflow, checkpoint)?;
+                emit_attempt_workflow_guidance(
                     emitter,
                     &completed_target,
+                    &workflow,
+                    &local_store_argument,
                     Guidance {
                         topology: topology(&selected),
                         action,
@@ -2034,17 +2388,44 @@ pub fn run(
                 &completed_protocols,
             ),
         };
-        let next_command = continuation_command(
-            &completed,
-            outcome.disposition != deep_capture::RunDisposition::Failed,
-            completed_target.stable_id,
-            &local_store_argument,
-            &all_protocols,
+        let next_command = if outcome.disposition == deep_capture::RunDisposition::Failed {
+            None
+        } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
+            Some(target_command(
+                "deep-capture",
+                completed_target.stable_id,
+                &local_store_argument,
+                " --launch",
+            ))
+        } else {
+            Some(calibration_resume_command(
+                workflow.id,
+                &local_store_argument,
+            ))
+        };
+        let (workflow_state, pause_reason) =
+            terminal_workflow_state(outcome.disposition, completed_status);
+        let checkpoint = progress_checkpoint(
+            &workflow,
+            &requested_protocols,
+            &observed_protocols,
+            &completed_protocols,
             &remaining_protocols,
+            workflow_state,
+            pause_reason,
+            None,
         );
-        emit_attempt_guidance(
+        let checkpoint = if outcome.disposition == deep_capture::RunDisposition::Declined {
+            retry_current_case(&workflow, checkpoint)
+        } else {
+            checkpoint
+        };
+        apply_workflow_checkpoint(&mut completed_store, &mut workflow, checkpoint)?;
+        emit_attempt_workflow_guidance(
             emitter,
             &completed_target,
+            &workflow,
+            &local_store_argument,
             Guidance {
                 topology: topology(&completed),
                 action,
@@ -2191,6 +2572,183 @@ fn target_command(verb: &str, target_id: i64, local_store: &str, suffix: &str) -
     format!("fragcap {verb} --id {target_id} --local-db {local_store}{suffix}")
 }
 
+fn calibration_resume_command(workflow_id: i64, local_store: &str) -> String {
+    format!("fragcap calibrate --resume {workflow_id} --local-db {local_store}")
+}
+
+fn workflow_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn pause_reason(value: GuidedCalibrationPauseArg) -> CalibrationPauseReason {
+    match value {
+        GuidedCalibrationPauseArg::Login => CalibrationPauseReason::Login,
+        GuidedCalibrationPauseArg::Eula => CalibrationPauseReason::Eula,
+        GuidedCalibrationPauseArg::Gameplay => CalibrationPauseReason::Gameplay,
+        GuidedCalibrationPauseArg::Shutdown => CalibrationPauseReason::Shutdown,
+        GuidedCalibrationPauseArg::Interrupted => CalibrationPauseReason::Interrupted,
+    }
+}
+
+fn workflow_phase(value: deep_capture_api::CalibrationPhase) -> CalibrationWorkflowPhase {
+    match value {
+        deep_capture_api::CalibrationPhase::Reachability => CalibrationWorkflowPhase::Reachability,
+        deep_capture_api::CalibrationPhase::Tls => CalibrationWorkflowPhase::Tls,
+    }
+}
+
+fn checkpoint_from_workflow(
+    workflow: &CalibrationWorkflow,
+    state: CalibrationWorkflowState,
+    pause_reason: Option<CalibrationPauseReason>,
+) -> CalibrationWorkflowCheckpoint {
+    CalibrationWorkflowCheckpoint {
+        requested_protocols: workflow.requested_protocols.clone(),
+        observed_protocols: workflow.observed_protocols.clone(),
+        completed_protocols: workflow.completed_protocols.clone(),
+        remaining_protocols: workflow.remaining_protocols.clone(),
+        attempted_case_keys: workflow.attempted_case_keys.clone(),
+        attempt_ordinal: workflow.attempt_ordinal,
+        attempt_phase: None,
+        attempt_protocol: None,
+        attempt_key: None,
+        state,
+        pause_reason,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn progress_checkpoint(
+    workflow: &CalibrationWorkflow,
+    requested_protocols: &[CompatibilityProtocol],
+    observed_protocols: &[CompatibilityProtocol],
+    completed_protocols: &[CompatibilityProtocol],
+    remaining_protocols: &[CompatibilityProtocol],
+    state: CalibrationWorkflowState,
+    pause_reason: Option<CalibrationPauseReason>,
+    attempt: Option<(
+        u64,
+        deep_capture_api::CalibrationPhase,
+        CompatibilityProtocol,
+        String,
+    )>,
+) -> CalibrationWorkflowCheckpoint {
+    let mut attempted_case_keys = workflow.attempted_case_keys.clone();
+    if let Some((_, _, _, key)) = &attempt {
+        attempted_case_keys.push(key.clone());
+        attempted_case_keys.sort();
+        attempted_case_keys.dedup();
+    }
+    CalibrationWorkflowCheckpoint {
+        requested_protocols: requested_protocols.to_vec(),
+        observed_protocols: observed_protocols.to_vec(),
+        completed_protocols: completed_protocols.to_vec(),
+        remaining_protocols: remaining_protocols.to_vec(),
+        attempted_case_keys,
+        attempt_ordinal: attempt
+            .as_ref()
+            .map(|(ordinal, _, _, _)| *ordinal)
+            .unwrap_or(workflow.attempt_ordinal),
+        attempt_phase: attempt
+            .as_ref()
+            .map(|(_, phase, _, _)| workflow_phase(*phase)),
+        attempt_protocol: attempt.as_ref().map(|(_, _, protocol, _)| *protocol),
+        attempt_key: attempt.map(|(_, _, _, key)| key),
+        state,
+        pause_reason,
+    }
+}
+
+fn apply_workflow_checkpoint(
+    store: &mut Store,
+    workflow: &mut CalibrationWorkflow,
+    checkpoint: CalibrationWorkflowCheckpoint,
+) -> Result<(), CliError> {
+    match store
+        .update_calibration_workflow(workflow.id, workflow.revision, &checkpoint, workflow_now())
+        .map_err(|error| {
+            CliError::failure(format!("cannot update calibration workflow: {error}"))
+        })? {
+        CalibrationWorkflowUpdateOutcome::Applied(updated) => {
+            *workflow = *updated;
+            Ok(())
+        }
+        CalibrationWorkflowUpdateOutcome::Changed => Err(CliError::usage(format!(
+            "calibration workflow {} changed concurrently; review its current state",
+            workflow.id
+        ))),
+        CalibrationWorkflowUpdateOutcome::Missing => Err(CliError::usage(format!(
+            "calibration workflow {} was removed before its checkpoint could be updated",
+            workflow.id
+        ))),
+    }
+}
+
+fn retry_current_case(
+    workflow: &CalibrationWorkflow,
+    mut checkpoint: CalibrationWorkflowCheckpoint,
+) -> CalibrationWorkflowCheckpoint {
+    if let Some(attempt_key) = &workflow.attempt_key {
+        checkpoint
+            .attempted_case_keys
+            .retain(|value| value != attempt_key);
+    }
+    checkpoint
+}
+
+fn terminal_workflow_state(
+    disposition: deep_capture::RunDisposition,
+    completed_status: &str,
+) -> (CalibrationWorkflowState, Option<CalibrationPauseReason>) {
+    match disposition {
+        deep_capture::RunDisposition::Declined => (
+            CalibrationWorkflowState::Paused,
+            Some(CalibrationPauseReason::Authorization),
+        ),
+        deep_capture::RunDisposition::Interrupted => (
+            CalibrationWorkflowState::Paused,
+            Some(CalibrationPauseReason::Interrupted),
+        ),
+        deep_capture::RunDisposition::Failed => (
+            CalibrationWorkflowState::Paused,
+            Some(CalibrationPauseReason::Failure),
+        ),
+        deep_capture::RunDisposition::Completed if completed_status == "completed" => {
+            (CalibrationWorkflowState::Ready, None)
+        }
+        deep_capture::RunDisposition::Completed => (
+            CalibrationWorkflowState::Paused,
+            Some(CalibrationPauseReason::Gameplay),
+        ),
+    }
+}
+
+fn workflow_status_guidance(
+    workflow: &CalibrationWorkflow,
+    status: &'static str,
+    reason: &'static str,
+) -> Guidance {
+    Guidance {
+        topology: None,
+        action: "operator-action",
+        status,
+        observed_launch_case: None,
+        selected_launch_case: None,
+        reason: Some(reason.to_string()),
+        images: Vec::new(),
+        limitations: Vec::new(),
+        requested_protocols: protocol_names(&workflow.requested_protocols),
+        observed_protocols: protocol_names(&workflow.observed_protocols),
+        completed_protocols: protocol_names(&workflow.completed_protocols),
+        remaining_protocols: protocol_names(&workflow.remaining_protocols),
+        next_command: None,
+    }
+}
+
+#[cfg(test)]
 fn calibrate_command(
     target_id: i64,
     local_store: &str,
@@ -2209,6 +2767,7 @@ fn calibrate_command(
     target_command("calibrate", target_id, local_store, &suffix)
 }
 
+#[cfg(test)]
 fn continuation_command(
     proposal: &deep_capture_api::CalibrationProposal,
     session_succeeded: bool,
@@ -2557,17 +3116,37 @@ fn limitation_messages(proposal: &deep_capture_api::CalibrationProposal) -> Vec<
         .collect()
 }
 
-fn emit_guidance(emitter: &mut Emitter, target: &TargetEntry, guidance: Guidance) {
-    emit_guidance_with_attempt(emitter, target, guidance, None);
-}
-
-fn emit_attempt_guidance(
+fn emit_workflow_guidance(
     emitter: &mut Emitter,
     target: &TargetEntry,
+    workflow: &CalibrationWorkflow,
+    local_store: &str,
+    guidance: Guidance,
+) {
+    emit_guidance_with_attempt(
+        emitter,
+        target,
+        guidance,
+        None,
+        Some((workflow, local_store)),
+    );
+}
+
+fn emit_attempt_workflow_guidance(
+    emitter: &mut Emitter,
+    target: &TargetEntry,
+    workflow: &CalibrationWorkflow,
+    local_store: &str,
     guidance: Guidance,
     attempt: AttemptProgress,
 ) {
-    emit_guidance_with_attempt(emitter, target, guidance, Some(attempt));
+    emit_guidance_with_attempt(
+        emitter,
+        target,
+        guidance,
+        Some(attempt),
+        Some((workflow, local_store)),
+    );
 }
 
 fn emit_guidance_with_attempt(
@@ -2575,7 +3154,10 @@ fn emit_guidance_with_attempt(
     target: &TargetEntry,
     guidance: Guidance,
     attempt: Option<AttemptProgress>,
+    workflow: Option<(&CalibrationWorkflow, &str)>,
 ) {
+    let resume_command = workflow
+        .map(|(workflow, local_store)| calibration_resume_command(workflow.id, local_store));
     emitter.event(&Event::CalibrationGuidance {
         target_id: target.stable_id,
         target: target.handle.clone(),
@@ -2597,9 +3179,16 @@ fn emit_guidance_with_attempt(
         maximum_attempts: attempt.map(|_| MAX_GUIDED_ATTEMPTS as u64),
         phase: attempt.map(|value| value.phase.as_str().to_string()),
         protocol: attempt.map(|value| value.protocol.as_str().to_string()),
+        workflow_id: workflow.map(|(value, _)| value.id),
+        workflow_revision: workflow.map(|(value, _)| value.revision),
+        workflow_state: workflow.map(|(value, _)| value.state.as_str().to_string()),
+        pause_reason: workflow
+            .and_then(|(value, _)| value.pause_reason)
+            .map(|value| value.as_str().to_string()),
+        resume_command: Box::new(resume_command.clone()),
     });
     emitter.progress(&format!(
-        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} process_control=none next_command={}",
+        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} workflow_id={} workflow_revision={} workflow_state={} pause_reason={} process_control=none next_command={} resume_command={}",
         target.handle,
         target.stable_id,
         guidance.topology.as_deref().unwrap_or("unavailable"),
@@ -2618,7 +3207,12 @@ fn emit_guidance_with_attempt(
         attempt.map(|_| MAX_GUIDED_ATTEMPTS.to_string()).unwrap_or_else(|| "none".to_string()),
         attempt.map(|value| value.phase.as_str()).unwrap_or("none"),
         attempt.map(|value| value.protocol.as_str()).unwrap_or("none"),
+        workflow.map(|(value, _)| value.id.to_string()).unwrap_or_else(|| "none".to_string()),
+        workflow.map(|(value, _)| value.revision.to_string()).unwrap_or_else(|| "none".to_string()),
+        workflow.map(|(value, _)| value.state.as_str()).unwrap_or("none"),
+        workflow.and_then(|(value, _)| value.pause_reason).map(|value| value.as_str()).unwrap_or("none"),
         guidance.next_command.as_deref().unwrap_or("none"),
+        resume_command.as_deref().unwrap_or("none"),
     ));
 }
 
@@ -3085,6 +3679,42 @@ mod tests {
         assert!(!guided_sequence_interrupted(&interrupt));
         interrupt.store(true, Ordering::Relaxed);
         assert!(guided_sequence_interrupted(&interrupt));
+    }
+
+    #[test]
+    fn terminal_workflow_state_keeps_operator_and_failure_boundaries_distinct() {
+        assert_eq!(
+            terminal_workflow_state(deep_capture::RunDisposition::Completed, "completed"),
+            (CalibrationWorkflowState::Ready, None)
+        );
+        assert_eq!(
+            terminal_workflow_state(deep_capture::RunDisposition::Completed, "partial"),
+            (
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Gameplay)
+            )
+        );
+        assert_eq!(
+            terminal_workflow_state(deep_capture::RunDisposition::Declined, "declined"),
+            (
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Authorization)
+            )
+        );
+        assert_eq!(
+            terminal_workflow_state(deep_capture::RunDisposition::Interrupted, "interrupted"),
+            (
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Interrupted)
+            )
+        );
+        assert_eq!(
+            terminal_workflow_state(deep_capture::RunDisposition::Failed, "failed"),
+            (
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Failure)
+            )
+        );
     }
 
     #[test]

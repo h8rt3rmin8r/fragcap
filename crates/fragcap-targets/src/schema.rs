@@ -69,9 +69,13 @@
 //! Version 10 (slice S121) adds nullable routing-strategy, address-family, and
 //! protocol-family columns to `deep_capture_facts`. NULL remains the exact state
 //! of a pre-S121 row, so migration preserves history without inventing a case.
+//!
+//! Version 11 (slice S145) adds `calibration_workflows`, a target-bound durable
+//! progress checkpoint. It stores no authorization, secret, effect, or compatibility
+//! evidence. The migration from version 10 is one additive `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -251,6 +255,95 @@ CREATE TABLE deep_capture_facts (
             AND fact_value IN ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
                                'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'))
     )
+);
+
+CREATE TABLE calibration_workflows (
+    id                  INTEGER PRIMARY KEY,
+    record_version      INTEGER NOT NULL CHECK (record_version = 1),
+    target_id           INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    target_stable_id    INTEGER NOT NULL CHECK (target_stable_id >= 0),
+    target_handle       TEXT NOT NULL CHECK (length(target_handle) > 0),
+    target_name         TEXT NOT NULL CHECK (length(target_name) > 0),
+    target_anchor       TEXT,
+    target_install_root TEXT,
+    target_launch_entries TEXT,
+    requested_protocols TEXT NOT NULL,
+    observed_protocols  TEXT NOT NULL,
+    completed_protocols TEXT NOT NULL,
+    remaining_protocols TEXT NOT NULL,
+    attempted_case_keys TEXT NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL CHECK (attempt_ordinal BETWEEN 0 AND 14),
+    attempt_phase       TEXT CHECK (attempt_phase IS NULL OR attempt_phase IN
+                            ('reachability', 'tls')),
+    attempt_protocol    TEXT CHECK (attempt_protocol IS NULL OR attempt_protocol IN
+                            ('routing', 'http1', 'https', 'http2', 'websocket', 'sse',
+                             'grpc', 'generic-tcp', 'non-http-tls', 'socks5-tcp',
+                             'socks5-udp', 'generic-udp', 'quic', 'http3')),
+    attempt_key         TEXT,
+    state               TEXT NOT NULL CHECK (state IN
+                            ('ready', 'in-flight', 'paused', 'completed', 'refused')),
+    pause_reason        TEXT CHECK (pause_reason IS NULL OR pause_reason IN
+                            ('login', 'eula', 'gameplay', 'shutdown', 'interrupted',
+                             'authorization', 'failure')),
+    revision            INTEGER NOT NULL CHECK (revision > 0),
+    created_at          INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at          INTEGER NOT NULL CHECK (updated_at >= created_at),
+    CHECK ((state = 'in-flight') =
+           (attempt_phase IS NOT NULL AND attempt_protocol IS NOT NULL AND
+            attempt_key IS NOT NULL)),
+    CHECK ((attempt_phase IS NULL) = (attempt_protocol IS NULL) AND
+           (attempt_phase IS NULL) = (attempt_key IS NULL)),
+    CHECK ((state = 'paused') = (pause_reason IS NOT NULL)),
+    CHECK (state != 'in-flight' OR attempt_ordinal > 0),
+    CHECK (attempt_phase IS NULL OR
+           (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
+           (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
+);
+";
+
+/// Add target-bound durable guided-calibration progress without inventing evidence.
+pub const MIGRATE_10_TO_11: &str = "\
+CREATE TABLE calibration_workflows (
+    id                  INTEGER PRIMARY KEY,
+    record_version      INTEGER NOT NULL CHECK (record_version = 1),
+    target_id           INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    target_stable_id    INTEGER NOT NULL CHECK (target_stable_id >= 0),
+    target_handle       TEXT NOT NULL CHECK (length(target_handle) > 0),
+    target_name         TEXT NOT NULL CHECK (length(target_name) > 0),
+    target_anchor       TEXT,
+    target_install_root TEXT,
+    target_launch_entries TEXT,
+    requested_protocols TEXT NOT NULL,
+    observed_protocols  TEXT NOT NULL,
+    completed_protocols TEXT NOT NULL,
+    remaining_protocols TEXT NOT NULL,
+    attempted_case_keys TEXT NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL CHECK (attempt_ordinal BETWEEN 0 AND 14),
+    attempt_phase       TEXT CHECK (attempt_phase IS NULL OR attempt_phase IN
+                            ('reachability', 'tls')),
+    attempt_protocol    TEXT CHECK (attempt_protocol IS NULL OR attempt_protocol IN
+                            ('routing', 'http1', 'https', 'http2', 'websocket', 'sse',
+                             'grpc', 'generic-tcp', 'non-http-tls', 'socks5-tcp',
+                             'socks5-udp', 'generic-udp', 'quic', 'http3')),
+    attempt_key         TEXT,
+    state               TEXT NOT NULL CHECK (state IN
+                            ('ready', 'in-flight', 'paused', 'completed', 'refused')),
+    pause_reason        TEXT CHECK (pause_reason IS NULL OR pause_reason IN
+                            ('login', 'eula', 'gameplay', 'shutdown', 'interrupted',
+                             'authorization', 'failure')),
+    revision            INTEGER NOT NULL CHECK (revision > 0),
+    created_at          INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at          INTEGER NOT NULL CHECK (updated_at >= created_at),
+    CHECK ((state = 'in-flight') =
+           (attempt_phase IS NOT NULL AND attempt_protocol IS NOT NULL AND
+            attempt_key IS NOT NULL)),
+    CHECK ((attempt_phase IS NULL) = (attempt_protocol IS NULL) AND
+           (attempt_phase IS NULL) = (attempt_key IS NULL)),
+    CHECK ((state = 'paused') = (pause_reason IS NOT NULL)),
+    CHECK (state != 'in-flight' OR attempt_ordinal > 0),
+    CHECK (attempt_phase IS NULL OR
+           (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
+           (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
 );
 ";
 
