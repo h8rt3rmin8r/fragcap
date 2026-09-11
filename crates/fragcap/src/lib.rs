@@ -83,19 +83,20 @@ pub mod targets {
     pub use fragcap_targets::latest_applicable_fact;
     pub use fragcap_targets::readiness::SCANNED_CLEAN_MARKER;
     pub use fragcap_targets::{
-        capture_readiness, engine_summary, entry_windows_clients, entry_windows_launch_entries,
-        entry_windows_launch_paths, export, export_targets, import, import_targets,
-        install_presence, is_client_executable, is_row_index, launch_entries_for,
-        launch_is_unresolved, name_divergence, observed_executable, plan_reconciliation,
-        register_automatic_candidates, register_candidate, register_candidates, resolve_id,
-        resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
-        sensitivities_summary, AuthorTargetClientOutcome, AutomaticRegistrationDecision,
-        AutomaticRegistrationOutcome, CalibrationPauseReason, CalibrationTargetAuthority,
-        CalibrationWorkflow, CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase,
-        CalibrationWorkflowState, CalibrationWorkflowUpdateOutcome, CaptureReadiness, CatalogBatch,
-        CatalogEntry, CatalogSource, Classification, ClassificationSource,
-        CompatibilityAddressFamily, CompatibilityApplicability, CompatibilityCase,
-        CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
+        calibration_candidate_id, calibration_candidate_value, capture_readiness, engine_summary,
+        entry_windows_clients, entry_windows_launch_entries, entry_windows_launch_paths, export,
+        export_targets, import, import_targets, install_presence, is_client_executable,
+        is_row_index, launch_entries_for, launch_is_unresolved, name_divergence,
+        observed_executable, plan_reconciliation, register_automatic_candidates,
+        register_candidate, register_candidates, resolve_id, resolve_positional,
+        resolved_client_launch, seed_catalog, seed_engine, sensitivities_summary,
+        validate_calibration_candidate_id, AuthorTargetClientOutcome,
+        AutomaticRegistrationDecision, AutomaticRegistrationOutcome, CalibrationPauseReason,
+        CalibrationTargetAuthority, CalibrationWorkflow, CalibrationWorkflowCheckpoint,
+        CalibrationWorkflowPhase, CalibrationWorkflowState, CalibrationWorkflowUpdateOutcome,
+        CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource, Classification,
+        ClassificationSource, CompatibilityAddressFamily, CompatibilityApplicability,
+        CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
         CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityMatrix,
         CompatibilityMatrixRow, CompatibilityProtocol, CompatibilityRoutingStrategy, CorpusGate,
         DetectionScan, Engine, EngineBatch, EngineConfidence, EngineEntry, EngineFeed,
@@ -104,7 +105,8 @@ pub mod targets {
         ReconciliationPreservationReason, ReconciliationRemovalReason, RegistrationOutcome,
         ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection, SocketHolderAnswer, Store,
         TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
-        DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
+        CALIBRATION_CANDIDATE_PREFIX, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        INSTALL_MISSING_NOTE,
     };
 
     /// The machine-wide anti-cheat presence seam (slice S068). The one real

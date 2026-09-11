@@ -588,12 +588,32 @@ pub struct CalibrateArgs {
     pub id: Option<i64>,
 
     /// Resume one exact workflow from the effective local store.
-    #[arg(long, value_name = "WORKFLOW_ID", conflicts_with = "protocol")]
+    #[arg(
+        long,
+        value_name = "WORKFLOW_ID",
+        conflicts_with_all = ["protocol", "candidate", "launch_case", "routing_strategy", "proxy_family"]
+    )]
     pub resume: Option<i64>,
 
     /// Record operator-owned work and exit without starting a session.
     #[arg(long, value_enum, requires = "resume")]
     pub pause_for: Option<GuidedCalibrationPauseArg>,
+
+    /// Select one exact candidate from a prior ambiguity report.
+    #[arg(long, value_name = "CANDIDATE_ID", conflicts_with = "resume")]
+    pub candidate: Option<String>,
+
+    /// Assert the exact cold launch case inferred for this workflow.
+    #[arg(long, value_enum, conflicts_with = "resume")]
+    pub launch_case: Option<DeepCaptureLaunchCaseArg>,
+
+    /// Select the exact routing strategy for this workflow.
+    #[arg(long, value_enum, conflicts_with = "resume")]
+    pub routing_strategy: Option<GuidedCalibrationRoutingArg>,
+
+    /// Select the exact loopback address family for this workflow.
+    #[arg(long, value_enum, conflicts_with = "resume")]
+    pub proxy_family: Option<DeepCaptureProxyFamilyArg>,
 
     /// The shipped catalog store consulted while resolving target context.
     #[arg(long)]
@@ -712,6 +732,17 @@ pub enum GuidedCalibrationPauseArg {
     Gameplay,
     Shutdown,
     Interrupted,
+}
+
+/// Exact routing strategy requested by a guided calibration workflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum GuidedCalibrationRoutingArg {
+    ChildEnvironment,
+    CommandArguments,
+    TargetConfiguration,
+    HttpProxy,
+    Socks,
+    ProtocolSpecific,
 }
 
 /// Exact protocol dimension for one compatibility calibration.
