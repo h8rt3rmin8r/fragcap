@@ -4,7 +4,12 @@
 
 use serde_json::Value;
 
-use crate::{CompatibilityProtocol, TargetEntry, TargetsError};
+use fragcap_profile::FidelityTier;
+
+use crate::{
+    ClassificationSource, CompatibilityProtocol, DetectionScan, TargetClassification, TargetEntry,
+    TargetsError,
+};
 
 /// The checkpoint record contract understood by this build.
 pub const CALIBRATION_WORKFLOW_RECORD_VERSION: i64 = 1;
@@ -117,9 +122,17 @@ pub struct CalibrationTargetAuthority {
     pub stable_id: i64,
     pub handle: String,
     pub name: String,
+    pub classification: TargetClassification,
+    pub classification_source: ClassificationSource,
+    pub fidelity: FidelityTier,
+    pub provenance: Option<Value>,
     pub anchor: Option<String>,
     pub install_root: Option<String>,
     pub launch_entries: Option<Value>,
+    pub evidence: Option<Value>,
+    pub detection_scan: Option<DetectionScan>,
+    pub folder_name: Option<String>,
+    pub executable_hint: Option<String>,
 }
 
 impl CalibrationTargetAuthority {
@@ -128,9 +141,17 @@ impl CalibrationTargetAuthority {
             stable_id: target.stable_id,
             handle: target.handle.clone(),
             name: target.name.clone(),
+            classification: target.classification,
+            classification_source: target.classification_source,
+            fidelity: target.fidelity,
+            provenance: target.provenance.clone(),
             anchor: target.anchor.clone(),
             install_root: target.install_root.clone(),
             launch_entries: target.launch_entries.clone(),
+            evidence: target.evidence.clone(),
+            detection_scan: target.detection_scan,
+            folder_name: target.folder_name.clone(),
+            executable_hint: target.executable_hint.clone(),
         }
     }
 
@@ -376,6 +397,54 @@ fn is_concrete_protocol(protocol: CompatibilityProtocol) -> bool {
 mod tests {
     use super::*;
     use crate::CompatibilityProtocol;
+
+    #[test]
+    fn calibration_authority_detects_drift_in_every_enrichment_field() {
+        let target = TargetEntry {
+            id: Some(1),
+            stable_id: 145,
+            handle: "guided_target".to_string(),
+            name: "Guided Target".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: Some(serde_json::json!({"source":"operator"})),
+            anchor: Some("path:c:/games/guided".to_string()),
+            launch_entries: Some(serde_json::json!([{"path":"guided.exe"}])),
+            install_root: Some("C:\\Games\\Guided".to_string()),
+            evidence: Some(serde_json::json!({"verified":true})),
+            detection_scan: Some(DetectionScan::Complete),
+            folder_name: Some("Guided".to_string()),
+            executable_hint: Some("guided.exe".to_string()),
+        };
+        let authority = CalibrationTargetAuthority::from_target(&target);
+        assert!(authority.matches(&target));
+
+        let mut drift = target.clone();
+        drift.classification = TargetClassification::Tool;
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.classification_source = ClassificationSource::Platform;
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.fidelity = FidelityTier::Verified;
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.provenance = Some(serde_json::json!({"source":"refresh"}));
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.evidence = Some(serde_json::json!({"verified":false}));
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.detection_scan = Some(DetectionScan::Incomplete);
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.folder_name = Some("Changed".to_string());
+        assert!(!authority.matches(&drift));
+        let mut drift = target.clone();
+        drift.executable_hint = Some("changed.exe".to_string());
+        assert!(!authority.matches(&drift));
+    }
 
     #[test]
     fn calibration_workflow_closed_tokens_round_trip() {

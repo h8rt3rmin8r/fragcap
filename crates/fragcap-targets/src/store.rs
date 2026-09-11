@@ -1155,32 +1155,38 @@ impl Store {
             TargetsError::Model("calibration workflow timestamp exceeds SQLite range".to_string())
         })?;
         let authority = CalibrationTargetAuthority::from_target(target);
-        let target_launch_entries = authority
-            .launch_entries
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|error| TargetsError::Model(error.to_string()))?;
         let transaction = self.conn.transaction()?;
         transaction.execute(
             "INSERT INTO calibration_workflows
                 (record_version, target_id, target_stable_id, target_handle,
-                 target_name, target_anchor, target_install_root,
-                 target_launch_entries, requested_protocols, observed_protocols,
+                 target_name, target_classification, target_classification_source,
+                 target_fidelity, target_provenance, target_anchor,
+                 target_install_root, target_launch_entries, target_evidence,
+                 target_detection_scan, target_folder_name, target_executable_hint,
+                 requested_protocols, observed_protocols,
                  completed_protocols, remaining_protocols, attempted_case_keys,
                  attempt_ordinal, attempt_phase, attempt_protocol, attempt_key,
                  state, pause_reason, revision, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                     ?13, 0, NULL, NULL, NULL, ?14, NULL, 1, ?15, ?15)",
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 0, NULL,
+                     NULL, NULL, ?22, NULL, 1, ?23, ?23)",
             params![
                 CALIBRATION_WORKFLOW_RECORD_VERSION,
                 target_id,
                 authority.stable_id,
                 authority.handle,
                 authority.name,
+                authority.classification.as_str(),
+                authority.classification_source.as_str(),
+                authority.fidelity.as_str(),
+                authority.provenance.as_ref().map(json_text),
                 authority.anchor,
                 authority.install_root,
-                target_launch_entries,
+                authority.launch_entries.as_ref().map(json_text),
+                authority.evidence.as_ref().map(json_text),
+                authority.detection_scan.map(DetectionScan::as_str),
+                authority.folder_name,
+                authority.executable_hint,
                 encode_protocols(&checkpoint.requested_protocols)?,
                 encode_protocols(&checkpoint.observed_protocols)?,
                 encode_protocols(&checkpoint.completed_protocols)?,
@@ -1641,8 +1647,11 @@ fn calibration_workflow_from_connection(
     connection
         .query_row(
             "SELECT id, record_version, target_id, target_stable_id,
-                    target_handle, target_name, target_anchor,
-                    target_install_root, target_launch_entries,
+                    target_handle, target_name, target_classification,
+                    target_classification_source, target_fidelity,
+                    target_provenance, target_anchor, target_install_root,
+                    target_launch_entries, target_evidence, target_detection_scan,
+                    target_folder_name, target_executable_hint,
                     requested_protocols, observed_protocols,
                     completed_protocols, remaining_protocols,
                     attempted_case_keys, attempt_ordinal, attempt_phase,
@@ -1665,23 +1674,31 @@ fn read_calibration_workflow_row(
     let target_stable_id: i64 = row.get(3)?;
     let target_handle: String = row.get(4)?;
     let target_name: String = row.get(5)?;
-    let target_anchor: Option<String> = row.get(6)?;
-    let target_install_root: Option<String> = row.get(7)?;
-    let target_launch_entries: Option<String> = row.get(8)?;
-    let requested_protocols: String = row.get(9)?;
-    let observed_protocols: String = row.get(10)?;
-    let completed_protocols: String = row.get(11)?;
-    let remaining_protocols: String = row.get(12)?;
-    let attempted_case_keys: String = row.get(13)?;
-    let attempt_ordinal: i64 = row.get(14)?;
-    let attempt_phase: Option<String> = row.get(15)?;
-    let attempt_protocol: Option<String> = row.get(16)?;
-    let attempt_key: Option<String> = row.get(17)?;
-    let state: String = row.get(18)?;
-    let pause_reason: Option<String> = row.get(19)?;
-    let revision: i64 = row.get(20)?;
-    let created_at: i64 = row.get(21)?;
-    let updated_at: i64 = row.get(22)?;
+    let target_classification: String = row.get(6)?;
+    let target_classification_source: String = row.get(7)?;
+    let target_fidelity: String = row.get(8)?;
+    let target_provenance: Option<String> = row.get(9)?;
+    let target_anchor: Option<String> = row.get(10)?;
+    let target_install_root: Option<String> = row.get(11)?;
+    let target_launch_entries: Option<String> = row.get(12)?;
+    let target_evidence: Option<String> = row.get(13)?;
+    let target_detection_scan: Option<String> = row.get(14)?;
+    let target_folder_name: Option<String> = row.get(15)?;
+    let target_executable_hint: Option<String> = row.get(16)?;
+    let requested_protocols: String = row.get(17)?;
+    let observed_protocols: String = row.get(18)?;
+    let completed_protocols: String = row.get(19)?;
+    let remaining_protocols: String = row.get(20)?;
+    let attempted_case_keys: String = row.get(21)?;
+    let attempt_ordinal: i64 = row.get(22)?;
+    let attempt_phase: Option<String> = row.get(23)?;
+    let attempt_protocol: Option<String> = row.get(24)?;
+    let attempt_key: Option<String> = row.get(25)?;
+    let state: String = row.get(26)?;
+    let pause_reason: Option<String> = row.get(27)?;
+    let revision: i64 = row.get(28)?;
+    let created_at: i64 = row.get(29)?;
+    let updated_at: i64 = row.get(30)?;
 
     Ok((|| {
         if record_version != CALIBRATION_WORKFLOW_RECORD_VERSION {
@@ -1722,16 +1739,24 @@ fn read_calibration_workflow_row(
                 stable_id: target_stable_id,
                 handle: target_handle,
                 name: target_name,
+                classification: TargetClassification::parse(&target_classification)?,
+                classification_source: ClassificationSource::parse(&target_classification_source)?,
+                fidelity: FidelityTier::parse(&target_fidelity).ok_or_else(|| {
+                    TargetsError::Model(format!(
+                        "unknown calibration target fidelity {target_fidelity:?}"
+                    ))
+                })?,
+                provenance: parse_json_opt(target_provenance)?,
                 anchor: target_anchor,
                 install_root: target_install_root,
-                launch_entries: target_launch_entries
-                    .map(|value| serde_json::from_str(&value))
-                    .transpose()
-                    .map_err(|error| {
-                        TargetsError::Model(format!(
-                            "invalid calibration target launch declaration: {error}"
-                        ))
-                    })?,
+                launch_entries: parse_json_opt(target_launch_entries)?,
+                evidence: parse_json_opt(target_evidence)?,
+                detection_scan: target_detection_scan
+                    .as_deref()
+                    .map(DetectionScan::parse)
+                    .transpose()?,
+                folder_name: target_folder_name,
+                executable_hint: target_executable_hint,
             },
             requested_protocols: checkpoint.requested_protocols,
             observed_protocols: checkpoint.observed_protocols,
@@ -2129,7 +2154,13 @@ mod tests {
     #[test]
     fn calibration_workflow_round_trips_and_revisions_conditionally() {
         let mut store = Store::open_in_memory().expect("store");
-        let entry = sample_target("workflow_target", Some("steam:145"), FidelityTier::Authored);
+        let mut entry = sample_target("workflow_target", Some("steam:145"), FidelityTier::Authored);
+        entry.provenance = Some(serde_json::json!({"source":"operator"}));
+        entry.install_root = Some("C:\\Games\\Workflow".to_string());
+        entry.evidence = Some(serde_json::json!({"verified":true}));
+        entry.detection_scan = Some(DetectionScan::Complete);
+        entry.folder_name = Some("Workflow".to_string());
+        entry.executable_hint = Some("game.exe".to_string());
         store.insert_target(&entry).expect("insert target");
         let target = store
             .target_by_handle("workflow_target")
@@ -2146,6 +2177,10 @@ mod tests {
         assert_eq!(workflow.revision, 1);
         assert_eq!(workflow.state, CalibrationWorkflowState::Ready);
         assert!(workflow.target.matches(&target));
+        assert_eq!(
+            workflow.target,
+            CalibrationTargetAuthority::from_target(&target)
+        );
         assert_eq!(
             workflow.requested_protocols,
             vec![CompatibilityProtocol::Http1, CompatibilityProtocol::Https]

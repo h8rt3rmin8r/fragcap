@@ -1877,8 +1877,8 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     let (code, _out, events) = run(&[
         "--json",
         "calibrate",
-        "--id",
-        "82001",
+        "--resume",
+        "1",
         "--restart-warm",
         "--local-db",
         local.to_str().unwrap(),
@@ -1887,6 +1887,13 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
     assert!(events.contains("deep_capture.restart_plan"));
     assert!(events.contains("operator-close step requires a terminal"));
     assert!(!events.contains("deep_capture.authorization_plan"));
+    let workflow = Store::open(&local)
+        .unwrap()
+        .calibration_workflow(1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(workflow.state, CalibrationWorkflowState::Paused);
+    assert_eq!(workflow.pause_reason.unwrap().as_str(), "shutdown");
 }
 
 #[test]

@@ -1682,9 +1682,6 @@ pub fn run(
             if !args.restart_warm {
                 return Ok(Exit::SUCCESS);
             }
-            let checkpoint =
-                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Ready, None);
-            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
             let mut restart_args = low_level_args(
                 args,
                 target.stable_id,
@@ -1694,6 +1691,9 @@ pub fn run(
             )?;
             restart_args.restart_warm = true;
             deep_capture::prepare_warm_restart(&restart_args, &store, emitter)?;
+            let checkpoint =
+                checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Ready, None);
+            apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
         }
         deep_capture_api::CalibrationLaunchReadiness::Ready { .. } => {}
         _ => {

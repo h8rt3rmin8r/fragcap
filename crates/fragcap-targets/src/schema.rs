@@ -264,9 +264,21 @@ CREATE TABLE calibration_workflows (
     target_stable_id    INTEGER NOT NULL CHECK (target_stable_id >= 0),
     target_handle       TEXT NOT NULL CHECK (length(target_handle) > 0),
     target_name         TEXT NOT NULL CHECK (length(target_name) > 0),
+    target_classification TEXT NOT NULL CHECK (target_classification IN
+                            ('game', 'launcher', 'tool', 'mod', 'emulator', 'unknown')),
+    target_classification_source TEXT NOT NULL CHECK (target_classification_source IN
+                            ('catalog', 'engine-signature', 'platform', 'user', 'unset')),
+    target_fidelity     TEXT NOT NULL CHECK (target_fidelity IN
+                            ('authored', 'verified', 'heuristic-unverified', 'observed')),
+    target_provenance   TEXT,
     target_anchor       TEXT,
     target_install_root TEXT,
     target_launch_entries TEXT,
+    target_evidence     TEXT,
+    target_detection_scan TEXT CHECK (target_detection_scan IS NULL OR
+                            target_detection_scan IN ('complete', 'incomplete')),
+    target_folder_name  TEXT,
+    target_executable_hint TEXT,
     requested_protocols TEXT NOT NULL,
     observed_protocols  TEXT NOT NULL,
     completed_protocols TEXT NOT NULL,
@@ -310,9 +322,21 @@ CREATE TABLE calibration_workflows (
     target_stable_id    INTEGER NOT NULL CHECK (target_stable_id >= 0),
     target_handle       TEXT NOT NULL CHECK (length(target_handle) > 0),
     target_name         TEXT NOT NULL CHECK (length(target_name) > 0),
+    target_classification TEXT NOT NULL CHECK (target_classification IN
+                            ('game', 'launcher', 'tool', 'mod', 'emulator', 'unknown')),
+    target_classification_source TEXT NOT NULL CHECK (target_classification_source IN
+                            ('catalog', 'engine-signature', 'platform', 'user', 'unset')),
+    target_fidelity     TEXT NOT NULL CHECK (target_fidelity IN
+                            ('authored', 'verified', 'heuristic-unverified', 'observed')),
+    target_provenance   TEXT,
     target_anchor       TEXT,
     target_install_root TEXT,
     target_launch_entries TEXT,
+    target_evidence     TEXT,
+    target_detection_scan TEXT CHECK (target_detection_scan IS NULL OR
+                            target_detection_scan IN ('complete', 'incomplete')),
+    target_folder_name  TEXT,
+    target_executable_hint TEXT,
     requested_protocols TEXT NOT NULL,
     observed_protocols  TEXT NOT NULL,
     completed_protocols TEXT NOT NULL,

@@ -30,10 +30,13 @@ S134 plan binds them before effects.
 
 ## Decision 3: Bind the complete target authority, not a weak fingerprint
 
-The checkpoint stores the stable identifier plus the target row's handle, name,
-anchor, install root, and launch declaration. Resume re-resolves by stable identifier
-and compares those fields exactly. Explicit fields remain reviewable and avoid adding
-hash construction as another durable contract.
+The checkpoint stores every target-row field: stable identifier, handle, name,
+classification, classification source, fidelity, provenance, anchor, install root,
+launch declaration, evidence, detection-scan coverage, folder name, and executable
+hint. The owning row identifier is already the checkpoint foreign key. Resume
+re-resolves by stable identifier and compares the complete snapshot exactly. Explicit
+fields remain reviewable and avoid adding hash construction as another durable
+contract.
 
 Any mismatch refuses the workflow. Automatic rebasing would let old intent silently
 authorize a changed topology.
