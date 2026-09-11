@@ -2058,6 +2058,10 @@ pub fn run(
         let inserted = attempted_count < MAX_GUIDED_ATTEMPTS && attempted.insert(key.clone());
         let no_progress_reason = no_progress_reason(attempted_count, inserted);
         if let Some(no_progress_reason) = no_progress_reason {
+            // The retained exact-case key can be the checkpoint of an interrupted
+            // effectful attempt. Recovery authority must win over the no-repeat
+            // guard so an outstanding cleanup or trust obligation is never hidden.
+            deep_capture::require_prior_recovery_settled()?;
             let checkpoint = progress_checkpoint(
                 &workflow,
                 &requested_protocols,
