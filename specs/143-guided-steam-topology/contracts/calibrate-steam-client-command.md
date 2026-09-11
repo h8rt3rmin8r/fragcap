@@ -46,7 +46,7 @@ A preceding target registration plan and a later Deep Capture plan each require 
 
 After affirmative confirmation, the command re-resolves the target by stable identifier and repeats the bounded discovery join. It rebuilds the complete plan and requires byte-equivalent canonical authority. Changed selection, candidate data, discovery accounting, warning text, store identity, target field, executable, or result is drift.
 
-The shared target store then starts an immediate transaction and compares its current complete row to the planned row. A match updates only `launch_entries` to one client entry and `fidelity` to `authored`. A changed or missing row remains untouched and produces a non-success outcome. A transaction or store error emits one terminal failed setup outcome before the operational error is returned.
+The shared target store then starts an immediate transaction and compares its current complete row to the planned row. A match updates only `launch_entries` to one client entry and `fidelity` to `authored`. A changed or missing row remains untouched and produces a non-success outcome. A target re-read, transaction, store, or post-update verification failure emits one terminal failed setup outcome before the operational error is returned.
 
 ## Outcome Event
 

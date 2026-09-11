@@ -99,7 +99,7 @@ After client setup succeeds, the same invocation re-resolves the target by durab
 - **FR-015**: After confirmation, the command MUST re-read the target by durable identifier, repeat bounded Steam discovery, and rebuild the complete setup plan.
 - **FR-016**: Any changed, missing, ambiguous, unconserved, or otherwise unreproducible authority after confirmation MUST produce a drift outcome and no target update.
 - **FR-017**: The target update MUST be conditional on exact equality with the planned stored row so another writer cannot be overwritten between revalidation and persistence.
-- **FR-017a**: Once a setup plan is emitted, every persistence error MUST emit exactly one terminal failed `calibration.steam_client` outcome before the command returns the operational error.
+- **FR-017a**: Once a setup plan is emitted, every target re-read, persistence, and post-update verification error or missing-row result MUST emit exactly one terminal failed `calibration.steam_client` outcome before the command returns the operational error.
 - **FR-018**: A successful update MUST retain the existing row identity, handle, name, classification, classification source, provenance, anchor, install root, evidence, detection coverage, folder name, and executable hint.
 - **FR-019**: A successful update MUST write exactly one client launch declaration from the operator-attested executable and MUST stamp the resulting target fidelity as authored rather than observed or verified.
 - **FR-020**: A successful update MUST NOT create a target, compatibility fact, listing snapshot, workflow record, artifact, or second storage shape.

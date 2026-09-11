@@ -1062,9 +1062,19 @@ fn prepare_steam_client(
         }
     }
 
-    let current_target = store
-        .target_by_stable_id(plan.target.stable_id)
-        .map_err(|error| CliError::failure(error.to_string()))?;
+    let current_target = match store.target_by_stable_id(plan.target.stable_id) {
+        Ok(target) => target,
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "failed",
+                "target-read-failed-after-confirmation",
+                false,
+            )?;
+            return Err(CliError::failure(error.to_string()));
+        }
+    };
     let Some(current_target) = current_target else {
         steam_client_outcome(
             emitter,
@@ -1165,10 +1175,11 @@ fn prepare_steam_client(
         }
     }
 
-    let updated = store
-        .target_by_stable_id(plan.target.stable_id)
-        .map_err(|error| CliError::failure(error.to_string()))?
-        .ok_or_else(|| CliError::failure("the authored Steam target could not be re-resolved"))?;
+    let updated = authored_steam_client_result(
+        emitter,
+        &plan,
+        store.target_by_stable_id(plan.target.stable_id),
+    )?;
     let mut expected = plan.target.clone();
     expected.launch_entries = Some(fragcap::targets::resolved_client_launch(&plan.executable));
     expected.fidelity = fragcap::profile::FidelityTier::Authored;
@@ -1284,6 +1295,38 @@ fn steam_client_persistence_result<E: std::fmt::Display>(
                 plan,
                 "failed",
                 "steam-client-persistence-failed",
+                false,
+            )?;
+            Err(CliError::failure(error.to_string()))
+        }
+    }
+}
+
+fn authored_steam_client_result<E: std::fmt::Display>(
+    emitter: &mut Emitter,
+    plan: &SteamClientPlan,
+    result: Result<Option<TargetEntry>, E>,
+) -> Result<TargetEntry, CliError> {
+    match result {
+        Ok(Some(target)) => Ok(target),
+        Ok(None) => {
+            steam_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "authored-target-missing-after-update",
+                false,
+            )?;
+            Err(CliError::failure(
+                "the authored Steam target could not be re-resolved",
+            ))
+        }
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "authored-target-read-failed",
                 false,
             )?;
             Err(CliError::failure(error.to_string()))
@@ -2416,6 +2459,40 @@ mod tests {
         assert!(output.contains("\"status\":\"failed\""));
         assert!(output.contains("steam-client-persistence-failed"));
         assert!(output.contains("\"continued\":false"));
+    }
+
+    #[test]
+    fn authored_steam_client_read_failure_and_absence_are_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let observed = discovery(vec![candidate(
+            CandidateIdentity::SteamAppId(620),
+            "Portal 2",
+        )]);
+        let plan = SteamClientPlan::new(steam_target(None), &observed, dir.path())
+            .unwrap()
+            .unwrap();
+        for (result, reason) in [
+            (
+                Err::<Option<TargetEntry>, _>("database is locked"),
+                "authored-target-read-failed",
+            ),
+            (Ok(None), "authored-target-missing-after-update"),
+        ] {
+            let mut output = Vec::new();
+            {
+                let mut emitter = crate::emit::Emitter::new(
+                    &mut output,
+                    crate::emit::Format::Json,
+                    crate::emit::Verbosity::Normal,
+                );
+                assert!(authored_steam_client_result(&mut emitter, &plan, result).is_err());
+            }
+            let output = String::from_utf8(output).unwrap();
+            assert_eq!(output.matches("calibration.steam_client").count(), 1);
+            assert!(output.contains("\"status\":\"failed\""));
+            assert!(output.contains(reason));
+            assert!(output.contains("\"continued\":false"));
+        }
     }
 
     #[test]
