@@ -26,6 +26,7 @@
 
 pub mod authoring;
 pub mod catalog;
+pub mod choice;
 pub mod classifier;
 pub mod compatibility;
 pub mod engine_feed;
@@ -61,6 +62,10 @@ pub use authoring::{
     resolved_client_launch, SocketHolderAnswer,
 };
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
+pub use choice::{
+    calibration_candidate_id, calibration_candidate_value, validate_calibration_candidate_id,
+    CALIBRATION_CANDIDATE_PREFIX,
+};
 pub use classifier::{
     ClassifierResult, ClassifierVerdict, DirectoryClassifier, FixtureClassifier,
     KnownRootChildIsGame, SignatureClassifier,

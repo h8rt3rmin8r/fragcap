@@ -22,7 +22,7 @@ use subtle::ConstantTimeEq;
 use crate::cli::{
     CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationArg, DeepCaptureCalibrationProtocolArg,
     DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, GuidedCalibrationPauseArg,
-    GuidedCalibrationProtocolArg,
+    GuidedCalibrationProtocolArg, GuidedCalibrationRoutingArg,
 };
 use crate::commands::deep_capture;
 use crate::emit::Emitter;
@@ -182,6 +182,7 @@ struct SteamClientPlan {
     target: TargetEntry,
     app_id: u32,
     executable: String,
+    candidate: CandidateTarget,
     discovery_account: DiscoveryAccount,
     discovery_warning_count: usize,
 }
@@ -264,6 +265,7 @@ impl SteamClientPlan {
             target,
             app_id,
             executable: executable.to_string(),
+            candidate: candidate.clone(),
             discovery_account: discovery.account.clone(),
             discovery_warning_count: discovery.warnings.len(),
         }))
@@ -378,6 +380,52 @@ enum TargetFrontDoor {
     Declined,
 }
 
+struct CandidateSelection {
+    requested: Option<String>,
+    consumed: bool,
+}
+
+impl CandidateSelection {
+    fn new(requested: Option<&str>) -> Result<Self, CliError> {
+        if let Some(value) = requested {
+            fragcap::targets::validate_calibration_candidate_id(value)
+                .map_err(|error| CliError::usage(error.to_string()))?;
+        }
+        Ok(Self {
+            requested: requested.map(str::to_string),
+            consumed: false,
+        })
+    }
+
+    fn consume(&mut self, value: &str) -> Result<(), CliError> {
+        if self.consumed {
+            return Err(CliError::usage(
+                "the supplied calibration candidate was already consumed by an earlier ambiguity",
+            ));
+        }
+        if self.requested.as_deref() != Some(value) {
+            return Err(CliError::usage(
+                "the current calibration candidate does not match the supplied identity",
+            ));
+        }
+        self.consumed = true;
+        Ok(())
+    }
+
+    fn require_consumed(&self) -> Result<(), CliError> {
+        if self.requested.is_some() && !self.consumed {
+            return Err(CliError::usage(
+                "the supplied calibration candidate was not consumed by a current ambiguous target or Steam client choice",
+            ));
+        }
+        Ok(())
+    }
+
+    fn has_unconsumed(&self) -> bool {
+        self.requested.is_some() && !self.consumed
+    }
+}
+
 enum RegistrationConfirmation {
     Confirmed,
     Declined,
@@ -392,6 +440,7 @@ fn resolve_or_register_target(
     emitter: &mut Emitter,
     local_store_path: &Path,
     store: &mut Store,
+    candidate_selection: &mut CandidateSelection,
 ) -> Result<TargetFrontDoor, CliError> {
     match deep_capture::select_target_input(
         store,
@@ -440,7 +489,8 @@ fn resolve_or_register_target(
             CliError::usage("a positional target selector or --target is required for discovery")
         })?;
     let discovery = discover_for_calibration(args, store, emitter)?;
-    let candidate = select_discovery_candidate(selector, &discovery)?;
+    let candidate =
+        select_discovery_candidate_with_choice(selector, &discovery, candidate_selection, emitter)?;
     let plan = RegistrationPlan::new(candidate, &discovery, local_store_path)?;
     plan.emit(emitter)?;
     let confirmation = match confirm_registration(args, authorization, emitter, &plan) {
@@ -525,9 +575,16 @@ fn resolve_or_register_target(
             ));
         }
     };
-    let current_candidate = match select_discovery_candidate(selector, &current_discovery) {
+    let current_candidate = match revalidate_candidate(&plan.candidate, &current_discovery) {
         Ok(candidate) => candidate,
         Err(error) => {
+            let mut no_selection = CandidateSelection::new(None)?;
+            let _ = select_discovery_candidate_with_choice(
+                selector,
+                &current_discovery,
+                &mut no_selection,
+                emitter,
+            );
             registration_outcome(
                 emitter,
                 &plan.id,
@@ -560,6 +617,13 @@ fn resolve_or_register_target(
         plan.canonical_json.as_bytes(),
         current_plan.canonical_json.as_bytes(),
     ) {
+        let mut no_selection = CandidateSelection::new(None)?;
+        let _ = select_discovery_candidate_with_choice(
+            selector,
+            &current_discovery,
+            &mut no_selection,
+            emitter,
+        );
         registration_outcome(
             emitter,
             &plan.id,
@@ -635,6 +699,8 @@ fn discover_for_calibration(
             std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS").is_some();
         let steam_client_ambiguous =
             std::env::var_os("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS").is_some();
+        let duplicate =
+            std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DUPLICATE").is_some();
         let mut candidates = vec![CandidateTarget {
             identity: CandidateIdentity::SteamAppId(75_000),
             display_name: if drifted {
@@ -687,6 +753,10 @@ fn discover_for_calibration(
                 executable_hint: Some("other-client.exe".to_string()),
             });
         }
+        if duplicate {
+            account.produce();
+            candidates.push(candidates[0].clone());
+        }
         return Ok(Discovery {
             candidates,
             account,
@@ -727,9 +797,11 @@ fn discover_for_calibration(
     Ok(discovery)
 }
 
-fn select_discovery_candidate(
+fn select_discovery_candidate_with_choice(
     selector: &str,
     discovery: &Discovery,
+    selection: &mut CandidateSelection,
+    emitter: &mut Emitter,
 ) -> Result<CandidateTarget, CliError> {
     let steam_id = selector.parse::<u32>().ok();
     let folded_selector = selector.to_lowercase();
@@ -743,37 +815,173 @@ fn select_discovery_candidate(
         .cloned()
         .collect();
     match matches.as_slice() {
-        [candidate] => Ok(candidate.clone()),
+        [candidate] if !selection.has_unconsumed() => Ok(candidate.clone()),
+        [_] => Err(CliError::usage(
+            "the supplied calibration candidate has no current ambiguous target-registration choice",
+        )),
         [] => Err(CliError::usage(format!(
             "no stored or discovered target exactly matches {selector:?}; discovery considered {}, produced {}, and reported {} warning(s)",
             discovery.account.considered,
             discovery.account.produced,
             discovery.warnings.len(),
         ))),
-        _ => {
-            let mut message = format!(
-                "the discovered selector is ambiguous ({} exact candidates match):",
-                matches.len()
-            );
-            for candidate in matches {
-                message.push_str(&format!(
-                    "\n  {}\t{}\t{}\t{}\t{}\t{}",
-                    candidate.source_name,
-                    candidate_identity(&candidate.identity),
-                    candidate.fidelity.as_str(),
-                    candidate.classification.as_str(),
-                    candidate.display_name,
-                    candidate.install_root.as_deref().unwrap_or("no-install-root"),
-                ));
-            }
-            message.push_str(&format!(
-                "\n  discovery considered {}, produced {}, and reported {} warning(s); no target was selected",
-                discovery.account.considered,
-                discovery.account.produced,
-                discovery.warnings.len(),
-            ));
-            Err(CliError::usage(message))
-        }
+        _ => choose_ambiguous_candidate(
+            "target-registration",
+            selector,
+            None,
+            matches,
+            discovery,
+            selection,
+            emitter,
+        ),
+    }
+}
+
+#[cfg(test)]
+fn select_discovery_candidate(
+    selector: &str,
+    discovery: &Discovery,
+) -> Result<CandidateTarget, CliError> {
+    let steam_id = selector.parse::<u32>().ok();
+    let folded_selector = selector.to_lowercase();
+    let matches = discovery
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            steam_id.is_some_and(|appid| candidate.identity == CandidateIdentity::SteamAppId(appid))
+                || candidate.display_name.to_lowercase() == folded_selector
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [candidate] => Ok(candidate.clone()),
+        [] => Err(CliError::usage(format!(
+            "no stored or discovered target exactly matches {selector:?}"
+        ))),
+        _ => Err(CliError::usage(format!(
+            "the discovered selector is ambiguous ({} exact candidates match); no target was selected",
+            matches.len()
+        ))),
+    }
+}
+
+fn choose_ambiguous_candidate(
+    scope: &str,
+    selector: &str,
+    target_id: Option<i64>,
+    candidates: Vec<CandidateTarget>,
+    discovery: &Discovery,
+    selection: &mut CandidateSelection,
+    emitter: &mut Emitter,
+) -> Result<CandidateTarget, CliError> {
+    let mut choices = candidates
+        .into_iter()
+        .map(|candidate| {
+            let id = fragcap::targets::calibration_candidate_id(&candidate);
+            (id, candidate)
+        })
+        .collect::<Vec<_>>();
+    choices.sort_by(|left, right| left.0.cmp(&right.0));
+    emit_candidate_choices(scope, selector, target_id, &choices, discovery, emitter)?;
+    if choices.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(CliError::usage(
+            "calibration discovery produced duplicate candidate authority; no candidate was selected",
+        ));
+    }
+    let Some(requested) = selection.requested.as_deref() else {
+        return Err(CliError::usage(format!(
+            "the calibration {scope} is ambiguous; rerun with one exact --candidate identity"
+        )));
+    };
+    let selected = choices
+        .iter()
+        .find(|(id, _)| id == requested)
+        .map(|(_, candidate)| candidate.clone())
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "the supplied calibration candidate is not present in the current {scope} choices"
+            ))
+        })?;
+    let requested = requested.to_string();
+    selection.consume(&requested)?;
+    Ok(selected)
+}
+
+fn emit_candidate_choices(
+    scope: &str,
+    selector: &str,
+    target_id: Option<i64>,
+    choices: &[(String, CandidateTarget)],
+    discovery: &Discovery,
+    emitter: &mut Emitter,
+) -> Result<(), CliError> {
+    let projections = choices
+        .iter()
+        .map(|(id, candidate)| {
+            json!({
+                "classification": candidate.classification.as_str(),
+                "display_name": candidate.display_name,
+                "executable_hint": candidate.executable_hint,
+                "fidelity": candidate.fidelity.as_str(),
+                "id": id,
+                "identity": candidate_identity(&candidate.identity),
+                "install_root": candidate.install_root,
+                "source": candidate.source_name,
+            })
+        })
+        .collect::<Vec<_>>();
+    emitter
+        .event_checked(&Event::CalibrationChoiceRequired {
+            scope: scope.to_string(),
+            selector: selector.to_string(),
+            target_id,
+            choices: projections.clone(),
+            discovery_considered: discovery.account.considered,
+            discovery_produced: discovery.account.produced,
+            discovery_warning_count: discovery.warnings.len() as u64,
+            process_control: "none".to_string(),
+        })
+        .map_err(|error| CliError::usage(format!("could not write candidate choices: {error}")))?;
+    let mut human = format!("Calibration choice required: scope={scope} selector={selector}\n");
+    for choice in projections {
+        human.push_str(&format!(
+            "  {}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            choice["id"].as_str().unwrap_or("invalid-id"),
+            choice["source"].as_str().unwrap_or("unknown-source"),
+            choice["identity"].as_str().unwrap_or("unknown-identity"),
+            choice["fidelity"].as_str().unwrap_or("unknown-fidelity"),
+            choice["classification"]
+                .as_str()
+                .unwrap_or("unknown-classification"),
+            choice["display_name"].as_str().unwrap_or("unknown-name"),
+            choice["install_root"].as_str().unwrap_or("no-install-root"),
+        ));
+    }
+    human.push_str("Rerun the same command with --candidate '<CANDIDATE_ID>'.\n");
+    emitter
+        .required_human_checked(&human)
+        .map_err(|error| CliError::usage(format!("could not write candidate choices: {error}")))
+}
+
+fn revalidate_candidate(
+    expected: &CandidateTarget,
+    discovery: &Discovery,
+) -> Result<CandidateTarget, CliError> {
+    let expected_id = fragcap::targets::calibration_candidate_id(expected);
+    let matches = discovery
+        .candidates
+        .iter()
+        .filter(|candidate| fragcap::targets::calibration_candidate_id(candidate) == expected_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [candidate] => Ok(candidate.clone()),
+        [] => Err(CliError::usage(
+            "the selected calibration candidate is absent from current discovery",
+        )),
+        _ => Err(CliError::usage(
+            "current discovery contains duplicate selected candidate authority",
+        )),
     }
 }
 
@@ -1103,13 +1311,48 @@ fn prepare_steam_client(
     local_store_path: &Path,
     store: &mut Store,
     target: TargetEntry,
+    candidate_selection: &mut CandidateSelection,
 ) -> Result<TargetFrontDoor, CliError> {
     if target.launch_entries.is_some() || steam_app_id(&target).is_none() {
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     }
 
     let discovery = discover_for_calibration(args, store, emitter)?;
-    let Some(plan) = SteamClientPlan::new(target.clone(), &discovery, local_store_path)? else {
+    let app_id = steam_app_id(&target).expect("the early return checked the Steam app id");
+    let current_candidates = discovery
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.identity == CandidateIdentity::SteamAppId(app_id)
+                && candidate.source_name == "steam"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_candidate = match current_candidates.as_slice() {
+        [candidate] if !candidate_selection.has_unconsumed() => candidate.clone(),
+        [_] => {
+            return Err(CliError::usage(
+                "the supplied calibration candidate has no current ambiguous Steam client choice",
+            ))
+        }
+        [] => {
+            return Err(CliError::usage(format!(
+                "Steam client setup is unavailable: discovery returned no exact steam:{app_id} candidate; refresh Steam metadata and retry"
+            )))
+        }
+        _ => choose_ambiguous_candidate(
+            "steam-client",
+            &format!("steam:{app_id}"),
+            Some(target.stable_id),
+            current_candidates,
+            &discovery,
+            candidate_selection,
+            emitter,
+        )?,
+    };
+    let selected_discovery = discovery_with_candidate(&discovery, selected_candidate);
+    let Some(plan) = SteamClientPlan::new(target.clone(), &selected_discovery, local_store_path)?
+    else {
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     };
     if emitter.is_json() && !args.authorize_stdin {
@@ -1217,20 +1460,38 @@ fn prepare_steam_client(
             return Err(error);
         }
     };
-    let current_plan =
-        match SteamClientPlan::new(current_target, &current_discovery, local_store_path) {
-            Ok(plan) => plan,
-            Err(error) => {
-                steam_client_outcome(
-                    emitter,
-                    &plan,
-                    "drifted",
-                    "steam-client-authority-not-reproduced",
-                    false,
-                )?;
-                return Err(error);
-            }
-        };
+    let current_candidate = match revalidate_candidate(&plan.candidate, &current_discovery) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "drifted",
+                "steam-client-candidate-not-reproduced",
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    let current_selected_discovery =
+        discovery_with_candidate(&current_discovery, current_candidate);
+    let current_plan = match SteamClientPlan::new(
+        current_target,
+        &current_selected_discovery,
+        local_store_path,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                &plan,
+                "drifted",
+                "steam-client-authority-not-reproduced",
+                false,
+            )?;
+            return Err(error);
+        }
+    };
     let Some(current_plan) = current_plan else {
         steam_client_outcome(
             emitter,
@@ -1314,6 +1575,14 @@ fn prepare_steam_client(
     }
     steam_client_outcome(emitter, &plan, "applied", "authored-client-persisted", true)?;
     Ok(TargetFrontDoor::Ready(Box::new(updated)))
+}
+
+fn discovery_with_candidate(discovery: &Discovery, candidate: CandidateTarget) -> Discovery {
+    Discovery {
+        candidates: vec![candidate],
+        account: discovery.account.clone(),
+        warnings: discovery.warnings.clone(),
+    }
 }
 
 fn confirm_steam_client(
@@ -1461,6 +1730,7 @@ pub fn run(
             "calibration workflow identifier must be positive",
         ));
     }
+    let mut candidate_selection = CandidateSelection::new(args.candidate.as_deref())?;
     let mut requested_protocols = normalize_protocol_args(&args.protocol);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let mut store = Store::open(&local_store_path)
@@ -1549,6 +1819,7 @@ pub fn run(
             emitter,
             &local_store_path,
             &mut store,
+            &mut candidate_selection,
         )? {
             TargetFrontDoor::Ready(target) => *target,
             TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
@@ -1560,12 +1831,25 @@ pub fn run(
             &local_store_path,
             &mut store,
             target,
+            &mut candidate_selection,
         )? {
             TargetFrontDoor::Ready(target) => *target,
             TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
         };
+        candidate_selection.require_consumed()?;
         let workflow = store
-            .create_calibration_workflow(&target, &requested_protocols, workflow_now())
+            .create_calibration_workflow_with_intent(
+                &target,
+                &requested_protocols,
+                args.launch_case.map(compatibility_launch_case_arg),
+                args.routing_strategy
+                    .map(compatibility_routing_arg)
+                    .unwrap_or(CompatibilityRoutingStrategy::ChildEnvironment),
+                args.proxy_family
+                    .map(compatibility_family_arg)
+                    .unwrap_or(CompatibilityAddressFamily::Ipv4),
+                workflow_now(),
+            )
             .map_err(|error| {
                 CliError::failure(format!("cannot create calibration workflow: {error}"))
             })?;
@@ -1576,7 +1860,48 @@ pub fn run(
     }
     let sequence_target_authority = SequenceTargetAuthority::from_target(&target);
     let snapshot = process_snapshot(args.controlled_target);
-    let proposal = build_proposal(&store, &target, snapshot.clone(), &requested_protocols)?;
+    let proposal = build_proposal_for_workflow(
+        &store,
+        &target,
+        snapshot.clone(),
+        &requested_protocols,
+        &workflow,
+    )?;
+    if let Some(expected) = workflow.selected_launch_case {
+        if let Some(current) = proposal_cold_launch_case(&proposal) {
+            if current != expected {
+                let checkpoint =
+                    checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Refused, None);
+                apply_workflow_checkpoint(&mut store, &mut workflow, checkpoint)?;
+                emit_workflow_guidance(
+                    emitter,
+                    &target,
+                    &workflow,
+                    &local_store_argument,
+                    Guidance {
+                        topology: topology(&proposal),
+                        action: "refused",
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: Some(current.as_str().to_string()),
+                        reason: Some("launch-case-assertion-mismatch".to_string()),
+                        images: readiness_images(&proposal),
+                        limitations: limitation_messages(&proposal),
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&workflow.observed_protocols),
+                        completed_protocols: protocol_names(&workflow.completed_protocols),
+                        remaining_protocols: protocol_names(&workflow.remaining_protocols),
+                        next_command: None,
+                    },
+                );
+                return Err(CliError::usage(format!(
+                    "guided calibration launch-case assertion {} does not match current inferred case {}",
+                    expected.as_str(),
+                    current.as_str()
+                )));
+            }
+        }
+    }
     if workflow.state == CalibrationWorkflowState::Completed {
         let all_protocols = merge_protocols(&requested_protocols, &workflow.observed_protocols);
         let (completed_protocols, remaining_protocols) =
@@ -1688,6 +2013,7 @@ pub fn run(
                 None,
                 deep_capture_api::CalibrationPhase::Reachability,
                 CompatibilityProtocol::Routing,
+                workflow.address_family,
             )?;
             restart_args.restart_warm = true;
             deep_capture::prepare_warm_restart(&restart_args, &store, emitter)?;
@@ -1733,6 +2059,7 @@ pub fn run(
         None,
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
+        workflow.address_family,
     )?;
     let mut observed_protocols = workflow.observed_protocols.clone();
     let mut attempted = workflow
@@ -1848,6 +2175,8 @@ pub fn run(
             &fresh_target,
             process_snapshot(args.controlled_target),
             &all_protocols,
+            workflow.routing_strategy,
+            workflow.address_family,
         )?;
         let (completed_protocols, remaining_protocols) =
             coverage_from_proposal(&selected, &all_protocols);
@@ -2108,6 +2437,7 @@ pub fn run(
             Some(launch_case_arg(step.case.launch_case)),
             step.phase,
             step.case.protocol,
+            workflow.address_family,
         )?;
         low_level.bundle = attempt_bundle(
             args.bundle.as_deref(),
@@ -2333,6 +2663,8 @@ pub fn run(
             &completed_target,
             process_snapshot(args.controlled_target),
             &all_protocols,
+            workflow.routing_strategy,
+            workflow.address_family,
         ) {
             Ok(proposal) => proposal,
             Err(error) => {
@@ -2925,6 +3257,8 @@ fn build_proposal(
     target: &TargetEntry,
     snapshot: deep_capture_api::CalibrationProcessSnapshot,
     protocols: &[CompatibilityProtocol],
+    routing_strategy: CompatibilityRoutingStrategy,
+    address_family: CompatibilityAddressFamily,
 ) -> Result<deep_capture_api::CalibrationProposal, CliError> {
     let facts = store
         .compatibility_facts_for_target(required_row_id(target)?)
@@ -2936,11 +3270,28 @@ fn build_proposal(
         env!("CARGO_PKG_VERSION"),
     )
     .with_process_snapshot(snapshot)
-    .with_routing_strategy(CompatibilityRoutingStrategy::ChildEnvironment)
-    .with_address_family(CompatibilityAddressFamily::Ipv4)
+    .with_routing_strategy(routing_strategy)
+    .with_address_family(address_family)
     .with_protocol_candidates(protocols.iter().copied())
     .with_facts(facts);
     Ok(deep_capture_api::propose_calibration(&request))
+}
+
+fn build_proposal_for_workflow(
+    store: &Store,
+    target: &TargetEntry,
+    snapshot: deep_capture_api::CalibrationProcessSnapshot,
+    protocols: &[CompatibilityProtocol],
+    workflow: &CalibrationWorkflow,
+) -> Result<deep_capture_api::CalibrationProposal, CliError> {
+    build_proposal(
+        store,
+        target,
+        snapshot,
+        protocols,
+        workflow.routing_strategy,
+        workflow.address_family,
+    )
 }
 
 fn required_row_id(target: &TargetEntry) -> Result<i64, CliError> {
@@ -2967,6 +3318,7 @@ fn low_level_args(
     launch_case: Option<DeepCaptureLaunchCaseArg>,
     phase: deep_capture_api::CalibrationPhase,
     protocol: CompatibilityProtocol,
+    address_family: CompatibilityAddressFamily,
 ) -> Result<DeepCaptureArgs, CliError> {
     let calibration = match phase {
         deep_capture_api::CalibrationPhase::Reachability => DeepCaptureCalibrationArg::Reachability,
@@ -2998,7 +3350,7 @@ fn low_level_args(
         key_log: false,
         client_certificate: None,
         client_private_key: None,
-        proxy_family: DeepCaptureProxyFamilyArg::Ipv4,
+        proxy_family: proxy_family_arg(address_family),
         proxy_bypass: Vec::new(),
         controlled_target: args.controlled_target,
     })
@@ -3075,6 +3427,72 @@ fn launch_case_arg(value: CompatibilityLaunchCase) -> DeepCaptureLaunchCaseArg {
         CompatibilityLaunchCase::PublisherLauncherCold => {
             DeepCaptureLaunchCaseArg::PublisherLauncherCold
         }
+    }
+}
+
+fn compatibility_launch_case_arg(value: DeepCaptureLaunchCaseArg) -> CompatibilityLaunchCase {
+    match value {
+        DeepCaptureLaunchCaseArg::SteamProtocolWarm => CompatibilityLaunchCase::SteamProtocolWarm,
+        DeepCaptureLaunchCaseArg::SteamProtocolCold => CompatibilityLaunchCase::SteamProtocolCold,
+        DeepCaptureLaunchCaseArg::DirectExeWarm => CompatibilityLaunchCase::DirectExeWarm,
+        DeepCaptureLaunchCaseArg::DirectExeCold => CompatibilityLaunchCase::DirectExeCold,
+        DeepCaptureLaunchCaseArg::PublisherLauncher => CompatibilityLaunchCase::PublisherLauncher,
+        DeepCaptureLaunchCaseArg::PublisherLauncherWarm => {
+            CompatibilityLaunchCase::PublisherLauncherWarm
+        }
+        DeepCaptureLaunchCaseArg::PublisherLauncherGameStartCleanWarm => {
+            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
+        }
+        DeepCaptureLaunchCaseArg::PublisherLauncherCold => {
+            CompatibilityLaunchCase::PublisherLauncherCold
+        }
+    }
+}
+
+fn compatibility_routing_arg(value: GuidedCalibrationRoutingArg) -> CompatibilityRoutingStrategy {
+    match value {
+        GuidedCalibrationRoutingArg::ChildEnvironment => {
+            CompatibilityRoutingStrategy::ChildEnvironment
+        }
+        GuidedCalibrationRoutingArg::CommandArguments => {
+            CompatibilityRoutingStrategy::CommandArguments
+        }
+        GuidedCalibrationRoutingArg::TargetConfiguration => {
+            CompatibilityRoutingStrategy::TargetConfiguration
+        }
+        GuidedCalibrationRoutingArg::HttpProxy => CompatibilityRoutingStrategy::HttpProxy,
+        GuidedCalibrationRoutingArg::Socks => CompatibilityRoutingStrategy::Socks,
+        GuidedCalibrationRoutingArg::ProtocolSpecific => {
+            CompatibilityRoutingStrategy::ProtocolSpecific
+        }
+    }
+}
+
+fn compatibility_family_arg(value: DeepCaptureProxyFamilyArg) -> CompatibilityAddressFamily {
+    match value {
+        DeepCaptureProxyFamilyArg::Ipv4 => CompatibilityAddressFamily::Ipv4,
+        DeepCaptureProxyFamilyArg::Ipv6 => CompatibilityAddressFamily::Ipv6,
+    }
+}
+
+fn proxy_family_arg(value: CompatibilityAddressFamily) -> DeepCaptureProxyFamilyArg {
+    match value {
+        CompatibilityAddressFamily::Ipv4 => DeepCaptureProxyFamilyArg::Ipv4,
+        CompatibilityAddressFamily::Ipv6 => DeepCaptureProxyFamilyArg::Ipv6,
+    }
+}
+
+fn proposal_cold_launch_case(
+    proposal: &deep_capture_api::CalibrationProposal,
+) -> Option<CompatibilityLaunchCase> {
+    match proposal.readiness {
+        deep_capture_api::CalibrationLaunchReadiness::Ready { launch_case, .. } => {
+            Some(launch_case)
+        }
+        deep_capture_api::CalibrationLaunchReadiness::OperatorAction { cold_case, .. } => {
+            Some(cold_case)
+        }
+        _ => None,
     }
 }
 
@@ -3170,6 +3588,17 @@ fn emit_guidance_with_attempt(
         status: guidance.status.to_string(),
         observed_launch_case: guidance.observed_launch_case.clone(),
         selected_launch_case: guidance.selected_launch_case.clone(),
+        launch_case_assertion: Box::new(
+            workflow
+                .and_then(|(value, _)| value.selected_launch_case)
+                .map(|value| value.as_str().to_string()),
+        ),
+        routing_strategy: workflow
+            .map(|(value, _)| value.routing_strategy.as_str().to_string())
+            .unwrap_or_else(|| "unavailable".to_string()),
+        address_family: workflow
+            .map(|(value, _)| value.address_family.as_str().to_string())
+            .unwrap_or_else(|| "unavailable".to_string()),
         reason: guidance.reason.clone(),
         images: guidance.images.clone(),
         limitations: guidance.limitations.clone(),
@@ -3178,21 +3607,23 @@ fn emit_guidance_with_attempt(
         completed_protocols: guidance.completed_protocols.clone(),
         remaining_protocols: guidance.remaining_protocols.clone(),
         process_control: "none".to_string(),
-        next_command: guidance.next_command.clone(),
+        next_command: Box::new(guidance.next_command.clone()),
         attempt: attempt.map(|value| value.number),
         maximum_attempts: attempt.map(|_| MAX_GUIDED_ATTEMPTS as u64),
         phase: attempt.map(|value| value.phase.as_str().to_string()),
         protocol: attempt.map(|value| value.protocol.as_str().to_string()),
         workflow_id: workflow.map(|(value, _)| value.id),
         workflow_revision: workflow.map(|(value, _)| value.revision),
-        workflow_state: workflow.map(|(value, _)| value.state.as_str().to_string()),
-        pause_reason: workflow
-            .and_then(|(value, _)| value.pause_reason)
-            .map(|value| value.as_str().to_string()),
+        workflow_state: Box::new(workflow.map(|(value, _)| value.state.as_str().to_string())),
+        pause_reason: Box::new(
+            workflow
+                .and_then(|(value, _)| value.pause_reason)
+                .map(|value| value.as_str().to_string()),
+        ),
         resume_command: Box::new(resume_command.clone()),
     });
     emitter.progress(&format!(
-        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} workflow_id={} workflow_revision={} workflow_state={} pause_reason={} process_control=none next_command={} resume_command={}",
+        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} launch_case_assertion={} routing_strategy={} address_family={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} workflow_id={} workflow_revision={} workflow_state={} pause_reason={} process_control=none next_command={} resume_command={}",
         target.handle,
         target.stable_id,
         guidance.topology.as_deref().unwrap_or("unavailable"),
@@ -3200,6 +3631,9 @@ fn emit_guidance_with_attempt(
         guidance.status,
         guidance.observed_launch_case.as_deref().unwrap_or("none"),
         guidance.selected_launch_case.as_deref().unwrap_or("none"),
+        workflow.and_then(|(value, _)| value.selected_launch_case).map(|value| value.as_str()).unwrap_or("none"),
+        workflow.map(|(value, _)| value.routing_strategy.as_str()).unwrap_or("unavailable"),
+        workflow.map(|(value, _)| value.address_family.as_str()).unwrap_or("unavailable"),
         guidance.reason.as_deref().unwrap_or("none"),
         if guidance.images.is_empty() { "none".to_string() } else { guidance.images.join(",") },
         if guidance.limitations.is_empty() { "none".to_string() } else { guidance.limitations.join("; ") },
@@ -3564,6 +3998,8 @@ mod tests {
             &target,
             deep_capture_api::CalibrationProcessSnapshot::unavailable("snapshot failed"),
             &[],
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityAddressFamily::Ipv4,
         )
         .unwrap();
         assert!(proposal.steps.is_empty());
@@ -3642,6 +4078,8 @@ mod tests {
             &target,
             deep_capture_api::CalibrationProcessSnapshot::complete(["fixture.exe"]),
             &[CompatibilityProtocol::Https],
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityAddressFamily::Ipv4,
         )
         .unwrap();
 
@@ -3792,6 +4230,8 @@ mod tests {
             &target,
             deep_capture_api::CalibrationProcessSnapshot::complete(Vec::<String>::new()),
             &[],
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityAddressFamily::Ipv4,
         )
         .unwrap();
         let key = ExactAttemptCase::from_step(&proposal.steps[0]);

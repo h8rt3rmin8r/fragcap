@@ -23,9 +23,9 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_10_TO_11, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5,
-    MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, MIGRATE_9_TO_10,
-    SCHEMA_VERSION,
+    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4,
+    MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
+    MIGRATE_9_TO_10, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::workflow::{
@@ -193,6 +193,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 11i64)?;
             tx.commit()?;
             version = 11;
+        }
+
+        if version == 11 {
+            // 11 -> 12: retain the exact guided-calibration defaults while adding
+            // immutable advanced case intent. No compatibility evidence changes.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_11_TO_12)?;
+            tx.pragma_update(None, "user_version", 12i64)?;
+            tx.commit()?;
+            version = 12;
         }
 
         if version != SCHEMA_VERSION {
@@ -1132,6 +1142,26 @@ impl Store {
         requested_protocols: &[CompatibilityProtocol],
         now: u64,
     ) -> Result<CalibrationWorkflow, TargetsError> {
+        self.create_calibration_workflow_with_intent(
+            target,
+            requested_protocols,
+            None,
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityAddressFamily::Ipv4,
+            now,
+        )
+    }
+
+    /// Create one target-bound workflow with immutable exact-case intent.
+    pub fn create_calibration_workflow_with_intent(
+        &mut self,
+        target: &TargetEntry,
+        requested_protocols: &[CompatibilityProtocol],
+        selected_launch_case: Option<CompatibilityLaunchCase>,
+        routing_strategy: CompatibilityRoutingStrategy,
+        address_family: CompatibilityAddressFamily,
+        now: u64,
+    ) -> Result<CalibrationWorkflow, TargetsError> {
         let target_id = target.id.ok_or_else(|| {
             TargetsError::Model(
                 "a calibration workflow requires a persisted target row".to_string(),
@@ -1163,13 +1193,14 @@ impl Store {
                  target_fidelity, target_provenance, target_anchor,
                  target_install_root, target_launch_entries, target_evidence,
                  target_detection_scan, target_folder_name, target_executable_hint,
+                 selected_launch_case, routing_strategy, address_family,
                  requested_protocols, observed_protocols,
                  completed_protocols, remaining_protocols, attempted_case_keys,
                  attempt_ordinal, attempt_phase, attempt_protocol, attempt_key,
                  state, pause_reason, revision, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 0, NULL,
-                     NULL, NULL, ?22, NULL, 1, ?23, ?23)",
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
+                     ?24, 0, NULL, NULL, NULL, ?25, NULL, 1, ?26, ?26)",
             params![
                 CALIBRATION_WORKFLOW_RECORD_VERSION,
                 target_id,
@@ -1187,6 +1218,9 @@ impl Store {
                 authority.detection_scan.map(DetectionScan::as_str),
                 authority.folder_name,
                 authority.executable_hint,
+                selected_launch_case.map(CompatibilityLaunchCase::as_str),
+                routing_strategy.as_str(),
+                address_family.as_str(),
                 encode_protocols(&checkpoint.requested_protocols)?,
                 encode_protocols(&checkpoint.observed_protocols)?,
                 encode_protocols(&checkpoint.completed_protocols)?,
@@ -1652,6 +1686,7 @@ fn calibration_workflow_from_connection(
                     target_provenance, target_anchor, target_install_root,
                     target_launch_entries, target_evidence, target_detection_scan,
                     target_folder_name, target_executable_hint,
+                    selected_launch_case, routing_strategy, address_family,
                     requested_protocols, observed_protocols,
                     completed_protocols, remaining_protocols,
                     attempted_case_keys, attempt_ordinal, attempt_phase,
@@ -1685,20 +1720,23 @@ fn read_calibration_workflow_row(
     let target_detection_scan: Option<String> = row.get(14)?;
     let target_folder_name: Option<String> = row.get(15)?;
     let target_executable_hint: Option<String> = row.get(16)?;
-    let requested_protocols: String = row.get(17)?;
-    let observed_protocols: String = row.get(18)?;
-    let completed_protocols: String = row.get(19)?;
-    let remaining_protocols: String = row.get(20)?;
-    let attempted_case_keys: String = row.get(21)?;
-    let attempt_ordinal: i64 = row.get(22)?;
-    let attempt_phase: Option<String> = row.get(23)?;
-    let attempt_protocol: Option<String> = row.get(24)?;
-    let attempt_key: Option<String> = row.get(25)?;
-    let state: String = row.get(26)?;
-    let pause_reason: Option<String> = row.get(27)?;
-    let revision: i64 = row.get(28)?;
-    let created_at: i64 = row.get(29)?;
-    let updated_at: i64 = row.get(30)?;
+    let selected_launch_case: Option<String> = row.get(17)?;
+    let routing_strategy: String = row.get(18)?;
+    let address_family: String = row.get(19)?;
+    let requested_protocols: String = row.get(20)?;
+    let observed_protocols: String = row.get(21)?;
+    let completed_protocols: String = row.get(22)?;
+    let remaining_protocols: String = row.get(23)?;
+    let attempted_case_keys: String = row.get(24)?;
+    let attempt_ordinal: i64 = row.get(25)?;
+    let attempt_phase: Option<String> = row.get(26)?;
+    let attempt_protocol: Option<String> = row.get(27)?;
+    let attempt_key: Option<String> = row.get(28)?;
+    let state: String = row.get(29)?;
+    let pause_reason: Option<String> = row.get(30)?;
+    let revision: i64 = row.get(31)?;
+    let created_at: i64 = row.get(32)?;
+    let updated_at: i64 = row.get(33)?;
 
     Ok((|| {
         if record_version != CALIBRATION_WORKFLOW_RECORD_VERSION {
@@ -1758,6 +1796,12 @@ fn read_calibration_workflow_row(
                 folder_name: target_folder_name,
                 executable_hint: target_executable_hint,
             },
+            selected_launch_case: selected_launch_case
+                .as_deref()
+                .map(CompatibilityLaunchCase::parse)
+                .transpose()?,
+            routing_strategy: CompatibilityRoutingStrategy::parse(&routing_strategy)?,
+            address_family: CompatibilityAddressFamily::parse(&address_family)?,
             requested_protocols: checkpoint.requested_protocols,
             observed_protocols: checkpoint.observed_protocols,
             completed_protocols: checkpoint.completed_protocols,
@@ -2152,6 +2196,42 @@ mod tests {
     }
 
     #[test]
+    fn a_v11_workflow_gains_the_exact_prior_case_defaults() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("s146_migration", None, FidelityTier::Authored);
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("s146_migration")
+            .expect("query")
+            .expect("target");
+        let workflow_id = store
+            .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+            .expect("create workflow")
+            .id;
+        let conn = store.conn;
+        conn.execute_batch(
+            "ALTER TABLE calibration_workflows DROP COLUMN address_family;
+             ALTER TABLE calibration_workflows DROP COLUMN routing_strategy;
+             ALTER TABLE calibration_workflows DROP COLUMN selected_launch_case;",
+        )
+        .expect("restore v11 workflow shape");
+        conn.pragma_update(None, "user_version", 11i64)
+            .expect("stamp v11");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let workflow = store
+            .calibration_workflow(workflow_id)
+            .expect("read migrated workflow")
+            .expect("workflow survives");
+        assert_eq!(workflow.selected_launch_case, None);
+        assert_eq!(
+            workflow.routing_strategy,
+            CompatibilityRoutingStrategy::ChildEnvironment
+        );
+        assert_eq!(workflow.address_family, CompatibilityAddressFamily::Ipv4);
+    }
+
+    #[test]
     fn calibration_workflow_round_trips_and_revisions_conditionally() {
         let mut store = Store::open_in_memory().expect("store");
         let mut entry = sample_target("workflow_target", Some("steam:145"), FidelityTier::Authored);
@@ -2215,6 +2295,60 @@ mod tests {
                 .expect("stale update"),
             CalibrationWorkflowUpdateOutcome::Changed
         );
+    }
+
+    #[test]
+    fn calibration_workflow_round_trips_immutable_exact_case_intent() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("workflow_case", None, FidelityTier::Authored);
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("workflow_case")
+            .expect("query")
+            .expect("target");
+        let workflow = store
+            .create_calibration_workflow_with_intent(
+                &target,
+                &[CompatibilityProtocol::Https],
+                Some(CompatibilityLaunchCase::DirectExeCold),
+                CompatibilityRoutingStrategy::Socks,
+                CompatibilityAddressFamily::Ipv6,
+                100,
+            )
+            .expect("create workflow");
+
+        assert_eq!(
+            workflow.selected_launch_case,
+            Some(CompatibilityLaunchCase::DirectExeCold)
+        );
+        assert_eq!(
+            workflow.routing_strategy,
+            CompatibilityRoutingStrategy::Socks
+        );
+        assert_eq!(workflow.address_family, CompatibilityAddressFamily::Ipv6);
+
+        let checkpoint = CalibrationWorkflowCheckpoint {
+            requested_protocols: workflow.requested_protocols.clone(),
+            observed_protocols: workflow.observed_protocols.clone(),
+            completed_protocols: workflow.completed_protocols.clone(),
+            remaining_protocols: workflow.remaining_protocols.clone(),
+            attempted_case_keys: workflow.attempted_case_keys.clone(),
+            attempt_ordinal: workflow.attempt_ordinal,
+            attempt_phase: None,
+            attempt_protocol: None,
+            attempt_key: None,
+            state: CalibrationWorkflowState::Paused,
+            pause_reason: Some(crate::CalibrationPauseReason::Gameplay),
+        };
+        let CalibrationWorkflowUpdateOutcome::Applied(updated) = store
+            .update_calibration_workflow(workflow.id, workflow.revision, &checkpoint, 101)
+            .expect("update")
+        else {
+            panic!("expected updated workflow");
+        };
+        assert_eq!(updated.selected_launch_case, workflow.selected_launch_case);
+        assert_eq!(updated.routing_strategy, workflow.routing_strategy);
+        assert_eq!(updated.address_family, workflow.address_family);
     }
 
     #[test]

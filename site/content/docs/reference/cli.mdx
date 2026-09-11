@@ -175,11 +175,15 @@ Guide one target through a bounded sequence of current Deep Capture reachability
 
 For a target with authoritative topology, the command freshly reads the process image inventory and retained compatibility facts before every proposed action. Repeatable `--protocol` values request measurements and do not constitute evidence. Missing route evidence selects reachability first. After each separately authorized session, eligible final-client observations may add concrete candidates, but only a fresh current positive fact permits the next useful case. One workflow runs reachability at most once and each concrete protocol at most once, for a maximum of fourteen durable attempt ordinals. A decline, invalid input, interruption, failure, partial result, warm transition, limitation, target change, or repeated case stops before later effects and checkpoints current coverage. A warm target starts no session unless `--restart-warm` explicitly selects the existing operator-owned close-and-retry workflow.
 
-Fresh calibration creates a target-bound workflow before its first attempt. Resume it explicitly with `--resume <WORKFLOW_ID>` from the same effective local store. Resume revalidates the complete target snapshot and rebuilds current process, fact, proposal, recovery, bundle, plan, and confirmation authority. It never reuses a prior plan or response. A row left in flight first becomes an effect-free interruption pause. `--pause-for` can record login, EULA, gameplay, shutdown, or interruption work without entering the session executor. A pause records operator intent, not proof or compatibility evidence. Generated commands carry the effective local-store path as one PowerShell-quoted argument.
+Fresh calibration creates a target-bound workflow before its first attempt. Resume it explicitly with `--resume <WORKFLOW_ID>` from the same effective local store. Resume revalidates the complete target snapshot and rebuilds current process, fact, proposal, recovery, bundle, plan, and confirmation authority. It never reuses a prior plan or response. A row left in flight first becomes an effect-free interruption pause. `--pause-for` can record login, EULA, gameplay, shutdown, or interruption work without entering the session executor. A pause records operator intent, not proof or compatibility evidence. Generated commands carry the effective local-store path as one PowerShell-quoted argument. If target discovery or Steam executable metadata is ambiguous, `calibration.choice_required` lists stable content-derived candidate identities. Repeat the command with one exact `--candidate`; list positions are never accepted. The selection still passes the existing registration or Steam client plan and fresh post-confirmation checks.
+
+Advanced fresh workflows may assert `--launch-case`, select `--routing-strategy`, and select `--proxy-family`. The values become immutable workflow intent and appear in guidance. A launch assertion must equal the current inferred cold topology, and unimplemented routing strategies remain pre-effect refusals. Resume cannot change candidate or exact-case intent.
 
 ```powershell
 fragcap calibrate sample-target
+fragcap calibrate "Sample Target" --candidate candidate-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 fragcap calibrate --id 42 --protocol https
+fragcap calibrate --id 42 --launch-case direct-exe-cold --routing-strategy child-environment --proxy-family ipv6
 fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
 fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 ```
@@ -188,18 +192,22 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 | --- | --- | --- | --- | --- |
 | `--authorize-stdin` | open | `false` | all | Read each exact emitted plan identifier from standard input. A discovered target first requires its `target-registration-v1` identifier, an eligible absent Steam client requires its separate `steam-client-setup-v1` identifier, and any later effectful attempt requires its current Deep Capture plan identifier. Conflicts with `--restart-warm`. |
 | `--bundle` | open | none | all | Select the first attempt bundle. Later attempts use deterministic sibling paths containing attempt, phase, and protocol. |
+| `--candidate` | open | none | all | Fresh workflow only. Select one exact current candidate from a prior ambiguity event. The value must be a `candidate-v1:<digest>` content-derived identity and must be consumed exactly once. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
 | `-d`, `--duration` | open | none | all | Bound the selected observation duration. |
 | `--id` | open | none | all | Select a stored target by durable identifier. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Fresh workflow only. Assert the exact current cold launch case. Omission uses the inferred case; a mismatch refuses and never rewrites topology. |
 | `--max-bytes` | open | none | all | Stop the selected attempt after this many captured bytes. |
 | `--max-packets` | open | none | all | Stop the selected attempt after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes during the selected attempt. |
 | `--protocol` | `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Request concrete protocol measurements after reachability. Repeat for more than one candidate; each useful case retains a separate authorization plan. |
 | `--pause-for` | `login`, `eula`, `gameplay`, `shutdown`, `interrupted` | none | all | With `--resume`, atomically record operator-owned work and exit without session effects. |
+| `--proxy-family` | `ipv4`, `ipv6` | none | all | Fresh workflow only. Persist the exact loopback family and use it in every fresh proposal and attempt. Omission selects IPv4. |
 | `--resume` | open | none | all | Resume one positive target-bound workflow identifier from the effective local store. Conflicts with target selectors and `--protocol`. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, take a fresh process snapshot, and measure the selected cold launch. Conflicts with `--authorize-stdin`. |
+| `--routing-strategy` | `child-environment`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension. Omission selects child-environment. Only child-environment is currently implemented; other values refuse before effects. |
 | `--target` | open | none | all | Explicit target selector. Stored resolution runs first; a clean miss may exactly match an installed title name or Steam application identifier. |
 | `--wait` | open | none | all | Set the target acquisition timeout for the selected attempt. |
 

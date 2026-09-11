@@ -349,6 +349,15 @@ fn assert_next_command_selects_store(events: &str, subcommand: &str, target_id: 
     );
 }
 
+fn calibration_choices(events: &str) -> Vec<serde_json::Value> {
+    events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "calibration.choice_required")
+        .and_then(|event| event["choices"].as_array().cloned())
+        .expect("one structured calibration choice set")
+}
+
 fn seed_target(local: &Path, with_current_routing: bool) -> i64 {
     let mut store = Store::open(local).expect("scratch local store");
     let entry = TargetEntry {
@@ -525,6 +534,10 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
         "--id",
         "--resume",
         "--pause-for",
+        "--candidate",
+        "--launch-case",
+        "--routing-strategy",
+        "--proxy-family",
         "--bundle",
         "--duration",
         "--wait",
@@ -543,8 +556,6 @@ fn calibrate_is_listed_and_documents_its_bounded_contract() {
     }
     for excluded in [
         "--calibration-protocol",
-        "--launch-case",
-        "--proxy-family",
         "--proxy-bypass",
         "--trust-ca",
         "--yes",
@@ -560,6 +571,28 @@ fn resume_is_an_explicit_mutually_exclusive_workflow_selector() {
         vec!["calibrate", "sample-target", "--resume", "1"],
         vec!["calibrate", "--id", "75000", "--resume", "1"],
         vec!["calibrate", "--resume", "1", "--protocol", "https"],
+        vec![
+            "calibrate",
+            "--resume",
+            "1",
+            "--candidate",
+            "candidate-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ],
+        vec![
+            "calibrate",
+            "--resume",
+            "1",
+            "--launch-case",
+            "direct-exe-cold",
+        ],
+        vec![
+            "calibrate",
+            "--resume",
+            "1",
+            "--routing-strategy",
+            "child-environment",
+        ],
+        vec!["calibrate", "--resume", "1", "--proxy-family", "ipv6"],
     ] {
         let (code, _out, err) = run(&args);
         assert_eq!(code, 2, "args={args:?} stderr={err}");
@@ -1411,7 +1444,7 @@ fn steam_client_setup_refuses_discovery_drift_before_mutation() {
     );
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_DRIFT");
     assert_eq!(code, 2, "events:\n{events}");
-    assert!(events.contains("steam-client-plan-changed-after-confirmation"));
+    assert!(events.contains("steam-client-candidate-not-reproduced"));
     assert_eq!(
         Store::open(&local)
             .unwrap()
@@ -1447,7 +1480,7 @@ fn steam_client_setup_refuses_ambiguous_candidate_reproduction() {
     );
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
     assert_eq!(code, 2, "events:\n{events}");
-    assert!(events.contains("steam-client-authority-not-reproduced"));
+    assert!(events.contains("steam-client-plan-changed-after-confirmation"));
     assert_eq!(
         Store::open(&local)
             .unwrap()
@@ -1478,10 +1511,10 @@ fn steam_client_setup_reports_initial_discovery_ambiguity() {
     ]);
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
     assert_eq!(code, 2, "events:\n{events}");
-    assert!(
-        events.contains("2 exact steam:75000 candidates"),
-        "events:\n{events}"
-    );
+    let choices = calibration_choices(&events);
+    assert_eq!(choices.len(), 2);
+    assert!(events.contains("\"scope\":\"steam-client\""));
+    assert!(events.contains("\"process_control\":\"none\""));
     assert!(!events.contains("calibration.steam_client_plan"));
     assert_eq!(
         Store::open(&local)
@@ -1492,6 +1525,312 @@ fn steam_client_setup_reports_initial_discovery_ambiguity() {
             .launch_entries,
         None
     );
+}
+
+#[test]
+fn explicit_candidate_selects_one_ambiguous_discovered_target() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let base = [
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ];
+    let (code, _out, events) = run(&base);
+    assert_eq!(code, 2, "events:\n{events}");
+    let choices = calibration_choices(&events);
+    assert_eq!(choices.len(), 2);
+    let selected = choices
+        .iter()
+        .find(|choice| choice["identity"] == "steam:75000")
+        .and_then(|choice| choice["id"].as_str())
+        .unwrap()
+        .to_string();
+    assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
+
+    let mut authorization = BoundedEchoAuthorization {
+        calls: 0,
+        accepted: 2,
+    };
+    let (code, _out, selected_events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "Sample Target",
+            "--candidate",
+            &selected,
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS");
+    assert_eq!(code, 2, "events:\n{selected_events}");
+    assert!(selected_events.contains("\"status\":\"registered\""));
+    assert_eq!(Store::open(&local).unwrap().targets().unwrap().len(), 1);
+}
+
+#[test]
+fn explicit_candidate_selects_one_ambiguous_steam_client() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        &id,
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "events:\n{events}");
+    let choices = calibration_choices(&events);
+    let selected = choices
+        .iter()
+        .find(|choice| choice["executable_hint"] == "client.exe")
+        .and_then(|choice| choice["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    let mut authorization = BoundedEchoAuthorization {
+        calls: 0,
+        accepted: 1,
+    };
+    let (code, _out, selected_events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            &id,
+            "--candidate",
+            &selected,
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
+    assert_eq!(code, 2, "events:\n{selected_events}");
+    assert!(selected_events.contains("\"status\":\"applied\""));
+    let target = Store::open(&local)
+        .unwrap()
+        .target_by_stable_id(stable_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        target.launch_entries,
+        Some(resolved_client_launch("client.exe"))
+    );
+}
+
+#[test]
+fn malformed_and_unused_candidates_stop_before_workflow_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let (code, _out, malformed) = run(&[
+        "calibrate",
+        "--id",
+        "75000",
+        "--candidate",
+        "candidate-v1:not-a-digest",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(malformed.contains("64 lowercase hexadecimal"));
+
+    let valid = format!("candidate-v1:{}", "0".repeat(64));
+    let (code, _out, unused) = run(&[
+        "calibrate",
+        "--id",
+        "75000",
+        "--candidate",
+        &valid,
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        unused.contains("was not consumed"),
+        "diagnostics:\n{unused}"
+    );
+    assert!(Store::open(&local)
+        .unwrap()
+        .calibration_workflow(1)
+        .unwrap()
+        .is_none());
+
+    let discovery_local = dir.path().join("discovery.db");
+    let (code, _out, stale) = run(&[
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--candidate",
+        &valid,
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        discovery_local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(stale.contains("no current ambiguous target-registration choice"));
+    assert!(Store::open(&discovery_local)
+        .unwrap()
+        .targets()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn duplicate_candidate_authority_is_refused_without_a_target_write() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DUPLICATE", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DUPLICATE");
+    assert_eq!(code, 2, "events:\n{events}");
+    assert!(events.contains("duplicate candidate authority"));
+    assert!(events.contains("calibration.choice_required"));
+    assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
+}
+
+#[test]
+fn exact_case_intent_is_persisted_rendered_and_reused_on_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let mut authorization = BoundedEchoAuthorization {
+        calls: 0,
+        accepted: 0,
+    };
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--launch-case",
+            "direct-exe-cold",
+            "--routing-strategy",
+            "child-environment",
+            "--proxy-family",
+            "ipv6",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "events:\n{events}");
+    assert_eq!(authorization.calls, 1);
+    assert!(events.contains("\"launch_case_assertion\":\"direct-exe-cold\""));
+    assert!(events.contains("\"routing_strategy\":\"child-environment\""));
+    assert!(events.contains("\"address_family\":\"ipv6\""));
+    let authorization_plan = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "deep_capture.authorization_plan")
+        .expect("the delegated low-level attempt must disclose its plan");
+    assert_eq!(
+        authorization_plan["plan"]["proxy"]["address_family"],
+        "ipv6"
+    );
+    assert!(events.contains("\"reason\":\"delegated-session-refused\""));
+    let store = Store::open(&local).unwrap();
+    let workflow = store.calibration_workflow(1).unwrap().unwrap();
+    assert_eq!(
+        workflow.selected_launch_case,
+        Some(CompatibilityLaunchCase::DirectExeCold)
+    );
+    assert_eq!(
+        workflow.routing_strategy,
+        CompatibilityRoutingStrategy::ChildEnvironment
+    );
+    assert_eq!(workflow.address_family, CompatibilityAddressFamily::Ipv6);
+    drop(store);
+
+    let (code, _out, resumed) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        "1",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "events:\n{resumed}");
+    assert!(resumed.contains("\"address_family\":\"ipv6\""));
+    assert!(resumed.contains("\"launch_case_assertion\":\"direct-exe-cold\""));
+}
+
+#[test]
+fn unsupported_routing_and_mismatched_launch_assertions_refuse_before_effects() {
+    for (extra, expected) in [
+        (
+            vec!["--routing-strategy", "socks"],
+            "unsupported-routing-strategy",
+        ),
+        (
+            vec!["--launch-case", "steam-protocol-cold"],
+            "launch-case-assertion-mismatch",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.db");
+        seed_target(&local, true);
+        let mut args = vec![
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        let (code, _out, events) = run(&args);
+        assert_eq!(code, 2, "events:\n{events}");
+        assert!(events.contains(expected), "events:\n{events}");
+        assert!(!events.contains("deep_capture.authorization_plan"));
+        assert!(!events.contains("deep_capture.session"));
+        assert_eq!(
+            Store::open(&local)
+                .unwrap()
+                .calibration_workflow(1)
+                .unwrap()
+                .unwrap()
+                .state,
+            CalibrationWorkflowState::Refused
+        );
+    }
 }
 
 #[test]
@@ -1579,7 +1918,10 @@ fn confirmed_registration_preserves_rediscovery_ambiguity_diagnostics() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS");
     assert_eq!(code, 2, "events:\n{events}");
     assert!(events.contains("\"status\":\"drifted\""));
-    assert!(events.contains("2 exact candidates"), "events:\n{events}");
+    assert!(
+        events.contains("calibration.choice_required"),
+        "events:\n{events}"
+    );
     assert!(events.contains("steam:75000"), "events:\n{events}");
     assert!(
         events.contains("C:\\\\Other Games\\\\Sample Target\\\\client.exe"),
@@ -1818,6 +2160,8 @@ fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handof
             "calibrate",
             "--id",
             &id_arg,
+            "--launch-case",
+            launch_case.as_str(),
             "--local-db",
             local.to_str().unwrap(),
         ]);

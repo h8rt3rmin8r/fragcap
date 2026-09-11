@@ -7,8 +7,9 @@ use serde_json::Value;
 use fragcap_profile::FidelityTier;
 
 use crate::{
-    ClassificationSource, CompatibilityProtocol, DetectionScan, TargetClassification, TargetEntry,
-    TargetsError,
+    ClassificationSource, CompatibilityAddressFamily, CompatibilityLaunchCase,
+    CompatibilityProtocol, CompatibilityRoutingStrategy, DetectionScan, TargetClassification,
+    TargetEntry, TargetsError,
 };
 
 /// The checkpoint record contract understood by this build.
@@ -167,6 +168,9 @@ pub struct CalibrationWorkflow {
     pub record_version: i64,
     pub target_id: i64,
     pub target: CalibrationTargetAuthority,
+    pub selected_launch_case: Option<CompatibilityLaunchCase>,
+    pub routing_strategy: CompatibilityRoutingStrategy,
+    pub address_family: CompatibilityAddressFamily,
     pub requested_protocols: Vec<CompatibilityProtocol>,
     pub observed_protocols: Vec<CompatibilityProtocol>,
     pub completed_protocols: Vec<CompatibilityProtocol>,

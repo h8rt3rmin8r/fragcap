@@ -153,6 +153,17 @@ pub enum Event {
         target_id: Option<i64>,
         continued: bool,
     },
+    /// One explicit candidate choice required before a target or launch can proceed.
+    CalibrationChoiceRequired {
+        scope: String,
+        selector: String,
+        target_id: Option<i64>,
+        choices: Vec<serde_json::Value>,
+        discovery_considered: u64,
+        discovery_produced: u64,
+        discovery_warning_count: u64,
+        process_control: String,
+    },
     /// One complete Steam client authoring plan, emitted before input.
     CalibrationSteamClientPlan {
         plan_id: String,
@@ -188,6 +199,9 @@ pub enum Event {
         status: String,
         observed_launch_case: Option<String>,
         selected_launch_case: Option<String>,
+        launch_case_assertion: Box<Option<String>>,
+        routing_strategy: String,
+        address_family: String,
         reason: Option<String>,
         images: Vec<String>,
         limitations: Vec<String>,
@@ -196,15 +210,15 @@ pub enum Event {
         completed_protocols: Vec<String>,
         remaining_protocols: Vec<String>,
         process_control: String,
-        next_command: Option<String>,
+        next_command: Box<Option<String>>,
         attempt: Option<u64>,
         maximum_attempts: Option<u64>,
         phase: Option<String>,
         protocol: Option<String>,
         workflow_id: Option<i64>,
         workflow_revision: Option<u64>,
-        workflow_state: Option<String>,
-        pause_reason: Option<String>,
+        workflow_state: Box<Option<String>>,
+        pause_reason: Box<Option<String>>,
         resume_command: Box<Option<String>>,
     },
     /// An explicit warm-to-cold plan, emitted before the operator acts.
@@ -337,6 +351,7 @@ impl Event {
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
             Event::CalibrationRegistrationPlan { .. } => "calibration.registration_plan",
             Event::CalibrationRegistration { .. } => "calibration.registration",
+            Event::CalibrationChoiceRequired { .. } => "calibration.choice_required",
             Event::CalibrationSteamClientPlan { .. } => "calibration.steam_client_plan",
             Event::CalibrationSteamClient { .. } => "calibration.steam_client",
             Event::CalibrationGuidance { .. } => "calibration.guidance",
@@ -672,6 +687,39 @@ impl Event {
                 line.push_str(",\"continued\":");
                 line.push_str(if *continued { "true" } else { "false" });
             }
+            Event::CalibrationChoiceRequired {
+                scope,
+                selector,
+                target_id,
+                choices,
+                discovery_considered,
+                discovery_produced,
+                discovery_warning_count,
+                process_control,
+            } => {
+                line.push_str(",\"scope\":");
+                write_json_string(scope, &mut line);
+                line.push_str(",\"selector\":");
+                write_json_string(selector, &mut line);
+                line.push_str(",\"target_id\":");
+                match target_id {
+                    Some(target_id) => line.push_str(&target_id.to_string()),
+                    None => line.push_str("null"),
+                }
+                line.push_str(",\"choices\":");
+                line.push_str(
+                    &serde_json::to_string(choices)
+                        .expect("calibration choice projections are serializable"),
+                );
+                line.push_str(",\"discovery_considered\":");
+                line.push_str(&discovery_considered.to_string());
+                line.push_str(",\"discovery_produced\":");
+                line.push_str(&discovery_produced.to_string());
+                line.push_str(",\"discovery_warning_count\":");
+                line.push_str(&discovery_warning_count.to_string());
+                line.push_str(",\"process_control\":");
+                write_json_string(process_control, &mut line);
+            }
             Event::CalibrationSteamClientPlan {
                 plan_id,
                 canonical_json,
@@ -746,6 +794,9 @@ impl Event {
                 status,
                 observed_launch_case,
                 selected_launch_case,
+                launch_case_assertion,
+                routing_strategy,
+                address_family,
                 reason,
                 images,
                 limitations,
@@ -779,6 +830,12 @@ impl Event {
                 write_optional_json_string(observed_launch_case.as_deref(), &mut line);
                 line.push_str(",\"selected_launch_case\":");
                 write_optional_json_string(selected_launch_case.as_deref(), &mut line);
+                line.push_str(",\"launch_case_assertion\":");
+                write_optional_json_string(launch_case_assertion.as_deref(), &mut line);
+                line.push_str(",\"routing_strategy\":");
+                write_json_string(routing_strategy, &mut line);
+                line.push_str(",\"address_family\":");
+                write_json_string(address_family, &mut line);
                 line.push_str(",\"reason\":");
                 write_optional_json_string(reason.as_deref(), &mut line);
                 line.push_str(",\"images\":[");
@@ -1318,6 +1375,26 @@ mod tests {
         assert_eq!(registration["target_id"], 42);
         assert_eq!(registration["continued"], true);
 
+        let choice = Event::CalibrationChoiceRequired {
+            scope: "target-registration".to_string(),
+            selector: "Sample Target".to_string(),
+            target_id: None,
+            choices: vec![serde_json::json!({
+                "id": "candidate-v1:abcd",
+                "source": "steam",
+            })],
+            discovery_considered: 2,
+            discovery_produced: 2,
+            discovery_warning_count: 0,
+            process_control: "none".to_string(),
+        }
+        .render(now);
+        let choice: serde_json::Value = serde_json::from_str(&choice).unwrap();
+        assert_eq!(choice["event"], "calibration.choice_required");
+        assert_eq!(choice["scope"], "target-registration");
+        assert_eq!(choice["choices"][0]["id"], "candidate-v1:abcd");
+        assert_eq!(choice["process_control"], "none");
+
         let steam_client_plan = Event::CalibrationSteamClientPlan {
             plan_id: "steam-client-setup-v1:abcd".to_string(),
             canonical_json: "{\"schema\":\"fragcap.steam-client-setup-plan.v1\"}".to_string(),
@@ -1364,6 +1441,9 @@ mod tests {
             status: "selected".to_string(),
             observed_launch_case: None,
             selected_launch_case: Some("direct-exe-cold".to_string()),
+            launch_case_assertion: Box::new(Some("direct-exe-cold".to_string())),
+            routing_strategy: "child-environment".to_string(),
+            address_family: "ipv6".to_string(),
             reason: Some("missing".to_string()),
             images: vec!["client.exe".to_string()],
             limitations: Vec::new(),
@@ -1372,15 +1452,15 @@ mod tests {
             completed_protocols: Vec::new(),
             remaining_protocols: vec!["http1".to_string(), "https".to_string()],
             process_control: "none".to_string(),
-            next_command: None,
+            next_command: Box::new(None),
             attempt: Some(2),
             maximum_attempts: Some(14),
             phase: Some("tls".to_string()),
             protocol: Some("https".to_string()),
             workflow_id: Some(17),
             workflow_revision: Some(4),
-            workflow_state: Some("paused".to_string()),
-            pause_reason: Some("gameplay".to_string()),
+            workflow_state: Box::new(Some("paused".to_string())),
+            pause_reason: Box::new(Some("gameplay".to_string())),
             resume_command: Box::new(Some("fragcap calibrate --resume 17".to_string())),
         }
         .render(now);
@@ -1410,6 +1490,9 @@ mod tests {
         assert_eq!(guidance["workflow_revision"], 4);
         assert_eq!(guidance["workflow_state"], "paused");
         assert_eq!(guidance["pause_reason"], "gameplay");
+        assert_eq!(guidance["launch_case_assertion"], "direct-exe-cold");
+        assert_eq!(guidance["routing_strategy"], "child-environment");
+        assert_eq!(guidance["address_family"], "ipv6");
         assert_eq!(guidance["resume_command"], "fragcap calibrate --resume 17");
 
         let restart_plan = Event::DeepCaptureRestartPlan {

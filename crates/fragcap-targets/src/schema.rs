@@ -73,9 +73,13 @@
 //! Version 11 (slice S145) adds `calibration_workflows`, a target-bound durable
 //! progress checkpoint. It stores no authorization, secret, effect, or compatibility
 //! evidence. The migration from version 10 is one additive `CREATE TABLE`.
+//!
+//! Version 12 (slice S146) adds immutable launch-case assertion, routing-strategy,
+//! and address-family intent to each calibration workflow. Existing rows gain the
+//! exact prior defaults: inferred launch case, child-environment routing, and IPv4.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -279,6 +283,17 @@ CREATE TABLE calibration_workflows (
                             target_detection_scan IN ('complete', 'incomplete')),
     target_folder_name  TEXT,
     target_executable_hint TEXT,
+    selected_launch_case TEXT CHECK (selected_launch_case IS NULL OR selected_launch_case IN
+                            ('steam-protocol-warm', 'steam-protocol-cold',
+                             'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
+                             'publisher-launcher-warm',
+                             'publisher-launcher-game-start-clean-warm',
+                             'publisher-launcher-cold')),
+    routing_strategy    TEXT NOT NULL CHECK (routing_strategy IN
+                            ('child-environment', 'command-arguments',
+                             'target-configuration', 'http-proxy', 'socks',
+                             'protocol-specific')),
+    address_family      TEXT NOT NULL CHECK (address_family IN ('ipv4', 'ipv6')),
     requested_protocols TEXT NOT NULL,
     observed_protocols  TEXT NOT NULL,
     completed_protocols TEXT NOT NULL,
@@ -311,6 +326,22 @@ CREATE TABLE calibration_workflows (
            (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
            (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
 );
+";
+
+/// Add immutable exact-case intent to existing guided-calibration workflows.
+pub const MIGRATE_11_TO_12: &str = "\
+ALTER TABLE calibration_workflows ADD COLUMN selected_launch_case TEXT
+    CHECK (selected_launch_case IS NULL OR selected_launch_case IN
+           ('steam-protocol-warm', 'steam-protocol-cold',
+            'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
+            'publisher-launcher-warm', 'publisher-launcher-game-start-clean-warm',
+            'publisher-launcher-cold'));
+ALTER TABLE calibration_workflows ADD COLUMN routing_strategy TEXT NOT NULL
+    DEFAULT 'child-environment'
+    CHECK (routing_strategy IN ('child-environment', 'command-arguments',
+           'target-configuration', 'http-proxy', 'socks', 'protocol-specific'));
+ALTER TABLE calibration_workflows ADD COLUMN address_family TEXT NOT NULL
+    DEFAULT 'ipv4' CHECK (address_family IN ('ipv4', 'ipv6'));
 ";
 
 /// Add target-bound durable guided-calibration progress without inventing evidence.
