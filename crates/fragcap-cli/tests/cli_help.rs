@@ -67,6 +67,164 @@ fn render(page: &[String]) -> String {
     out
 }
 
+fn render_with(page: &[&str], flag: &str) -> String {
+    let mut args = page.to_vec();
+    args.push(flag);
+    let (code, out, err) = run(&args);
+    assert_eq!(code, 0, "`fragcap {} {flag}` failed: {err}", page.join(" "));
+    assert!(
+        !out.is_empty(),
+        "`fragcap {} {flag}` rendered nothing",
+        page.join(" ")
+    );
+    out
+}
+
+const DEEP_CAPTURE_JOURNEY_PAGES: &[&[&str]] = &[
+    &[],
+    &["doctor"],
+    &["targets"],
+    &["targets", "discover"],
+    &["targets", "add"],
+    &["targets", "show"],
+    &["calibrate"],
+    &["deep-capture"],
+    &["bundle", "cleanup"],
+    &["bundle", "export"],
+];
+
+#[test]
+fn deep_capture_journey_has_concise_and_complete_help_pages() {
+    for page in DEEP_CAPTURE_JOURNEY_PAGES {
+        let short = render_with(page, "-h");
+        let long = render_with(page, "--help");
+        assert!(
+            short.len() <= long.len(),
+            "short help grew beyond long help for {page:?}"
+        );
+    }
+
+    let root = normalize(&render_with(&[], "--help"));
+    let ordered = [
+        "fragcap doctor",
+        "fragcap targets discover",
+        "fragcap calibrate",
+        "fragcap deep-capture",
+    ];
+    let mut prior = 0;
+    for command in ordered {
+        let found = root[prior..]
+            .find(command)
+            .map(|offset| prior + offset)
+            .unwrap_or_else(|| panic!("root long help omits `{command}`: {root}"));
+        prior = found + command.len();
+    }
+
+    let short = normalize(&render_with(&[], "-h"));
+    assert!(
+        !short.contains("First Deep Capture session"),
+        "short help contains the long tutorial: {short}"
+    );
+    for operation in ["doctor", "targets", "calibrate", "deep-capture", "bundle"] {
+        assert!(
+            short.contains(operation),
+            "root short help omits `{operation}`: {short}"
+        );
+    }
+}
+
+#[test]
+fn deep_capture_long_help_orders_controls_and_states_security_boundaries() {
+    let help = normalize(&render_with(&["deep-capture"], "--help"));
+    let headings = [
+        "Required inputs",
+        "Common options",
+        "Advanced compatibility",
+        "Networking",
+        "Sensitive outputs",
+        "Custom storage",
+        "Troubleshooting",
+    ];
+    let mut prior = 0;
+    for heading in headings {
+        let found = help[prior..]
+            .find(heading)
+            .map(|offset| prior + offset)
+            .unwrap_or_else(|| {
+                panic!("deep-capture long help omits or misorders `{heading}`: {help}")
+            });
+        prior = found + heading.len();
+    }
+    for boundary in [
+        "observed compatibility",
+        "not universal",
+        "does not bypass certificate pinning",
+        "mutual-TLS identity",
+        "Key logs, HAR",
+    ] {
+        assert!(
+            help.contains(boundary),
+            "deep-capture long help omits `{boundary}`: {help}"
+        );
+    }
+    for example in [
+        "fragcap targets add --steam 620",
+        "fragcap targets scan \"C:\\Games\\My Game\"",
+    ] {
+        assert!(
+            help.contains(example),
+            "deep-capture long help omits `{example}`: {help}"
+        );
+    }
+}
+
+#[test]
+fn audited_long_help_preserves_meaning_at_supported_narrow_widths() {
+    fn command_at(path: &[&str]) -> clap::Command {
+        let mut command = fragcap_cli::command();
+        for name in path {
+            command = command
+                .find_subcommand(name)
+                .unwrap_or_else(|| panic!("missing audited subcommand {path:?}"))
+                .clone();
+        }
+        command
+    }
+
+    for width in [40, 60, 80] {
+        for path in DEEP_CAPTURE_JOURNEY_PAGES {
+            let mut command = command_at(path).term_width(width);
+            let help = command.render_long_help().to_string();
+            assert!(
+                !help.contains('\u{1b}'),
+                "help meaning depends on color at {width} columns: {path:?}"
+            );
+            assert!(
+                !help.contains('\u{2026}'),
+                "help truncates content at {width} columns: {path:?}"
+            );
+            assert!(
+                help.contains("Usage:"),
+                "help loses usage at {width} columns: {path:?}"
+            );
+        }
+
+        let mut deep_capture = command_at(&["deep-capture"]).term_width(width);
+        let help = normalize(&deep_capture.render_long_help().to_string());
+        for token in [
+            "observed compatibility",
+            "certificate pinning",
+            "fragcap calibrate",
+            "fragcap doctor --fix",
+        ] {
+            assert!(
+                help.contains(token),
+                "deep-capture help loses `{token}` at {width} columns: {help}"
+            );
+        }
+    }
+}
+
 /// A page's label for a failure message.
 fn label(page: &[String]) -> String {
     if page.is_empty() {

@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.68-draft \
+**Version:** 0.1.69-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -161,6 +161,7 @@ enforcement.
 | 0.1.66-draft | 2026-09-11 | W. Thompson | **Adds durable guided calibration pause and resume (issue #404).** Extends sections 15, 17.2.1, 25, and 28. The local target store migrates additively to version 11 with one target-bound, revision-checked workflow checkpoint. Fresh calibration creates the record before its first attempt; `calibrate --resume <WORKFLOW_ID>` explicitly reloads intent and the durable attempt ordinal while freshly rebuilding target, process, fact, proposal, recovery, bundle, plan, and confirmation authority. Login, EULA, gameplay, shutdown, interruption, authorization, and failure remain explicit no-evidence pause reasons. In-flight resume first records interruption and starts no effect. Checkpoints contain no secret, authorization, trust, endpoint, effect, or compatibility authority. Non-Steam topology authoring, ambiguity resolution, and final completion remain in parent issue #380. |
 | 0.1.67-draft | 2026-09-11 | W. Thompson | **Adds explicit guided calibration choices and exact-case intent (issue #406).** Extends sections 15, 17.2.1, 25, and 28. Ambiguous discovered targets and Steam executable metadata now emit content-derived `candidate-v1` identities and require one exact rerun selection before the existing confirmation plans. Local-store schema version 12 adds immutable optional launch-case assertion, routing strategy, and loopback family to each workflow. Every resume rebuilds current authority with those values; stale, duplicate, malformed, unused, unsupported, or topology-inconsistent selections stop before effects. Non-Steam topology authoring and final completion remain in parent issue #380. |
 | 0.1.68-draft | 2026-09-11 | W. Thompson | **Completes controlled guided-calibration acceptance (issue #380).** Extends sections 15, 17.2.1, 24.3, 25, and 28. One checked registry maps all thirteen parent criteria to exact controlled tests and is validated in ordinary CI. Stable confirmed selection can narrow an ambiguous non-Steam client-only declaration without collapsing Steam or publisher authority, and store version 13 adds update and anti-cheat to the no-effect pause vocabulary. Direct, Steam, and publisher defaults, complete visible plans, durable resume, refusal, cleanup, and ordinary Deep Capture handoff are regression-protected. S147 closes only the guided workflow; no real-game compatibility was demonstrated. Real-game validation is operator-owned, optional, and permitted only against a published release. |
+| 0.1.69-draft | 2026-09-11 | W. Thompson | **Makes the complete Deep Capture workflow discoverable from embedded help (issue #379).** Extends sections 17.2.2, 25, and 28. Root and workflow command help now lead from environment checks through target discovery, registration, calibration, and a managed Deep Capture launch, with Steam and direct or publisher examples. The Deep Capture page groups ordinary controls before advanced and sensitive controls, states compatibility and certificate-pinning limits, and names sensitive outputs. Human pre-session refusals and cleanup failures provide one bounded next command while JSON contracts remain unchanged. Width and parse tests cover the audited help surface without running a target or changing trust. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3217,6 +3218,32 @@ The controlled packet artifact is synthetic test truth because continuous
 integration has no capture driver; real sessions reuse the ordinary Capture
 pipeline and its packet-side flow registry.
 
+#### 17.2.2 Embedded Workflow Help
+
+The root long-help page and the long-help pages for Doctor, target discovery and
+registration, calibration, Deep Capture, and bundle cleanup and export form one
+complete first-session journey. They lead from `fragcap doctor` through target
+discovery, stored-target inspection or registration, exact-case calibration,
+and `fragcap deep-capture <target> --launch`. Steam and direct or publisher
+examples use complete commands whose argument vectors are parsed by the CLI's
+own command tree in tests.
+
+The Deep Capture page presents required and common controls before advanced
+compatibility, networking, sensitive-output, custom-storage, and troubleshooting
+groups. It states that compatibility is observed for an exact case, inspection
+is not universal, and certificate pinning is not bypassed. It also identifies
+HAR, TLS key logs, client identities, and retained plaintext as sensitive where
+their commands are introduced. Short help stays concise.
+
+Every post-parse pre-session refusal in the closed environment, target, launch,
+process, compatibility, recovery, bundle, authorization, and calibration
+inventory gives a human operator one bounded `Next command`. Destructive bundle
+cleanup reports its exact confirmed retry before execution and retains the
+manifest, cleanup journal, resources journal, and session-owner record for
+Doctor recovery after failure. Structured event and JSON error contracts do not
+receive prose-only guidance. Runtime session failures remain owned by their
+existing terminal evidence rather than being recast as setup refusals.
+
 ### 17.3 Worked Invocations
 
 ```bash
@@ -4320,6 +4347,8 @@ Guided calibration tests additionally freeze repeatable candidate normalization,
 
 The versioned `integration/guided-calibration-acceptance-v1.json` registry is the executable completion authority for issue #380. It maps the closed thirteen-criterion inventory to exact controlled tests, and `cargo xtask guided-calibration-acceptance` rejects inventory or source drift. Passing this gate proves the guided orchestration contract under controlled authorities. It does not prove compatibility with a real game or complete general Deep Capture issue #334.
 
+Embedded workflow-help tests render every audited root, Doctor, targets, calibration, Deep Capture, and bundle page from the production Clap tree. They verify command order, ordinary-before-advanced grouping, security language, concise short help, semantic preservation at 40, 60, and 80 columns, and parseability of every registered command example. Refusal and cleanup tests exercise only controlled argument, store, and adapter boundaries. They do not launch a game, open a listener, mutate trust, or retain sensitive traffic.
+
 Guided proposal policy is fully Tier 1 testable because resolved target declarations, process-image snapshots, exact version contexts, protocol candidates, and compatibility facts are values. Controlled permutations cover every supported topology and readiness branch, every S121 case dimension, all six retest reasons, reachability-first deferral, positive suppression, duplicate and reordered input stability, conservative defaults, and zero-step limitations without process enumeration or any external effect.
 
 The controlled matrix also enumerates every selectable native protocol over both exact loopback families. Positive protocol facts require the retained S120 classification to match the selected case; unrelated traffic, parser failure, truncation, writer loss, stale rows, legacy-incomplete rows, and any single-dimension mismatch cannot promote or authorize compatibility.
@@ -5001,6 +5030,8 @@ S145 is the next bounded child of #380 and deliberately supersedes S144's statel
 S146 follows S145 and closes child issue #406 at the explicit choice and advanced exact-case boundary. Canonical candidate authority yields a stable `candidate-v1` identity for ambiguous discovered targets and Steam executable metadata, while duplicate, stale, malformed, unknown, and unused values remain no-effect refusals. Store version 12 binds optional launch-case assertion, routing strategy, and address family as immutable workflow intent. Resume reuses only those values while rebuilding every current authority, and each low-level attempt receives them through a fresh S134 plan. Issue #406 closes with S146 while non-Steam topology authoring and the final parent completion gate remain in #380.
 
 S147 closes guided-calibration parent issue #380 at the controlled implementation-acceptance boundary. A versioned thirteen-criterion registry maps the complete workflow to exact executable evidence and is checked in ordinary Linux and Windows CI. The gap audit adds update and anti-cheat as durable no-effect pauses through store version 13, confirmation-gates one exact stored non-Steam client choice without touching Steam or publisher topology, proves automatic launch-case inference, and asserts the complete visible authorization plan. Controlled evidence covers registration, topology, sequencing, resume, refusals, cleanup, coverage, and ordinary Deep Capture handoff. This revision deliberately changes the prior Tier 3 timing: real-game validation is optional, operator-owned, and restricted to an already published release. S147 did not demonstrate live game compatibility and does not close general Deep Capture completion issue #334.
+
+S148 closes issue #379 at the embedded workflow-discovery boundary. Root and related long-help pages now form one first-session path from Doctor through target registration and calibration to managed Deep Capture, with complete Steam and direct or publisher examples. Deep Capture orders ordinary controls before advanced and sensitive controls, states exact-case and pinning limits, and labels sensitive artifacts. Human-only refusal and cleanup guidance identifies one safe next command while structured contracts and runtime terminal evidence remain unchanged. Controlled width and parse tests add no target launch, network, trust, or sensitive-data behavior, and general Deep Capture completion issue #334 remains open.
 
 S123 closes complete process lifecycle evidence over the existing managed
 launch, process watcher, stage binding, and packet attribution authorities.

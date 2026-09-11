@@ -2076,10 +2076,71 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let outcome = run_with_outcome(args, authorization, emitter)?;
+    let outcome = match run_with_outcome(args, authorization, emitter) {
+        Ok(outcome) => outcome,
+        Err(error) if !emitter.is_json() => {
+            let target = crate::workflow_help::target_reference(
+                args.selector.as_deref(),
+                args.target.as_deref(),
+                args.id,
+            );
+            let command_context = crate::workflow_help::CalibrationCommandContext::for_deep_capture(
+                args,
+                local_store_path(args.local_db.as_deref()).ok(),
+            );
+            return Err(crate::workflow_help::actionable_error(
+                error,
+                target,
+                None,
+                crate::workflow_help::WorkflowVerb::DeepCapture,
+                Some(&command_context),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     match outcome.terminal_error {
+        Some(error) if !emitter.is_json() && outcome.disposition == RunDisposition::Interrupted => {
+            let target = crate::workflow_help::target_reference(
+                args.selector.as_deref(),
+                args.target.as_deref(),
+                args.id,
+            );
+            let command_context = crate::workflow_help::CalibrationCommandContext::for_deep_capture(
+                args,
+                local_store_path(args.local_db.as_deref()).ok(),
+            );
+            Err(crate::workflow_help::actionable_error(
+                error,
+                target,
+                Some(crate::workflow_help::FirstRunRefusal::Authorization),
+                crate::workflow_help::WorkflowVerb::DeepCapture,
+                Some(&command_context),
+            ))
+        }
         Some(error) => Err(error),
-        None => Ok(Exit::SUCCESS),
+        None => {
+            if outcome.disposition == RunDisposition::Declined && !emitter.is_json() {
+                let target = crate::workflow_help::target_reference(
+                    args.selector.as_deref(),
+                    args.target.as_deref(),
+                    args.id,
+                );
+                let command_context =
+                    crate::workflow_help::CalibrationCommandContext::for_deep_capture(
+                        args,
+                        local_store_path(args.local_db.as_deref()).ok(),
+                    );
+                emitter.progress(&format!(
+                    "Next command:  {}",
+                    crate::workflow_help::next_command(
+                        crate::workflow_help::FirstRunRefusal::Authorization,
+                        target,
+                        Some(&command_context),
+                    )
+                ));
+            }
+            Ok(Exit::SUCCESS)
+        }
     }
 }
 

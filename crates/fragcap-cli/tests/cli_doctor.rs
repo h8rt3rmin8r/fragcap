@@ -81,6 +81,11 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     let human = report.render_human();
     assert!(human.contains("Capture: ready"), "{human}");
     assert!(human.contains("Deep Capture: ready"), "{human}");
+    assert!(
+        human.contains("Next command:\n    fragcap targets discover")
+            && human.contains("fragcap calibrate"),
+        "environment readiness must bridge to target setup and calibration: {human}"
+    );
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
 }
@@ -346,6 +351,10 @@ fn mode_verdicts_keep_deep_only_failures_out_of_capture() {
     let report = checks::run(&inputs);
     assert!(report.capture_ready());
     assert!(!report.deep_capture_ready());
+    assert!(
+        !report.render_human().contains("Deep Capture setup"),
+        "blocked Deep Capture must retain remediation-first guidance"
+    );
 
     inputs.npcap = None;
     let report = checks::run(&inputs);

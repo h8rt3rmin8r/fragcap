@@ -629,6 +629,7 @@ fn resume_requires_a_positive_workflow_identifier() {
         err.contains("workflow identifier must be positive"),
         "stderr={err}"
     );
+    assert!(err.contains("Next command:  fragcap calibrate"), "{err}");
 
     let (code, _out, err) = run(&["calibrate", "--resume", "-1"]);
     assert_eq!(code, 2, "stderr={err}");
@@ -1177,6 +1178,10 @@ fn calibrate_reports_a_clean_stored_and_discovered_miss() {
         "refusal: {err}"
     );
     assert!(err.contains("considered 1, produced 1"), "refusal: {err}");
+    assert!(
+        err.contains("Next command:  fragcap targets discover"),
+        "target refusal must provide one bounded discovery step: {err}"
+    );
 }
 
 #[test]
@@ -1214,6 +1219,8 @@ fn calibrate_preserves_shared_ambiguity_diagnostics() {
     assert_eq!(code, 2);
     assert!(err.contains("selector is ambiguous"), "diagnostic: {err}");
     assert!(err.contains("first") && err.contains("second"));
+    assert!(err.contains("fragcap calibrate --id 76001"), "{err}");
+    assert!(err.contains("fragcap calibrate --id 76002"), "{err}");
 }
 
 #[test]
@@ -1259,6 +1266,40 @@ fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
         assert!(events.contains(expected_status), "diagnostics:\n{events}");
         assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
     }
+}
+
+#[test]
+fn invalid_registration_plan_returns_to_the_same_calibration_store() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let mut authorization = FixedAuthorization {
+        terminal: false,
+        response: b"wrong-plan\n".to_vec(),
+    };
+    let (code, _out, err) = run_with_authorization(
+        &[
+            "calibrate",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "diagnostic:\n{err}");
+    assert!(
+        err.contains("no target was registered"),
+        "diagnostic:\n{err}"
+    );
+    assert!(
+        err.contains("Next command:  fragcap calibrate \"75000\" --local-db \"")
+            && err.contains("local.db\" --proxy-family ipv4"),
+        "registration refusal must preserve the calibration path: {err}"
+    );
+    assert!(!err.contains("fragcap deep-capture"), "diagnostic:\n{err}");
+    assert!(Store::open(&local).unwrap().targets().unwrap().is_empty());
 }
 
 #[test]

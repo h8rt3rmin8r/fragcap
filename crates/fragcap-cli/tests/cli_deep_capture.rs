@@ -778,13 +778,18 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("bundle");
     seed_target(&local, false);
+    let target_id = 75_000;
+    let target_id_arg = target_id.to_string();
 
     let (code, _out, err) = run(&[
         "deep-capture",
-        "sample-target",
+        "--id",
+        &target_id_arg,
         "--launch",
         "--local-db",
         local.to_str().unwrap(),
+        "--proxy-family",
+        "ipv6",
         "--bundle",
         bundle.to_str().unwrap(),
     ]);
@@ -792,6 +797,12 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
     assert!(
         err.contains("requires current compatibility facts"),
         "the refusal names missing facts rather than backend state: {err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "Next command:  fragcap calibrate --id {target_id} --local-db \""
+        )) && err.contains("local.db\" --proxy-family ipv6"),
+        "the compatibility refusal provides the exact guided next step: {err}"
     );
 }
 
