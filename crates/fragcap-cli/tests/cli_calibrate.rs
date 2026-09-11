@@ -1509,13 +1509,27 @@ fn steam_client_setup_reports_initial_discovery_ambiguity() {
         "--local-db",
         local.to_str().unwrap(),
     ]);
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
     assert_eq!(code, 2, "events:\n{events}");
     let choices = calibration_choices(&events);
     assert_eq!(choices.len(), 2);
     assert!(events.contains("\"scope\":\"steam-client\""));
     assert!(events.contains("\"process_control\":\"none\""));
     assert!(!events.contains("calibration.steam_client_plan"));
+
+    let (human_code, human_out, human) = run(&[
+        "calibrate",
+        "--id",
+        &id,
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(human_code, 2, "stderr:\n{human}");
+    assert!(human_out.is_empty());
+    assert!(human.contains("client.exe"), "stderr:\n{human}");
+    assert!(human.contains("other-client.exe"), "stderr:\n{human}");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
+
     assert_eq!(
         Store::open(&local)
             .unwrap()

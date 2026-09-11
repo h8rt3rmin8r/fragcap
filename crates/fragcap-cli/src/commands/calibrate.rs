@@ -945,7 +945,7 @@ fn emit_candidate_choices(
     let mut human = format!("Calibration choice required: scope={scope} selector={selector}\n");
     for choice in projections {
         human.push_str(&format!(
-            "  {}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "  {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             choice["id"].as_str().unwrap_or("invalid-id"),
             choice["source"].as_str().unwrap_or("unknown-source"),
             choice["identity"].as_str().unwrap_or("unknown-identity"),
@@ -954,6 +954,9 @@ fn emit_candidate_choices(
                 .as_str()
                 .unwrap_or("unknown-classification"),
             choice["display_name"].as_str().unwrap_or("unknown-name"),
+            choice["executable_hint"]
+                .as_str()
+                .unwrap_or("no-executable-hint"),
             choice["install_root"].as_str().unwrap_or("no-install-root"),
         ));
     }
