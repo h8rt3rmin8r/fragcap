@@ -44,7 +44,7 @@
 - [x] T022 Run the quickstart audit, requirements trace, punctuation, UTF-8, BOM, mojibake, and dependency checks
 - [x] T023 Run spec-kit convergence and implement every traceable omission
 - [x] T024 Run `cargo xtask ci` and review the complete diff and worktree
-- [ ] T025 Commit, push, open a PR closing #380, and move Project Stage to PR review
+- [x] T025 Commit, push, open a PR closing #380, and move Project Stage to PR review
 - [ ] T026 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for green CI
 
 ## Dependencies and Execution Order
