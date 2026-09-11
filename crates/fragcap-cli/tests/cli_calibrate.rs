@@ -26,6 +26,19 @@ struct EchoAuthorization {
     calls: usize,
 }
 
+struct RecordingEchoAuthorization {
+    plan_ids: Vec<String>,
+}
+
+struct AcceptThenDeclineAuthorization {
+    calls: usize,
+}
+
+struct SecondPlanTargetDriftAuthorization {
+    calls: usize,
+    local: PathBuf,
+}
+
 struct BoundedEchoAuthorization {
     calls: usize,
     accepted: usize,
@@ -60,6 +73,55 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for EchoAuthorization {
             "structured registration and session plans must be exact"
         );
         self.calls += 1;
+        Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for RecordingEchoAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(exact);
+        self.plan_ids.push(plan_id.to_string());
+        Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for AcceptThenDeclineAuthorization {
+    fn is_terminal(&self) -> bool {
+        true
+    }
+
+    fn read_response(&mut self, _plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(!exact);
+        self.calls += 1;
+        Ok(if self.calls == 1 {
+            b"yes\n".to_vec()
+        } else {
+            b"no\n".to_vec()
+        })
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for SecondPlanTargetDriftAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(exact);
+        self.calls += 1;
+        if self.calls == 2 {
+            let mut store = Store::open(&self.local).expect("open target for second-plan drift");
+            let mut target = store
+                .target_by_stable_id(STABLE_ID)
+                .expect("read target")
+                .expect("target exists");
+            target.name = "Changed During Sequence".to_string();
+            assert!(store.update_target(&target).expect("drift target"));
+        }
         Ok(format!("{plan_id}\n").into_bytes())
     }
 }
@@ -505,6 +567,10 @@ fn current_routing_without_candidates_reports_unknown_coverage() {
     assert_eq!(guidance["observed_protocols"], serde_json::json!([]));
     assert_eq!(guidance["completed_protocols"], serde_json::json!([]));
     assert_eq!(guidance["remaining_protocols"], serde_json::json!([]));
+    assert_eq!(guidance["attempt"], serde_json::Value::Null);
+    assert_eq!(guidance["maximum_attempts"], serde_json::Value::Null);
+    assert_eq!(guidance["phase"], serde_json::Value::Null);
+    assert_eq!(guidance["protocol"], serde_json::Value::Null);
     assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
 }
 
@@ -544,7 +610,7 @@ fn current_positive_candidate_reports_requested_coverage_without_effects() {
 }
 
 #[test]
-fn missing_routing_carries_observed_protocols_into_one_continuation() {
+fn missing_routing_runs_all_observed_protocols_before_handoff() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -574,35 +640,27 @@ fn missing_routing_carries_observed_protocols_into_one_continuation() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
 
     assert_eq!(code, 0, "events:\n{events}");
-    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 3);
     let guidance: serde_json::Value = events
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
         .unwrap();
-    assert_eq!(guidance["observed_protocols"], serde_json::json!(["http1"]));
     assert_eq!(
-        guidance["remaining_protocols"],
-        serde_json::json!(["http1"])
+        guidance["observed_protocols"],
+        serde_json::json!(["http1", "https"])
     );
-    let command = guidance["next_command"].as_str().unwrap();
-    assert!(command.contains("--protocol http1"), "command: {command}");
-    let matches = fragcap_cli::command()
-        .try_get_matches_from(powershell_words(command))
-        .expect("generated continuation parses");
-    let (_, arguments) = matches.subcommand().unwrap();
     assert_eq!(
-        arguments
-            .get_raw("protocol")
-            .unwrap()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>(),
-        vec!["http1"]
+        guidance["completed_protocols"],
+        serde_json::json!(["http1", "https"])
     );
+    assert_eq!(guidance["remaining_protocols"], serde_json::json!([]));
+    assert_eq!(guidance["status"], "observed-coverage-complete");
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
 }
 
 #[test]
-fn current_routing_runs_one_controlled_protocol_attempt_and_reassesses_facts() {
+fn current_routing_runs_requested_and_newly_observed_protocol_attempts() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -634,7 +692,7 @@ fn current_routing_runs_one_controlled_protocol_attempt_and_reassesses_facts() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
 
     assert_eq!(code, 0, "events:\n{events}");
-    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 2);
     assert!(events.contains("\"action\":\"run-protocol\""));
     assert!(events.contains("\"phase\":\"tls\""));
     assert!(events.contains("\"protocol\":\"https\""));
@@ -643,7 +701,10 @@ fn current_routing_runs_one_controlled_protocol_attempt_and_reassesses_facts() {
         .map(|line| serde_json::from_str(line).unwrap())
         .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
         .unwrap();
-    assert_eq!(guidance["status"], "completed", "events:\n{events}");
+    assert_eq!(
+        guidance["status"], "requested-coverage-complete",
+        "events:\n{events}"
+    );
     assert_eq!(
         guidance["requested_protocols"],
         serde_json::json!(["https"])
@@ -1304,7 +1365,7 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
 }
 
 #[test]
-fn missing_routing_runs_one_controlled_reachability_attempt() {
+fn missing_routing_runs_reachability_then_observed_protocol() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1336,12 +1397,12 @@ fn missing_routing_runs_one_controlled_reachability_attempt() {
 
     assert_eq!(code, 0, "events:\n{events}");
     assert!(out.is_empty());
-    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 3);
     assert!(events.contains("\"phase\":\"reachability\""));
     assert!(events.contains("\"protocol\":\"routing\""));
     assert!(events.contains("\"event\":\"calibration.guidance\""));
     assert!(events.contains("\"status\":\"completed\""));
-    assert_next_command_selects_store(&events, "calibrate", STABLE_ID, &local);
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(row_id).unwrap();
@@ -1648,7 +1709,7 @@ fn declined_and_wrong_authorization_never_claim_completion() {
         &mut decline,
     );
     assert_eq!(code, 0, "guidance:\n{guidance}");
-    assert!(guidance.contains("status=not-completed"));
+    assert!(guidance.contains("status=declined"));
     assert!(!guidance.contains("status=completed"));
     assert!(guidance.contains("fragcap calibrate --id 75000"));
     assert!(!declined_bundle.exists());
@@ -1681,4 +1742,302 @@ fn declined_and_wrong_authorization_never_claim_completion() {
     assert!(events.contains("\"reason\":\"delegated-session-error\""));
     assert!(!events.contains("\"status\":\"completed\""));
     assert!(!invalid_bundle.exists());
+}
+
+#[test]
+fn one_invocation_runs_reachability_and_all_current_useful_protocol_attempts() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("sequence");
+    let row_id = seed_target(&local, false);
+    let mut authorization = RecordingEchoAuthorization {
+        plan_ids: Vec::new(),
+    };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--protocol",
+            "https",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{events}");
+    assert_eq!(authorization.plan_ids.len(), 3, "events:\n{events}");
+    for (index, plan) in authorization.plan_ids.iter().enumerate() {
+        assert!(authorization.plan_ids[index + 1..]
+            .iter()
+            .all(|other| other != plan));
+    }
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 3);
+    let selected_attempts = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "calibration.guidance" && event["status"] == "selected")
+        .map(|event| {
+            (
+                event["attempt"].as_u64().unwrap(),
+                event["maximum_attempts"].as_u64().unwrap(),
+                event["phase"].as_str().unwrap().to_string(),
+                event["protocol"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected_attempts,
+        vec![
+            (1, 14, "reachability".to_string(), "routing".to_string()),
+            (2, 14, "tls".to_string(), "http1".to_string()),
+            (3, 14, "tls".to_string(), "https".to_string()),
+        ]
+    );
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(dir
+        .path()
+        .join("sequence-attempt-02-tls-http1")
+        .join("manifest.json")
+        .is_file());
+    assert!(dir
+        .path()
+        .join("sequence-attempt-03-tls-https")
+        .join("manifest.json")
+        .is_file());
+    let guidance: serde_json::Value = events
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .rfind(|event: &serde_json::Value| event["event"] == "calibration.guidance")
+        .unwrap();
+    assert_eq!(guidance["status"], "requested-coverage-complete");
+    assert_eq!(
+        guidance["completed_protocols"],
+        serde_json::json!(["http1", "https"])
+    );
+    assert_eq!(guidance["remaining_protocols"], serde_json::json!([]));
+    assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
+
+    let store = Store::open(&local).unwrap();
+    let facts = store.compatibility_facts_for_target(row_id).unwrap();
+    assert!(facts
+        .iter()
+        .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting));
+    for protocol in [CompatibilityProtocol::Http1, CompatibilityProtocol::Https] {
+        assert!(facts.iter().any(|fact| {
+            fact.key == CompatibilityFactKey::Inspectability
+                && fact.protocol == Some(protocol)
+                && fact.value == "full"
+        }));
+    }
+}
+
+#[test]
+fn declining_a_later_plan_stops_before_its_bundle_or_fact_effects() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("decline-sequence");
+    let row_id = seed_target(&local, false);
+    let mut authorization = AcceptThenDeclineAuthorization { calls: 0 };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, guidance) = run_with_authorization(
+        &[
+            "calibrate",
+            "--id",
+            "75000",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "guidance:\n{guidance}");
+    assert_eq!(authorization.calls, 2);
+    assert!(guidance.contains("status=declined"));
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(!dir
+        .path()
+        .join("decline-sequence-attempt-02-tls-http1")
+        .exists());
+    let store = Store::open(&local).unwrap();
+    let facts = store.compatibility_facts_for_target(row_id).unwrap();
+    assert!(facts
+        .iter()
+        .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting));
+    assert!(!facts
+        .iter()
+        .any(|fact| fact.key == CompatibilityFactKey::Inspectability));
+}
+
+#[test]
+fn target_drift_during_a_later_plan_stops_before_later_effects() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("drift-sequence");
+    seed_target(&local, false);
+    let mut authorization = SecondPlanTargetDriftAuthorization {
+        calls: 0,
+        local: local.clone(),
+    };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 2, "events:\n{events}");
+    assert_eq!(authorization.calls, 2);
+    assert!(events.contains("\"status\":\"drifted\""));
+    assert!(events.contains("\"reason\":\"delegated-session-error\""));
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(!dir
+        .path()
+        .join("drift-sequence-attempt-02-tls-http1")
+        .exists());
+}
+
+#[test]
+fn a_later_bundle_collision_stops_before_authorization_or_overwrite() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("collision-sequence");
+    let collision = dir.path().join("collision-sequence-attempt-02-tls-http1");
+    std::fs::create_dir(&collision).unwrap();
+    std::fs::write(collision.join("retained.txt"), b"retain me").unwrap();
+    seed_target(&local, false);
+    let mut authorization = EchoAuthorization { calls: 0 };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 2, "events:\n{events}");
+    assert_eq!(authorization.calls, 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert!(events.contains("is not empty"));
+    assert_eq!(
+        std::fs::read(collision.join("retained.txt")).unwrap(),
+        b"retain me"
+    );
+    assert!(bundle.join("manifest.json").is_file());
+}
+
+#[test]
+fn omitted_bundle_uses_a_distinct_default_session_root_for_every_attempt() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let mut authorization = RecordingEchoAuthorization {
+        plan_ids: Vec::new(),
+    };
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--duration",
+            "5s",
+            "--wait",
+            "7s",
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{events}");
+    let bundles = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "deep_capture.authorization_plan")
+        .map(|event| PathBuf::from(event["plan"]["artifacts"]["bundle"].as_str().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(bundles.len(), 3);
+    for (index, bundle) in bundles.iter().enumerate() {
+        assert!(bundle.join("manifest.json").is_file());
+        assert!(bundles[index + 1..].iter().all(|other| other != bundle));
+    }
 }

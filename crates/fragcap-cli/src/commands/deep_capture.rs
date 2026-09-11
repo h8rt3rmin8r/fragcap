@@ -2055,7 +2055,16 @@ pub fn run(
 
 pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
+    pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunDisposition {
+    Declined,
+    Completed,
+    Interrupted,
+    Failed,
 }
 
 pub(crate) fn run_with_outcome(
@@ -2195,6 +2204,7 @@ pub(crate) fn run_with_outcome(
         emitter.progress("Deep Capture declined; no effects were applied");
         return Ok(RunOutcome {
             observations: Vec::new(),
+            disposition: RunDisposition::Declined,
             terminal_error: None,
         });
     }
@@ -2442,9 +2452,16 @@ pub(crate) fn run_with_outcome(
     if report.is_complete() {
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            disposition: RunDisposition::Completed,
             terminal_error: None,
         })
     } else {
+        let disposition =
+            if report.snapshot.outcome == deep_capture_api::SessionOutcome::Interrupted {
+                RunDisposition::Interrupted
+            } else {
+                RunDisposition::Failed
+            };
         let detail = report
             .snapshot
             .failures
@@ -2453,6 +2470,7 @@ pub(crate) fn run_with_outcome(
             .unwrap_or_else(|| "Deep Capture completed with partial results".to_string());
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            disposition,
             terminal_error: Some(CliError::failure(detail)),
         })
     }
