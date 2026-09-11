@@ -53,7 +53,7 @@
 - [x] T028 Run spec-kit convergence and implement every traceable omission
 - [x] T029 Run `cargo xtask ci` and review the complete diff and worktree
 - [x] T030 Commit, push, open a PR closing #406, and move Project Stage to PR review
-- [ ] T031 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for green CI
+- [x] T031 Resolve every first-round review finding, trigger at most one `@Codex review` second round, resolve every second-round finding, and wait for green CI
 
 ## Dependencies and Execution Order
 
