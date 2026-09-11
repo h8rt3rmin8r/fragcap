@@ -94,20 +94,39 @@ impl SteamClientPlan {
                     && candidate.source_name == "steam"
             })
             .collect();
-        let [candidate] = candidates.as_slice() else {
-            return Ok(None);
+        let candidate = match candidates.as_slice() {
+            [candidate] => *candidate,
+            [] => {
+                return Err(CliError::usage(format!(
+                    "Steam client setup is unavailable: discovery returned no exact steam:{app_id} candidate; refresh Steam metadata and retry"
+                )))
+            }
+            _ => {
+                return Err(CliError::usage(format!(
+                    "Steam client setup is unavailable: discovery returned {} exact steam:{app_id} candidates; resolve the conflicting Steam metadata and retry",
+                    candidates.len()
+                )))
+            }
         };
         let Some(target_root) = target.install_root.as_deref() else {
-            return Ok(None);
+            return Err(CliError::usage(
+                "Steam client setup is unavailable: the stored target has no exact install root; refresh or re-register the target",
+            ));
         };
         if candidate.install_root.as_deref() != Some(target_root) {
-            return Ok(None);
+            return Err(CliError::usage(
+                "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
+            ));
         }
         let Some(executable) = candidate.executable_hint.as_deref() else {
-            return Ok(None);
+            return Err(CliError::usage(
+                "Steam client setup is unavailable: Steam metadata did not provide an executable path; configure the launch declaration explicitly",
+            ));
         };
         if !fragcap::targets::is_client_executable(executable) {
-            return Ok(None);
+            return Err(CliError::usage(
+                "Steam client setup is unavailable: the Steam executable hint is not one unambiguous executable path; configure the launch declaration explicitly",
+            ));
         }
 
         let canonical = steam_client_plan_value(
@@ -1071,7 +1090,20 @@ fn prepare_steam_client(
             return Err(error);
         }
     };
-    let current_plan = SteamClientPlan::new(current_target, &current_discovery, local_store_path)?;
+    let current_plan =
+        match SteamClientPlan::new(current_target, &current_discovery, local_store_path) {
+            Ok(plan) => plan,
+            Err(error) => {
+                steam_client_outcome(
+                    emitter,
+                    &plan,
+                    "drifted",
+                    "steam-client-authority-not-reproduced",
+                    false,
+                )?;
+                return Err(error);
+            }
+        };
     let Some(current_plan) = current_plan else {
         steam_client_outcome(
             emitter,
@@ -1100,10 +1132,12 @@ fn prepare_steam_client(
         ));
     }
 
-    match store
-        .author_target_client_if_unchanged(&plan.target, &plan.executable)
-        .map_err(|error| CliError::failure(error.to_string()))?
-    {
+    let persistence = steam_client_persistence_result(
+        emitter,
+        &plan,
+        store.author_target_client_if_unchanged(&plan.target, &plan.executable),
+    )?;
+    match persistence {
         AuthorTargetClientOutcome::Applied => {}
         AuthorTargetClientOutcome::Changed => {
             steam_client_outcome(
@@ -1235,6 +1269,26 @@ fn steam_client_outcome(
         .map_err(|error| {
             CliError::usage(format!("could not write the Steam client outcome: {error}"))
         })
+}
+
+fn steam_client_persistence_result<E: std::fmt::Display>(
+    emitter: &mut Emitter,
+    plan: &SteamClientPlan,
+    result: Result<AuthorTargetClientOutcome, E>,
+) -> Result<AuthorTargetClientOutcome, CliError> {
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            steam_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "steam-client-persistence-failed",
+                false,
+            )?;
+            Err(CliError::failure(error.to_string()))
+        }
+    }
 }
 
 pub fn run(
@@ -2297,28 +2351,30 @@ mod tests {
         )
         .unwrap()
         .is_none());
-        assert!(SteamClientPlan::new(
+        let ambiguity = SteamClientPlan::new(
             steam_target(None),
             &discovery(vec![
                 valid.clone(),
-                candidate(CandidateIdentity::SteamAppId(620), "Portal 2")
+                candidate(CandidateIdentity::SteamAppId(620), "Portal 2"),
             ]),
             dir.path(),
         )
-        .unwrap()
-        .is_none());
+        .unwrap_err();
+        assert!(ambiguity.message().contains("2 exact steam:620 candidates"));
         let mut wrong_root = valid.clone();
         wrong_root.install_root = Some(r"D:\Games\Portal 2".to_string());
-        assert!(
-            SteamClientPlan::new(steam_target(None), &discovery(vec![wrong_root]), dir.path(),)
-                .unwrap()
-                .is_none()
-        );
+        let wrong_root =
+            SteamClientPlan::new(steam_target(None), &discovery(vec![wrong_root]), dir.path())
+                .unwrap_err();
+        assert!(wrong_root.message().contains("install root does not match"));
         for invalid in [
             "",
             " client.exe",
             "../client.exe",
             "client.exe --flag",
+            "game.exe --helper.exe",
+            "game --helper.exe",
+            "bin/client name.exe",
             "https://client.exe",
             "%command%",
             "client.dll",
@@ -2329,6 +2385,37 @@ mod tests {
             );
         }
         assert!(fragcap::targets::is_client_executable("bin/client.EXE"));
+    }
+
+    #[test]
+    fn steam_client_persistence_failure_emits_one_terminal_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = steam_target(None);
+        let observed = discovery(vec![candidate(
+            CandidateIdentity::SteamAppId(620),
+            "Portal 2",
+        )]);
+        let plan = SteamClientPlan::new(target, &observed, dir.path())
+            .unwrap()
+            .unwrap();
+        let mut output = Vec::new();
+        let mut emitter = crate::emit::Emitter::new(
+            &mut output,
+            crate::emit::Format::Json,
+            crate::emit::Verbosity::Normal,
+        );
+        let error = steam_client_persistence_result(
+            &mut emitter,
+            &plan,
+            Err::<AuthorTargetClientOutcome, _>("database is locked"),
+        )
+        .unwrap_err();
+        assert_eq!(error.message(), "database is locked");
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("calibration.steam_client").count(), 1);
+        assert!(output.contains("\"status\":\"failed\""));
+        assert!(output.contains("steam-client-persistence-failed"));
+        assert!(output.contains("\"continued\":false"));
     }
 
     #[test]

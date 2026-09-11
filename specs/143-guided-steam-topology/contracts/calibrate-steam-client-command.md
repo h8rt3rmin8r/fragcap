@@ -18,7 +18,7 @@ The visible argument surface is unchanged. Setup is an internal guided state rea
 4. Run the existing bounded discovery composition.
 5. Require exactly one current Steam candidate with that application identifier.
 6. Require exact non-empty install-root agreement and one suitable executable proposal.
-7. Emit one complete setup plan or retain the existing typed proposal limitation without mutation.
+7. Emit one complete setup plan, or report a condition-specific setup limitation without mutation. No candidate, multiple candidates, absent stored install authority, install-root disagreement, absent executable metadata, and unsafe executable syntax remain distinct.
 
 No display-name, folder, predicted-handle, substring, or path-prefix join exists at this boundary.
 
@@ -46,7 +46,7 @@ A preceding target registration plan and a later Deep Capture plan each require 
 
 After affirmative confirmation, the command re-resolves the target by stable identifier and repeats the bounded discovery join. It rebuilds the complete plan and requires byte-equivalent canonical authority. Changed selection, candidate data, discovery accounting, warning text, store identity, target field, executable, or result is drift.
 
-The shared target store then starts an immediate transaction and compares its current complete row to the planned row. A match updates only `launch_entries` to one client entry and `fidelity` to `authored`. A changed or missing row remains untouched and produces a non-success outcome.
+The shared target store then starts an immediate transaction and compares its current complete row to the planned row. A match updates only `launch_entries` to one client entry and `fidelity` to `authored`. A changed or missing row remains untouched and produces a non-success outcome. A transaction or store error emits one terminal failed setup outcome before the operational error is returned.
 
 ## Outcome Event
 
@@ -59,6 +59,8 @@ The shared target store then starts an immediate transaction and compares its cu
 - `continued`
 
 No outcome field claims routing, propagation, inspectability, protocol coverage, session authorization, or directly observed socket ownership.
+
+Every emitted setup plan has exactly one terminal setup outcome, including persistence failure.
 
 ## Continuation
 

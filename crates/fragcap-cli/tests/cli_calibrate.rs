@@ -1055,6 +1055,41 @@ fn steam_client_setup_refuses_ambiguous_candidate_reproduction() {
 }
 
 #[test]
+fn steam_client_setup_reports_initial_discovery_ambiguity() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let (code, _out, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        &id,
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
+    assert_eq!(code, 2, "events:\n{events}");
+    assert!(
+        events.contains("2 exact steam:75000 candidates"),
+        "events:\n{events}"
+    );
+    assert!(!events.contains("calibration.steam_client_plan"));
+    assert_eq!(
+        Store::open(&local)
+            .unwrap()
+            .target_by_stable_id(stable_id)
+            .unwrap()
+            .unwrap()
+            .launch_entries,
+        None
+    );
+}
+
+#[test]
 fn steam_client_setup_refuses_changed_or_missing_target_authority() {
     let _environment = controlled_environment().lock().unwrap();
     for mutation in [TargetMutation::Change, TargetMutation::Delete] {

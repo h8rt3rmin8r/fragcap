@@ -61,7 +61,7 @@ After client setup succeeds, the same invocation re-resolves the target by durab
 
 - A zero, malformed, or non-Steam anchor never enters Steam client setup.
 - A stored target and current Steam candidate must name the same positive application identifier and exact install root; a missing or changed root is not silently reconciled.
-- A current Steam candidate whose executable is empty, whitespace, lacks one Windows executable image, or is otherwise unsuitable for an exact client declaration produces no plan.
+- A current Steam candidate whose executable is empty, contains whitespace, lacks one Windows executable image, or is otherwise unsuitable for an exact client declaration produces no plan and reports the executable-authority limitation distinctly.
 - Appinfo may name a launcher. The proposal asks for a positive socket-holder attestation and never interprets discovery metadata, engine evidence, executable naming, or operator silence as that attestation.
 - Any present launch declaration, including a prior `no` or `unsure` answer and malformed historical data, is preserved for explicit repair outside this slice.
 - A target deleted, replaced, imported, promoted, or otherwise changed after proposal display is drift, even if its Steam anchor remains the same.
@@ -88,6 +88,7 @@ After client setup succeeds, the same invocation re-resolves the target by durab
 - **FR-005**: Current proposal evidence MUST contain exactly one candidate with the target's Steam application identifier; zero or multiple matches MUST be explicit non-mutating limitations.
 - **FR-006**: The stored and discovered install roots MUST both be present and exactly equal before a setup plan may be offered.
 - **FR-007**: The proposed executable MUST be non-empty and reduce to one exact Windows executable image suitable for a client declaration; commands, URLs, placeholders, and ambiguous values MUST be refused.
+- **FR-007a**: Every ineligible Steam setup condition MUST report a stable, condition-specific limitation that distinguishes no exact candidate, multiple exact candidates, absent stored install authority, install-root disagreement, absent executable metadata, and an unsafe executable proposal.
 - **FR-008**: The setup proposal MUST bind the complete stored target, complete selected candidate, conserved discovery account and warnings, effective local-store identity, proposed executable, exact resulting client declaration, authoring operation version, and no-effect boundaries.
 - **FR-009**: The setup plan MUST have a deterministic versioned identifier that changes when any bound authority or proposed result changes.
 - **FR-010**: Human and structured output MUST emit stable setup-plan and setup-outcome records distinct from registration, calibration guidance, and Deep Capture session events.
@@ -98,6 +99,7 @@ After client setup succeeds, the same invocation re-resolves the target by durab
 - **FR-015**: After confirmation, the command MUST re-read the target by durable identifier, repeat bounded Steam discovery, and rebuild the complete setup plan.
 - **FR-016**: Any changed, missing, ambiguous, unconserved, or otherwise unreproducible authority after confirmation MUST produce a drift outcome and no target update.
 - **FR-017**: The target update MUST be conditional on exact equality with the planned stored row so another writer cannot be overwritten between revalidation and persistence.
+- **FR-017a**: Once a setup plan is emitted, every persistence error MUST emit exactly one terminal failed `calibration.steam_client` outcome before the command returns the operational error.
 - **FR-018**: A successful update MUST retain the existing row identity, handle, name, classification, classification source, provenance, anchor, install root, evidence, detection coverage, folder name, and executable hint.
 - **FR-019**: A successful update MUST write exactly one client launch declaration from the operator-attested executable and MUST stamp the resulting target fidelity as authored rather than observed or verified.
 - **FR-020**: A successful update MUST NOT create a target, compatibility fact, listing snapshot, workflow record, artifact, or second storage shape.

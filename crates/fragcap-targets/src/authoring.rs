@@ -73,6 +73,7 @@ pub fn is_client_executable(executable: &str) -> bool {
         || executable.contains(['\"', '\'', ';', '|', '&'])
         || executable.contains("://")
         || executable.chars().any(char::is_control)
+        || executable.chars().any(char::is_whitespace)
         || executable.contains(['*', '?', '<', '>', '%'])
         || executable
             .split(['/', '\\'])
@@ -166,6 +167,9 @@ mod tests {
             " client.exe",
             "../client.exe",
             "client.exe --flag",
+            "game.exe --helper.exe",
+            "game --helper.exe",
+            "bin/client name.exe",
             "https://client.exe",
             "%command%",
             "*.exe",
