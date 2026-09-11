@@ -136,6 +136,18 @@ pub(crate) enum FirstRunRefusal {
     Calibration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetReference<'a> {
+    Selector(&'a str),
+    Id(i64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkflowVerb {
+    Calibrate,
+    DeepCapture,
+}
+
 #[cfg(test)]
 const FIRST_RUN_REFUSALS: &[FirstRunRefusal] = &[
     FirstRunRefusal::Environment,
@@ -282,33 +294,55 @@ pub(crate) fn quote_powershell_argument(value: &str) -> String {
     quoted
 }
 
-pub(crate) fn calibration_command(selector: &str) -> String {
-    format!("fragcap calibrate {}", quote_powershell_argument(selector))
+pub(crate) fn target_reference<'a>(
+    positional: Option<&'a str>,
+    explicit: Option<&'a str>,
+    id: Option<i64>,
+) -> Option<TargetReference<'a>> {
+    positional
+        .or(explicit)
+        .map(TargetReference::Selector)
+        .or_else(|| id.map(TargetReference::Id))
 }
 
-pub(crate) fn deep_capture_command(selector: &str) -> String {
-    format!(
-        "fragcap deep-capture {} --launch",
-        quote_powershell_argument(selector)
-    )
+pub(crate) fn calibration_command(target: TargetReference<'_>) -> String {
+    match target {
+        TargetReference::Selector(selector) => {
+            format!("fragcap calibrate {}", quote_powershell_argument(selector))
+        }
+        TargetReference::Id(id) => format!("fragcap calibrate --id {id}"),
+    }
 }
 
-pub(crate) fn next_command(category: FirstRunRefusal, selector: Option<&str>) -> String {
+pub(crate) fn deep_capture_command(target: TargetReference<'_>) -> String {
+    match target {
+        TargetReference::Selector(selector) => format!(
+            "fragcap deep-capture {} --launch",
+            quote_powershell_argument(selector)
+        ),
+        TargetReference::Id(id) => format!("fragcap deep-capture --id {id} --launch"),
+    }
+}
+
+pub(crate) fn next_command(
+    category: FirstRunRefusal,
+    target: Option<TargetReference<'_>>,
+) -> String {
     match category {
         FirstRunRefusal::Environment => "fragcap doctor".to_string(),
         FirstRunRefusal::Target => "fragcap targets discover".to_string(),
         FirstRunRefusal::Launch | FirstRunRefusal::Compatibility | FirstRunRefusal::Calibration => {
-            selector.map_or_else(
+            target.map_or_else(
                 || "fragcap calibrate \"<installed game>\"".to_string(),
                 calibration_command,
             )
         }
-        FirstRunRefusal::Process => selector.map_or_else(
+        FirstRunRefusal::Process => target.map_or_else(
             || "fragcap calibrate \"<installed game>\" --restart-warm".to_string(),
             |value| format!("{} --restart-warm", calibration_command(value)),
         ),
         FirstRunRefusal::Recovery => "fragcap doctor --fix".to_string(),
-        FirstRunRefusal::Bundle => selector.map_or_else(
+        FirstRunRefusal::Bundle => target.map_or_else(
             || {
                 "fragcap deep-capture \"<installed game>\" --launch --bundle \"<new empty directory>\""
                     .to_string()
@@ -320,7 +354,7 @@ pub(crate) fn next_command(category: FirstRunRefusal, selector: Option<&str>) ->
                 )
             },
         ),
-        FirstRunRefusal::Authorization => selector.map_or_else(
+        FirstRunRefusal::Authorization => target.map_or_else(
             || "fragcap deep-capture \"<installed game>\" --launch".to_string(),
             deep_capture_command,
         ),
@@ -356,16 +390,44 @@ pub(crate) fn classify_pre_session_refusal(message: &str) -> Option<FirstRunRefu
 
 pub(crate) fn actionable_error(
     error: CliError,
-    selector: Option<&str>,
+    target: Option<TargetReference<'_>>,
     fallback: Option<FirstRunRefusal>,
+    verb: WorkflowVerb,
 ) -> CliError {
     if error.message().contains("Next command:") || error.message().contains("Next commands:") {
         return error;
     }
+    if error.message().contains("selector is ambiguous") {
+        return ambiguous_target_error(error, verb);
+    }
     let Some(category) = classify_pre_session_refusal(error.message()).or(fallback) else {
         return error;
     };
-    with_next_command(error, next_command(category, selector))
+    with_next_command(error, next_command(category, target))
+}
+
+fn ambiguous_target_error(error: CliError, verb: WorkflowVerb) -> CliError {
+    let commands: Vec<_> = error
+        .message()
+        .lines()
+        .filter_map(|line| line.trim().split('\t').nth(1)?.parse::<i64>().ok())
+        .map(|id| match verb {
+            WorkflowVerb::Calibrate => format!("fragcap calibrate --id {id}"),
+            WorkflowVerb::DeepCapture => format!("fragcap deep-capture --id {id} --launch"),
+        })
+        .collect();
+    if commands.is_empty() {
+        return error;
+    }
+    let message = format!(
+        "{}\nNext commands:\n  Choose one listed target:\n  {}",
+        error.message(),
+        commands.join("\n  ")
+    );
+    match error {
+        CliError::Usage(_) => CliError::usage(message),
+        CliError::Failure(_) => CliError::failure(message),
+    }
 }
 
 pub(crate) fn with_next_command(error: CliError, command: impl AsRef<str>) -> CliError {
@@ -434,15 +496,16 @@ mod tests {
                 !FIRST_RUN_REFUSALS[..index].contains(category),
                 "duplicate refusal category {category:?}"
             );
-            let command = next_command(*category, Some("My Game"));
+            let command = next_command(*category, Some(TargetReference::Selector("My Game")));
             assert!(
                 registered.contains(command.as_str()),
                 "refusal category {category:?} has an unregistered next command: {command}"
             );
             let error = actionable_error(
                 CliError::usage("setup stopped"),
-                Some("My Game"),
+                Some(TargetReference::Selector("My Game")),
                 Some(*category),
+                WorkflowVerb::Calibrate,
             );
             assert_eq!(
                 error.message().matches("Next command:").count(),
@@ -460,12 +523,53 @@ mod tests {
     #[test]
     fn dynamic_target_commands_preserve_one_argument() {
         assert_eq!(
-            calibration_command("Pokémon \"Élan\" `$HOME"),
+            calibration_command(TargetReference::Selector("Pokémon \"Élan\" `$HOME")),
             "fragcap calibrate \"Pokémon `\"Élan`\" ```$HOME\""
         );
         assert_eq!(
-            deep_capture_command("My Game"),
+            deep_capture_command(TargetReference::Selector("My Game")),
             "fragcap deep-capture \"My Game\" --launch"
         );
+        assert_eq!(
+            calibration_command(TargetReference::Id(123)),
+            "fragcap calibrate --id 123"
+        );
+        assert_eq!(
+            deep_capture_command(TargetReference::Id(123)),
+            "fragcap deep-capture --id 123 --launch"
+        );
+    }
+
+    #[test]
+    fn ambiguous_target_guidance_preserves_every_durable_choice() {
+        let message = "the selector is ambiguous (2 targets match); select by handle or `--id`:\n  first\t76001\tFirst\n  second\t76002\tSecond";
+        let calibrate = actionable_error(
+            CliError::usage(message),
+            None,
+            None,
+            WorkflowVerb::Calibrate,
+        );
+        assert!(calibrate.message().contains("fragcap calibrate --id 76001"));
+        assert!(calibrate.message().contains("fragcap calibrate --id 76002"));
+        let deep_capture = actionable_error(
+            CliError::usage(message),
+            None,
+            None,
+            WorkflowVerb::DeepCapture,
+        );
+        assert!(deep_capture
+            .message()
+            .contains("fragcap deep-capture --id 76001 --launch"));
+        assert!(deep_capture
+            .message()
+            .contains("fragcap deep-capture --id 76002 --launch"));
+        Cli::try_parse_from(["fragcap", "calibrate", "--id", "76001"])
+            .expect("first durable choice parses");
+        Cli::try_parse_from(["fragcap", "calibrate", "--id", "76002"])
+            .expect("second durable choice parses");
+        Cli::try_parse_from(["fragcap", "deep-capture", "--id", "76001", "--launch"])
+            .expect("first durable Deep Capture choice parses");
+        Cli::try_parse_from(["fragcap", "deep-capture", "--id", "76002", "--launch"])
+            .expect("second durable Deep Capture choice parses");
     }
 }

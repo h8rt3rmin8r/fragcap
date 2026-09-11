@@ -2079,48 +2079,47 @@ pub fn run(
     let outcome = match run_with_outcome(args, authorization, emitter) {
         Ok(outcome) => outcome,
         Err(error) if !emitter.is_json() => {
-            let selector = args
-                .selector
-                .as_deref()
-                .or(args.target.as_deref())
-                .map(str::to_string)
-                .or_else(|| args.id.map(|id| id.to_string()));
+            let target = crate::workflow_help::target_reference(
+                args.selector.as_deref(),
+                args.target.as_deref(),
+                args.id,
+            );
             return Err(crate::workflow_help::actionable_error(
                 error,
-                selector.as_deref(),
+                target,
                 None,
+                crate::workflow_help::WorkflowVerb::DeepCapture,
             ));
         }
         Err(error) => return Err(error),
     };
     match outcome.terminal_error {
         Some(error) if !emitter.is_json() && outcome.disposition == RunDisposition::Interrupted => {
-            let selector = args
-                .selector
-                .as_deref()
-                .or(args.target.as_deref())
-                .map(str::to_string)
-                .or_else(|| args.id.map(|id| id.to_string()));
+            let target = crate::workflow_help::target_reference(
+                args.selector.as_deref(),
+                args.target.as_deref(),
+                args.id,
+            );
             Err(crate::workflow_help::actionable_error(
                 error,
-                selector.as_deref(),
+                target,
                 Some(crate::workflow_help::FirstRunRefusal::Authorization),
+                crate::workflow_help::WorkflowVerb::DeepCapture,
             ))
         }
         Some(error) => Err(error),
         None => {
             if outcome.disposition == RunDisposition::Declined && !emitter.is_json() {
-                let selector = args
-                    .selector
-                    .as_deref()
-                    .or(args.target.as_deref())
-                    .map(str::to_string)
-                    .or_else(|| args.id.map(|id| id.to_string()));
+                let target = crate::workflow_help::target_reference(
+                    args.selector.as_deref(),
+                    args.target.as_deref(),
+                    args.id,
+                );
                 emitter.progress(&format!(
                     "Next command:  {}",
                     crate::workflow_help::next_command(
                         crate::workflow_help::FirstRunRefusal::Authorization,
-                        selector.as_deref(),
+                        target,
                     )
                 ));
             }

@@ -351,6 +351,10 @@ fn mode_verdicts_keep_deep_only_failures_out_of_capture() {
     let report = checks::run(&inputs);
     assert!(report.capture_ready());
     assert!(!report.deep_capture_ready());
+    assert!(
+        !report.render_human().contains("Deep Capture setup"),
+        "blocked Deep Capture must retain remediation-first guidance"
+    );
 
     inputs.npcap = None;
     let report = checks::run(&inputs);

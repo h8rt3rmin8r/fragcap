@@ -629,6 +629,7 @@ fn resume_requires_a_positive_workflow_identifier() {
         err.contains("workflow identifier must be positive"),
         "stderr={err}"
     );
+    assert!(err.contains("Next command:  fragcap calibrate"), "{err}");
 
     let (code, _out, err) = run(&["calibrate", "--resume", "-1"]);
     assert_eq!(code, 2, "stderr={err}");
@@ -1218,6 +1219,8 @@ fn calibrate_preserves_shared_ambiguity_diagnostics() {
     assert_eq!(code, 2);
     assert!(err.contains("selector is ambiguous"), "diagnostic: {err}");
     assert!(err.contains("first") && err.contains("second"));
+    assert!(err.contains("fragcap calibrate --id 76001"), "{err}");
+    assert!(err.contains("fragcap calibrate --id 76002"), "{err}");
 }
 
 #[test]

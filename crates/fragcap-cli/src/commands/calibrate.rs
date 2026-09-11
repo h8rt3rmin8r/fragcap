@@ -2224,11 +2224,39 @@ pub fn run(
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
     if args.resume.is_some_and(|workflow_id| workflow_id <= 0) {
-        return Err(CliError::usage(
-            "calibration workflow identifier must be positive",
-        ));
+        let error = CliError::usage("calibration workflow identifier must be positive");
+        return Err(if emitter.is_json() {
+            error
+        } else {
+            crate::workflow_help::actionable_error(
+                error,
+                crate::workflow_help::target_reference(
+                    args.selector.as_deref(),
+                    args.target.as_deref(),
+                    args.id,
+                ),
+                Some(crate::workflow_help::FirstRunRefusal::Calibration),
+                crate::workflow_help::WorkflowVerb::Calibrate,
+            )
+        });
     }
-    let mut candidate_selection = CandidateSelection::new(args.candidate.as_deref())?;
+    let mut candidate_selection =
+        CandidateSelection::new(args.candidate.as_deref()).map_err(|error| {
+            if emitter.is_json() {
+                error
+            } else {
+                crate::workflow_help::actionable_error(
+                    error,
+                    crate::workflow_help::target_reference(
+                        args.selector.as_deref(),
+                        args.target.as_deref(),
+                        args.id,
+                    ),
+                    Some(crate::workflow_help::FirstRunRefusal::Calibration),
+                    crate::workflow_help::WorkflowVerb::Calibrate,
+                )
+            }
+        })?;
     let mut requested_protocols = normalize_protocol_args(&args.protocol);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let mut store = Store::open(&local_store_path)
@@ -2311,14 +2339,31 @@ pub fn run(
         }
         (target, workflow)
     } else {
-        let target = match resolve_or_register_target(
+        let front_door = resolve_or_register_target(
             args,
             authorization,
             emitter,
             &local_store_path,
             &mut store,
             &mut candidate_selection,
-        )? {
+        )
+        .map_err(|error| {
+            if emitter.is_json() {
+                error
+            } else {
+                crate::workflow_help::actionable_error(
+                    error,
+                    crate::workflow_help::target_reference(
+                        args.selector.as_deref(),
+                        args.target.as_deref(),
+                        args.id,
+                    ),
+                    None,
+                    crate::workflow_help::WorkflowVerb::Calibrate,
+                )
+            }
+        })?;
+        let target = match front_door {
             TargetFrontDoor::Ready(target) => *target,
             TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
         };
