@@ -56,8 +56,8 @@ pub mod targets_export;
 pub mod volume;
 
 pub use authoring::{
-    launch_entries_for, launch_is_unresolved, observed_executable, resolved_client_launch,
-    SocketHolderAnswer,
+    is_client_executable, launch_entries_for, launch_is_unresolved, observed_executable,
+    resolved_client_launch, SocketHolderAnswer,
 };
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use classifier::{
@@ -119,7 +119,7 @@ pub use sources::directory::DirectorySource;
 pub use sources::interactive::{Confirm, InteractiveSource, ScriptedConfirm};
 pub use sources::known_roots::{KnownRootsSource, KNOWN_ROOTS};
 pub use sources::{DirListing, DirectoryLister, FixtureTree, FsDirectoryLister};
-pub use store::Store;
+pub use store::{AuthorTargetClientOutcome, Store};
 pub use targets_export::{export_targets, import_targets};
 pub use volume::{
     DriveType, EligibilityReason, FixtureInventory, Volume, VolumeEligibility, VolumeInventory,
