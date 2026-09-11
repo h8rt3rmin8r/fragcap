@@ -190,6 +190,21 @@ pub enum Event {
         target_id: i64,
         continued: bool,
     },
+    /// One complete stored client selection plan, emitted before input.
+    CalibrationStoredClientPlan {
+        plan_id: String,
+        canonical_json: String,
+        target_id: i64,
+        executable: String,
+    },
+    /// The terminal decision for one stored client selection plan.
+    CalibrationStoredClient {
+        plan_id: String,
+        status: String,
+        reason: String,
+        target_id: i64,
+        continued: bool,
+    },
     /// A guided calibration decision or terminal outcome.
     CalibrationGuidance {
         target_id: i64,
@@ -354,6 +369,8 @@ impl Event {
             Event::CalibrationChoiceRequired { .. } => "calibration.choice_required",
             Event::CalibrationSteamClientPlan { .. } => "calibration.steam_client_plan",
             Event::CalibrationSteamClient { .. } => "calibration.steam_client",
+            Event::CalibrationStoredClientPlan { .. } => "calibration.stored_client_plan",
+            Event::CalibrationStoredClient { .. } => "calibration.stored_client",
             Event::CalibrationGuidance { .. } => "calibration.guidance",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
             Event::DeepCaptureRestart { .. } => "deep_capture.restart",
@@ -769,6 +786,39 @@ impl Event {
                 line.push_str(&discovery_warning_count.to_string());
             }
             Event::CalibrationSteamClient {
+                plan_id,
+                status,
+                reason,
+                target_id,
+                continued,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+                line.push_str(",\"target_id\":");
+                line.push_str(&target_id.to_string());
+                line.push_str(",\"continued\":");
+                line.push_str(if *continued { "true" } else { "false" });
+            }
+            Event::CalibrationStoredClientPlan {
+                plan_id,
+                canonical_json,
+                target_id,
+                executable,
+            } => {
+                line.push_str(",\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"canonical_json\":");
+                write_json_string(canonical_json, &mut line);
+                line.push_str(",\"target_id\":");
+                line.push_str(&target_id.to_string());
+                line.push_str(",\"executable\":");
+                write_json_string(executable, &mut line);
+            }
+            Event::CalibrationStoredClient {
                 plan_id,
                 status,
                 reason,
@@ -1432,6 +1482,33 @@ mod tests {
         assert_eq!(steam_client["event"], "calibration.steam_client");
         assert_eq!(steam_client["status"], "applied");
         assert_eq!(steam_client["continued"], true);
+
+        let stored_client_plan = Event::CalibrationStoredClientPlan {
+            plan_id: "stored-client-selection-v1:abcd".to_string(),
+            canonical_json: "{\"schema\":\"fragcap.stored-client-selection-plan.v1\"}".to_string(),
+            target_id: 42,
+            executable: "client.exe".to_string(),
+        }
+        .render(now);
+        let stored_client_plan: serde_json::Value =
+            serde_json::from_str(&stored_client_plan).unwrap();
+        assert_eq!(
+            stored_client_plan["event"],
+            "calibration.stored_client_plan"
+        );
+        assert_eq!(stored_client_plan["executable"], "client.exe");
+
+        let stored_client = Event::CalibrationStoredClient {
+            plan_id: "stored-client-selection-v1:abcd".to_string(),
+            status: "applied".to_string(),
+            reason: "stored-client-persisted".to_string(),
+            target_id: 42,
+            continued: true,
+        }
+        .render(now);
+        let stored_client: serde_json::Value = serde_json::from_str(&stored_client).unwrap();
+        assert_eq!(stored_client["event"], "calibration.stored_client");
+        assert_eq!(stored_client["continued"], true);
 
         let guidance = Event::CalibrationGuidance {
             target_id: 75_000,

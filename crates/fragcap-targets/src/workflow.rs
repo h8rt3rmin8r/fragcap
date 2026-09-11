@@ -55,6 +55,8 @@ impl CalibrationWorkflowState {
 pub enum CalibrationPauseReason {
     Login,
     Eula,
+    Update,
+    AntiCheat,
     Gameplay,
     Shutdown,
     Interrupted,
@@ -67,6 +69,8 @@ impl CalibrationPauseReason {
         match self {
             Self::Login => "login",
             Self::Eula => "eula",
+            Self::Update => "update",
+            Self::AntiCheat => "anti-cheat",
             Self::Gameplay => "gameplay",
             Self::Shutdown => "shutdown",
             Self::Interrupted => "interrupted",
@@ -79,6 +83,8 @@ impl CalibrationPauseReason {
         match value {
             "login" => Ok(Self::Login),
             "eula" => Ok(Self::Eula),
+            "update" => Ok(Self::Update),
+            "anti-cheat" => Ok(Self::AntiCheat),
             "gameplay" => Ok(Self::Gameplay),
             "shutdown" => Ok(Self::Shutdown),
             "interrupted" => Ok(Self::Interrupted),
@@ -467,6 +473,8 @@ mod tests {
         for reason in [
             CalibrationPauseReason::Login,
             CalibrationPauseReason::Eula,
+            CalibrationPauseReason::Update,
+            CalibrationPauseReason::AntiCheat,
             CalibrationPauseReason::Gameplay,
             CalibrationPauseReason::Shutdown,
             CalibrationPauseReason::Interrupted,
@@ -479,7 +487,7 @@ mod tests {
             );
         }
         assert!(CalibrationWorkflowState::parse("active").is_err());
-        assert!(CalibrationPauseReason::parse("update").is_err());
+        assert!(CalibrationPauseReason::parse("maintenance").is_err());
     }
 
     #[test]

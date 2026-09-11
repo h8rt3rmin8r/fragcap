@@ -321,6 +321,29 @@ pub fn entry_windows_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
     out
 }
 
+/// Project one complete stored launch declaration into canonical JSON.
+pub fn launch_entry_value(entry: &LaunchEntry) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert(
+        "executable".to_string(),
+        serde_json::json!(entry.executable()),
+    );
+    for (key, field) in [
+        ("os", &entry.os),
+        ("osarch", &entry.osarch),
+        ("launch_type", &entry.launch_type),
+        ("beta_branch", &entry.beta_branch),
+        ("arguments", &entry.arguments),
+        ("description", &entry.description),
+        ("role", &entry.role),
+    ] {
+        if let Some(field) = field {
+            value.insert(key.to_string(), serde_json::json!(field));
+        }
+    }
+    serde_json::Value::Object(value)
+}
+
 /// The distinct client executables a row names for the capture platform.
 ///
 /// Keeps only launch entries applicable to Windows (an `os` filter that is unset
@@ -387,8 +410,24 @@ fn entry_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
                 continue;
             };
             le.os = item.get("os").and_then(|v| v.as_str()).map(str::to_string);
+            le.osarch = item
+                .get("osarch")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.launch_type = item
+                .get("launch_type")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.beta_branch = item
+                .get("beta_branch")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             le.arguments = item
                 .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.description = item
+                .get("description")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             le.role = item

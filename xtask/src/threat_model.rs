@@ -413,7 +413,7 @@ fn first_rust_string(source: &str) -> Option<String> {
     None
 }
 
-fn strip_rust_comments(source: &str) -> String {
+pub(crate) fn strip_rust_comments(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;

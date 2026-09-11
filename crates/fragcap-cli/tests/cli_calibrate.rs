@@ -722,7 +722,15 @@ fn explicit_operator_pauses_are_durable_and_effect_free() {
         .id;
     drop(store);
 
-    for reason in ["login", "eula", "gameplay", "shutdown", "interrupted"] {
+    for reason in [
+        "login",
+        "eula",
+        "update",
+        "anti-cheat",
+        "gameplay",
+        "shutdown",
+        "interrupted",
+    ] {
         let (code, _out, events) = run(&[
             "--json",
             "calibrate",
@@ -1653,6 +1661,117 @@ fn explicit_candidate_selects_one_ambiguous_steam_client() {
 }
 
 #[test]
+fn explicit_candidate_selects_one_ambiguous_stored_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let mut store = Store::open(&local).unwrap();
+    let target = TargetEntry {
+        id: None,
+        stable_id: 85_001,
+        handle: "ambiguous-stored-client".to_string(),
+        name: "Ambiguous Stored Client".to_string(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Observed,
+        provenance: None,
+        anchor: None,
+        launch_entries: Some(serde_json::json!([
+            {"executable":"shared-client.exe","arguments":"--first","role":"client"},
+            {"executable":"shared-client.exe","arguments":"--second","role":"client"}
+        ])),
+        install_root: Some("C:\\Games\\Ambiguous".to_string()),
+        evidence: None,
+        detection_scan: None,
+        folder_name: None,
+        executable_hint: None,
+    };
+    store.insert_target(&target).unwrap();
+    drop(store);
+
+    let (code, _out, choices) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "85001",
+        "--authorize-stdin",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "events:\n{choices}");
+    assert!(choices.contains("\"scope\":\"stored-client\""));
+    assert!(!choices.contains("calibration.stored_client_plan"));
+    let selected = calibration_choices(&choices)
+        .into_iter()
+        .find(|choice| {
+            choice["identity"]
+                .as_str()
+                .and_then(|identity| serde_json::from_str::<serde_json::Value>(identity).ok())
+                .is_some_and(|identity| identity["arguments"] == "--second")
+        })
+        .and_then(|choice| choice["id"].as_str().map(str::to_string))
+        .unwrap();
+
+    let mut authorization = BoundedEchoAuthorization {
+        calls: 0,
+        accepted: 1,
+    };
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "85001",
+            "--candidate",
+            &selected,
+            "--authorize-stdin",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert!(matches!(code, 0 | 2), "events:\n{events}");
+    assert!(events.contains("calibration.stored_client_plan"));
+    assert!(events.contains("\"reason\":\"stored-client-persisted\""));
+    let plan_event = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "calibration.stored_client_plan")
+        .expect("one stored client plan");
+    assert!(plan_event["plan_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("stored-client-selection-v1:"));
+    let canonical: serde_json::Value =
+        serde_json::from_str(plan_event["canonical_json"].as_str().unwrap()).unwrap();
+    assert_eq!(canonical["target"]["stable_id"], 85_001);
+    assert_eq!(canonical["proposed_executable"], "shared-client.exe");
+    assert_eq!(
+        canonical["resulting_launch_entries"][0]["arguments"],
+        "--second"
+    );
+    assert_eq!(canonical["resulting_launch_entries"][0]["role"], "client");
+    assert_eq!(
+        canonical["operation"],
+        "select-stored-client-if-unchanged-v1"
+    );
+    assert_eq!(canonical["no_effects"].as_array().unwrap().len(), 5);
+    let selected_target = Store::open(&local)
+        .unwrap()
+        .target_by_stable_id(85_001)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected_target.launch_entries,
+        Some(serde_json::json!([{
+            "executable":"shared-client.exe",
+            "arguments":"--second",
+            "role":"client"
+        }]))
+    );
+    assert_eq!(selected_target.fidelity, FidelityTier::Authored);
+}
+
+#[test]
 fn malformed_and_unused_candidates_stop_before_workflow_creation() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -2117,6 +2236,36 @@ fn missing_routing_runs_reachability_then_observed_protocol() {
     assert_eq!(code, 0, "events:\n{events}");
     assert!(out.is_empty());
     assert_eq!(events.matches("deep_capture.authorization_plan").count(), 3);
+    let plan: serde_json::Value = events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "deep_capture.authorization_plan")
+        .unwrap();
+    assert_eq!(plan["plan"]["target"]["stable_id"], STABLE_ID);
+    assert_eq!(plan["plan"]["target"]["handle"], "sample-target");
+    assert_eq!(plan["plan"]["launch"]["observed_case"], "direct-exe-cold");
+    assert_eq!(
+        plan["plan"]["launch"]["process_control"],
+        "managed launch only; no process handle or forced termination"
+    );
+    assert_eq!(
+        plan["plan"]["proxy"]["routing_scope"],
+        "managed child environment only"
+    );
+    assert_eq!(plan["plan"]["proxy"]["address_family"], "ipv4");
+    assert_eq!(plan["plan"]["proxy"]["system_proxy_change"], false);
+    assert_eq!(plan["plan"]["deadlines_milliseconds"]["launch"], 7_000);
+    assert_eq!(plan["plan"]["deadlines_milliseconds"]["observation"], 5_000);
+    assert_eq!(plan["plan"]["trust"]["action"], "none");
+    assert_eq!(
+        plan["plan"]["capture"]["scope"],
+        "selected target process tree"
+    );
+    assert_eq!(plan["plan"]["cleanup"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        plan["plan"]["artifacts"]["bundle"],
+        bundle.display().to_string()
+    );
     assert!(events.contains("\"phase\":\"reachability\""));
     assert!(events.contains("\"protocol\":\"routing\""));
     assert!(events.contains("\"event\":\"calibration.guidance\""));
@@ -2174,8 +2323,6 @@ fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handof
             "calibrate",
             "--id",
             &id_arg,
-            "--launch-case",
-            launch_case.as_str(),
             "--local-db",
             local.to_str().unwrap(),
         ]);
@@ -2184,6 +2331,10 @@ fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handof
         let event: serde_json::Value =
             serde_json::from_str(events.lines().next().unwrap()).unwrap();
         assert_eq!(event["topology"], expected_topology);
+        assert_eq!(event["selected_launch_case"], launch_case.as_str());
+        assert!(event["launch_case_assertion"].is_null());
+        assert_eq!(event["routing_strategy"], "child-environment");
+        assert_eq!(event["address_family"], "ipv4");
         if event["status"] == "ready" {
             assert_next_command_selects_store(&events, "deep-capture", stable_id, &local);
         } else {
@@ -2255,7 +2406,7 @@ fn warm_target_is_guidance_only_until_restart_is_explicit() {
 }
 
 #[test]
-fn malformed_topology_reports_all_typed_limitations_before_effects() {
+fn ambiguous_stored_topology_requires_choice_before_effects() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let mut store = Store::open(&local).unwrap();
@@ -2294,9 +2445,10 @@ fn malformed_topology_reports_all_typed_limitations_before_effects() {
         bundle.to_str().unwrap(),
     ]);
     assert_eq!(code, 2, "events:\n{events}");
-    assert!(events.contains("\"action\":\"refused\""));
-    assert!(events.contains("ambiguous-launch-declaration"));
+    assert!(events.contains("calibration.choice_required"));
+    assert!(events.contains("\"scope\":\"stored-client\""));
     assert!(events.contains("A.exe") && events.contains("B.exe"));
+    assert!(!events.contains("calibration.stored_client_plan"));
     assert!(!bundle.exists());
 }
 

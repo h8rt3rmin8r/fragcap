@@ -47,6 +47,9 @@ pub fn calibration_candidate_value(candidate: &CandidateTarget) -> Value {
             json!({"kind": "steam-app-id", "value": app_id})
         }
         CandidateIdentity::Path(path) => json!({"kind": "path", "value": path}),
+        CandidateIdentity::LaunchEntry(entry) => {
+            json!({"kind": "stored-launch-entry", "value": crate::launch_entry_value(entry)})
+        }
     };
     let mut evidence = candidate
         .evidence

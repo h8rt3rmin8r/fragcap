@@ -72,6 +72,12 @@ jobs:
       - name: Specification version lock-step
         run: cargo run --package xtask -- spec
 
+      # S147: every issue #380 criterion names current controlled executable
+      # evidence. The Windows leg also proves the non-ignored #[cfg(windows)]
+      # topology and warm-state rows without a real game or trust mutation.
+      - name: Guided calibration acceptance
+        run: cargo run --package xtask -- guided-calibration-acceptance
+
       # S125 security-review currency: every high-risk native threat keeps its
       # exact executable evidence, and protocol or direct proxy dependency
       # changes force a model update. File reads only, so both legs must agree.

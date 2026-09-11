@@ -27,6 +27,7 @@
 use fragcap_profile::{DetectionFinding, FidelityTier};
 
 use crate::entry::{DetectionScan, TargetClassification};
+use crate::model::LaunchEntry;
 use crate::TargetsError;
 
 /// What a source found, enough to identify it and later author it into an entry.
@@ -36,6 +37,9 @@ pub enum CandidateIdentity {
     Path(String),
     /// A Steam application id (tier 1); joins to the shipped catalog.
     SteamAppId(u32),
+    /// One complete stored launch declaration offered only for calibration
+    /// disambiguation. It is never a registrable discovery identity.
+    LaunchEntry(LaunchEntry),
 }
 
 /// One thing a source found.

@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "issue": 380,
+  "reviewed_on": "2026-09-11",
+  "scope": "Complete controlled implementation acceptance for the one-game guided calibration workflow",
+  "completion_boundary": {
+    "implementation": "controlled-automated-evidence",
+    "live_game_execution": "operator-only-published-release",
+    "live_game_blocks_implementation": false,
+    "live_compatibility_claim": "not-demonstrated-by-this-acceptance",
+    "sensitive_automation": "prohibited",
+    "raw_live_evidence": "private-outside-repository"
+  },
+  "criteria": [
+    {
+      "id": "one-target-guidance",
+      "statement": "A Steam game can enter a bounded guided workflow from one target selector without low-level case flags.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"confirmed_discovered_target_registers_then_authors_the_steam_client_once","platform":"portable","proves":"One selector performs confirmed registration and Steam client setup before continuing under the durable target identity."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"one_invocation_runs_reachability_and_all_current_useful_protocol_attempts","platform":"portable","proves":"One guided invocation executes the bounded useful case sequence without manual phase or protocol composition."}
+      ]
+    },
+    {
+      "id": "supported-topology-parity",
+      "statement": "Direct, Steam, and declared publisher targets receive the same inferred guided handoff where ownership rules support them.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff","platform":"windows","proves":"The Windows command infers all three supported topologies, applies conservative defaults, and emits durable handoff guidance."},
+        {"path":"crates/fragcap/src/deep_capture/proposal.rs","function":"publisher_roles_and_warm_states_preserve_declared_order","platform":"portable","proves":"Publisher topology retains its declared launcher-to-client role order."}
+      ]
+    },
+    {
+      "id": "explicit-ambiguity-choice",
+      "statement": "Ambiguous games, Steam metadata, and supported stored client declarations require a stable explicit choice and are never guessed.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"explicit_candidate_selects_one_ambiguous_discovered_target","platform":"portable","proves":"A content-derived identifier narrows ambiguous installed-game discovery before registration."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"explicit_candidate_selects_one_ambiguous_steam_client","platform":"portable","proves":"A content-derived identifier narrows ambiguous Steam client metadata before authoring."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"explicit_candidate_selects_one_ambiguous_stored_client","platform":"portable","proves":"A content-derived identifier narrows an ambiguous non-Steam stored client declaration before a confirmed conditional rewrite."}
+      ]
+    },
+    {
+      "id": "conservative-defaults-and-overrides",
+      "statement": "Defaults come from current target and process authority while exact advanced dimensions remain inspectable and immutable.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap/src/deep_capture/proposal.rs","function":"defaults_and_ipv6_override_flow_into_every_exact_case","platform":"portable","proves":"Conservative routing and family defaults and an explicit IPv6 override flow into every exact case."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"exact_case_intent_is_persisted_rendered_and_reused_on_resume","platform":"portable","proves":"Advanced case intent remains visible and immutable across process resume."}
+      ]
+    },
+    {
+      "id": "reachability-before-trust",
+      "statement": "Reachability must become a current positive fact before any trust-bearing attempt is offered.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"missing_routing_runs_reachability_then_observed_protocol","platform":"portable","proves":"The guided sequence orders reachability before every observed protocol attempt."},
+        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"reachability_calibration_rejects_trust_and_tls_outputs_before_mutation","platform":"portable","proves":"A reachability phase rejects trust-bearing configuration before mutation."},
+        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"tls_calibration_requires_current_same_case_routing_before_mutation","platform":"portable","proves":"TLS refuses before mutation without current reachability for the same exact case."}
+      ]
+    },
+    {
+      "id": "complete-plan-visibility",
+      "statement": "Every guided effect exposes exact target, launch, routing, deadline, evidence, trust, and cleanup authority before confirmation.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"missing_routing_runs_reachability_then_observed_protocol","platform":"portable","proves":"The guided front door emits and separately confirms complete plan-bound authority for each attempt."},
+        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"controlled_calibration_runs_reachability_then_tls","platform":"portable","proves":"Controlled reachability and TLS plans carry exact deadlines, routing, family, backend, trust, and fact dimensions."}
+      ]
+    },
+    {
+      "id": "operator-owned-warm-retry",
+      "statement": "Warm targets receive bounded operator-owned normal-shutdown guidance and fragcap never closes or kills them.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"warm_target_is_guidance_only_until_restart_is_explicit","platform":"windows","proves":"The Windows guided command starts no session for a warm target until explicit retry and reports process_control=none."},
+        {"path":"crates/fragcap/src/deep_capture/restart.rs","function":"partial_closure_is_never_cold","platform":"portable","proves":"A partial operator shutdown never becomes cold authority."}
+      ]
+    },
+    {
+      "id": "distinct-operator-actions",
+      "statement": "Login, update, EULA, anti-cheat, no-traffic, and gameplay work remain distinct operator action or incomplete states.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"explicit_operator_pauses_are_durable_and_effect_free","platform":"portable","proves":"Every explicit operator action is stored and resumed without entering the session executor."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"partial_protocol_attempt_reassesses_facts_but_never_claims_completion","platform":"portable","proves":"Partial or no-positive-evidence outcomes remain incomplete instead of becoming generic success."}
+      ]
+    },
+    {
+      "id": "exact-append-only-facts",
+      "statement": "Compatibility facts remain exact and append-only, retaining history, negative, stale, partial, and conflicting observations.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-targets/src/store.rs","function":"compatibility_retests_append_conflicting_rows_in_order","platform":"portable","proves":"Retests append conflicting observations without replacing prior history."},
+        {"path":"crates/fragcap-targets/src/compatibility.rs","function":"compatibility_matrix_preserves_repeated_and_conflicting_stored_rows","platform":"portable","proves":"The public matrix preserves repeated and conflicting exact stored rows."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"every_non_positive_routing_state_preserves_the_proposal_reason","platform":"windows","proves":"Every non-positive routing state retains its exact proposal reason."}
+      ]
+    },
+    {
+      "id": "coverage-and-deep-capture-handoff",
+      "statement": "Successful completion reconciles concise coverage and emits a paste-ready ordinary Deep Capture command.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"missing_routing_runs_all_observed_protocols_before_handoff","platform":"portable","proves":"Completed controlled work reconciles requested, observed, completed, and remaining coverage before handoff."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"current_exact_routing_emits_ready_guidance_without_session_effects","platform":"portable","proves":"Ready guidance emits an exact store-bound ordinary Deep Capture command without a session effect."}
+      ]
+    },
+    {
+      "id": "selective-retest",
+      "statement": "A rerun proposes only missing, stale, negative, conflicting, legacy, mismatched, or explicitly requested work and names the reason.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap/src/deep_capture/proposal.rs","function":"stale_legacy_mismatch_negative_and_conflict_have_distinct_reasons","platform":"portable","proves":"Every non-current evidence class receives a distinct stable retest reason."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"resume_reassesses_current_facts_and_suppresses_completed_work","platform":"portable","proves":"Resume freshly suppresses completed exact work and starts no redundant attempt."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"current_positive_candidate_reports_requested_coverage_without_effects","platform":"portable","proves":"An explicitly requested current protocol is reported without inventing another measurement."}
+      ]
+    },
+    {
+      "id": "human-json-resume",
+      "statement": "Human and JSON modes expose one stable durable workflow suitable for interruption and exact resume.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"guidance_obeys_human_suppression_and_json_remains_machine_readable","platform":"portable","proves":"Human and structured projections retain the same workflow authority without corrupting JSON output."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"an_in_flight_checkpoint_resumes_as_an_effect_free_interruption","platform":"portable","proves":"A crash-shaped checkpoint first becomes a durable no-effect interruption."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"a_paused_workflow_resumes_with_a_fresh_plan_and_durable_bundle_ordinal","platform":"portable","proves":"A later process resumes with fresh authority and a durable non-reused attempt destination."}
+      ]
+    },
+    {
+      "id": "controlled-and-windows-matrix",
+      "statement": "Controlled and ordinary Windows CI evidence covers every required topology and terminal state without a real game or trust mutation.",
+      "evidence_class": "controlled-automated",
+      "tests": [
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff","platform":"windows","proves":"The ordinary Windows suite covers all supported launch topologies and successful handoff."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"warm_target_is_guidance_only_until_restart_is_explicit","platform":"windows","proves":"The ordinary Windows suite covers warm-state refusal and bounded retry."},
+        {"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"interrupting_a_later_authorization_retains_interrupted_guidance","platform":"portable","proves":"Controlled orchestration covers interruption after prior progress."},
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"trust_failure_still_cleans_the_proxy","platform":"portable","proves":"A controlled trust failure retains exact cleanup."},
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization","platform":"portable","proves":"Controlled cleanup failure cannot skip remaining cleanup or terminal evidence."}
+      ]
+    }
+  ],
+  "controlled_matrix": [
+    {"id":"steam","statement":"Steam topology and handoff","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff","platform":"windows","proves":"Steam topology is inferred and handed off in the ordinary Windows suite."}]},
+    {"id":"direct","statement":"Direct topology and handoff","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff","platform":"windows","proves":"Direct topology is inferred and handed off in the ordinary Windows suite."}]},
+    {"id":"publisher","statement":"Publisher topology and handoff","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handoff","platform":"windows","proves":"Publisher topology is inferred and handed off in the ordinary Windows suite."}]},
+    {"id":"warm-state","statement":"Warm state and operator retry","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"warm_target_is_guidance_only_until_restart_is_explicit","platform":"windows","proves":"Warm state remains effect-free until explicit operator retry."}]},
+    {"id":"ambiguity","statement":"Ambiguous choice","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"explicit_candidate_selects_one_ambiguous_stored_client","platform":"portable","proves":"A stored launch ambiguity requires an exact content-derived choice."}]},
+    {"id":"partial-evidence","statement":"Partial evidence","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"partial_protocol_attempt_reassesses_facts_but_never_claims_completion","platform":"portable","proves":"Partial evidence cannot claim completion."}]},
+    {"id":"trust-refusal","statement":"Trust refusal","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"tls_calibration_requires_current_same_case_routing_before_mutation","platform":"portable","proves":"Trust-bearing work refuses before mutation without exact reachability."}]},
+    {"id":"interruption","statement":"Interruption","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"interrupting_a_later_authorization_retains_interrupted_guidance","platform":"portable","proves":"Interruption retains exact durable continuation."}]},
+    {"id":"cleanup","statement":"Cleanup reconciliation","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap/tests/deep_capture_session.rs","function":"cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization","platform":"portable","proves":"Cleanup attempts every owned resource and preserves terminal evidence."}]},
+    {"id":"successful-handoff","statement":"Successful Deep Capture handoff","evidence_class":"controlled-automated","tests":[{"path":"crates/fragcap-cli/tests/cli_calibrate.rs","function":"missing_routing_runs_all_observed_protocols_before_handoff","platform":"portable","proves":"Successful controlled completion emits exact ordinary Deep Capture handoff."}]}
+  ]
+}
