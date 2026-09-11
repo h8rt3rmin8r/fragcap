@@ -2719,7 +2719,7 @@ pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
     Store::open(&path).map_err(|e| CliError::failure(format!("cannot open local store: {e}")))
 }
 
-fn validate_bundle_root(path: &Path) -> Result<(), CliError> {
+pub(crate) fn validate_bundle_root(path: &Path) -> Result<(), CliError> {
     if !path.exists() {
         return Ok(());
     }

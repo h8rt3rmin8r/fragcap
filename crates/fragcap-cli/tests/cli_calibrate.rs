@@ -1740,7 +1740,7 @@ fn declined_and_wrong_authorization_never_claim_completion() {
     );
     assert_eq!(code, 2, "events:\n{events}");
     assert!(events.contains("\"status\":\"invalid\""));
-    assert!(events.contains("\"reason\":\"delegated-session-error\""));
+    assert!(events.contains("\"reason\":\"delegated-session-refused\""));
     assert!(!events.contains("\"status\":\"completed\""));
     assert!(!invalid_bundle.exists());
 }
@@ -1940,7 +1940,7 @@ fn target_drift_during_a_later_plan_stops_before_later_effects() {
     assert_eq!(code, 2, "events:\n{events}");
     assert_eq!(authorization.calls, 2);
     assert!(events.contains("\"status\":\"drifted\""));
-    assert!(events.contains("\"reason\":\"delegated-session-error\""));
+    assert!(events.contains("\"reason\":\"delegated-session-refused\""));
     assert!(bundle.join("manifest.json").is_file());
     assert!(!dir
         .path()
@@ -1988,6 +1988,9 @@ fn a_later_bundle_collision_stops_before_authorization_or_overwrite() {
     assert_eq!(code, 2, "events:\n{events}");
     assert_eq!(authorization.calls, 1);
     assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert!(events.contains("\"status\":\"refused\""));
+    assert!(events.contains("\"reason\":\"bundle-destination-refused\""));
+    assert!(events.contains("\"next_command\":\"fragcap calibrate"));
     assert!(events.contains("is not empty"));
     assert_eq!(
         std::fs::read(collision.join("retained.txt")).unwrap(),

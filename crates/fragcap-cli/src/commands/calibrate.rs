@@ -62,6 +62,35 @@ struct ExactAttemptCase {
     target_version: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SequenceTargetAuthority {
+    row_id: Option<i64>,
+    stable_id: i64,
+    handle: String,
+    name: String,
+    anchor: Option<String>,
+    install_root: Option<String>,
+    launch_entries: Option<Value>,
+}
+
+impl SequenceTargetAuthority {
+    fn from_target(target: &TargetEntry) -> Self {
+        Self {
+            row_id: target.id,
+            stable_id: target.stable_id,
+            handle: target.handle.clone(),
+            name: target.name.clone(),
+            anchor: target.anchor.clone(),
+            install_root: target.install_root.clone(),
+            launch_entries: target.launch_entries.clone(),
+        }
+    }
+
+    fn matches(&self, target: &TargetEntry) -> bool {
+        self == &Self::from_target(target)
+    }
+}
+
 impl ExactAttemptCase {
     fn from_step(step: &deep_capture_api::CalibrationProposalStep) -> Self {
         Self {
@@ -1437,6 +1466,7 @@ pub fn run(
     if args.controlled_target {
         deep_capture::require_controlled_target(&target)?;
     }
+    let sequence_target_authority = SequenceTargetAuthority::from_target(&target);
     let snapshot = process_snapshot(args.controlled_target);
     let proposal = build_proposal(&store, &target, snapshot.clone(), &requested_protocols)?;
     if !proposal.limitations.is_empty() {
@@ -1556,6 +1586,30 @@ pub fn run(
         let fresh_store = deep_capture::open_local_store(args.local_db.as_deref())?;
         let fresh_target = deep_capture::resolve_target(&fresh_store, &resolver_args)?;
         let all_protocols = merge_protocols(&requested_protocols, &observed_protocols);
+        if !sequence_target_authority.matches(&fresh_target) {
+            emit_guidance(
+                emitter,
+                &target,
+                Guidance {
+                    topology: None,
+                    action: "refused",
+                    status: "refused",
+                    observed_launch_case: None,
+                    selected_launch_case: None,
+                    reason: Some("target-authority-drift".to_string()),
+                    images: Vec::new(),
+                    limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: Vec::new(),
+                    remaining_protocols: protocol_names(&all_protocols),
+                    next_command: None,
+                },
+            );
+            return Err(CliError::usage(
+                "the target authority changed during guided calibration; review a fresh sequence",
+            ));
+        }
         let selected = build_proposal(
             &fresh_store,
             &fresh_target,
@@ -1765,6 +1819,31 @@ pub fn run(
             step.phase,
             step.case.protocol,
         )?;
+        if let Some(bundle) = low_level.bundle.as_deref() {
+            if let Err(error) = deep_capture::validate_bundle_root(bundle) {
+                emit_attempt_guidance(
+                    emitter,
+                    &fresh_target,
+                    Guidance {
+                        topology: topology(&selected),
+                        action,
+                        status: "refused",
+                        observed_launch_case: None,
+                        selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                        reason: Some("bundle-destination-refused".to_string()),
+                        images: readiness_images(&selected),
+                        limitations: vec![error.message().to_string()],
+                        requested_protocols: protocol_names(&requested_protocols),
+                        observed_protocols: protocol_names(&observed_protocols),
+                        completed_protocols: protocol_names(&completed_protocols),
+                        remaining_protocols: protocol_names(&remaining_protocols),
+                        next_command,
+                    },
+                    progress,
+                );
+                return Err(error);
+            }
+        }
         emit_attempt_guidance(
             emitter,
             &fresh_target,
@@ -1789,16 +1868,24 @@ pub fn run(
         let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
             Ok(outcome) => outcome,
             Err(error) => {
+                let refused = error.exit() == Exit::USAGE;
                 emit_attempt_guidance(
                     emitter,
                     &fresh_target,
                     Guidance {
                         topology: topology(&selected),
                         action,
-                        status: "failed",
+                        status: if refused { "refused" } else { "failed" },
                         observed_launch_case: None,
                         selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
-                        reason: Some("delegated-session-error".to_string()),
+                        reason: Some(
+                            if refused {
+                                "delegated-session-refused"
+                            } else {
+                                "delegated-session-error"
+                            }
+                            .to_string(),
+                        ),
                         images: readiness_images(&selected),
                         limitations: Vec::new(),
                         requested_protocols: protocol_names(&requested_protocols),
@@ -1845,6 +1932,31 @@ pub fn run(
                 return Err(error);
             }
         };
+        if !sequence_target_authority.matches(&completed_target) {
+            emit_attempt_guidance(
+                emitter,
+                &target,
+                Guidance {
+                    topology: topology(&selected),
+                    action,
+                    status: "refused",
+                    observed_launch_case: None,
+                    selected_launch_case: Some(step.case.launch_case.as_str().to_string()),
+                    reason: Some("target-authority-drift".to_string()),
+                    images: readiness_images(&selected),
+                    limitations: Vec::new(),
+                    requested_protocols: protocol_names(&requested_protocols),
+                    observed_protocols: protocol_names(&observed_protocols),
+                    completed_protocols: protocol_names(&completed_protocols),
+                    remaining_protocols: protocol_names(&remaining_protocols),
+                    next_command: None,
+                },
+                progress,
+            );
+            return Err(CliError::usage(
+                "the target authority changed during guided calibration; review a fresh sequence",
+            ));
+        }
         let completed = match build_proposal(
             &completed_store,
             &completed_target,
@@ -3025,5 +3137,20 @@ mod tests {
         assert!(attempted.insert(key.clone()));
         assert!(!attempted.insert(key));
         assert_eq!(attempted.len(), 1);
+    }
+
+    #[test]
+    fn sequence_target_authority_detects_launch_and_install_drift() {
+        let target = steam_target(Some(resolved_client_launch("client.exe")));
+        let authority = SequenceTargetAuthority::from_target(&target);
+        assert!(authority.matches(&target));
+
+        let mut changed_launch = target.clone();
+        changed_launch.launch_entries = Some(resolved_client_launch("other.exe"));
+        assert!(!authority.matches(&changed_launch));
+
+        let mut changed_root = target.clone();
+        changed_root.install_root = Some("C:\\Other".to_string());
+        assert!(!authority.matches(&changed_root));
     }
 }
