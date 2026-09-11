@@ -729,6 +729,8 @@ pub enum GuidedCalibrationProtocolArg {
 pub enum GuidedCalibrationPauseArg {
     Login,
     Eula,
+    Update,
+    AntiCheat,
     Gameplay,
     Shutdown,
     Interrupted,

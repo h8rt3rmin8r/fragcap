@@ -23,8 +23,8 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4,
-    MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
+    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_1_TO_2, MIGRATE_2_TO_3,
+    MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
     MIGRATE_9_TO_10, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
@@ -203,6 +203,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 12i64)?;
             tx.commit()?;
             version = 12;
+        }
+
+        if version == 12 {
+            // 12 -> 13: preserve every workflow while extending the exact
+            // no-effect operator-action vocabulary (slice S147).
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_12_TO_13)?;
+            tx.pragma_update(None, "user_version", 13i64)?;
+            tx.commit()?;
+            version = 13;
         }
 
         if version != SCHEMA_VERSION {
@@ -1025,6 +1035,85 @@ impl Store {
         if !crate::is_client_executable(executable) {
             return Err(TargetsError::Model(
                 "authored client executable must name one suitable Windows image".to_string(),
+            ));
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = tx
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
+                 FROM targets WHERE stable_id = ?1",
+                params![expected.stable_id],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()?;
+        let Some(current) = current else {
+            return Ok(AuthorTargetClientOutcome::Missing);
+        };
+        if current != *expected {
+            return Ok(AuthorTargetClientOutcome::Changed);
+        }
+
+        let launch_entries = crate::resolved_client_launch(executable);
+        tx.execute(
+            "UPDATE targets SET launch_entries = ?2, fidelity = ?3 WHERE stable_id = ?1",
+            params![
+                expected.stable_id,
+                json_text(&launch_entries),
+                FidelityTier::Authored.as_str()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(AuthorTargetClientOutcome::Applied)
+    }
+
+    /// Replace one exact ambiguous non-Steam client declaration after the
+    /// operator selects the socket-holding executable from the stored set.
+    ///
+    /// The complete target row remains the optimistic authority. Only a set of
+    /// at least two Windows client candidates is eligible, and the selected
+    /// executable must occur exactly once. Publisher chains and Steam targets
+    /// are never collapsed through this operation.
+    pub fn select_target_client_if_unchanged(
+        &mut self,
+        expected: &TargetEntry,
+        executable: &str,
+    ) -> Result<AuthorTargetClientOutcome, TargetsError> {
+        if expected
+            .anchor
+            .as_deref()
+            .is_some_and(|anchor| anchor.starts_with("steam:"))
+        {
+            return Err(TargetsError::Model(
+                "stored client selection cannot rewrite a Steam target".to_string(),
+            ));
+        }
+        let candidates = crate::entry_windows_launch_entries(expected);
+        if candidates.len() < 2
+            || candidates
+                .iter()
+                .any(|entry| entry.role().is_some_and(|role| role != "client"))
+        {
+            return Err(TargetsError::Model(
+                "stored client selection requires at least two client-only Windows declarations"
+                    .to_string(),
+            ));
+        }
+        if !crate::is_client_executable(executable)
+            || candidates
+                .iter()
+                .filter(|entry| entry.executable() == executable)
+                .count()
+                != 1
+        {
+            return Err(TargetsError::Model(
+                "selected client must name exactly one current stored candidate".to_string(),
             ));
         }
 
@@ -2232,6 +2321,83 @@ mod tests {
     }
 
     #[test]
+    fn a_v12_workflow_survives_pause_vocabulary_expansion() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("s147_migration", None, FidelityTier::Authored);
+        store.insert_target(&entry).expect("insert target");
+        let target = store
+            .target_by_handle("s147_migration")
+            .expect("query")
+            .expect("target");
+        let workflow = store
+            .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+            .expect("create workflow");
+        let paused = CalibrationWorkflowCheckpoint {
+            requested_protocols: workflow.requested_protocols.clone(),
+            observed_protocols: Vec::new(),
+            completed_protocols: Vec::new(),
+            remaining_protocols: workflow.remaining_protocols.clone(),
+            attempted_case_keys: Vec::new(),
+            attempt_ordinal: 0,
+            attempt_phase: None,
+            attempt_protocol: None,
+            attempt_key: None,
+            state: CalibrationWorkflowState::Paused,
+            pause_reason: Some(crate::CalibrationPauseReason::Gameplay),
+        };
+        let CalibrationWorkflowUpdateOutcome::Applied(paused) = store
+            .update_calibration_workflow(workflow.id, workflow.revision, &paused, 101)
+            .expect("pause workflow")
+        else {
+            panic!("expected applied pause");
+        };
+        let conn = store.conn;
+        conn.execute_batch(
+            "ALTER TABLE calibration_workflows DROP COLUMN address_family;
+             ALTER TABLE calibration_workflows DROP COLUMN routing_strategy;
+             ALTER TABLE calibration_workflows DROP COLUMN selected_launch_case;",
+        )
+        .expect("restore v11 workflow layout");
+        conn.execute_batch(MIGRATE_11_TO_12)
+            .expect("recreate historical v12 column order");
+        conn.pragma_update(None, "user_version", 12i64)
+            .expect("stamp v12");
+
+        let mut store = Store::from_connection(conn).expect("migrate forward");
+        let migrated = store
+            .calibration_workflow(workflow.id)
+            .expect("read migrated workflow")
+            .expect("workflow survives");
+        assert_eq!(
+            migrated.pause_reason,
+            Some(crate::CalibrationPauseReason::Gameplay)
+        );
+        let anti_cheat = CalibrationWorkflowCheckpoint {
+            requested_protocols: paused.requested_protocols.clone(),
+            observed_protocols: paused.observed_protocols.clone(),
+            completed_protocols: paused.completed_protocols.clone(),
+            remaining_protocols: paused.remaining_protocols.clone(),
+            attempted_case_keys: paused.attempted_case_keys.clone(),
+            attempt_ordinal: paused.attempt_ordinal,
+            attempt_phase: paused.attempt_phase,
+            attempt_protocol: paused.attempt_protocol,
+            attempt_key: paused.attempt_key.clone(),
+            state: CalibrationWorkflowState::Paused,
+            pause_reason: Some(crate::CalibrationPauseReason::AntiCheat),
+        };
+        let CalibrationWorkflowUpdateOutcome::Applied(updated) = store
+            .update_calibration_workflow(migrated.id, migrated.revision, &anti_cheat, 102)
+            .expect("write extended pause reason")
+        else {
+            panic!("expected extended pause update");
+        };
+        assert_eq!(
+            updated.pause_reason,
+            Some(crate::CalibrationPauseReason::AntiCheat)
+        );
+    }
+
+    #[test]
     fn calibration_workflow_round_trips_and_revisions_conditionally() {
         let mut store = Store::open_in_memory().expect("store");
         let mut entry = sample_target("workflow_target", Some("steam:145"), FidelityTier::Authored);
@@ -2982,6 +3148,59 @@ mod tests {
         assert!(error
             .to_string()
             .contains("launch declaration is already present"));
+    }
+
+    #[test]
+    fn selected_stored_client_rewrites_only_exact_ambiguous_authority() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut expected = sample_target("ambiguous_client", None, FidelityTier::Observed);
+        expected.launch_entries = Some(serde_json::json!([
+            {"executable":"first.exe","role":"client"},
+            {"executable":"second.exe","role":"client"}
+        ]));
+        let mut steam = expected.clone();
+        steam.anchor = Some("steam:85".to_string());
+        assert!(store
+            .select_target_client_if_unchanged(&steam, "second.exe")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot rewrite a Steam target"));
+        let mut publisher = expected.clone();
+        publisher.launch_entries = Some(serde_json::json!([
+            {"executable":"launcher.exe","role":"launcher"},
+            {"executable":"second.exe","role":"client"}
+        ]));
+        assert!(store
+            .select_target_client_if_unchanged(&publisher, "second.exe")
+            .unwrap_err()
+            .to_string()
+            .contains("client-only Windows declarations"));
+        store.insert_target(&expected).unwrap();
+        let expected = store
+            .target_by_stable_id(expected.stable_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .select_target_client_if_unchanged(&expected, "second.exe")
+                .unwrap(),
+            AuthorTargetClientOutcome::Applied
+        );
+        let selected = store
+            .target_by_stable_id(expected.stable_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            selected.launch_entries,
+            Some(crate::resolved_client_launch("second.exe"))
+        );
+        assert_eq!(selected.fidelity, FidelityTier::Authored);
+        assert_eq!(
+            store
+                .select_target_client_if_unchanged(&expected, "first.exe")
+                .unwrap(),
+            AuthorTargetClientOutcome::Changed
+        );
     }
 
     #[test]

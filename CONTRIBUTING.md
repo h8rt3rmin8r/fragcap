@@ -100,11 +100,13 @@ Three tiers:
 | --- | --- | --- |
 | Unit | Individual components in isolation | yes |
 | Pipeline integration | End to end over fixtures, no driver, no game | yes |
-| Live smoke | Real capture against a real title | no, manual |
+| Live compatibility | Optional operator-owned verification of an already published release against a real title | no, manual |
 
 Test fixtures under `fixtures/` are the one place capture files are committed.
 They are reviewed before they land and MUST NOT contain account identifiers,
 session tokens, or addresses attributable to a real operator.
+
+Implementation acceptance never requires an agent to launch a real game, mutate the real trust store, or run sensitive live capture. Guided calibration uses a checked controlled-evidence registry in ordinary CI. A real-game run is optional compatibility evidence owned by the operator, is permitted only against already published product bytes, and does not block implementation work. Retain its raw evidence privately and publish only a scrubbed summary.
 
 ## Documentation and the glossary
 

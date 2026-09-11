@@ -163,6 +163,9 @@ const REGISTRATION_PLAN_PREFIX: &str = "target-registration-v1:";
 const STEAM_CLIENT_PLAN_SCHEMA: &str = "fragcap.steam-client-setup-plan.v1";
 const STEAM_CLIENT_OPERATION: &str = "author-target-client-if-unchanged-v1";
 const STEAM_CLIENT_PLAN_PREFIX: &str = "steam-client-setup-v1:";
+const STORED_CLIENT_PLAN_SCHEMA: &str = "fragcap.stored-client-selection-plan.v1";
+const STORED_CLIENT_OPERATION: &str = "select-stored-client-if-unchanged-v1";
+const STORED_CLIENT_PLAN_PREFIX: &str = "stored-client-selection-v1:";
 
 #[derive(Clone, Debug)]
 struct RegistrationPlan {
@@ -185,6 +188,72 @@ struct SteamClientPlan {
     candidate: CandidateTarget,
     discovery_account: DiscoveryAccount,
     discovery_warning_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct StoredClientPlan {
+    id: String,
+    canonical: Value,
+    canonical_json: String,
+    target: TargetEntry,
+    executable: String,
+}
+
+impl StoredClientPlan {
+    fn new(target: TargetEntry, executable: String, local_store: &Path) -> Self {
+        let canonical = json!({
+            "local_store": crate::commands::target_resolve::resolve_store_identity(local_store).to_string_lossy(),
+            "no_effects": [
+                "no-process-control",
+                "no-process-launch",
+                "no-proxy-or-routing",
+                "no-session-authorization",
+                "no-system-trust-change",
+            ],
+            "operation": STORED_CLIENT_OPERATION,
+            "proposed_executable": executable,
+            "resulting_launch_entries": fragcap::targets::resolved_client_launch(&executable),
+            "schema": STORED_CLIENT_PLAN_SCHEMA,
+            "target": target_plan_value(&target),
+        });
+        let canonical_json = serde_json::to_string(&canonical)
+            .expect("the stored client plan contains only serializable values");
+        let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
+        Self {
+            id: format!("{STORED_CLIENT_PLAN_PREFIX}{digest}"),
+            canonical,
+            canonical_json,
+            target,
+            executable,
+        }
+    }
+
+    fn emit(&self, emitter: &mut Emitter) -> Result<(), CliError> {
+        emitter
+            .event_checked(&Event::CalibrationStoredClientPlan {
+                plan_id: self.id.clone(),
+                canonical_json: self.canonical_json.clone(),
+                target_id: self.target.stable_id,
+                executable: self.executable.clone(),
+            })
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the stored client selection plan: {error}"
+                ))
+            })?;
+        let rendered = serde_json::to_string_pretty(&self.canonical)
+            .expect("the stored client plan contains only serializable values");
+        emitter
+            .required_human_checked(&format!(
+                "Stored client selection plan\n  plan id: {}\n{}\n",
+                self.id, rendered
+            ))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the stored client selection plan: {error}"
+                ))
+            })
+    }
 }
 
 impl SteamClientPlan {
@@ -415,7 +484,7 @@ impl CandidateSelection {
     fn require_consumed(&self) -> Result<(), CliError> {
         if self.requested.is_some() && !self.consumed {
             return Err(CliError::usage(
-                "the supplied calibration candidate was not consumed by a current ambiguous target or Steam client choice",
+                "the supplied calibration candidate was not consumed by a current ambiguous target, Steam client, or stored client choice",
             ));
         }
         Ok(())
@@ -1580,6 +1649,408 @@ fn prepare_steam_client(
     Ok(TargetFrontDoor::Ready(Box::new(updated)))
 }
 
+fn stored_client_candidates(target: &TargetEntry) -> Vec<CandidateTarget> {
+    if target
+        .anchor
+        .as_deref()
+        .is_some_and(|anchor| anchor.starts_with("steam:"))
+    {
+        return Vec::new();
+    }
+    let launches = fragcap::targets::entry_windows_launch_entries(target);
+    if launches.len() < 2
+        || launches
+            .iter()
+            .any(|entry| entry.role().is_some_and(|role| role != "client"))
+    {
+        return Vec::new();
+    }
+    launches
+        .into_iter()
+        .map(|entry| CandidateTarget {
+            identity: CandidateIdentity::Path(entry.executable().to_string()),
+            display_name: target.name.clone(),
+            fidelity: target.fidelity,
+            classification: target.classification,
+            evidence: Vec::new(),
+            detection_scan: target.detection_scan,
+            source_name: "stored-launch-declaration".to_string(),
+            install_root: target.install_root.clone(),
+            folder_name: target.folder_name.clone(),
+            executable_hint: Some(entry.executable().to_string()),
+        })
+        .collect()
+}
+
+fn stored_client_discovery(target: &TargetEntry) -> Discovery {
+    let candidates = stored_client_candidates(target);
+    let mut account = DiscoveryAccount::default();
+    for _ in &candidates {
+        account.produce();
+    }
+    Discovery {
+        candidates,
+        account,
+        warnings: Vec::new(),
+    }
+}
+
+fn prepare_stored_client(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    local_store_path: &Path,
+    store: &mut Store,
+    target: TargetEntry,
+    candidate_selection: &mut CandidateSelection,
+) -> Result<TargetFrontDoor, CliError> {
+    let discovery = stored_client_discovery(&target);
+    if discovery.candidates.is_empty() {
+        return Ok(TargetFrontDoor::Ready(Box::new(target)));
+    }
+    let selected = choose_ambiguous_candidate(
+        "stored-client",
+        &target.handle,
+        Some(target.stable_id),
+        discovery.candidates.clone(),
+        &discovery,
+        candidate_selection,
+        emitter,
+    )?;
+    let executable = selected
+        .executable_hint
+        .clone()
+        .ok_or_else(|| CliError::failure("stored client choice lost its executable"))?;
+    let plan = StoredClientPlan::new(target.clone(), executable, local_store_path);
+    if emitter.is_json() && !args.authorize_stdin {
+        return Err(CliError::usage(
+            "JSON stored client selection requires --authorize-stdin and the exact emitted plan identifier",
+        ));
+    }
+    if !args.authorize_stdin && !authorization.is_terminal() {
+        return Err(CliError::usage(
+            "stored client selection requires an interactive terminal or --authorize-stdin",
+        ));
+    }
+    plan.emit(emitter)?;
+    let confirmation = match confirm_stored_client(args, authorization, emitter, &plan) {
+        Ok(confirmation) => confirmation,
+        Err(error) => {
+            let _ = stored_client_outcome(
+                emitter,
+                &plan,
+                "failed",
+                "stored-client-confirmation-failed",
+                false,
+            );
+            return Err(error);
+        }
+    };
+    match confirmation {
+        RegistrationConfirmation::Confirmed => {}
+        RegistrationConfirmation::Declined => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "declined",
+                "operator-declined-stored-client-assertion",
+                false,
+            )?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Closed => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "closed",
+                "stored-client-input-closed",
+                false,
+            )?;
+            return Ok(TargetFrontDoor::Declined);
+        }
+        RegistrationConfirmation::Invalid => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "invalid",
+                "exact-stored-client-plan-id-not-supplied",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "stored client confirmation did not match the exact current plan identifier; no target was changed",
+            ));
+        }
+        RegistrationConfirmation::Interrupted => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "interrupted",
+                "interrupt-before-stored-client-update",
+                false,
+            )?;
+            return Err(CliError::failure(
+                "stored client selection was interrupted; no target was changed",
+            ));
+        }
+    }
+
+    let current = match store.target_by_stable_id(plan.target.stable_id) {
+        Ok(Some(target)) => target,
+        Ok(None) => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "drifted",
+                "target-missing-after-confirmation",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the target disappeared after stored client confirmation; review a fresh plan",
+            ));
+        }
+        Err(error) => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "failed",
+                "target-read-failed-after-confirmation",
+                false,
+            )?;
+            return Err(CliError::failure(error.to_string()));
+        }
+    };
+    let requested = fragcap::targets::calibration_candidate_id(&selected);
+    let current_candidates = stored_client_candidates(&current)
+        .into_iter()
+        .filter(|candidate| fragcap::targets::calibration_candidate_id(candidate) == requested)
+        .collect::<Vec<_>>();
+    let [current_candidate] = current_candidates.as_slice() else {
+        stored_client_outcome(
+            emitter,
+            &plan,
+            "drifted",
+            "stored-client-candidate-not-reproduced",
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the stored client choices changed after confirmation; review a fresh plan",
+        ));
+    };
+    let current_executable = current_candidate
+        .executable_hint
+        .clone()
+        .expect("stored client candidates always name an executable");
+    let current_plan = StoredClientPlan::new(current, current_executable, local_store_path);
+    if !constant_time_equal(
+        plan.canonical_json.as_bytes(),
+        current_plan.canonical_json.as_bytes(),
+    ) {
+        stored_client_outcome(
+            emitter,
+            &plan,
+            "drifted",
+            "stored-client-plan-changed-after-confirmation",
+            false,
+        )?;
+        return Err(CliError::usage(
+            "the stored client authority changed after confirmation; review a fresh plan",
+        ));
+    }
+    let persistence = stored_client_persistence_result(
+        emitter,
+        &plan,
+        store.select_target_client_if_unchanged(&plan.target, &plan.executable),
+    )?;
+    match persistence {
+        AuthorTargetClientOutcome::Applied => {}
+        AuthorTargetClientOutcome::Changed => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "changed",
+                "target-changed-before-conditional-update",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the target changed before stored client selection; review a fresh plan",
+            ));
+        }
+        AuthorTargetClientOutcome::Missing => {
+            stored_client_outcome(
+                emitter,
+                &plan,
+                "changed",
+                "target-missing-before-conditional-update",
+                false,
+            )?;
+            return Err(CliError::usage(
+                "the target disappeared before stored client selection; review a fresh plan",
+            ));
+        }
+    }
+    let updated = selected_stored_client_result(
+        emitter,
+        &plan,
+        store.target_by_stable_id(plan.target.stable_id),
+    )?;
+    let mut expected = plan.target.clone();
+    expected.launch_entries = Some(fragcap::targets::resolved_client_launch(&plan.executable));
+    expected.fidelity = fragcap::profile::FidelityTier::Authored;
+    if updated != expected {
+        stored_client_outcome(
+            emitter,
+            &plan,
+            "failed",
+            "selected-target-verification-failed",
+            false,
+        )?;
+        return Err(CliError::failure(
+            "the selected stored client did not match the confirmed result",
+        ));
+    }
+    stored_client_outcome(emitter, &plan, "applied", "stored-client-persisted", true)?;
+    Ok(TargetFrontDoor::Ready(Box::new(updated)))
+}
+
+fn confirm_stored_client(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    plan: &StoredClientPlan,
+) -> Result<RegistrationConfirmation, CliError> {
+    if !args.authorize_stdin {
+        emitter
+            .required_human_checked(&format!(
+                "Does {} hold the target's network sockets? [y/N] ",
+                plan.executable
+            ))
+            .map_err(|error| {
+                CliError::usage(format!("could not write the stored client prompt: {error}"))
+            })?;
+    }
+    emitter.flush().map_err(|error| {
+        CliError::usage(format!(
+            "could not flush the stored client plan before input: {error}"
+        ))
+    })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    let response = authorization
+        .read_response(&plan.id, args.authorize_stdin)
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not read stored client confirmation: {error}"
+            ))
+        })?;
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        return Ok(RegistrationConfirmation::Interrupted);
+    }
+    if args.authorize_stdin {
+        if response.is_empty() {
+            return Ok(RegistrationConfirmation::Closed);
+        }
+        return Ok(if exact_plan_response(&response, &plan.id) {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Invalid
+        });
+    }
+    let Some(line) = response.strip_suffix(b"\n") else {
+        return Ok(RegistrationConfirmation::Closed);
+    };
+    let Ok(answer) = std::str::from_utf8(line) else {
+        return Ok(RegistrationConfirmation::Invalid);
+    };
+    Ok(
+        if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
+            RegistrationConfirmation::Confirmed
+        } else {
+            RegistrationConfirmation::Declined
+        },
+    )
+}
+
+fn stored_client_outcome(
+    emitter: &mut Emitter,
+    plan: &StoredClientPlan,
+    status: &str,
+    reason: &str,
+    continued: bool,
+) -> Result<(), CliError> {
+    emitter
+        .event_checked(&Event::CalibrationStoredClient {
+            plan_id: plan.id.clone(),
+            status: status.to_string(),
+            reason: reason.to_string(),
+            target_id: plan.target.stable_id,
+            continued,
+        })
+        .and_then(|()| {
+            emitter.required_human_checked(&format!(
+                "Stored client selection: {status} ({reason}); target id: {}; calibration continued: {continued}\n",
+                plan.target.stable_id,
+            ))
+        })
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not write the stored client outcome: {error}"
+            ))
+        })
+}
+
+fn stored_client_persistence_result<E: std::fmt::Display>(
+    emitter: &mut Emitter,
+    plan: &StoredClientPlan,
+    result: Result<AuthorTargetClientOutcome, E>,
+) -> Result<AuthorTargetClientOutcome, CliError> {
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            stored_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "stored-client-persistence-failed",
+                false,
+            )?;
+            Err(CliError::failure(error.to_string()))
+        }
+    }
+}
+
+fn selected_stored_client_result<E: std::fmt::Display>(
+    emitter: &mut Emitter,
+    plan: &StoredClientPlan,
+    result: Result<Option<TargetEntry>, E>,
+) -> Result<TargetEntry, CliError> {
+    match result {
+        Ok(Some(target)) => Ok(target),
+        Ok(None) => {
+            stored_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "selected-target-missing-after-update",
+                false,
+            )?;
+            Err(CliError::failure(
+                "the selected stored target could not be re-resolved",
+            ))
+        }
+        Err(error) => {
+            stored_client_outcome(
+                emitter,
+                plan,
+                "failed",
+                "selected-target-read-failed",
+                false,
+            )?;
+            Err(CliError::failure(error.to_string()))
+        }
+    }
+}
+
 fn discovery_with_candidate(discovery: &Discovery, candidate: CandidateTarget) -> Discovery {
     Discovery {
         candidates: vec![candidate],
@@ -1828,6 +2299,18 @@ pub fn run(
             TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
         };
         let target = match prepare_steam_client(
+            args,
+            authorization,
+            emitter,
+            &local_store_path,
+            &mut store,
+            target,
+            &mut candidate_selection,
+        )? {
+            TargetFrontDoor::Ready(target) => *target,
+            TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
+        };
+        let target = match prepare_stored_client(
             args,
             authorization,
             emitter,
@@ -2926,6 +3409,8 @@ fn pause_reason(value: GuidedCalibrationPauseArg) -> CalibrationPauseReason {
     match value {
         GuidedCalibrationPauseArg::Login => CalibrationPauseReason::Login,
         GuidedCalibrationPauseArg::Eula => CalibrationPauseReason::Eula,
+        GuidedCalibrationPauseArg::Update => CalibrationPauseReason::Update,
+        GuidedCalibrationPauseArg::AntiCheat => CalibrationPauseReason::AntiCheat,
         GuidedCalibrationPauseArg::Gameplay => CalibrationPauseReason::Gameplay,
         GuidedCalibrationPauseArg::Shutdown => CalibrationPauseReason::Shutdown,
         GuidedCalibrationPauseArg::Interrupted => CalibrationPauseReason::Interrupted,

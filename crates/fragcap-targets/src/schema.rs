@@ -77,9 +77,12 @@
 //! Version 12 (slice S146) adds immutable launch-case assertion, routing-strategy,
 //! and address-family intent to each calibration workflow. Existing rows gain the
 //! exact prior defaults: inferred launch case, child-environment routing, and IPv4.
+//!
+//! Version 13 (slice S147) extends the closed durable pause vocabulary with update
+//! and anti-cheat operator actions. The table rebuild preserves every row exactly.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -310,7 +313,7 @@ CREATE TABLE calibration_workflows (
     state               TEXT NOT NULL CHECK (state IN
                             ('ready', 'in-flight', 'paused', 'completed', 'refused')),
     pause_reason        TEXT CHECK (pause_reason IS NULL OR pause_reason IN
-                            ('login', 'eula', 'gameplay', 'shutdown', 'interrupted',
+                            ('login', 'eula', 'update', 'anti-cheat', 'gameplay', 'shutdown', 'interrupted',
                              'authorization', 'failure')),
     revision            INTEGER NOT NULL CHECK (revision > 0),
     created_at          INTEGER NOT NULL CHECK (created_at >= 0),
@@ -326,6 +329,99 @@ CREATE TABLE calibration_workflows (
            (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
            (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
 );
+";
+
+/// Extend the durable operator-action vocabulary without rewriting any value.
+pub const MIGRATE_12_TO_13: &str = "\
+ALTER TABLE calibration_workflows RENAME TO calibration_workflows_v12;
+CREATE TABLE calibration_workflows (
+    id                  INTEGER PRIMARY KEY,
+    record_version      INTEGER NOT NULL CHECK (record_version = 1),
+    target_id           INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    target_stable_id    INTEGER NOT NULL CHECK (target_stable_id >= 0),
+    target_handle       TEXT NOT NULL CHECK (length(target_handle) > 0),
+    target_name         TEXT NOT NULL CHECK (length(target_name) > 0),
+    target_classification TEXT NOT NULL CHECK (target_classification IN
+                            ('game', 'launcher', 'tool', 'mod', 'emulator', 'unknown')),
+    target_classification_source TEXT NOT NULL CHECK (target_classification_source IN
+                            ('catalog', 'engine-signature', 'platform', 'user', 'unset')),
+    target_fidelity     TEXT NOT NULL CHECK (target_fidelity IN
+                            ('authored', 'verified', 'heuristic-unverified', 'observed')),
+    target_provenance   TEXT,
+    target_anchor       TEXT,
+    target_install_root TEXT,
+    target_launch_entries TEXT,
+    target_evidence     TEXT,
+    target_detection_scan TEXT CHECK (target_detection_scan IS NULL OR
+                            target_detection_scan IN ('complete', 'incomplete')),
+    target_folder_name  TEXT,
+    target_executable_hint TEXT,
+    selected_launch_case TEXT CHECK (selected_launch_case IS NULL OR selected_launch_case IN
+                            ('steam-protocol-warm', 'steam-protocol-cold',
+                             'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
+                             'publisher-launcher-warm',
+                             'publisher-launcher-game-start-clean-warm',
+                             'publisher-launcher-cold')),
+    routing_strategy    TEXT NOT NULL CHECK (routing_strategy IN
+                            ('child-environment', 'command-arguments',
+                             'target-configuration', 'http-proxy', 'socks',
+                             'protocol-specific')),
+    address_family      TEXT NOT NULL CHECK (address_family IN ('ipv4', 'ipv6')),
+    requested_protocols TEXT NOT NULL,
+    observed_protocols  TEXT NOT NULL,
+    completed_protocols TEXT NOT NULL,
+    remaining_protocols TEXT NOT NULL,
+    attempted_case_keys TEXT NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL CHECK (attempt_ordinal BETWEEN 0 AND 14),
+    attempt_phase       TEXT CHECK (attempt_phase IS NULL OR attempt_phase IN
+                            ('reachability', 'tls')),
+    attempt_protocol    TEXT CHECK (attempt_protocol IS NULL OR attempt_protocol IN
+                            ('routing', 'http1', 'https', 'http2', 'websocket', 'sse',
+                             'grpc', 'generic-tcp', 'non-http-tls', 'socks5-tcp',
+                             'socks5-udp', 'generic-udp', 'quic', 'http3')),
+    attempt_key         TEXT,
+    state               TEXT NOT NULL CHECK (state IN
+                            ('ready', 'in-flight', 'paused', 'completed', 'refused')),
+    pause_reason        TEXT CHECK (pause_reason IS NULL OR pause_reason IN
+                            ('login', 'eula', 'update', 'anti-cheat', 'gameplay', 'shutdown',
+                             'interrupted', 'authorization', 'failure')),
+    revision            INTEGER NOT NULL CHECK (revision > 0),
+    created_at          INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at          INTEGER NOT NULL CHECK (updated_at >= created_at),
+    CHECK ((state = 'in-flight') =
+           (attempt_phase IS NOT NULL AND attempt_protocol IS NOT NULL AND
+            attempt_key IS NOT NULL)),
+    CHECK ((attempt_phase IS NULL) = (attempt_protocol IS NULL) AND
+           (attempt_phase IS NULL) = (attempt_key IS NULL)),
+    CHECK ((state = 'paused') = (pause_reason IS NOT NULL)),
+    CHECK (state != 'in-flight' OR attempt_ordinal > 0),
+    CHECK (attempt_phase IS NULL OR
+           (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
+           (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
+);
+INSERT INTO calibration_workflows (
+    id, record_version, target_id, target_stable_id, target_handle, target_name,
+    target_classification, target_classification_source, target_fidelity,
+    target_provenance, target_anchor, target_install_root, target_launch_entries,
+    target_evidence, target_detection_scan, target_folder_name,
+    target_executable_hint, selected_launch_case, routing_strategy, address_family,
+    requested_protocols, observed_protocols, completed_protocols,
+    remaining_protocols, attempted_case_keys, attempt_ordinal, attempt_phase,
+    attempt_protocol, attempt_key, state, pause_reason, revision, created_at,
+    updated_at
+)
+SELECT
+    id, record_version, target_id, target_stable_id, target_handle, target_name,
+    target_classification, target_classification_source, target_fidelity,
+    target_provenance, target_anchor, target_install_root, target_launch_entries,
+    target_evidence, target_detection_scan, target_folder_name,
+    target_executable_hint, selected_launch_case, routing_strategy, address_family,
+    requested_protocols, observed_protocols, completed_protocols,
+    remaining_protocols, attempted_case_keys, attempt_ordinal, attempt_phase,
+    attempt_protocol, attempt_key, state, pause_reason, revision, created_at,
+    updated_at
+FROM calibration_workflows_v12;
+DROP TABLE calibration_workflows_v12;
 ";
 
 /// Add immutable exact-case intent to existing guided-calibration workflows.

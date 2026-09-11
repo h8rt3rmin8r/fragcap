@@ -62,7 +62,7 @@ what each needs in order to run.
 | 0, unit | nothing | yes |
 | 1, pipeline | nothing | yes |
 | 2, platform | privilege and a capture driver | yes, on a Windows runner |
-| 3, live | privilege, a driver, and a game | no, manual |
+| 3, live compatibility | an already published release, privilege, a driver, and a game | no, optional operator-owned manual work |
 
 {: .matters }
 > Tier 1 is the one the architecture was shaped to make possible. Because a
@@ -70,6 +70,8 @@ what each needs in order to run.
 > attributor](process-and-attribution.md#scripted-attributor) substitute for the two platform-dependent
 > seams, the whole pipeline is testable on any machine with no privilege. That
 > is the return on keeping capture and attribution apart.
+
+Tier 3 is compatibility evidence for exact already published product bytes. It is never an automated implementation gate, an agent does not run it, and its absence does not imply compatibility or block controlled implementation acceptance.
 
 **See also:** [Fixture corpus](capture-and-networking.md#fixture-corpus),
 [Replay source](process-and-attribution.md#replay-source)
