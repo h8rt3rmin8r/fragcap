@@ -51,6 +51,7 @@ mod output;
 mod paths;
 #[cfg(windows)]
 mod windows_cert;
+mod workflow_help;
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -291,8 +292,26 @@ fn dispatch(
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::DeepCapture(args) => commands::deep_capture::run(&args, authorization, emitter),
-        Command::Calibrate(args) => commands::calibrate::run(&args, authorization, emitter),
-        Command::Bundle(args) => commands::bundle::run(&args, out),
+        Command::Calibrate(args) => {
+            let selector = args
+                .selector
+                .as_deref()
+                .or(args.target.as_deref())
+                .map(str::to_string)
+                .or_else(|| args.id.map(|id| id.to_string()));
+            commands::calibrate::run(&args, authorization, emitter).map_err(|error| {
+                if json {
+                    error
+                } else {
+                    workflow_help::actionable_error(
+                        error,
+                        selector.as_deref(),
+                        Some(workflow_help::FirstRunRefusal::Calibration),
+                    )
+                }
+            })
+        }
+        Command::Bundle(args) => commands::bundle::run(&args, json, out),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),
         Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),

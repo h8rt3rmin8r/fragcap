@@ -793,6 +793,10 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
         err.contains("requires current compatibility facts"),
         "the refusal names missing facts rather than backend state: {err}"
     );
+    assert!(
+        err.contains("Next command:  fragcap calibrate"),
+        "the compatibility refusal provides the exact guided next step: {err}"
+    );
 }
 
 #[test]

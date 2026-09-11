@@ -38,6 +38,7 @@ use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow,
     version,
     about,
     long_about = None,
+    after_long_help = crate::workflow_help::ROOT_LONG_HELP,
     // The `Commands:` block below is a literal, not clap-rendered rows, so
     // `wrap_help` does not reach it and it does not wrap at any width. Its lines
     // are hand-budgeted to 76 columns; keep a new entry inside that or the root
@@ -70,7 +71,9 @@ Commands:
     fresh-start   Preview or remove canonical fragcap user data
 
 Options:
-{options}"
+{options}
+
+{after-help}"
 )]
 pub struct Cli {
     // `display_order = 1000` on all three global flags below is load-bearing,
@@ -140,12 +143,14 @@ pub enum Command {
     /// Deep Capture is explicit inspection for known-compatible targets. It
     /// writes a session bundle containing packet truth, application records,
     /// proxy and process sidecars, compatibility facts, and cleanup status.
+    #[command(after_long_help = crate::workflow_help::DEEP_CAPTURE_LONG_HELP)]
     DeepCapture(Box<DeepCaptureArgs>),
     /// Guide a target through bounded Deep Capture calibration.
     ///
     /// Runs each useful reachability or protocol case under a fresh plan and
     /// separate confirmation. Warm targets receive effect-free guidance unless
     /// `--restart-warm` is selected explicitly.
+    #[command(after_long_help = crate::workflow_help::CALIBRATE_LONG_HELP)]
     Calibrate(Box<CalibrateArgs>),
     /// Manage completed Deep Capture bundle evidence.
     Bundle(BundleArgs),
@@ -165,6 +170,7 @@ pub enum Command {
     ///   fragcap targets add --steam 306130
     ///
     ///   fragcap capture 1
+    #[command(after_long_help = crate::workflow_help::TARGETS_LONG_HELP)]
     Targets(TargetsArgs),
     /// Detect the technologies present in a game's install directory (engine,
     /// anti-cheat, and DRM), from a signature table.
@@ -172,6 +178,7 @@ pub enum Command {
     /// Enumerate installed titles from a Steam installation.
     Steam(SteamArgs),
     /// Report environment readiness.
+    #[command(after_long_help = crate::workflow_help::DOCTOR_LONG_HELP)]
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
     /// source.
@@ -440,67 +447,151 @@ pub struct DeepCaptureArgs {
     ///
     /// A bare integer here is always a row index over the current `fragcap
     /// targets` listing, never a platform app id.
-    #[arg(value_name = "SELECTOR")]
+    #[arg(value_name = "SELECTOR", help_heading = "Required inputs")]
     pub selector: Option<String>,
 
     /// A stored target: an exact handle, a case-insensitive name, or a row number.
     ///
     /// The explicit-flag form of the positional selector.
-    #[arg(long)]
+    #[arg(long, help_heading = "Required inputs")]
     pub target: Option<String>,
 
     /// Select a stored target by its durable stable identifier.
-    #[arg(long)]
+    #[arg(long, help_heading = "Required inputs")]
     pub id: Option<i64>,
-
-    /// The shipped catalog store consulted while resolving target context.
-    #[arg(long)]
-    pub catalog_db: Option<PathBuf>,
-
-    /// The local store holding registered targets and Deep Capture facts.
-    #[arg(long)]
-    pub local_db: Option<PathBuf>,
 
     /// Start the target under scoped proxy configuration.
     ///
     /// Supports cold Steam protocol and cold direct-executable launches when
     /// current same-case compatibility evidence reaches the final client.
-    #[arg(long)]
+    #[arg(long, help_heading = "Common options")]
     pub launch: bool,
+
+    /// The capture duration bound, from arm.
+    #[arg(short = 'd', long, value_parser = parse_duration, help_heading = "Common options")]
+    pub duration: Option<Duration>,
+
+    /// How long to wait for the target before giving up.
+    #[arg(long, value_parser = parse_duration, help_heading = "Common options")]
+    pub wait: Option<Duration>,
+
+    /// Stop after this many captured packets.
+    #[arg(long, help_heading = "Common options")]
+    pub max_packets: Option<u64>,
+
+    /// Stop after this many captured bytes.
+    #[arg(long, value_parser = parse_size, help_heading = "Common options")]
+    pub max_bytes: Option<u64>,
+
+    /// Write metadata only, no packet payloads.
+    #[arg(long, help_heading = "Common options")]
+    pub no_payload: bool,
+
+    /// Run one explicit compatibility calibration phase.
+    #[arg(
+        long,
+        value_enum,
+        requires = "launch_case",
+        requires = "calibration_protocol",
+        help_heading = "Advanced compatibility"
+    )]
+    pub calibrate: Option<DeepCaptureCalibrationArg>,
+
+    /// Exact routing or protocol case whose evidence may be appended.
+    #[arg(
+        long,
+        value_enum,
+        requires = "calibrate",
+        help_heading = "Advanced compatibility"
+    )]
+    pub calibration_protocol: Option<DeepCaptureCalibrationProtocolArg>,
+
+    /// Declare the launch case whose compatibility is being measured.
+    #[arg(
+        long,
+        value_enum,
+        requires = "calibrate",
+        help_heading = "Advanced compatibility"
+    )]
+    pub launch_case: Option<DeepCaptureLaunchCaseArg>,
+
+    /// A capture interface, repeatable.
+    #[arg(short = 'i', long, help_heading = "Networking")]
+    pub interface: Vec<String>,
+
+    /// Loopback address family for the scoped native proxy listener.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = DeepCaptureProxyFamilyArg::Ipv4,
+        help_heading = "Networking"
+    )]
+    pub proxy_family: DeepCaptureProxyFamilyArg,
+
+    /// Explicit target destinations that may bypass the session proxy.
+    ///
+    /// Repeat the option or separate rules with commas. Supports DNS domains,
+    /// IP literals, CIDRs, and optional authority ports. Bare and leading-dot
+    /// DNS inputs both include descendants. The complete-bypass wildcard is refused.
+    #[arg(long, value_name = "RULE", help_heading = "Networking")]
+    pub proxy_bypass: Vec<String>,
+
+    /// Write HAR when HTTP semantics are observable.
+    #[arg(long, help_heading = "Sensitive outputs")]
+    pub har: bool,
+
+    /// Write a proxy-owned analyzer key log.
+    #[arg(long, help_heading = "Sensitive outputs")]
+    pub key_log: bool,
+
+    /// A certificate chain to present to an upstream that requires mutual TLS.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "client_private_key",
+        help_heading = "Sensitive outputs"
+    )]
+    pub client_certificate: Option<PathBuf>,
+
+    /// The operator-owned private key matching `--client-certificate`.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "client_certificate",
+        help_heading = "Sensitive outputs"
+    )]
+    pub client_private_key: Option<PathBuf>,
+
+    /// The shipped catalog store consulted while resolving target context.
+    #[arg(long, help_heading = "Custom storage")]
+    pub catalog_db: Option<PathBuf>,
+
+    /// The local store holding registered targets and Deep Capture facts.
+    #[arg(long, help_heading = "Custom storage")]
+    pub local_db: Option<PathBuf>,
 
     /// The session bundle directory.
     ///
     /// Defaults to a new directory under fragcap's Deep Capture session storage.
-    #[arg(long)]
+    #[arg(long, help_heading = "Custom storage")]
     pub bundle: Option<PathBuf>,
 
-    /// The capture duration bound, from arm.
-    #[arg(short = 'd', long, value_parser = parse_duration)]
-    pub duration: Option<Duration>,
-
-    /// How long to wait for the target before giving up.
-    #[arg(long, value_parser = parse_duration)]
-    pub wait: Option<Duration>,
-
-    /// Stop after this many captured packets.
-    #[arg(long)]
-    pub max_packets: Option<u64>,
-
-    /// Stop after this many captured bytes.
-    #[arg(long, value_parser = parse_size)]
-    pub max_bytes: Option<u64>,
-
-    /// A capture interface, repeatable.
-    #[arg(short = 'i', long)]
-    pub interface: Vec<String>,
-
-    /// Write metadata only, no packet payloads.
-    #[arg(long)]
-    pub no_payload: bool,
-
     /// Read the exact emitted authorization plan identifier from standard input.
-    #[arg(long, conflicts_with_all = ["legacy_trust_ca", "legacy_yes"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["legacy_trust_ca", "legacy_yes"],
+        help_heading = "Troubleshooting"
+    )]
     pub authorize_stdin: bool,
+
+    /// Wait for operator-owned normal shutdown, then prepare a new cold launch.
+    #[arg(
+        long,
+        conflicts_with = "calibrate",
+        conflicts_with = "controlled_target",
+        help_heading = "Troubleshooting"
+    )]
+    pub restart_warm: bool,
 
     /// Legacy Deep Capture trust confirmation (rejected with migration guidance).
     #[arg(long = "trust-ca", hide = true, conflicts_with = "authorize_stdin")]
@@ -509,59 +600,6 @@ pub struct DeepCaptureArgs {
     /// Legacy Deep Capture blanket confirmation (rejected with migration guidance).
     #[arg(long = "yes", hide = true, conflicts_with = "authorize_stdin")]
     pub legacy_yes: bool,
-
-    /// Wait for operator-owned normal shutdown, then prepare a new cold launch.
-    #[arg(
-        long,
-        conflicts_with = "calibrate",
-        conflicts_with = "controlled_target"
-    )]
-    pub restart_warm: bool,
-
-    /// Run one explicit compatibility calibration phase.
-    #[arg(
-        long,
-        value_enum,
-        requires = "launch_case",
-        requires = "calibration_protocol"
-    )]
-    pub calibrate: Option<DeepCaptureCalibrationArg>,
-
-    /// Exact routing or protocol case whose evidence may be appended.
-    #[arg(long, value_enum, requires = "calibrate")]
-    pub calibration_protocol: Option<DeepCaptureCalibrationProtocolArg>,
-
-    /// Declare the launch case whose compatibility is being measured.
-    #[arg(long, value_enum, requires = "calibrate")]
-    pub launch_case: Option<DeepCaptureLaunchCaseArg>,
-
-    /// Write HAR when HTTP semantics are observable.
-    #[arg(long)]
-    pub har: bool,
-
-    /// Write a proxy-owned analyzer key log.
-    #[arg(long)]
-    pub key_log: bool,
-
-    /// A certificate chain to present to an upstream that requires mutual TLS.
-    #[arg(long, value_name = "FILE", requires = "client_private_key")]
-    pub client_certificate: Option<PathBuf>,
-
-    /// The operator-owned private key matching `--client-certificate`.
-    #[arg(long, value_name = "FILE", requires = "client_certificate")]
-    pub client_private_key: Option<PathBuf>,
-
-    /// Loopback address family for the scoped native proxy listener.
-    #[arg(long, value_enum, default_value_t = DeepCaptureProxyFamilyArg::Ipv4)]
-    pub proxy_family: DeepCaptureProxyFamilyArg,
-
-    /// Explicit target destinations that may bypass the session proxy.
-    ///
-    /// Repeat the option or separate rules with commas. Supports DNS domains,
-    /// IP literals, CIDRs, and optional authority ports. Bare and leading-dot
-    /// DNS inputs both include descendants. The complete-bypass wildcard is refused.
-    #[arg(long, value_name = "RULE")]
-    pub proxy_bypass: Vec<String>,
 
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
@@ -680,6 +718,7 @@ pub struct BundleArgs {
 #[derive(Debug, Subcommand)]
 pub enum BundleCommand {
     /// Remove only sensitive artifacts declared by a completed bundle.
+    #[command(after_long_help = crate::workflow_help::BUNDLE_CLEANUP_LONG_HELP)]
     Cleanup {
         /// The completed Deep Capture bundle.
         bundle: PathBuf,
@@ -688,6 +727,7 @@ pub enum BundleCommand {
         yes: bool,
     },
     /// Create a separate share copy with sensitive artifacts omitted.
+    #[command(after_long_help = crate::workflow_help::BUNDLE_EXPORT_LONG_HELP)]
     Export {
         /// The source Deep Capture bundle, which is never modified.
         bundle: PathBuf,
@@ -890,6 +930,7 @@ pub struct TargetsArgs {
 #[derive(Debug, Subcommand)]
 pub enum TargetsCommand {
     /// Register a target from a name, deriving a unique handle.
+    #[command(after_long_help = crate::workflow_help::TARGETS_ADD_LONG_HELP)]
     Add(TargetsAddArgs),
     /// List capture targets by row number, handle, readiness, and known
     /// technologies.
@@ -908,11 +949,13 @@ pub enum TargetsCommand {
         db: Option<PathBuf>,
     },
     /// Show one target resolved by a selector (handle, name, row index, or `--id`).
+    #[command(after_long_help = crate::workflow_help::TARGETS_SHOW_LONG_HELP)]
     Show(TargetsShowArgs),
     /// Discover installed games: walk Steam and the known game-install roots.
     ///
     /// Reads only; a candidate becomes a stored target when acted on
     /// (`targets add`).
+    #[command(after_long_help = crate::workflow_help::TARGETS_DISCOVER_LONG_HELP)]
     Discover(TargetsDiscoverArgs),
     /// Preview or confirm conservative cleanup of historical discovery residue.
     Reconcile(TargetsReconcileArgs),

@@ -559,6 +559,12 @@ impl Report {
         } else {
             "not ready\n"
         });
+        out.push_str("\nDeep Capture setup\n");
+        out.push_str("  Environment readiness is step one.\n");
+        out.push_str("  Next command:\n");
+        out.push_str("    fragcap targets discover\n");
+        out.push_str("  Then run:\n");
+        out.push_str("    fragcap calibrate \"<game>\"\n");
         out
     }
 

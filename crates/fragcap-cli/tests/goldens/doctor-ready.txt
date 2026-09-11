@@ -40,3 +40,10 @@ Deep Capture
 
 Capture: ready
 Deep Capture: ready
+
+Deep Capture setup
+  Environment readiness is step one.
+  Next command:
+    fragcap targets discover
+  Then run:
+    fragcap calibrate "<game>"

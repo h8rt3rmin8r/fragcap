@@ -1177,6 +1177,10 @@ fn calibrate_reports_a_clean_stored_and_discovered_miss() {
         "refusal: {err}"
     );
     assert!(err.contains("considered 1, produced 1"), "refusal: {err}");
+    assert!(
+        err.contains("Next command:  fragcap targets discover"),
+        "target refusal must provide one bounded discovery step: {err}"
+    );
 }
 
 #[test]

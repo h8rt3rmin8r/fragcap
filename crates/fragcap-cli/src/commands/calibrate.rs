@@ -3397,21 +3397,7 @@ fn quote_powershell_path(path: &Path) -> Result<String, CliError> {
     let value = path.to_str().ok_or_else(|| {
         CliError::usage("the effective local store path cannot be represented in a next command")
     })?;
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('"');
-    for character in value.chars() {
-        match character {
-            '`' => quoted.push_str("``"),
-            '"' => quoted.push_str("`\""),
-            '$' => quoted.push_str("`$"),
-            '\r' => quoted.push_str("`r"),
-            '\n' => quoted.push_str("`n"),
-            '\t' => quoted.push_str("`t"),
-            _ => quoted.push(character),
-        }
-    }
-    quoted.push('"');
-    Ok(quoted)
+    Ok(crate::workflow_help::quote_powershell_argument(value))
 }
 
 fn target_command(verb: &str, target_id: i64, local_store: &str, suffix: &str) -> String {

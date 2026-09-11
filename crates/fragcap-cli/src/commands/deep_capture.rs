@@ -2076,10 +2076,56 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let outcome = run_with_outcome(args, authorization, emitter)?;
+    let outcome = match run_with_outcome(args, authorization, emitter) {
+        Ok(outcome) => outcome,
+        Err(error) if !emitter.is_json() => {
+            let selector = args
+                .selector
+                .as_deref()
+                .or(args.target.as_deref())
+                .map(str::to_string)
+                .or_else(|| args.id.map(|id| id.to_string()));
+            return Err(crate::workflow_help::actionable_error(
+                error,
+                selector.as_deref(),
+                None,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     match outcome.terminal_error {
+        Some(error) if !emitter.is_json() && outcome.disposition == RunDisposition::Interrupted => {
+            let selector = args
+                .selector
+                .as_deref()
+                .or(args.target.as_deref())
+                .map(str::to_string)
+                .or_else(|| args.id.map(|id| id.to_string()));
+            Err(crate::workflow_help::actionable_error(
+                error,
+                selector.as_deref(),
+                Some(crate::workflow_help::FirstRunRefusal::Authorization),
+            ))
+        }
         Some(error) => Err(error),
-        None => Ok(Exit::SUCCESS),
+        None => {
+            if outcome.disposition == RunDisposition::Declined && !emitter.is_json() {
+                let selector = args
+                    .selector
+                    .as_deref()
+                    .or(args.target.as_deref())
+                    .map(str::to_string)
+                    .or_else(|| args.id.map(|id| id.to_string()));
+                emitter.progress(&format!(
+                    "Next command:  {}",
+                    crate::workflow_help::next_command(
+                        crate::workflow_help::FirstRunRefusal::Authorization,
+                        selector.as_deref(),
+                    )
+                ));
+            }
+            Ok(Exit::SUCCESS)
+        }
     }
 }
 

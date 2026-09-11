@@ -25,6 +25,17 @@ fn cleanup_requires_confirmation_and_removes_only_sensitive_evidence() {
     let (code, _, err) = run(&["bundle", "cleanup", &path]);
     assert_eq!(code, 2);
     assert!(err.contains("pass --yes"));
+    assert!(
+        err.contains("Next command:  fragcap bundle cleanup") && err.contains("--yes"),
+        "cleanup refusal provides the exact confirmed retry: {err}"
+    );
+    let (code, _, json_err) = run(&["--json", "bundle", "cleanup", &path]);
+    assert_eq!(code, 2);
+    assert!(json_err.contains("pass --yes"));
+    assert!(
+        !json_err.contains("Next command:"),
+        "human guidance changed the JSON-mode error contract: {json_err}"
+    );
     assert!(bundle.join("tls-keylog.log").exists());
 
     let (code, out, err) = run(&["bundle", "cleanup", &path, "--yes"]);

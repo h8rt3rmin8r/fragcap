@@ -81,6 +81,11 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     let human = report.render_human();
     assert!(human.contains("Capture: ready"), "{human}");
     assert!(human.contains("Deep Capture: ready"), "{human}");
+    assert!(
+        human.contains("Next command:\n    fragcap targets discover")
+            && human.contains("fragcap calibrate"),
+        "environment readiness must bridge to target setup and calibration: {human}"
+    );
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
 }
