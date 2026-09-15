@@ -41,8 +41,10 @@
 
 - [x] T016 Run targeted tests, full watched cargo xtask ci/MSRV and documentation site build/unit/browser contracts; record exact evidence in specs/152-registry-patch-release/verification.md.
 - [x] T017 Check UTF-8/no-BOM/LF, no mojibake, clean patch scope and unchanged published-release.json; commit with conventional message and required co-author trailer, then automatically push release/0.10.1 and open official PR against main.
-- [ ] T018 Monitor current-head hosted CI and every bot review, reply to all comments, verify corrections and resolve threads; retain at most one manual second review request in specs/152-registry-patch-release/verification.md.
-- [ ] T019 Update #416/project tracking to PR review with truthful dispositions and hand the official green PR to the operator, without closing independent #372/#331/#333/#413/#334/#278 or deferred #155/#94 and without merge/tag/publication.
+- [x] T018 Monitor current-head hosted CI and every bot review, reply to all comments, verify corrections and resolve threads; retain at most one manual second review request in specs/152-registry-patch-release/verification.md.
+- [x] T019 Update #416/project tracking to PR review with truthful dispositions and prepare the official green PR handoff, without closing independent #372/#331/#333/#413/#334/#278 or deferred #155/#94 and without merge/tag/publication.
+
+All implementation and handoff-preparation tasks are complete against verified code head `08af858`. This final records-only commit must independently pass its current-head hosted checks before the operator receives the completion notification. Clarifying T019 as handoff preparation avoids a self-referential record/CI commit cycle; it does not waive FR-009/SC-003's final current-head green requirement or authorize merge.
 
 ## Dependencies and Execution Order
 

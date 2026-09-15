@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-15
 
-**Status**: Specified
+**Status**: Implemented; final records-head CI required before human handoff.
 
 **Input**: Explicit S152 autopilot kickoff, including automatic push and official pull request, following the approved #416 registry-protection and v0.10.1 preparation recommendation.
 
