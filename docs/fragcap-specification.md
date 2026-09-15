@@ -4461,6 +4461,8 @@ drift, missing sides, incomplete outcomes, unowned families, and stale or
 disabled tests. The command runs in ordinary CI and follows the repository
 0/1/2 exit contract.
 
+S150's explicitly authorized #413 remediation preserves the S128 performance authority (`performance/native-proxy-budgets-v1.json`), workload, queue capacity, and all budgets. Application serialization uses a finite 64 KiB byte buffer with the existing 64-event pending-storage bound, timeout/final flush, exact failed-write reconciliation, and unchanged observation content. Owned JSON fields move rather than being copied again. Deterministic metadata write-count and output-equivalence tests protect this implementation; two fresh fixed-code Windows short campaigns must individually pass and agree before release verification clears. Original failed reports remain historical evidence, not rewritten acceptance.
+
 ### 25.6 Attribution Accuracy Measurement
 
 SC-7 requires 99 percent attribution on profiled processes. The

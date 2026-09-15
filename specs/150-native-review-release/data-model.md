@@ -15,3 +15,7 @@ The committed template is explicitly `not-started`. Source SHA, final product ve
 ## Release state
 
 v0.9.0 remains the last published baseline until operator tagging and successful publication. v0.10.0 is a prepared candidate. Historical physical evidence keeps its measured identity; portable version-bound evidence is rerun, not relabeled as physical proof. Exact calibration rows remain append-only and require fresh applicability under the new product version.
+
+## Runtime remediation evidence
+
+#413 owns the original immutable failed report and its separate unchanged diagnostic rerun. New measurements record actual fixed source, registry identity, environment, complete samples, and terminal decisions. Writer byte batching is finite, distinct from the unchanged 4,096-event queue and 64-event pending storage-accounting limit. Serialization order, content, loss identity, timeout flush, final drain, and failure retirement remain the existing artifact contract.

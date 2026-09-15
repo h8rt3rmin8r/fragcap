@@ -19,3 +19,14 @@ Read-only analyze phase passed before implementation. No extensions.yml hooks ar
 ## Boundary Decisions
 
 No general completed-security-review validator is introduced. Static readiness checks and an explicitly not-started template cannot authorize review closure. Physical historical Windows reports retain measured version/source identity. Release-only version and changelog operations occur on the repository-required release branch through a verified hidden launcher. This evidence file records the completed read-only gate afterward; it is not an edit made during analyze.
+
+## Authorized extension gate (2026-09-15)
+
+Read-only cross-artifact analysis passed before runtime tests or correction. Thirteen functional requirements, eight buildable success criteria, and twenty-two tasks have complete coverage. No ambiguity, duplication, unmapped task, HIGH finding, or constitutional conflict remains. Existing original-scope performance statements are explicitly historical and superseded only by the operator-approved #413 extension. Every security, workload, queue, budget, report-integrity, publication, and independence boundary remains unchanged. No extension hooks exist. All requirements checklists remain complete and now include runtime-remediation quality criteria.
+
+| Requirements | Tasks | Acceptance |
+| --- | --- | --- |
+| FR-012, SC-007 | T018, T019, T020 | Supported diagnosis, failing deterministic regression, exact bounded writer and loss behavior |
+| FR-013, SC-008 | T021, T022, T017 | Unchanged gates, two fresh comparable passing Windows reports, no third review request |
+
+Next action: implement T019 after baseline evidence is read. This record was appended after the read-only analysis phase concluded; no files were edited during analyze.

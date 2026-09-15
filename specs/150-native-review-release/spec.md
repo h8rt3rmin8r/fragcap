@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-15
 
-**Status**: Implemented; external verification pending (#413)
+**Status**: In progress; authorized #413 runtime remediation extension
 
 **Input**: S150 bundles native documentation alignment under #331, independent-review readiness under #333, and preparation of a fresh operator-published release. It does not perform or certify the independent audit, run sensitive installed software, reproduce #372 against a real host, or close #334.
 
@@ -59,6 +59,18 @@ The operator receives fresh-release preparation with version-bound contracts and
 - Unperformed installed-build review never becomes a pass inferred from portable CI or a bot emoji.
 - Credentials, capabilities, private keys, real addresses, and host identities never enter public handoff examples.
 
+### User Story 4 - Retain observations within the existing performance envelope (Priority: P1)
+
+The operator receives a release candidate whose native QUIC application writer no longer loses observations in the existing controlled Windows short campaign. On 2026-09-15 the operator explicitly authorized expanding S150 to investigate and fix #413 after its hard queue-loss finding blocked release verification.
+
+**Independent Test**: Deterministic writer regression tests preserve exact records and failure accounting; two fresh fixed-source Windows campaigns pass independently and agree under the unchanged S128 authority.
+
+**Acceptance Scenarios**:
+
+1. **Given** the original failed and diagnostic reports, **When** remediation is evaluated, **Then** those reports remain unchanged and are not converted into acceptance by retry.
+2. **Given** the existing workload and 4,096-event queue, **When** the repaired producer/writer runs, **Then** forwarding remains independent, every retained observation keeps its identity and content, and every actual queue or storage refusal remains counted.
+3. **Given** a candidate fix, **When** two fresh Windows campaigns execute against fixed code, **Then** each passes all fourteen rows, every hard invariant, and the existing comparability checks without changing workloads, budgets, workflows, crypto, consent, or real-host testing restrictions.
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -74,6 +86,8 @@ The operator receives fresh-release preparation with version-bound contracts and
 - **FR-009**: S150 MUST NOT run a game, installed product, sensitive live capture, or real host trust mutation. Controlled evidence and CI remain implementation acceptance.
 - **FR-010**: #331 and #333 MUST retain unfinished review dependencies; #372, #334, and #278 MUST remain open. S150 MUST have bounded GitHub acceptance without duplicate parent issues.
 - **FR-011**: Documentation, release records, and architecture currency MUST agree with the prepared version without calling a candidate already published or feature-complete.
+- **FR-012**: #413 remediation MUST preserve the existing performance workload, queue capacity, budgets, nonblocking observation admission, exact artifact semantics, bounded writer ownership, and storage-failure conservation; deterministic regression tests MUST precede the runtime fix.
+- **FR-013**: Verification MUST retain the original hard-failure evidence, collect two fresh fixed-code Windows campaigns, validate both complete reports and outcome agreement, and keep ordinary CI and all security gates unchanged. No third requested bot review round is permitted.
 
 ### Key Entities
 
@@ -92,6 +106,8 @@ The operator receives fresh-release preparation with version-bound contracts and
 - **SC-004**: Site build, links, search navigation, accessibility, release-note validation, and repository gates pass.
 - **SC-005**: Review identity and finding records require neither ambiguous branch-only provenance nor disclosure of sensitive evidence.
 - **SC-006**: No S150 record claims audit completion, published candidate bytes, live compatibility, or final completion before its external event.
+- **SC-007**: Deterministic runtime regression checks demonstrate the diagnosed bottleneck and preserve exact serialized observations, bounded pending ownership, queue refusal, storage failure, and final drain accounting.
+- **SC-008**: Two fresh fixed-code Windows short campaigns independently pass all fourteen cases with zero application-event loss, queue/storage payload loss, hard invariant failures, or incomplete terminals, and agree within the existing performance contract.
 
 ## Assumptions
 
@@ -107,3 +123,4 @@ The operator receives fresh-release preparation with version-bound contracts and
 - Q: Must S150 finish the independent installed-build audit? -> A: No. It delivers the handoff and explicitly retains unperformed audit under #333.
 - Q: Can ordinary PR approval or portable CI close final acceptance? -> A: No. #334 and #278 retain their actual acceptance criteria.
 - Q: Does release preparation authorize tag or publication? -> A: No. Local preparation and PR are in scope; tag and publication approval remain operator-owned.
+- Q: May S150 now fix the unexpected production runtime finding #413? -> A: Yes, explicitly authorized by the operator on 2026-09-15. Existing workload, queue bound, budgets, sensitive-execution restrictions, and two-review-round limit remain unchanged.

@@ -56,6 +56,8 @@ Root and related command help now lead through the complete first Deep Capture w
 
 ### Fixed
 
+Reduce native application-writer write amplification for metadata-heavy QUIC/UDP evidence using a finite 64 KiB byte buffer and moved JSON fields. Observation identity, nonblocking queue admission, the 64-event pending bound, failure accounting, and existing performance budgets remain unchanged (#413).
+
 Doctor now explains native Deep Capture residue with stable plain-language guidance and width-aware layouts, while JSON exposes exact structured lifecycle and recovery facts without changing cleanup eligibility or behavior.
 
 `fragcap steam list` now renders a display-cell-aligned table or labeled vertical records instead of raw tab-separated fields, preserving complete long and localized title values while leaving JSON and target state unchanged.
@@ -65,6 +67,8 @@ Automatic target registration now accepts authoritative Steam identities or veri
 Update the exact Rustls pin to 0.23.45 to reject TLS 1.3 handshake messages across encryption-level boundaries (RUSTSEC-2026-0285). The existing ring provider, selected features, upstream verification, and scoped session authority remain unchanged.
 
 ### Decisions
+
+**2026-09-15: S150 explicitly authorized runtime remediation extension.** After retained Windows campaigns exposed hard QUIC observation queue loss, the operator authorized scoped diagnosis and correction without changing workload, queue capacity, budgets, sensitive-execution restrictions, or the two-review-round limit. Source inspection established unnecessary writer write/allocation amplification, not the exact historical platform stall. A deterministic regression initially required 373 writes for 4,096 metadata records; the finite 64 KiB buffer targets 64 writes while preserving every serialized record and the existing 64-event pending bound. Owned JSON maps move instead of being deep-cloned. Preserve original failed evidence and require two fresh fixed-code Windows campaigns before clearing release verification. This release branch updates the already assembled v0.10.0 record directly because rerunning the current assembler would create a duplicate version section; no general changelog or release-tool policy is changed.
 
 S139 deliberately splits guided calibration issue #380 at the pure policy boundary. The stable facade owns proposal semantics now so later CLI and library workflows cannot diverge; target resolution, process enumeration, execution, persistence, and ordinary eligibility remain outside this child slice. Conflicting current exact facts conservatively require a retest instead of allowing row order to choose an answer.
 

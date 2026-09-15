@@ -8,3 +8,15 @@ These are exact observed reports, not illustrative fixtures, recreated measureme
 | [Attempt 2](windows-performance-attempt2.jsonl) | 10396111150 | `516afd746ca406aa4a5fa412b2596df8b15a26626b8784755fe0a18193a901ac` | Unchanged diagnostic rerun completed and passed all fourteen cases. |
 
 The checked-in bytes match the downloaded report digests exactly. Attempt 1 is still failed. Attempt 2 is a separate observed campaign, not a valid timing retry or acceptance of the preceding hard breach. The official report validator rejects attempt 1 and accepts attempt 2 individually. Their hard-outcome disagreement remains [#413](https://github.com/h8rt3rmin8r/fragcap/issues/413); root cause, bounded remediation, and final release-verification disposition are not established. Do not discard a report, pool windows, rewrite budgets, or declare the finding cleared because current CI became green.
+
+## Authorized remediation measurements (2026-09-15)
+
+The following records extend the chronological investigation and do not supersede either original report. The operator explicitly authorized the runtime correction. Local reports ran controlled synthetic loopback harnesses, not installed-product or real-host trust sessions; their `source_dirty` fields truthfully record in-progress artifact/code changes. Baseline and local fixed measurements both passed and do not by themselves satisfy two fresh hosted fixed-source verification.
+
+| Report | Identity | SHA-256 | Actual outcome |
+| --- | --- | --- | --- |
+| [Repeated hosted failure](windows-performance-repeat-failed.jsonl) | Run 34967816667, source synthetic merge `6148765542737eed2f99cfb8fd88c65b5bdb9cd8` | `9c861b124091228b8359e941bbd2c61f720b4d3df128ce6fbe787e1fbce2649b` | Complete campaign failed with two `quic-off` hard-loss windows. |
+| [Local baseline](windows-performance-local-baseline.jsonl) | Original runtime, in-progress S150 scope records | `56dc782ae47c177c6c323111f20f91f6c5a620208457ab0938240b5bbf9a33c7` | Complete fourteen-case campaign passed, no hard failures. |
+| [Local correction](windows-performance-local-fixed.jsonl) | Finite 64 KiB byte buffer and moved JSON maps | `6bb1a6ae02a5a70eb06916b772c5eb160b6a431998dec2f5d60132b5d04005eb` | Complete fourteen-case campaign passed, no hard failures. |
+
+Deterministic regression separately demonstrated 373 physical writes before correction versus 64 afterward for 4,096 exact metadata records, with unchanged serialization and pending limit. That proves reduced write amplification, not the precise historical host stall. Hosted fixed-source comparison is still pending.

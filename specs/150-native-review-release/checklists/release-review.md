@@ -21,6 +21,8 @@
 - [x] CHK008 Are absence of audit and an empty finding register explicitly non-approval? [Coverage, Spec FR-007]
 - [x] CHK009 Are skipped examples, stale evidence, and broken links failure cases? [Coverage, Spec Edge Cases]
 - [x] CHK010 Does done retain actual parent acceptance and operator publication gates? [Dependencies, Spec FR-008, FR-010]
+- [x] CHK011 Does authorized runtime remediation preserve exact observations, bounded pending ownership, queue/workload/budgets, and failure conservation? [Consistency, Spec FR-012]
+- [x] CHK012 Are two fresh fixed-code Windows campaigns, retained original failures, unchanged gates, and no third review request explicit? [Acceptance, Spec FR-013, SC-008]
 
 ## Notes
 

@@ -24,6 +24,8 @@ Align current native product guidance, expand existing no-dispatch CLI documenta
 
 **Performance Goals**: File-read validation only, no product performance change or relaxed runtime budget.
 
+**Authorized extension (2026-09-15)**: #413 now adds scoped native application-writer/QUIC-path diagnosis and remediation. The preceding performance-goal sentence describes the original documentation scope, not the approved extension. Keep S128 workload and every budget unchanged; require two fresh passing Windows campaigns against fixed code. Existing dependencies, artifact schemas, security policies, and installed-execution restrictions remain unchanged.
+
 **Constraints**: Keep #331/#333/#334/#278/#372 open; user tags and publishes after merge. Record version-bound evidence honestly and never rewrite physical Windows historical measurements to the new version.
 
 **Scale/Scope**: Eleven documentation surfaces, twelve independent-review areas, one bounded GitHub delivery issue, and one minor release preparation.
@@ -65,3 +67,11 @@ GATE: Passed before research and after design.
 ## Complexity Tracking
 
 No constitutional violation. Release documentation and version-bound policy/evidence changes require the dated S150 decisions fragment. Workflows, budgets, crypto selection, product authorization, physical evidence, and final gate requirements remain unchanged.
+
+## Authorized runtime remediation design
+
+Research the producer/consumer path and fresh failed report before choosing a fix. Existing source shows the writer uses a default 8 KiB byte buffer while QUIC ingress generates thousands of distinct datagram records. Evaluate bounded byte batching and redundant per-record allocation against exact observation semantics; do not coalesce datagrams, suppress observations, expand the event queue, add forwarding backpressure, or hide a hard loss behind timing retry. A deterministic write-count and output-equivalence seam can demonstrate avoidable write amplification without relying on noisy timing assertions. Any selected buffer remains finite and preserves the existing 64-event pending limit, timeout/final flush, and storage-failure reconciliation.
+
+Research and baseline controlled measurement precede test-first implementation in `crates/fragcap/src/deep_capture/application.rs`; inspect `crates/fragcap-proxy/src/quic.rs` only for supported producer-side causes. Controlled release harness child launchers are already hidden with null stdin. Add no real-host trust or installed-product execution. Rerun focused writer/security tests and full CI, then collect two fresh Windows reports at fixed source with unchanged registry identity. An additional same-source Windows job execution is a verification comparison, not a requested third bot review. Preserve historical failed reports and record actual remaining audit/publication acceptance.
+
+Constitution recheck: P-1 consent/denylist unchanged; P-4/P-9 all observations and refusals remain exact; P-2/P-3 no dependency edge; P-5 schemas unchanged; P-8 hidden launch/encoding unchanged; P-10 target authority unchanged; P-11 prepared versus published remains explicit. No constitutional exception.

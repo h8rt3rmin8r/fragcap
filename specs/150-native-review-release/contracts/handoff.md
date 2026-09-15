@@ -15,3 +15,7 @@ An authorized reviewer records `git rev-parse HEAD`, the actual release tag and 
 ## Operator release and external review
 
 After green CI, resolved PR reviews, and operator merge, only the operator creates and pushes the v0.10.0 tag and approves registry publication. Independently authorized reviewers then follow installed-build procedures under #333. #331 reconciles their documentation findings; #334 alone controls final completion. Doctor #372 measurements use the published release and remain separate from speculative optimization.
+
+## Authorized #413 remediation
+
+Runtime correction must preserve every observation, the finite 64-event pending writer limit, timeout/final flush, exact failed-storage reconciliation, and nonblocking queue admission. The S128 registry and workload remain immutable. Both original reports remain truthful historical evidence. Two fresh fixed-code Windows short campaigns must individually pass the canonical report validator and agree under the existing comparability contract before release verification clears. A successful retry of unchanged failing code is not remediation. Independent #333 review, operator testing, merge, and publication remain external acceptance.
