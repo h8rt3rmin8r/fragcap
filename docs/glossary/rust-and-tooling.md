@@ -76,6 +76,21 @@ Tier 3 is compatibility evidence for exact already published product bytes. It i
 **See also:** [Fixture corpus](capture-and-networking.md#fixture-corpus),
 [Replay source](process-and-attribution.md#replay-source)
 
+## Write amplification
+
+Extra underlying writer calls caused by dividing identical output into small batches. In fragcap's application-writer measurements this means call count, not flash-storage wear or extra observed records.
+
+Rust's `BufWriter` accumulates small writes in a byte buffer before issuing larger writes to the underlying destination. Its default capacity can change; `with_capacity` chooses an explicit capacity. Buffered records are not successfully written merely because they entered memory: explicit flush errors must still be checked and reconciled.
+
+{: .matters }
+> Metadata-heavy QUIC/UDP evidence can produce thousands of distinct observations, so S150 reduces physical write calls without merging observations, expanding the event queue, coupling forwarding to storage, or changing loss accounting. A write-count regression establishes this efficiency change, not the exact cause of a historical Windows scheduling or storage stall.
+
+**See also:** [Bounded buffer](capture-and-networking.md#bounded-buffer), [Backpressure](capture-and-networking.md#backpressure)
+
+**References:**
+
+- [Rust standard library: BufWriter](https://doc.rust-lang.org/std/io/struct.BufWriter.html)
+
 ## xtask
 
 A Cargo convention in which repository-wide tasks are implemented as a

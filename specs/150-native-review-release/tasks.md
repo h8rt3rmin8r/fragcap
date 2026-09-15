@@ -43,9 +43,9 @@
 
 - [x] T015 Run full cargo xtask ci, declared MSRV build, docs build/check, site unit/accessibility checks, release-note validation, and encoding sanity checks; record read evidence in specs/150-native-review-release/acceptance.md.
 - [x] T016 Commit only S150/release files with conventional messages and repository co-author policy; automatically push release/0.10.0 and open official PR against main.
-- [ ] T017 Wait for first reviews, respond to every comment and resolve each actionable thread, request at most one second @Codex round, and finish only with green current-head CI and satisfied reviews; notify operator for merge.
+- [x] T017 Wait for first reviews, respond to every comment and resolve each actionable thread, request at most one second @Codex round, and finish only with green current-head CI and satisfied reviews; notify operator for merge.
 
-T017 remains incomplete until #413 remediation and fresh verification finish. Both authorized bot rounds and all five remediation threads are closed. The operator explicitly authorized the runtime extension on 2026-09-15; no third review request is allowed. The original failed campaign remains failed.
+Both authorized bot rounds and all five remediation threads are closed. The operator explicitly authorized the runtime extension on 2026-09-15; no third review request is allowed. Two fresh fixed-code Windows campaigns passed and agreed, and every applicable hosted check passed on 9abfde2. The final evidence/documentation-only push receives its own checks before the operator notification; this record does not predict their result. The original failed campaigns remain failed.
 
 ## Phase 7: Authorized User Story 4 - Runtime Remediation
 
@@ -54,8 +54,8 @@ T017 remains incomplete until #413 remediation and fresh verification finish. Bo
 - [x] T018 [US4] Diagnose #413 from retained and fresh Windows reports plus application/QUIC source, collect a controlled baseline, and record supported alternatives in specs/150-native-review-release/research.md.
 - [x] T019 [US4] Add and run failing deterministic bottleneck/output-equivalence regression tests in crates/fragcap/src/deep_capture/application.rs; preserve storage failure, queue refusal, bounded pending ownership, and drain tests (FR-012, SC-007).
 - [x] T020 [US4] Implement the supported bounded runtime correction in crates/fragcap/src/deep_capture/application.rs, updating contracts and CHANGELOG.md with its measured rationale, without changing observation identity, queue/workload/budgets, or forwarding admission (FR-012).
-- [ ] T021 [US4] Run focused writer/security checks and full unchanged CI, automatically push the correction to PR #412, and handle any new reviews without requesting a third round (FR-013).
-- [ ] T022 [US4] Collect and individually validate two fresh fixed-code Windows short reports, check outcome agreement and comparability, retain exact report bytes/digests under specs/150-native-review-release/evidence/, and reconcile acceptance plus GitHub #411/#413 status (FR-013, SC-008).
+- [x] T021 [US4] Run focused writer/security checks and full unchanged CI, automatically push the correction to PR #412, and handle any new reviews without requesting a third round (FR-013).
+- [x] T022 [US4] Collect and individually validate two fresh fixed-code Windows short reports, check outcome agreement and comparability, retain exact report bytes/digests under specs/150-native-review-release/evidence/, and reconcile acceptance plus GitHub #411/#413 status (FR-013, SC-008).
 
 T018 precedes T019, which precedes T020. T020 precedes T021 and T022. T017 completes only after T022 and green current-head checks. Source changes integrate serially; read-only research may run alongside report inspection under the plan skill.
 
