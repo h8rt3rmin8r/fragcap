@@ -22,7 +22,7 @@ Date: 2026-09-15. Candidate: prepared v0.10.0 on release/0.10.0. This record rep
 
 ## External review and delivery
 
-PR publication, current-head CI and bot-review disposition remain pending. At most one manual second-round Codex request is allowed. Merge/tag and registry approval remain operator-owned.
+[PR #412](https://github.com/h8rt3rmin8r/fragcap/pull/412) was automatically published against main from release/0.10.0. The automatic first Codex review of adb7204 reported one P2 finding: the quickstart manifest command omitted the required feature and could select zero tests. Corrected it to the actual feature-enabled reader invocation and reran the exact documented command: one matching test passed, zero ignored. Current-head CI and final bot-review disposition remain pending. At most one manual second-round Codex request is allowed. Merge/tag and registry approval remain operator-owned.
 
 ## Non-claims and retained work
 

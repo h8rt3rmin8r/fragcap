@@ -10,7 +10,7 @@ Use the declared Rust toolchain and existing site dependencies. Run local consol
 cargo test -p fragcap-cli --test cli_reference --locked
 cargo test -p fragcap-cli --test cli_reference --locked --features net
 cargo xtask review-handoff
-cargo test -p fragcap --lib published_examples_match_the_versioned_reader --locked
+cargo test -p fragcap --lib --features deep-capture --locked published_examples_match_the_versioned_reader
 cargo xtask notes 0.10.0
 cargo xtask ci
 cargo +1.88.0 build --workspace --locked

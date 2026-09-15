@@ -42,7 +42,7 @@
 ## Phase 6: Polish and Handoff
 
 - [x] T015 Run full cargo xtask ci, declared MSRV build, docs build/check, site unit/accessibility checks, release-note validation, and encoding sanity checks; record read evidence in specs/150-native-review-release/acceptance.md.
-- [ ] T016 Commit only S150/release files with conventional messages and repository co-author policy; automatically push release/0.10.0 and open official PR against main.
+- [x] T016 Commit only S150/release files with conventional messages and repository co-author policy; automatically push release/0.10.0 and open official PR against main.
 - [ ] T017 Wait for first reviews, respond to every comment and resolve each actionable thread, request at most one second @Codex round, and finish only with green current-head CI and satisfied reviews; notify operator for merge.
 
 ## Dependencies and Parallel Opportunities
