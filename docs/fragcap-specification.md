@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.73-draft \
+**Version:** 0.1.74-draft \
 **Applies-To:** 0.10.1 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -50,9 +50,9 @@ product's purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
 
-Published baseline: [v0.10.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0).
+Published baseline: [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1).
 
-Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.0, published 2026-09-15 from `787739edfa8d748e25cb4b5c4965f5c936850d16`. The reviewed `docs/published-release.json` and fourteen current baseline markers bind actual publication independently from candidate version. S152 prepares v0.10.1 with S151 Doctor diagnostics, which remain unreleased. Independent review #333, installed retest #413 and final gate #334 remain open. Per-release scope is in section 27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.1, published 2026-09-15 from `a7d24962999d38d7ff130722859d473543864862`. The reviewed `docs/published-release.json` and fourteen current baseline markers bind actual publication independently from candidate version. S153 verifies v0.10.1 publication of S151 Doctor diagnostics and S152 owner-controlled registry protection. Independent review #333, installed retest #413 and final gate #334 remain open. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -161,6 +161,7 @@ enforcement.
 | 0.1.71-draft | 2026-09-15 | W. Thompson | **Prepares current native documentation and v0.10.0 independent-review readiness (S150, #411).** Corrects current product instructions, checks nonhistorical command examples without dispatch, links reader-validated manifest specimens, and publishes Doctor, security/privacy, packaging/migration and stable API guidance. A closed twelve-area handoff validates existing evidence and an explicitly not-started review record. Local version-only release preparation and controlled evidence do not tag, publish, perform installed sensitive-product execution, satisfy independent audit #333 or complete #334. |
 | 0.1.72-draft | 2026-09-15 | W. Thompson | Reconciles actual published v0.10.0 identity and current applicability under S151 (#414, parents #372/#331). Adds bounded owned slow-probe diagnostics, discoverable nested timing, one-second elapsed progress and controlled failure/suppression tests as explicitly unreleased source work. Publication is mechanically separate from candidate version; independent #333 review, #413 installed retest and final #334/#278 remain open. |
 | 0.1.73-draft | 2026-09-15 | W. Thompson | Configures and verifies existing registry approval protection under S152 (#416), with normal owner-required manual review, owner-initiated approval possible, administrator bypass explicitly retained at the operator's direction and tag-only release allowance. Fresh fail-closed metadata checks precede release creation and registry execution. Prepares v0.10.1 with S151 diagnostics while preserving actual v0.10.0, unsigned policy and all independent acceptance gates; no tag, publication, deployment approval or bypass is performed. |
+| 0.1.74-draft | 2026-09-15 | W. Thompson | Reconciles verified actual v0.10.1 publication under S153 (#418), including S151 Doctor diagnostics and S152 owner-controlled registry protection. Exact merged source, six certified public assets, owner deployment approval, all ten non-yanked registry versions and all four successful release jobs are verified before current publication markers change. Historical v0.10.0 evidence, unsigned policy and independent #333/#413 and final #331/#334/#278 acceptance remain unchanged; no installed sensitive product is agent-run. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4606,7 +4607,7 @@ and the selected verbosity permits progress. Redirected human reports,
 progress. The final report remains the only stdout result and the existing
 classifier remains the authority for readiness.
 
-Published v0.10.0 uses stable coarse Doctor probe labels and a hidden `fragcap doctor --timings` switch for completion durations only. S151's source diagnostics are unreleased: normal help exposes this option, readiness leaves name native residue inventory, manifest/artifact scan, manifest CA identities, separate current-user/machine root certificate stores and IPv4/IPv6 binds. Eligible interactive normal human read-only runs show the active pending boundary and monotonic elapsed milliseconds after one second, repeating no faster than once per second across parent/leaf transitions. Slow completions include duration automatically; explicit timings cover fast completions too. Native residue and tracing session availability remain aggregate boundaries, not specific historical API attribution. Progress remains fixed-vocabulary stderr, never final human/JSON report fields. A single scoped worker is explicitly joined; no new probe timeout, cancellation guarantee, effect, false unavailability or cleanup claim is introduced. Controlled tests preserve injected facts, output suppression and failure ownership; actual elevated first-run/repeat cause measurements remain #372.
+Historical v0.10.0 uses stable coarse Doctor probe labels and a hidden `fragcap doctor --timings` switch for completion durations only. v0.10.1 ships S151 diagnostics: normal help exposes this option, readiness leaves name native residue inventory, manifest/artifact scan, manifest CA identities, separate current-user/machine root certificate stores and IPv4/IPv6 binds. Eligible interactive normal human read-only runs show the active pending boundary and monotonic elapsed milliseconds after one second, repeating no faster than once per second across parent/leaf transitions. Slow completions include duration automatically; explicit timings cover fast completions too. Native residue and tracing session availability remain aggregate boundaries, not specific historical API attribution. Progress remains fixed-vocabulary stderr, never final human/JSON report fields. A single scoped worker is explicitly joined; no new probe timeout, cancellation guarantee, effect, false unavailability or cleanup claim is introduced. Controlled tests preserve injected facts, output suppression and failure ownership; actual elevated first-run/repeat cause measurements remain #372.
 
 `fragcap doctor --fix` adds an action layer above the same classifier. It
 prints the same report, then offers to perform the remediations the report
@@ -4844,8 +4845,9 @@ restated here. The scope of each release is:
 | v0.8.0 | 2026-08-30 | Deep Capture compatibility calibration, public library-first session orchestration, managed direct-executable launch, and documentation accessibility and recovery corrections | S095 through S101 |
 | v0.9.0 | 2026-09-05 | Native protocols, scoped managed launches and routing, application artifacts and correlation, recovery, security/performance and relocated Windows integration evidence; final completion remains open | S102 through S129 |
 | v0.10.0 | 2026-09-15 | Supply chain, final package certification, stable API, discovery integrity, exact authorization, guided registration/setup and resumable calibration, help/session UX, current documentation and bounded native writer correction; independent audit and final completion remain open | S130 through S150 |
+| v0.10.1 | 2026-09-15 | Discoverable nested Doctor timings and pending slow-probe progress, plus freshly verified owner-controlled registry protection; certified public packages and all ten crate versions verified, independent acceptance remains open | S151 through S152; S153 verifies publication |
 
-v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S152 prepares v0.10.1 with subsequent S151 diagnostics and verified registry approval protection; this candidate is not published and S151 remains unreleased. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
+v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S153 verifies subsequent v0.10.1 publication with S151 diagnostics, retained owner administrator bypass and verified registry approval protection. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
 
 ### 27.4 Critical Path
 

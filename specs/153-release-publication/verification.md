@@ -38,3 +38,30 @@ Downloaded public assets and the exact-run summary remain ignored under target/r
 | catalog.db.sha256 | 77 | bc7cf4fb3499d1fdc605d23e1bc51b904273d7eada20a959a7b140d756293901 |
 
 Registry job 104599866074 is waiting for crates-io environment approval, not failed or successful. Fresh pending-deployment metadata identifies sole configured reviewer h8rt3rmin8r, environment 21294112472 and no timer. The owner receives one direct request to approve through Review deployments on the release run. The agent does not approve or bypass it. No publication-record or baseline-marker mutation occurs before all ten registry versions and the entire release run are verified green. Independent acceptance and the later records PR remain pending, not approved by this partial publication.
+
+## 2026-09-15: Complete green publication and records reconciliation
+
+The owner approves crates-io through GitHub's normal deployment review. Run approval history records User h8rt3rmin8r (46768484), state approved, environment 21294112472, with can_admins_bypass=true unchanged. This is normal owner approval, not agent approval or bypass. Registry job 104599866074 completes successfully at 2026-09-15T23:38:00Z after its fresh protection guard. All four release jobs and aggregate run 35033304343 are successful on exact a7d24962999d38d7ff130722859d473543864862; no failure or rerun occurred.
+
+Independent exact-version registry reads verify every published archive below is 0.10.1 and non-yanked.
+
+| Crate | SHA-256 | Registry created at (UTC) |
+| --- | --- | --- |
+| fragcap-core | f8610012a44d2236a956b9886347cc08ff559135c07df25b93ca32e5ebc8f161 | 2026-09-15T23:36:36.445539Z |
+| fragcap-profile | e1773cb36041a11d481c4ecd4a6567a6f04af9a0c450b242edb82859f9efe3be | 2026-09-15T23:36:42.632546Z |
+| fragcap-capture | be8bd37ffb108392b1c28e94640d3187465677816cf03460ed0f872edeb97889 | 2026-09-15T23:36:45.366803Z |
+| fragcap-attr | ce15a0c2d999405f4e0b115a784602ea7d34d1ad105b3f5e6d945be94ab75b70 | 2026-09-15T23:36:48.803964Z |
+| fragcap-sink | 669ae60b5a3874bbf8621e27bdd6b7c6f73d123f5adf05fb867c799c0377ce7f | 2026-09-15T23:36:51.905134Z |
+| fragcap-steam | 6099d7416fbcd362548a5d101e65263f58359c1221409f9285f836ce5a448f5d | 2026-09-15T23:36:56.616707Z |
+| fragcap-targets | 1b634af0f6b12b73a857c2beb66e9eb3a45c4cc71ce8f54d1794edfba44d70e3 | 2026-09-15T23:37:06.784394Z |
+| fragcap-proxy | 20d6247dd188b66bcc5d9136f9e217490e666730f2f8c4367da525af6beb13d8 | 2026-09-15T23:37:26.110732Z |
+| fragcap | 76a522e9cdda2e15afbec029becaf68a6d186df149b8efbf42486bee4bfa9f9c | 2026-09-15T23:37:33.460699Z |
+| fragcap-cli | 609035431f66007475b39704c64bbaf5d4e58b9d5bb91f1ac42dfd5452be9bb9 | 2026-09-15T23:37:56.00203Z |
+
+After complete verification, actual publication JSON and all fourteen current baseline markers move to v0.10.1. Current S151 applicability and release handoff are reconciled, master history is appended chronologically and dated changelog fragments record pinned release-document changes. Historical v0.10.0 tag/source/package/registry evidence is preserved. Optional owner #372 field measurements, independent #333/#413 review, #331 final documentation and #334/#278 completion remain open; publication is not independent acceptance. Product source, versions, workflow, dependency, settings, registry secrets and installed sensitive execution are untouched. Local/PR verification and the human-owned records merge are still pending at this boundary.
+
+## 2026-09-15: Reconciled records pass local verification
+
+Full cargo xtask ci completes with exit zero after publication-record changes, including format, Clippy, workspace tests, lint, dependency/license/supply-chain, package authority, wrappers, skills, docs/parser, specification, guided acceptance, threat registry, review readiness, failure/fuzz/conformance and native facade gates. Dedicated installed Windows/trust rows remain intentionally ignored in ordinary local harnesses; no installed-product acceptance is inferred. cargo xtask spec reports candidate 0.10.1 agreement, two valid fragments and all fourteen surfaces matching actual v0.10.1. cargo xtask notes 0.10.1 passes with the unchanged short published highlights.
+
+The production Next.js site build succeeds with all 74 pages, required static-export markers, four unit tests and all thirteen production accessibility/navigation/search/link tests (zero failures or skips). Direct hidden noninteractive Node launchers are used rather than console-window-producing shell wrappers. Strict UTF-8/no-BOM/LF/final-newline/dash/whitespace sanity passes on all 21 changed files; git diff --check passes. No generated site output or ignored downloads are staged. Issue #418 records verified publication with only its human-merge reconciliation item still open; parent #334 links this bounded child without closing final acceptance. No new unrelated GitHub issue has arrived since kickoff.
