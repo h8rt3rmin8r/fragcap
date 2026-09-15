@@ -1,0 +1,33 @@
+---
+title: Doctor and troubleshooting
+description: Read environment readiness, distinguish retained history from recoverable residue, and review exact remediation.
+---
+
+## Read first, repair separately
+
+```powershell
+fragcap doctor
+fragcap doctor --json
+```
+
+Doctor checks without starting Capture, a proxy, a target, or trust changes. Capture and Deep Capture readiness are separate verdicts. Missing elevation, Npcap, required backend features, or usable interfaces can block packet recording without proving that the native proxy is unavailable. Indeterminate means the check could not establish the fact; it is not a green result. Target compatibility is separate from environment readiness.
+
+Native resource rows expose session/resource identity, kind, state, health, ownership authority, and recovery eligibility. Human output wraps full identities and adapts to narrow terminals. JSON preserves machine names and adds `native_resource`; do not scrape column spacing as a stable API.
+
+## Recovery is exact ownership, not a sweep
+
+Completed bundles and retained sensitive artifacts can be healthy history. Their existence alone does not authorize deletion. Durable journals distinguish acquired, pending, reconciled, missing, ambiguous, and unprovable resources. Recovery decisions are shared with session preparation: pending prior-session recovery can refuse a new session before its plan appears.
+
+```powershell
+fragcap doctor --fix
+```
+
+Review each named action and exact identity before its individual confirmation. CurrentUser trust removal requires the exact recorded owned CA; another user's trust, an unrelated certificate, a process with only a matching image name, or an unprovable listener is not owned. Failed recovery retains evidence. Re-run plain Doctor and retain unresolved journals and manifests rather than deleting the authority needed to recover.
+
+Published builds offer the official Npcap acquisition page after confirmation. Optional source-build `net` support may fetch and launch the vendor's signed installer after confirmation. Neither path silently installs or redistributes the driver. Wireshark/extcap remediation is optional for command-line Capture.
+
+## A stalled check
+
+[Issue #372](https://github.com/h8rt3rmin8r/fragcap/issues/372) tracks an elevated Doctor stall awaiting reproduction on newly published bytes. S150 does not claim to fix it. The operator owns that reproduction; an agent must not run the installed sensitive product or change real host trust to manufacture evidence. Report the published version, privilege level, last visible check, elapsed time, and sanitized diagnostic evidence. Exclude account names, private paths, target inventory, endpoints, credentials, and bundle contents. A stalled or interrupted check does not establish readiness or authorize a repair.
+
+For bundle authority and explicit sharing, see [Output formats](/docs/reference/output-formats) and [Security and privacy](/docs/guides/security-and-privacy).

@@ -58,17 +58,9 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 **v0.9.0 is the current release.** Capture provides target-scoped, process-attributed packet capture. Deep Capture adds a guarded native Rust proxy for eligible stored targets, with managed Steam, publisher, and direct-executable launches; scoped IPv4 and IPv6 routing; HTTP/1.1, HTTP/2, HTTP/3, TLS, WebSocket, SSE, gRPC, SOCKS5 TCP and UDP, and generic TCP and UDP evidence; and manifest-indexed packet, application, process, correlation, loss, and cleanup records.
 
-> **Deep Capture is functional but incomplete.** S107 adds proxy-owned TLS key
-> logs, explicit operator-supplied upstream client identities, stable refusal
-> evidence, and protected sensitive-artifact cleanup and sharing. S106 added bounded WebSocket
-> frames and messages over HTTP/1.1 and HTTP/2, incremental Server-Sent Events,
-> and schema-free gRPC message envelopes to the live application stream
-> to the native Rust sole production path. Python and mitmdump are no
-> longer runtime prerequisites. Protocol, launch, transport, recovery, artifact,
-> and completion coverage continues through the remaining Deep Capture milestones.
-> [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
-> owns the complete four-milestone roadmap. Do not treat Deep Capture as native,
-> self-contained, or feature-complete until the final gate, #334, closes.
+> **Deep Capture is functional but incomplete.** The production proxy and current-user trust lifecycle are native Rust and Windows API paths, with no separately installed proxy runtime. Implemented protocol, routing, recovery, artifact, packaging, stable library API, guided calibration, and session-presentation contracts have controlled evidence. Independent security review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333) and final gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) remain open. Native implementation does not imply universal decryption, live title compatibility, or feature-completion approval. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278) retains that completion authority.
+
+S150 prepares v0.10.0 as the next reviewable release. v0.9.0 remains the latest published baseline until the operator tags and successfully publishes the candidate. Use published release bytes for operator testing; preparation and portable CI are not an independent installed-build audit.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 
@@ -115,10 +107,7 @@ roles that separate launcher, client, and platform-service traffic.
 ## What it does
 
 - Attributes captured packets to the process that produced them, from launcher
-  start through client exit, and marks the ones it cannot resolve as
-  unattributed rather than dropping them or guessing. A frame with no flow key
-  or a socket-table miss is retained and labeled, not silently assigned an
-  owner.
+  start through client exit without guessing an owner. Default target scope omits unattributed and other-process traffic with explicit counters; `--scope all` retains it with attribution state marked.
 - Writes `.fcapng`, an extended pcapng profile carrying attribution in packet
   comments. **Unmodified analyzers read it as ordinary pcapng** and ignore the
   annotations. Compatibility is never traded for richness.
@@ -134,7 +123,7 @@ roles that separate launcher, client, and platform-service traffic.
 
 - Runs explicit Deep Capture sessions for stored targets with current compatibility evidence, correlating packet and application observations in one session bundle and reporting proxy, trust, omission, and cleanup state.
 
-The command-line tool exposes `capture` and `deep-capture` alongside `targets`, `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. The public Rust facade also exposes Deep Capture session orchestration and managed launch preparation for Steam and stored direct executables.
+The command-line tool exposes `capture`, `calibrate`, and `deep-capture` alongside target, diagnostic, analyzer, and bundle commands. The stable `fragcap::deep_capture::api` v1 facade exposes checked session preparation, exact plan authorization, cooperative cancellation, typed observations, and terminal truth without CLI ownership. See the [library guide](https://fragcap.com/docs/reference/library-api).
 
 Start with `fragcap targets`: it lists the capturable titles on your machine and
 ends by naming the next command.
@@ -176,7 +165,7 @@ fragcap capture --target sample_adventure --mode ring --ring 10m --out captures/
 fragcap capture --process sample-game.exe --duration 5m --out capture.fcapng
 
 # Guarded local-proxy inspection of a known-compatible stored target
-fragcap deep-capture 1 --launch --duration 30m --trust-ca --har
+fragcap deep-capture 1 --launch --duration 30m --har
 ```
 
 `sample_adventure` and `sample_arena` are synthetic target selectors. A target is registered in your local store; register an installed Steam title with `fragcap targets add --steam <APP_ID>`, then capture it by handle, name, or row index. A bare `fragcap` lists your registered targets. Non-file sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so they name it explicitly with `,format=pcapng` or `,format=jsonl`.
@@ -295,7 +284,7 @@ site/                             Documentation website (fragcap.com), Fumadocs
 docs/fragcap-specification.md     Architecture of record
 docs/fragcap-spec-outline.md      Navigable map of the specification
 docs/glossary/                    Glossary, one page per category (single source)
-docs/plans/README.md              Slice ordering S01 to S18
+docs/plans/README.md              Chronological slice ordering and dependencies
 brand/                            Brand identity kit (fonts, logos, tokens)
 specs/                            Spec Kit feature slices
 scripts/                          Shell wrappers and the documentation linter

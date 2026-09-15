@@ -5,9 +5,9 @@
   "release_features": ["etw", "live", "socket-table"],
   "workspace_msrv": "1.88",
   "graph_views": [
-    {"name": "linux-all", "digest": "906fb12c509f2ad6678c39e6fcf19215cab04b97f85c734cf991f13458c1efd4", "packages": 187, "edges": 448},
-    {"name": "windows-all", "digest": "ba58491cd614cc58e927da1e597d416369c0052a6b106522fe9f0f14d7e857dc", "packages": 186, "edges": 424},
-    {"name": "windows-release", "digest": "f5abd7bd16f9b876c3414a00dde7938532d642b672f8d4000187bce8b43cf745", "packages": 148, "edges": 317}
+    {"name": "linux-all", "digest": "96700124b280640984877d601dc8da95d640cced34e454a110444f920c030317", "packages": 187, "edges": 448},
+    {"name": "windows-all", "digest": "cc3189545e4073dccb6b575cc4d8c29a8714eba849eb502bbba8c004108de6b4", "packages": 186, "edges": 424},
+    {"name": "windows-release", "digest": "bc85259ec756031d43ab016ace2892056a2f6b45d54547213e51a097ef53f44a", "packages": 148, "edges": 317}
   ],
   "allowed_sources": ["registry+https://github.com/rust-lang/crates.io-index"],
   "tools": [
@@ -43,7 +43,7 @@
     {"name": "syn", "lines": ["2", "3"], "owner": "project-maintainers", "rationale": "Current proc-macro dependencies have not converged on syn 3.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "All reachable proc-macro packages converge on syn 3."},
     {"name": "windows-sys", "lines": ["0.36", "0.61"], "owner": "project-maintainers", "rationale": "The existing pcap and platform binding remains on 0.36 while native proxy dependencies use 0.61.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "The pcap and platform binding can move to the current Windows binding line without ABI or scope churn."}
   ],
-  "unsafe_review": {"graph_view": "windows-all", "graph_digest": "ba58491cd614cc58e927da1e597d416369c0052a6b106522fe9f0f14d7e857dc", "owner": "project-maintainers", "reviewed": "2026-09-15", "expires": "2026-12-08", "rationale": "Unsafe implementation remains confined to reviewed cryptography, platform FFI, allocators, and optimized transitive packages. S149 changes only Rustls 0.23.43 to 0.23.45; source comparison adds or removes no unsafe implementation, existing ring provider and feature inventory stay fixed, package and edge counts stay fixed, and the Rust floor stays 1.71 within workspace 1.88. Review expiry and all exceptions are unchanged."},
+"unsafe_review": {"graph_view": "windows-all", "graph_digest": "cc3189545e4073dccb6b575cc4d8c29a8714eba849eb502bbba8c004108de6b4", "owner": "project-maintainers", "reviewed": "2026-09-15", "expires": "2026-12-08", "rationale": "Unsafe implementation remains confined to reviewed cryptography, platform FFI, allocators, and optimized transitive packages. S149 changes only Rustls 0.23.43 to 0.23.45; source comparison adds or removes no unsafe implementation, existing ring provider and feature inventory stay fixed, package and edge counts stay fixed, and the Rust floor stays 1.71 within workspace 1.88. S150 changes only first-party package versions to 0.10.0 in the three locked graphs and rebinds this existing inventory to the resulting windows-all digest; no third-party source, feature, provider, unsafe implementation, package count or edge count changes. This is metadata reconciliation, not independent whole-product approval. Review expiry and all exceptions are unchanged."},
   "exceptions": [
     {"id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19", "tool": "cargo-cyclonedx", "tool_version": "0.5.9", "owner": "project-maintainers", "rationale": "The current official cargo-cyclonedx 0.5.9 locked tool graph retains this yanked XML writer; it runs only during SBOM generation, is not linked or shipped, and has no advisory.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "Upgrade cargo-cyclonedx when an official release removes xml-rs 0.8.19 from its locked generator graph."}
   ]

@@ -4,12 +4,7 @@ description: Process-attributed Capture and explicit, target-scoped Deep Capture
 ---
 
 <Callout title="Deep Capture status">
-Deep Capture is functional but incomplete. S105 extends the native authenticated
-HTTP/1.1, CONNECT, and HTTPS path with HTTP/2, protocol-faithful metadata,
-bounded body observations, and a live application stream. Python and mitmdump
-are no longer prerequisites. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
-owns the remaining completion roadmap. Deep Capture is not yet self-contained
-or feature-complete.
+Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration through S149. S150 prepares current documentation and v0.10.0, not an independent audit or published release. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278) and final gate #334 remain open. v0.9.0 remains the published baseline until operator publication.
 </Callout>
 
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
@@ -20,7 +15,7 @@ Ordinary packet records do not preserve process ownership. fragcap correlates th
 
 Two prerequisites, before anything else:
 
-- **[Npcap](https://npcap.com/)**, installed in WinPcap API-compatible mode, is required for live packet capture. fragcap never bundles or redistributes it. After explicit interactive confirmation, `fragcap doctor --fix` can fetch and launch the vendor's signed installer from the official location.
+- **[Npcap](https://npcap.com/)** in WinPcap API-compatible mode is required for live packets and is never bundled or redistributed. Published `doctor --fix` offers the official acquisition page after confirmation; optional source-build `net` support can fetch and launch the vendor's signed installer after confirmation.
 - **[Wireshark](https://www.wireshark.org/)** (or another pcapng-aware analyzer)
   is how you read a capture. fragcap writes extended pcapng; you capture with
   fragcap, then open the result in Wireshark to inspect it.

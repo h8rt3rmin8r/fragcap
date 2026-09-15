@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.70-draft \
-**Applies-To:** 0.9.0 \
+**Version:** 0.1.71-draft \
+**Applies-To:** 0.10.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-09-15 \
@@ -50,14 +50,7 @@ product's purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
 
-Two version fields in the header mean different things. **Applies-To** names the
-released software version this document describes. It tracks the workspace
-package version and is bound to it by `cargo xtask spec`, so the specification
-and the shipped artifact cannot drift (constitution P-11). **Version** is this
-document's own revision, recorded in the history below. As of this revision the
-released software runs from v0.1.0, the crates.io namespace-reservation stub
-carrying no functionality, through v0.8.0. The per-release scope is in section
-27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove that a candidate has been published. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.9.0. S150 prepares v0.10.0 for operator publication; independent review #333 and final gate #334 remain open. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -163,6 +156,7 @@ enforcement.
 | 0.1.68-draft | 2026-09-11 | W. Thompson | **Completes controlled guided-calibration acceptance (issue #380).** Extends sections 15, 17.2.1, 24.3, 25, and 28. One checked registry maps all thirteen parent criteria to exact controlled tests and is validated in ordinary CI. Stable confirmed selection can narrow an ambiguous non-Steam client-only declaration without collapsing Steam or publisher authority, and store version 13 adds update and anti-cheat to the no-effect pause vocabulary. Direct, Steam, and publisher defaults, complete visible plans, durable resume, refusal, cleanup, and ordinary Deep Capture handoff are regression-protected. S147 closes only the guided workflow; no real-game compatibility was demonstrated. Real-game validation is operator-owned, optional, and permitted only against a published release. |
 | 0.1.69-draft | 2026-09-11 | W. Thompson | **Makes the complete Deep Capture workflow discoverable from embedded help (issue #379).** Extends sections 17.2.2, 25, and 28. Root and workflow command help now lead from environment checks through target discovery, registration, calibration, and a managed Deep Capture launch, with Steam and direct or publisher examples. The Deep Capture page groups ordinary controls before advanced and sensitive controls, states compatibility and certificate-pinning limits, and names sensitive outputs. Human pre-session refusals and cleanup failures provide one bounded next command while JSON contracts remain unchanged. Width and parse tests cover the audited help surface without running a target or changing trust. |
 | 0.1.70-draft | 2026-09-15 | W. Thompson | **Completes native session presentation (issue #332).** Extends section 26.3 and the controlled acceptance record. Required human authorization now includes a plan-derived active-mode, trust, sensitive-output, retention, and recovery summary alongside unchanged canonical JSON. Typed lifecycle stages receive human progress; canonical six-state observation-delivery counters remain distinct from existing live packet counters. A post-run terminal report survives quiet, preserves actual session and artifact status, confirms retained paths, and names exact cleanup obligations and confirmation-gated recovery. JSON schemas, consent policy, protocols, storage, and effect authority remain unchanged. Controlled tests do not claim live game compatibility or final #334 completion. |
+| 0.1.71-draft | 2026-09-15 | W. Thompson | **Prepares current native documentation and v0.10.0 independent-review readiness (S150, #411).** Corrects current product instructions, checks nonhistorical command examples without dispatch, links reader-validated manifest specimens, and publishes Doctor, security/privacy, packaging/migration and stable API guidance. A closed twelve-area handoff validates existing evidence and an explicitly not-started review record. Local version-only release preparation and controlled evidence do not tag, publish, perform installed sensitive-product execution, satisfy independent audit #333 or complete #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4037,18 +4031,13 @@ rather than a repository subpath.
 /docs/contributing       Development setup, standards, workflow
 ```
 
-Getting started is ordered by the actual first-run sequence: install
-the capture driver with its required options, verify with diagnostics,
-capture a session, open the result.
+Getting started follows the actual first-run sequence: install digest-verified published bytes and separate driver prerequisites, observe readiness, resolve a target, record passive Capture, and open packet truth. The optional continuation uses guided calibration with separate registration/setup/session authorizations, resumable operator pauses, fresh exact-case applicability and a complete Deep Capture plan. Documentation distinguishes prepared candidate from published baseline.
 
 Getting started also sets three expectations that users otherwise form
 incorrectly and spend time disproving. Each comes from a measured
 finding in Appendix D.
 
-**Payloads are encrypted.** Both focal titles encrypt everything. Users
-get timing, sizing, endpoints, and attribution, not readable game
-packets. Section 19.6 states the position; getting started states it
-where a new user will actually encounter it.
+**Payload encryption is observed, not assumed.** Appendix D's focal titles encrypt their observed traffic. Capture preserves acquired packet truth rather than decrypting it or asserting all payloads are encrypted. Deep Capture adds semantics only for supported scoped traffic under its separate trust and protocol boundaries, without bypassing pinning.
 
 **The launcher-to-client handoff is not in the capture.** It happens on
 the command line, so no packet carries it. It is visible in process
@@ -4094,6 +4083,12 @@ verification and runs on a weekly schedule rather than per commit.
 `cargo xtask docs` starts the documentation site locally with hot
 reload. The task is the same entry point continuous integration uses,
 so local and built output cannot diverge through configuration drift.
+
+### 22.7 Native documentation and independent-review readiness
+
+Current architecture, getting started, CLI, compatibility, outputs, Doctor/troubleshooting, security/privacy, packaging/migration and stable API guidance trace to native source and controlled evidence. Current fenced fragcap commands across README and nonhistorical site pages are parser-checked without dispatch; Mermaid is not a command fence, and retired Deep Capture consent inputs are refused. Artifact specimens link to published schema/examples validated by actual product readers, not approximate new JSON or the target-schema validator.
+
+The twelve-area whole-product handoff maps architecture/threat model, dependencies, unsafe code, parsers, TLS, certificate issuance, trust, listener isolation, routing, artifacts, recovery and packaging to review methods and executable non-ignored evidence. `cargo xtask review-handoff` checks closed scope, confined existing source/test references and an exact not-started record. It does not perform independent review, populate future source/package identity, approve findings or close #333. Reviewer-owned installed Windows methods use frozen published certified bytes and actual finding dispositions and independent retests. Agent execution of installed sensitive software or real games is not substituted for operator validation.
 
 ## 23. Website and Brand
 
@@ -4465,6 +4460,8 @@ their owning source and rejects inventory
 drift, missing sides, incomplete outcomes, unowned families, and stale or
 disabled tests. The command runs in ordinary CI and follows the repository
 0/1/2 exit contract.
+
+S150's explicitly authorized #413 remediation preserves the S128 performance authority (`performance/native-proxy-budgets-v1.json`), workload, queue capacity, and all budgets. Application serialization uses a finite 64 KiB byte buffer with the existing 64-event pending-storage bound, timeout/final flush, exact failed-write reconciliation, and unchanged observation content. Owned JSON fields move rather than being copied again. Deterministic metadata write-count and output-equivalence tests protect this implementation; two fresh fixed-code Windows short campaigns must individually pass and agree before release verification clears. Original failed reports remain historical evidence, not rewritten acceptance.
 
 ### 25.6 Attribution Accuracy Measurement
 
@@ -4845,6 +4842,9 @@ restated here. The scope of each release is:
 | v0.6.0 | 2026-08-22 | Truthful live status, target-scoped output, loss accounting, and evidence-based target discovery corrections | follow-on slices |
 | v0.7.0 | 2026-08-27 | Deep Capture architecture and MVP, compatibility facts, session bundles, readiness and cleanup, and target-discovery corrections | follow-on slices |
 | v0.8.0 | 2026-08-30 | Deep Capture compatibility calibration, public library-first session orchestration, managed direct-executable launch, and documentation accessibility and recovery corrections | S095 through S101 |
+| v0.9.0 | 2026-09-05 | Native protocols, scoped managed launches and routing, application artifacts and correlation, recovery, security/performance and relocated Windows integration evidence; final completion remains open | S102 through S129 |
+
+S150 prepares v0.10.0 from the subsequent supply-chain, final-package, stable API, discovery/authorization, guided calibration and session UX slices S130 through S150. This candidate is not a published-release row until operator publication; independent review #333 and final gate #334 remain outstanding.
 
 ### 27.4 Critical Path
 

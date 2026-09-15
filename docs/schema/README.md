@@ -16,8 +16,7 @@ Committed complete, partial, crash-prefix, and legacy examples live under
 Manifest version 2 also distinguishes `proxy-lifecycle`,
 `cleanup-lifecycle`, `cleanup-summary`, and `resource-journal`; the summary is a
 derived projection whose authority source is `cleanup-lifecycle`.
-Emit the embedded copy with `fragcap schema print`, and validate any JSON file
-against it with `fragcap schema validate <file>`.
+Emit the embedded target schema with `fragcap schema print`, and validate target documents with `fragcap schema validate <file>`. These commands do not select the manifest or application contract. Native manifest specimens are validated by the same `ManifestDocument` reader used for bundles through the `published_examples_match_the_versioned_reader` workspace test. Application streams and HAR projections use dedicated product readers and projection checks, not target schema validation.
 
 The schema governs every machine-readable targeting and attribution artifact.
 Validation is structural only: the semantic invariants of profile loading

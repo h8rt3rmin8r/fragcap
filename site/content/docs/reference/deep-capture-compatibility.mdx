@@ -3,14 +3,8 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-<Callout title="Native in v0.9, final gate still open">
-This matrix describes the v0.9 native Deep Capture path through S129. Native
-protocol, scoped routing, managed launch, lifecycle recovery, artifact, security,
-performance, and relocated-binary integration work has landed. The final
-feature-completion gate remains
-[issue #334](https://github.com/h8rt3rmin8r/fragcap/issues/334), with packaging
-and archive validation tracked separately by
-[issue #329](https://github.com/h8rt3rmin8r/fragcap/issues/329).
+<Callout title="Native implementation, final gate still open">
+This matrix includes the native implementation, final-package certification, stable API, and guided calibration through S149. S150 prepares v0.10.0; v0.9.0 remains the last published baseline until operator publication. Independent whole-product review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333) and the final completion gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) remain outstanding. Controlled conformance and packaging evidence are not a universal title-compatibility claim.
 </Callout>
 
 <Callout title="The short version">
@@ -34,7 +28,7 @@ process, or silently change system-wide proxy settings. Packet truth remains
 available through Capture even when application inspection is unavailable.
 
 See [Output formats and session bundles](/docs/reference/output-formats) for the
-current v0.9 artifact authority, sensitivity, omission, correlation, retention,
+current native artifact authority, sensitivity, omission, correlation, retention,
 and cleanup contract. The native bundle includes versioned application and
 cleanup streams, packet-to-application correlation, a bounded HAR projection,
 and a manifest that declares finalization, completeness, loss, sensitivity, and
@@ -100,7 +94,7 @@ target versions, or proxy backends can produce different results.
 | `user-confirmed` | An operator explicitly confirmed the fact. |
 | `imported-catalog` | The fact came from an external catalog source. Import provenance does not by itself make the fact current or stale. |
 | `stale-observation` | Historical context that always appears as stale. |
-| `current` | The row is not marked stale and is not a stale observation. |
+| `current` | The displayed row is not marked stale and is not a stale observation. This display label alone does not establish applicability to a newly prepared exact case. |
 | `stale` | The row is marked stale or has the `stale-observation` source. |
 | `unknown` | A successful local-store read found no compatibility facts. No result was inferred from the title, engine, platform, or executable. |
 
@@ -111,6 +105,30 @@ launch-specific rows remain available as context rather than being silently
 rewritten.
 
 ## Calibrating an unknown target
+
+Start with the guided front door:
+
+```powershell
+fragcap calibrate sample-target
+fragcap calibrate --id 42 --protocol https
+```
+
+Stored resolution takes precedence. On a clean miss, an exact installed Steam application identifier or case-insensitive display name can produce a separately confirmed registration plan. Eligible absent Steam executable metadata and ambiguous stored non-Steam client declarations have distinct setup and candidate-selection plans. A content-derived `--candidate` identity selects one current candidate, never a list position. Registration, setup, and each later session require separate fresh authorization; a choice is not consent to traffic inspection.
+
+The workflow proposes reachability first when applicable routing evidence is missing. Fresh eligible final-client observations can propose concrete protocols, but requested `--protocol` values are only measurement intent. Each workflow runs reachability at most once and each concrete protocol at most once, with at most fourteen durable attempt ordinals. A failure, limitation, decline, partial result, interruption, target change, or repeated case checkpoints coverage and stops later effects instead of pretending success.
+
+Resume from the same effective local store using the workflow identity printed by the command:
+
+```powershell
+fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
+fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
+```
+
+The workflow stores an immutable target snapshot and exact-case intent. Resume rebuilds process inventory, fact applicability, proposal, recovery, bundle, plan, and confirmation authority; it never reuses an old plan or response. An in-flight record first becomes an effect-free interruption pause. Login, EULA, update, anti-cheat, gameplay, shutdown, and interruption pauses record operator work, not compatibility proof. Advanced fresh workflows can assert the inferred cold launch case, choose IPv4 or IPv6, and select child-environment routing; other routing strategies remain pre-effect refusals. Resume cannot change those dimensions or the candidate.
+
+Ordinary eligibility uses the latest exact applicable routing row for target/version, launch case, route, loopback family, selected measurement, native backend/version, and fragcap version. A historical `current` display label, imported fact, protocol fact, launcher observation, or another workflow cannot substitute for that decision. See the [CLI reference](/docs/reference/cli#calibrate) for full options.
+
+### Advanced single-phase measurements
 
 Compatibility calibration is the supported, explicit path from unknown local evidence toward ordinary Deep Capture eligibility. It keeps the ordinary safety gate intact and measures one declared launch case in two separate runs.
 

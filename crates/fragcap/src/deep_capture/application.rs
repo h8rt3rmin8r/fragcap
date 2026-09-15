@@ -25,6 +25,9 @@ use super::{
 };
 
 const SCHEMA_VERSION: u64 = 2;
+// Amortize metadata-heavy UDP/QUIC writes without expanding the event queue
+// or the writer's existing 64-event pending-storage bound.
+const APPLICATION_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 #[cfg(not(test))]
 const MAX_CONNECTION_WINDOWS: usize = 65_536;
 #[cfg(test)]
@@ -582,7 +585,7 @@ fn writer_loop(
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
     reconciled_classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
 ) -> io::Result<()> {
-    let mut writer = BufWriter::new(file);
+    let mut writer = application_writer(file);
     let mut sequence = 0_u64;
     let mut records_by_type = BTreeMap::<String, u64>::new();
     let mut body_observed = 0_u64;
@@ -1161,6 +1164,10 @@ fn serialized_record(value: &Value) -> io::Result<(Vec<u8>, u64)> {
     Ok((record, serialized_bytes))
 }
 
+fn application_writer<W: Write>(writer: W) -> BufWriter<W> {
+    BufWriter::with_capacity(APPLICATION_WRITE_BUFFER_BYTES, writer)
+}
+
 fn buffer_application_record<W: Write>(
     writer: &mut BufWriter<W>,
     value: &Value,
@@ -1277,7 +1284,10 @@ fn event_json(
         "correlation_state": correlation.state.unwrap_or_else(|| "deferred".to_string()),
         "correlation_reason": correlation.reason.unwrap_or_else(|| "final-reconciliation-pending".to_string()),
     });
-    let mut object = common.as_object().cloned().unwrap_or_default();
+    let mut object = match common {
+        Value::Object(object) => object,
+        _ => unreachable!("common application fields are an object"),
+    };
     let (kind, detail) = match event.kind {
         ApplicationEventKind::ConnectionOpen(value) => (
             "connection.open",
@@ -1525,8 +1535,8 @@ fn event_json(
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
-    if let Some(detail) = detail.as_object() {
-        object.extend(detail.clone());
+    if let Value::Object(detail) = detail {
+        object.extend(detail);
     }
     Value::Object(object)
 }
@@ -2836,6 +2846,287 @@ mod tests {
                 .load(Ordering::Acquire),
             4
         );
+    }
+
+    #[test]
+    fn metadata_writer_batches_without_changing_observations_or_pending_bound() {
+        #[derive(Default)]
+        struct CountWrites {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountWrites {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = application_writer(CountWrites::default());
+        let account = WriterAccount::default();
+        let mut pending = Vec::with_capacity(64);
+        let mut serialized_bytes = 0;
+        let mut expected = Vec::new();
+        let mut expected_serialized_bytes = 0;
+        for sequence in 1..=4096 {
+            let remote = "127.0.0.1:42000".parse().unwrap();
+            let kind = if sequence % 2 == 0 {
+                ApplicationEventKind::SocksUdp(fragcap_proxy::SocksUdpEvent {
+                    action: "client-to-upstream",
+                    outcome: "forwarded",
+                    address_type: Some("ipv4"),
+                    remote: Some(remote),
+                    payload_bytes: 1200,
+                    active_peers: 1,
+                })
+            } else {
+                ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                    direction: fragcap_proxy::GenericUdpDirection::ClientToUpstream,
+                    sequence,
+                    client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                    remote_endpoint: remote,
+                    observed_len: 1200,
+                    bytes: bytes::Bytes::new(),
+                    outcome: fragcap_proxy::GenericUdpOutcome::IntentionallyOmitted,
+                })
+            };
+            let event = ApplicationEvent::now("session", 7, None, None, kind);
+            let value = event_json(event.clone(), sequence, ApplicationCorrelation::default());
+            let (wire, length) = serialized_record(&value).unwrap();
+            expected.extend_from_slice(&wire);
+            expected_serialized_bytes += length;
+            buffer_application_record(
+                &mut writer,
+                &value,
+                event,
+                &mut pending,
+                &mut serialized_bytes,
+                &account,
+            )
+            .unwrap();
+            assert!(pending.len() <= 64);
+            assert_eq!(pending.capacity(), 64);
+            if pending.len() == 64 {
+                flush_application_batch(&mut writer, &mut pending, &mut serialized_bytes, &account)
+                    .unwrap();
+            }
+        }
+        flush_application_batch(&mut writer, &mut pending, &mut serialized_bytes, &account)
+            .unwrap();
+        assert_eq!(writer.get_ref().bytes, expected);
+        assert_eq!(account.written.load(Ordering::Acquire), 4096);
+        assert_eq!(
+            account.serialized_bytes.load(Ordering::Acquire),
+            expected_serialized_bytes
+        );
+        assert_eq!(account.dropped.load(Ordering::Acquire), 0);
+        assert!(pending.is_empty());
+        assert_eq!(writer.get_ref().calls, 64);
+    }
+
+    #[test]
+    fn batched_quic_storage_failure_reconciles_pending_and_queued_observations() {
+        struct FailWrites;
+        impl Write for FailWrites {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("controlled storage failure"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let kinds = [
+            ApplicationEventKind::QuicStream(fragcap_proxy::QuicStreamEvent {
+                pair_id: 9,
+                direction: fragcap_proxy::QuicDirection::ClientToUpstream,
+                stream_id: 0,
+                stream_kind: "http3-request",
+                sequence: 0,
+                offset: 0,
+                observed_len: 6,
+                bytes: bytes::Bytes::from_static(b"stream"),
+                outcome: fragcap_proxy::GenericStreamOutcome::Complete,
+                terminal: "forwarded",
+            }),
+            ApplicationEventKind::QuicDatagram(fragcap_proxy::QuicDatagramEvent {
+                pair_id: 9,
+                direction: fragcap_proxy::QuicDirection::ClientToUpstream,
+                sequence: 0,
+                observed_len: 4,
+                bytes: bytes::Bytes::from_static(b"data"),
+                outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                terminal: "forwarded",
+            }),
+            ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                direction: fragcap_proxy::GenericUdpDirection::ClientToUpstream,
+                sequence: 0,
+                client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                observed_len: 5,
+                bytes: bytes::Bytes::from_static(b"hello"),
+                outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+            }),
+        ];
+        let mut writer = application_writer(FailWrites);
+        let account = WriterAccount::default();
+        let mut pending = Vec::with_capacity(64);
+        let mut serialized_bytes = 0;
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let event =
+                ApplicationEvent::now("session", 7, Some(0), Some(ProtocolVersion::Http3), kind);
+            let value = event_json(
+                event.clone(),
+                index as u64 + 1,
+                ApplicationCorrelation::default(),
+            );
+            buffer_application_record(
+                &mut writer,
+                &value,
+                event,
+                &mut pending,
+                &mut serialized_bytes,
+                &account,
+            )
+            .unwrap();
+        }
+        let (tx, receiver) = mpsc::sync_channel(1);
+        account.queue_capacity.store(1, Ordering::Release);
+        assert!(account.reserve_queue_slot());
+        tx.try_send(ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::HttpStreamOpen,
+        ))
+        .unwrap();
+        account.accepted.store(4, Ordering::Release);
+        let sender = Arc::new(Mutex::new(Some(tx)));
+        let retired = AtomicBool::new(false);
+        let error =
+            flush_application_batch(&mut writer, &mut pending, &mut serialized_bytes, &account)
+                .unwrap_err();
+        assert!(fail_application_writer(
+            error,
+            &mut pending,
+            &receiver,
+            &sender,
+            &retired,
+            &account
+        )
+        .is_err());
+        assert!(retired.load(Ordering::Acquire));
+        assert!(pending.is_empty());
+        assert_eq!(account.queue_current.load(Ordering::Acquire), 0);
+        assert_eq!(
+            account.accepted.load(Ordering::Acquire),
+            account.written.load(Ordering::Acquire) + account.dropped.load(Ordering::Acquire)
+        );
+        assert_eq!(account.dropped.load(Ordering::Acquire), 4);
+        assert_eq!(
+            account
+                .quic_stream_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            6
+        );
+        assert_eq!(
+            account
+                .quic_datagrams_storage_dropped
+                .load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            account
+                .quic_datagram_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            4
+        );
+        assert_eq!(
+            account
+                .generic_udp_datagrams_storage_dropped
+                .load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            account
+                .generic_udp_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            5
+        );
+    }
+
+    #[test]
+    fn oversized_quic_record_write_failure_retains_exact_loss_ownership() {
+        struct FailWrites;
+        impl Write for FailWrites {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("controlled direct write failure"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            Some(0),
+            Some(ProtocolVersion::Http3),
+            ApplicationEventKind::QuicStream(fragcap_proxy::QuicStreamEvent {
+                pair_id: 9,
+                direction: fragcap_proxy::QuicDirection::ClientToUpstream,
+                stream_id: 0,
+                stream_kind: "http3-request",
+                sequence: 0,
+                offset: 0,
+                observed_len: APPLICATION_WRITE_BUFFER_BYTES as u64,
+                bytes: bytes::Bytes::from(vec![42; APPLICATION_WRITE_BUFFER_BYTES]),
+                outcome: fragcap_proxy::GenericStreamOutcome::Complete,
+                terminal: "forwarded",
+            }),
+        );
+        let value = event_json(event.clone(), 1, ApplicationCorrelation::default());
+        let mut writer = application_writer(FailWrites);
+        assert!(serialized_record(&value).unwrap().0.len() > writer.capacity());
+        let account = WriterAccount::default();
+        account.accepted.store(1, Ordering::Release);
+        let mut pending = Vec::with_capacity(64);
+        let mut serialized_bytes = 0;
+        let error = buffer_application_record(
+            &mut writer,
+            &value,
+            event,
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .unwrap_err();
+        assert_eq!(pending.len(), 1);
+        let (tx, receiver) = mpsc::sync_channel(1);
+        let sender = Arc::new(Mutex::new(Some(tx)));
+        let retired = AtomicBool::new(false);
+        assert!(fail_application_writer(
+            error,
+            &mut pending,
+            &receiver,
+            &sender,
+            &retired,
+            &account
+        )
+        .is_err());
+        assert_eq!(account.written.load(Ordering::Acquire), 0);
+        assert_eq!(account.dropped.load(Ordering::Acquire), 1);
+        assert_eq!(
+            account
+                .quic_stream_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            APPLICATION_WRITE_BUFFER_BYTES as u64
+        );
+        assert!(retired.load(Ordering::Acquire));
+        assert!(pending.is_empty());
     }
 
     #[test]

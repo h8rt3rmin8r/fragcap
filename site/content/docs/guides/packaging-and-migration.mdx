@@ -1,0 +1,31 @@
+---
+title: Packaging and migration
+description: Official unsigned downloads, package certification, preserved user data, and deliberate fresh-start removal.
+---
+
+## Official bytes
+
+Use the [official release downloads](https://github.com/h8rt3rmin8r/fragcap/releases). The portable ZIP and MSI contain the same six payload files; the standalone catalog is also published. Each primary artifact has a SHA-256 sidecar. The MSI and executables are deliberately unsigned. Checksums bind a download to published bytes but do not supply Authenticode publisher identity.
+
+The MSI owns its Program Files payload, product registration, exact system PATH entry, and only a Defender exclusion whose exact normalized path it successfully created and recorded. Pre-existing administrator-owned exclusions remain untouched. Portable use does not require installation. Npcap and Wireshark are separately acquired, not bundled fragcap dependencies.
+
+Final-package certification builds the official feature closure once, checks build identity, imports, sizes, shared digests and checksums, then validates isolated Windows lifecycle and constrained loopback smoke. Release publication uses those exact certified bytes, not a rebuilt executable. This is package evidence, not a claim that all games were tested or that the whole-product independent review passed. See [maintainer certification policy](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/maintainers/package-certification.md).
+
+## Upgrade without losing research
+
+Ordinary upgrade and uninstall preserve writable catalogs, local targets, profiles, captures, settings, logs, and Deep Capture bundles. Current local-store schema version 13 adds target-bound calibration checkpoints and immutable exact-case intent while retaining earlier evidence. Back up your writable stores and bundles before upgrading; a successful migration does not make old compatibility evidence applicable to a new product/backend/target version. Recalibrate the exact intended case when current applicable routing evidence is missing.
+
+Follow documentation matching the installed published version. S150 prepares v0.10.0, while v0.9.0 remains the published baseline until operator tag and release publication. Release tags and registry publication are operator-owned; source checkout or candidate build is not the requested newly published operator test surface.
+
+## Fresh start is irreversible and explicit
+
+The interactive uninstall option **Remove all fragcap application and user data for my account for a fresh start** is unchecked by default and displays the exact `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap` roots. Exact recorded current-user Deep Capture obligations are reconciled first. Accepted entries are deleted without following links or reparse points. Custom paths, exports, Npcap, Wireshark configuration, and independently managed extcap registrations are excluded.
+
+Silent current-user removal requires both `FRAGCAP_FRESH_START=1` and `FRAGCAP_FRESH_START_SCOPE=current-user`. All-users removal requires a separate preview-bound administrative flow:
+
+```powershell
+fragcap fresh-start --scope all-users --preview
+fragcap fresh-start --scope all-users --confirm <inventory-id> --yes --report .\fresh-start-report.json
+```
+
+Review every SID and exact root before confirmation. Drift requires a new preview. Another profile's Deep Capture evidence is retained because its CurrentUser trust must be reconciled while signed in as that identity. A fresh start is not permission to sweep unrelated files or trust resources. Read [Doctor and troubleshooting](/docs/guides/doctor-and-troubleshooting) before resolving remaining obligations.

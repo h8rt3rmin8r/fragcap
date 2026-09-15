@@ -4,36 +4,23 @@ description: How passive Capture and explicit Deep Capture produce distinct, aud
 ---
 
 <Callout title="Native completion status">
-Deep Capture is functional but incomplete. S105 adds native HTTP/2,
-protocol-faithful metadata, bounded body observations, and a live versioned
-application stream to the HTTP/1.1, CONNECT, and HTTPS path. Trust effects use
-native Windows APIs. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
-owns the four milestone completion contract; #334 is the only completion gate.
+Deep Capture is functional but incomplete. Native protocol, managed launch, scoped routing, bounded evidence, recovery, packaging, stable API, and guided calibration work has landed through S149. S150 prepares v0.10.0 documentation and an independent-review handoff, not a completed audit or published release. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278) owns the completion contract; [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) is the final gate.
 </Callout>
 
 fragcap has two shipped modes. [Capture](/docs/glossary/capture-and-networking#capture-mode) passively records packets and attributes flows to processes from evidence outside those processes. [Deep Capture](/docs/glossary/capture-and-networking#deep-capture) runs that same Capture path beside explicit, target-scoped local proxy inspection for one compatible stored target. Deep Capture is active by design, and it adds observations only for traffic that reaches its proxy.
 
-Both modes are library capabilities. Deep Capture is exposed through the public `fragcap::deep_capture` session API: side-effect-free preparation returns an immutable plan, caller authorization binds to that exact plan, and a checked coordinator owns start, observation, stop, fact attempts, cleanup, bundle finalization timing, and the terminal report. The CLI maps arguments, supplies the shipped effect bridges, and presents those typed results rather than defining a second lifecycle.
+Both modes are library capabilities. The stable [Deep Capture API](/docs/reference/library-api), `fragcap::deep_capture::api` version 1, exposes side-effect-free preparation, exact-plan authorization, checked lifecycle operations, narrow effect adapters, typed observations, cooperative cancellation, and one authoritative terminal report. The CLI supplies effect bridges and presentation rather than defining a second lifecycle.
 
 The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md) is the architecture of record. This page explains the execution and trust boundaries a user or reviewer needs to understand.
 
-The native target architecture adds a `fragcap-proxy` leaf beneath the facade.
-S103 gives that crate authenticated loopback admission, bounded upstream policy,
-per-session certificate and exact trust ownership, raw event accounting, and a
-controlled lab for every required protocol family. S104 adds bounded HTTP/1.1,
-CONNECT, and separately verified HTTPS. S105 adds multiplexed HTTP/2, complete
-available HTTP metadata, bounded streaming body evidence, and the live version
-2 application stream. S106 adds bounded WebSocket frame and message evidence,
-incremental Server-Sent Events, schema-free gRPC envelopes, proxy-owned TLS key
-logs, and explicit upstream client certificates. HAR, correlation, launch and transport coverage, and final
-completion remain open.
+The native architecture places `fragcap-proxy` beneath the facade. It owns authenticated loopback admission, finite task and upstream ownership, session certificates, HTTP/1.1, HTTP/2, WebSocket, SSE, gRPC envelopes, SOCKS5 TCP and UDP, generic byte evidence, and scoped QUIC/HTTP/3. Client-facing TLS and upstream TLS are separate verified boundaries. S107 introduced proxy-owned client-facing TLS key logs and explicit upstream client credentials; S108 introduced post-collection correlation, bounded HAR projection, and manifest version 2. Later slices add managed launch, IPv6 parity, exact compatibility applicability, recovery, conformance, security, performance, and final-package certification. These implementation records do not replace the outstanding independent whole-product review.
 
 ## Capture: passive packet truth
 
 A packet carries addresses and ports, but not the identity of the process that sent it. Capture joins the packet's [flow key](/docs/glossary/capture-and-networking#flow-key) with Windows socket-table and process-lifecycle evidence, then writes the result without opening or modifying the target process.
 
 ```mermaid
-flowchart LR
+flowchart TB
   accTitle: Capture packet attribution architecture
   nic["Selected interfaces"] --> npcap["Npcap"]
   npcap --> threads["Capture threads"]
@@ -56,7 +43,7 @@ The primary file is `.fcapng`, ordinary pcapng with attribution in standard pack
 Deep Capture starts from one stored target. Its read-only authorization preparation resolves the launch case, exact profile, client executable, platform root and dispatch where applicable, current compatibility evidence, proxy backend, bundle path, normalized routing policy, and exact process-local CA identity before creating the session directory, reserving the listener, or starting Capture and the proxy. Facade preflight independently prepares and compares that launch authority before selecting an endpoint, then execution consumes the retained preparation.
 
 ```mermaid
-flowchart LR
+flowchart TB
   accTitle: Deep Capture session architecture
   target["Stored target"] --> choice["Ordinary run or calibration"]
   choice --> calibrate["Reachability, then optional TLS"]
@@ -78,7 +65,7 @@ flowchart LR
   cleanup --> bundle["Manifest-indexed bundle"]
 ```
 
-The current real-target path is deliberately narrow. Ordinary Deep Capture requires current `proxy-routing = reached-client` evidence for the exact cold Steam protocol or cold direct-executable launch case. Unknown, stale, conflicting, or wrong-launch evidence is refused. Compatibility calibration can produce initial local evidence through a trust-free reachability phase followed, only after current final-client routing, by a separate TLS phase. Routing does not itself prove environment propagation. Already-running Steam and direct-executable targets are warm launches fragcap does not own, so both are refused before session side effects. The [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility) carries the complete current traffic and launch matrix.
+Ordinary Deep Capture requires current `proxy-routing = reached-client` evidence applicable to the exact target, cold managed launch, routing strategy, loopback family, selected case, backend/version, and product version. Supported topology includes direct executables, cold Steam platform ownership, and declared cold publisher chains. Unknown, stale, conflicting, escaped, ambiguous, or wrong-case authority is refused. Guided `fragcap calibrate` can resolve registration and topology through separately confirmed plans, measure trust-free reachability, and propose concrete protocol attempts only from fresh evidence. Its target-bound checkpoint preserves immutable intent, not a reusable authorization. Warm applications remain operator-owned; explicit close-and-retry observes normal operator shutdown and never stops a process itself. The [compatibility reference](/docs/reference/deep-capture-compatibility) carries the traffic and launch limits.
 
 After preflight, fragcap starts its native loopback proxy, manages any authorized CA trust, opens the ordinary Capture backend, and launches the target with launch-scoped proxy environment. The preflight does not prove that Npcap is available, the process is elevated, or a selected interface can be opened; `fragcap doctor` reports that environment readiness, and a later Capture startup failure is recorded through cleanup and the partial or failed bundle path. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
 
@@ -86,7 +73,7 @@ After preflight, fragcap starts its native loopback proxy, manages any authorize
 
 | Boundary | Trigger | Scope and owner | Cleanup or refusal |
 | --- | --- | --- | --- |
-| Compatibility | Current exact routing facts for the selected cold Steam or direct-executable launch case | One selected stored target and launch case, evaluated by fragcap | Refusal occurs before the proxy, trust, launch, or bundle side effects |
+| Compatibility | Current applicable routing facts for the exact supported cold managed launch | One selected stored target and exact measurement identity, evaluated by fragcap | Refusal occurs before proxy, trust, launch, or bundle effects |
 | Authorization | Exact versioned plan identifier | One target launch authority, process-local CA, routing policy, artifact set, deadline set, and cleanup contract | Output failure, decline, incomplete input, mismatch, expiry, or drift leaves session effects absent |
 | Calibration | Exact complete plan for one phase | One selected stored target and declared launch case | Reachability changes no trust; TLS requires prior same-case final-client routing |
 | Proxy | Successful authorization and resource preflight | One fragcap-owned native listener and bounded task set on a loopback port | The listener, tasks, and ephemeral proxy material receive recorded cleanup outcomes |
@@ -95,7 +82,7 @@ After preflight, fragcap starts its native loopback proxy, manages any authorize
 
 Interactive execution displays and confirms one complete plan on a complete input line. Structured execution uses `--authorize-stdin` and returns only the exact current plan identifier in the same process. A failed plan write, expired prepared CA, or target change at either revalidation boundary refuses. Before producing a new plan, fragcap inspects prior-session recovery records without mutation and directs pending recovery to `fragcap doctor --fix`; approval for a new session never authorizes cleanup from an older one. Trust is never silently added to the local-machine store or broadened to an unrelated CA. The former Deep Capture `--trust-ca` and `--yes` booleans are rejected migration inputs.
 
-Proxy visibility depends on actual target behavior. A flow that bypasses the proxy still belongs to ordinary Capture, but it produces no proxy semantics. HTTPS inspection also depends on the target accepting the fragcap-owned CA. Certificate-pinned traffic is not bypassed, and unsupported non-HTTP protocols remain metadata-only or unsupported according to what the proxy actually observed.
+Proxy visibility depends on actual target behavior. Intentional bypass is declared scope rather than proxy loss; bypassed or unrouted flows can appear in packet truth without application semantics. HTTPS inspection depends on acceptance of the session CA. Pinning is never bypassed. Generic streams and datagrams retain bounded byte evidence without inventing application meaning, while refusals and classification preserve what was actually observed.
 
 ## Output authority and correlation
 
@@ -108,9 +95,9 @@ The [session bundle](/docs/glossary/file-and-wire-formats#session-bundle) keeps 
 | `http.har` | Optional projection of HTTP semantics the proxy observed; omitted when not requested or when no suitable HTTP event exists |
 | `tls-keylog.log` | Optional, sensitive [proxy-owned TLS key-log material](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export) for analyzer workflows; never extracted from the target |
 | `proxy.jsonl`, `process-trace.jsonl`, `compatibility.json` | Proxy, process, and launch-specific compatibility evidence used to interpret and correlate the run |
-| `manifest.json`, `cleanup.json` | Artifact index, omissions, session state, trust identity, and per-resource cleanup evidence |
+| `manifest.json`, `cleanup.jsonl`, `cleanup.json` | Artifact authority and omissions, durable resource obligations and reconciliation, and a derived compatibility summary |
 
-Proxy observations carry the session and proxy connection identities. fragcap adds packet flow identifiers only when structured endpoint evidence matches the live flow registry. If no structured match exists, correlation stays absent; fragcap does not fabricate one from timing or content similarity.
+Proxy observations carry session, connection, and where applicable stream identities. Correlation reconciles after collection against timestamped packet-flow ownership. Ambiguous and unavailable matches stay explicit; neither timing similarity nor content similarity invents a process owner. Artifact finalization, completeness, loss, session outcome, cleanup outcome, and traffic inspectability remain separate dimensions.
 
 This is the high-level authority model. The [CLI reference](/docs/reference/cli#deep-capture) defines the command surface, and the [getting-started guide](/docs/getting-started#7-run-a-known-compatible-deep-capture) shows one bounded session and post-run cleanup check.
 

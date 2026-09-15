@@ -26,6 +26,7 @@ mod notes;
 mod package_certification;
 mod performance;
 mod publish;
+mod review_handoff;
 mod skills;
 mod spec;
 mod supply_chain;
@@ -62,6 +63,7 @@ cargo xtask <command>
   performance Validate the native Deep Capture performance registry and automation [--report <path>]
   windows-integration Validate or run the finite native Windows integration matrix
   threat-model Validate native Deep Capture threats and executable evidence
+  review-handoff Validate twelve-area independent-review readiness (not approval)
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
   supply-chain Validate the closed dependency policy and release evidence
   package-certification Validate final Windows package and lifecycle evidence
@@ -246,6 +248,15 @@ fn main() -> ExitCode {
             Ok(_) => ExitCode::from(1),
             Err(error) => {
                 eprintln!("threat-model: could not run: {error}");
+                ExitCode::from(2)
+            }
+        },
+
+        "review-handoff" => match review_handoff::run(&root) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::from(1),
+            Err(error) => {
+                eprintln!("review-handoff: could not run: {error}");
                 ExitCode::from(2)
             }
         },
@@ -571,6 +582,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: threat model could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running independent-review handoff readiness");
+            match review_handoff::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: review handoff reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: review handoff could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

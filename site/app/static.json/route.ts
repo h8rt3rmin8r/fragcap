@@ -23,6 +23,15 @@ const currentCommandPins: ZBSearchPlugin = {
         },
       });
     }
+    // The canonical artifact reference owns this sensitive concept. Keep a
+    // broad architecture mention from displacing its handling/cleanup guide.
+    insertPin(database, {
+      id: 'current-guidance-proxy-key-log',
+      conditions: [{ anchoring: 'is', pattern: 'proxy-owned TLS key' }],
+      consequence: {
+        promote: [{ doc_id: '/docs/reference/output-formats', position: 0 }],
+      },
+    });
   },
 };
 

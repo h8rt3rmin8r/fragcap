@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "review_state": "not-performed",
+  "areas": [
+    {
+      "id": "architecture",
+      "method": "Inspect crate direction, library/CLI authority, thread confinement, authorization and bounded ownership.",
+      "sources": [
+        "AGENTS.md",
+        "docs/fragcap-specification.md",
+        "docs/security/deep-capture-threat-model.md",
+        "crates/fragcap/src/deep_capture/api.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "cli_product_contract_does_not_bypass_the_stable_module",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dependencies",
+      "method": "Reconstruct official runtime, workspace and isolated graphs; inspect exact sources, licenses, critical provider choices, maintenance and unsafe inventory.",
+      "sources": [
+        "supply-chain/policy-v1.json",
+        "xtask/src/supply_chain.rs"
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/supply_chain.rs",
+          "function": "null_source_is_workspace_only_for_exact_workspace_members",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "unsafe-code",
+      "method": "Independently enumerate first-party unsafe and FFI, audit validity and ownership contracts, and compare third-party unsafe inventory. Lint is only a denylist check, not a memory-safety audit.",
+      "sources": [
+        "xtask/src/lint.rs",
+        "crates/fragcap-proxy/src/trust.rs",
+        "crates/fragcap-capture/src/lib.rs"
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/lint.rs",
+          "function": "clean_source_produces_no_findings",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "parsers",
+      "method": "Review framing, desynchronization, streaming decompression and finite parser limits across all native protocols; run closed fuzz inventory and controlled abuse tests.",
+      "sources": [
+        "crates/fragcap-proxy/src/http1.rs",
+        "crates/fragcap-proxy/src/http2.rs",
+        "crates/fragcap-proxy/src/streaming.rs",
+        "crates/fragcap-proxy/src/quic.rs",
+        "xtask/src/fuzz.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/http1_proxy.rs",
+          "function": "refuses_ambiguous_framing_before_connecting",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "tls",
+      "method": "Review separate client-facing/upstream verification, crypto provider closure, name validation, client auth, key-log boundary and refusal without downgrade.",
+      "sources": [
+        "crates/fragcap-proxy/src/tls.rs",
+        "crates/fragcap-proxy/src/key_log.rs",
+        "crates/fragcap-proxy/Cargo.toml"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/https_proxy.rs",
+          "function": "connect_fails_closed_for_wrong_name_and_untrusted_upstream",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "certificate-issuance",
+      "method": "Inspect CA and leaf constraints, identity validation, finite validity/cache and private-material lifetime.",
+      "sources": [
+        "crates/fragcap-proxy/src/certificate.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/certificates.rs",
+          "function": "malformed_leaf_identities_are_refused",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "trust",
+      "method": "Inspect exact CurrentUser store identity and ownership, authorization, duplicate/mismatch handling, failure obligations and recovery refusal.",
+      "sources": [
+        "crates/fragcap-proxy/src/trust.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/trust.rs",
+          "function": "explicit_authorization_adds_and_cleanup_removes_only_owned_entry",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "listener-isolation",
+      "method": "Inspect loopback family binding, capability admission, bounded tasks, unrelated local clients and UDP/QUIC association ownership.",
+      "sources": [
+        "crates/fragcap-proxy/src/auth.rs",
+        "crates/fragcap-proxy/src/runtime.rs",
+        "crates/fragcap-proxy/src/socks5.rs",
+        "crates/fragcap-proxy/src/quic.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/authentication.rs",
+          "function": "listener_refuses_wrong_proof_before_payload_and_counts_it",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "routing",
+      "method": "Inspect immutable child-scoped routing, bypass canonicalization, DNS/rebinding and destination rechecks, launch ancestry, and refusal of unimplemented strategies.",
+      "sources": [
+        "crates/fragcap-proxy/src/upstream.rs",
+        "crates/fragcap/src/deep_capture/routing.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/upstream.rs",
+          "function": "policy_refuses_listener_and_private_destinations_without_exact_grant",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "artifact-protection",
+      "method": "Inspect pre-start private bundle protection, raw/derived authority, finite retention/loss, exact deletion and separate transformed sharing.",
+      "sources": [
+        "crates/fragcap/src/deep_capture/manifest.rs",
+        "crates/fragcap/src/deep_capture/application.rs",
+        "crates/fragcap-cli/tests/cli_bundle.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_bundle.rs",
+          "function": "export_is_a_separate_copy_with_an_exhaustive_manifest",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "recovery",
+      "method": "Inspect synchronized resource obligations before effects, crash-readable reconciliation, bounded cleanup and Doctor shared recovery authority.",
+      "sources": [
+        "crates/fragcap/tests/deep_capture_session.rs",
+        "xtask/src/failure_matrix.rs"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/deep_capture_session.rs",
+          "function": "cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packaging",
+      "method": "Independently validate certified final ZIP/MSI/catalog digests, exact official build identity, imports/signature/size policy, constrained smoke and isolated install/repair/upgrade/uninstall/fresh-start.",
+      "sources": [
+        "docs/maintainers/package-certification.md",
+        "integration/windows-package-contract-v1.json",
+        "scripts/Test-PackageCertification.ps1",
+        ".github/workflows/package-certification.yml",
+        ".github/workflows/release.yml"
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/package_certification.rs",
+          "function": "transferred_artifacts_must_match_the_certified_bytes",
+          "features": []
+        }
+      ]
+    }
+  ]
+}

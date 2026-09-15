@@ -4,9 +4,7 @@ description: "The checked fragcap command surface: commands, options, values, de
 ---
 
 <Callout title="Current native path">
-Deep Capture uses the library-owned native HTTP/1.1, HTTP/2, CONNECT, and HTTPS proxy.
-Trust effects use native Windows APIs. Broader completion remains tracked by the
-[#278 roadmap](https://github.com/h8rt3rmin8r/fragcap/issues/278).
+Deep Capture uses the library-owned native proxy for the supported HTTP, streaming, generic TCP/UDP, and QUIC/HTTP/3 paths. Trust effects use native Windows APIs. Guided calibration and the stable library API share its authority boundaries. The [#278 roadmap](https://github.com/h8rt3rmin8r/fragcap/issues/278) remains incomplete until its independent review and final gate.
 </Callout>
 
 <Callout title="Before capturing">
@@ -14,7 +12,7 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-This page describes the public v0.9.0 command tree. Its command headings,
+This page describes the public command tree prepared for v0.10.0. Its command headings,
 option tables, sink vocabulary, and executable examples are checked against the
 same parser used by the binary. Hidden test controls are excluded. clap's
 generated `help` and `version` controls remain available but are not repeated in
@@ -49,8 +47,8 @@ These options propagate to every command.
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--json` | open | false | all | Emit structured command results instead of human text where the command supports them. See [Output routing](#output-routing). |
-| `--quiet` | open | false | all | Suppress progress while retaining warnings and errors. |
-| `--silent` | open | false | all | Suppress progress, summaries, and warnings. Errors still surface. |
+| `--quiet` | open | false | all | Suppress progress while retaining terminal results, warnings, and errors. Required authorization output remains visible. |
+| `--silent` | open | false | all | Suppress optional progress, summaries, and warnings. Errors and required authorization output still surface. |
 
 ## Capture
 
@@ -74,18 +72,18 @@ fragcap capture --process sample.exe --out capture.fcapng
 | `-d`, `--duration` | open | none | all | Stop after a duration measured from arm, such as `30s`, `5m`, or `2h`. |
 | `--id` | open | none | all | Select a stored target by durable numeric identifier. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
-| `--launch` | open | `false` | all | Start a Steam-anchored stored target through its platform launcher, then capture. |
+| `--launch` | open | `false` | all | Start an eligible prepared stored target through its declared managed launch, then capture. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then `%APPDATA%\fragcap\local.db`, for stored-target resolution. The managed path is not required. |
 | `--loopback` | open | `false` | all | Include the loopback adapter. |
 | `--max-bytes` | open | none | all | Stop after a byte count using an integer plus `b`, `kb`, `mb`, or `gb`. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
-| `--mode` | `file`, `ring`, `stream` | none | all | Select a capture mode. The fallback is a profile mode when present, otherwise `file`; `ring` and `stream` are not yet implemented. |
+| `--mode` | `file`, `ring`, `stream` | none | all | Select file, bounded ring, or streaming output. The fallback is a profile mode when present, otherwise `file`. |
 | `--no-payload` | open | `false` | all | Write metadata without packet payload bytes. |
 | `-o`, `--out` | open | none | all | Write a pcapng file; shorthand for a file sink. |
 | `--path` | open | none | all | Require a case-insensitive substring in the target image path. |
 | `--path-regex` | open | none | all | Require the target image path to match a regular expression. |
 | `--process` | open | none | all | Capture a running process by image name without a stored target. |
-| `--ring` | open | none | all | Set the ring window as a duration or size; ring mode is not yet implemented. |
+| `--ring` | open | none | all | Set the bounded ring window as a duration or size. See [Capture modes](/docs/guides/capture-modes) for mode and sink constraints. |
 | `--roles` | open | none | all | Capture a comma-separated role list. The fallback is profile roles, then all roles. |
 | `--scope` | `all`, `target` | `target` | all | Write only attributed target traffic or everything captured. Exclusions are counted. |
 | `--sink` | open | none | all | Add an output sink; repeat for multiple destinations. See [Sink specifications](#sink-specifications). |
@@ -149,7 +147,7 @@ fragcap deep-capture sample-target --launch --har --key-log
 | `--client-certificate` | open | none | all | Present this explicit operator-owned certificate chain to an upstream requiring mutual TLS. Requires `--client-private-key`. |
 | `--client-private-key` | open | none | all | Use the private key matching `--client-certificate`. The key is never written to session output. |
 | `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
-| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the launch case measured by `--calibrate`. Real calibration supports cold Steam protocol and cold direct-executable launches; other values receive a pre-side-effect refusal. |
+| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the case measured by `--calibrate`. Cold Steam, direct executable, and declared publisher-chain launches are supported. Unsupported or warm authority receives a pre-effect refusal. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
@@ -616,8 +614,4 @@ so they cannot contaminate capture bytes. Packet bytes and packet JSON Lines go
 only to the configured `--out`, `--sink`, or extcap FIFO destination. Warnings
 and errors are diagnostics on standard error.
 
-`--quiet` suppresses progress but keeps warnings and errors. `--silent`
-suppresses progress, completion summaries, and warnings, but errors still
-surface and configured sinks continue writing. A consumer should therefore
-parse the command's documented result stream and lifecycle stream separately;
-there is no single combined JSON stream.
+`--quiet` suppresses progress but retains authoritative terminal results, warnings, and errors. `--silent` suppresses optional progress, completion summaries, and warnings; errors and configured sinks remain active. Neither flag hides required complete authorization plans or turns consent into approval. A consumer must parse documented result and lifecycle streams separately; there is no combined JSON stream.

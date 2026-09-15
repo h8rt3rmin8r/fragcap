@@ -1,10 +1,6 @@
 # Native Deep Capture Threat Model
 
-This is the human review entry point for the native Deep Capture attack surface
-shipped through S124. The canonical, executable inventory is
-`deep-capture-threats.v1.json`; `cargo xtask threat-model` rejects incomplete
-control ownership, missing or ignored tests, and unreviewed protocol or direct
-proxy dependency changes.
+This is the human review entry point introduced by S124 for the native Deep Capture attack surface. The canonical executable inventory, `deep-capture-threats.v1.json`, tracks later protocol and dependency changes; `cargo xtask threat-model` rejects incomplete control ownership, missing/ignored tests, and inventory drift. Later supply-chain and final-package gates provide distinct evidence. The S150 [whole-product independent-review handoff](native-product-review-handoff.md) includes this threat model but does not claim independent review has been performed.
 
 ## Security objective
 
