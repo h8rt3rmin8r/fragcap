@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.71-draft \
+**Version:** 0.1.72-draft \
 **Applies-To:** 0.10.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -50,7 +50,9 @@ product's purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
 
-Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove that a candidate has been published. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.9.0. S150 prepares v0.10.0 for operator publication; independent review #333 and final gate #334 remain open. Per-release scope is in section 27.3.
+Published baseline: [v0.10.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0).
+
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.0, published 2026-09-15 from `787739edfa8d748e25cb4b5c4965f5c936850d16`. The reviewed `docs/published-release.json` and thirteen current baseline markers bind actual publication independently from candidate version. S151 Doctor diagnostics are unreleased. Independent review #333, installed retest #413 and final gate #334 remain open. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -157,6 +159,7 @@ enforcement.
 | 0.1.69-draft | 2026-09-11 | W. Thompson | **Makes the complete Deep Capture workflow discoverable from embedded help (issue #379).** Extends sections 17.2.2, 25, and 28. Root and workflow command help now lead from environment checks through target discovery, registration, calibration, and a managed Deep Capture launch, with Steam and direct or publisher examples. The Deep Capture page groups ordinary controls before advanced and sensitive controls, states compatibility and certificate-pinning limits, and names sensitive outputs. Human pre-session refusals and cleanup failures provide one bounded next command while JSON contracts remain unchanged. Width and parse tests cover the audited help surface without running a target or changing trust. |
 | 0.1.70-draft | 2026-09-15 | W. Thompson | **Completes native session presentation (issue #332).** Extends section 26.3 and the controlled acceptance record. Required human authorization now includes a plan-derived active-mode, trust, sensitive-output, retention, and recovery summary alongside unchanged canonical JSON. Typed lifecycle stages receive human progress; canonical six-state observation-delivery counters remain distinct from existing live packet counters. A post-run terminal report survives quiet, preserves actual session and artifact status, confirms retained paths, and names exact cleanup obligations and confirmation-gated recovery. JSON schemas, consent policy, protocols, storage, and effect authority remain unchanged. Controlled tests do not claim live game compatibility or final #334 completion. |
 | 0.1.71-draft | 2026-09-15 | W. Thompson | **Prepares current native documentation and v0.10.0 independent-review readiness (S150, #411).** Corrects current product instructions, checks nonhistorical command examples without dispatch, links reader-validated manifest specimens, and publishes Doctor, security/privacy, packaging/migration and stable API guidance. A closed twelve-area handoff validates existing evidence and an explicitly not-started review record. Local version-only release preparation and controlled evidence do not tag, publish, perform installed sensitive-product execution, satisfy independent audit #333 or complete #334. |
+| 0.1.72-draft | 2026-09-15 | W. Thompson | Reconciles actual published v0.10.0 identity and current applicability under S151 (#414, parents #372/#331). Adds bounded owned slow-probe diagnostics, discoverable nested timing, one-second elapsed progress and controlled failure/suppression tests as explicitly unreleased source work. Publication is mechanically separate from candidate version; independent #333 review, #413 installed retest and final #334/#278 remain open. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4600,13 +4603,7 @@ and the selected verbosity permits progress. Redirected human reports,
 progress. The final report remains the only stdout result and the existing
 classifier remains the authority for readiness.
 
-Doctor progress uses stable operator-facing probe labels: identity, platform,
-capture driver and interfaces, process event tracing, analyzer integration,
-target stores, Deep Capture readiness, and report rendering. A hidden
-maintainer flag, `fragcap doctor --timings`, adds elapsed milliseconds to the
-interactive progress completion lines only; it does not add JSON records and
-does not change the final human report. The timings exist to identify real
-probe costs before optimization work and are not a machine-readable API.
+Published v0.10.0 uses stable coarse Doctor probe labels and a hidden `fragcap doctor --timings` switch for completion durations only. S151's source diagnostics are unreleased: normal help exposes this option, readiness leaves name native residue inventory, manifest/artifact scan, manifest CA identities, separate current-user/machine root certificate stores and IPv4/IPv6 binds. Eligible interactive normal human read-only runs show the active pending boundary and monotonic elapsed milliseconds after one second, repeating no faster than once per second across parent/leaf transitions. Slow completions include duration automatically; explicit timings cover fast completions too. Native residue and tracing session availability remain aggregate boundaries, not specific historical API attribution. Progress remains fixed-vocabulary stderr, never final human/JSON report fields. A single scoped worker is explicitly joined; no new probe timeout, cancellation guarantee, effect, false unavailability or cleanup claim is introduced. Controlled tests preserve injected facts, output suppression and failure ownership; actual elevated first-run/repeat cause measurements remain #372.
 
 `fragcap doctor --fix` adds an action layer above the same classifier. It
 prints the same report, then offers to perform the remediations the report
@@ -4843,8 +4840,9 @@ restated here. The scope of each release is:
 | v0.7.0 | 2026-08-27 | Deep Capture architecture and MVP, compatibility facts, session bundles, readiness and cleanup, and target-discovery corrections | follow-on slices |
 | v0.8.0 | 2026-08-30 | Deep Capture compatibility calibration, public library-first session orchestration, managed direct-executable launch, and documentation accessibility and recovery corrections | S095 through S101 |
 | v0.9.0 | 2026-09-05 | Native protocols, scoped managed launches and routing, application artifacts and correlation, recovery, security/performance and relocated Windows integration evidence; final completion remains open | S102 through S129 |
+| v0.10.0 | 2026-09-15 | Supply chain, final package certification, stable API, discovery integrity, exact authorization, guided registration/setup and resumable calibration, help/session UX, current documentation and bounded native writer correction; independent audit and final completion remain open | S130 through S150 |
 
-S150 prepares v0.10.0 from the subsequent supply-chain, final-package, stable API, discovery/authorization, guided calibration and session UX slices S130 through S150. This candidate is not a published-release row until operator publication; independent review #333 and final gate #334 remain outstanding.
+v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S151 diagnostics are subsequent unreleased work. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
 
 ### 27.4 Critical Path
 

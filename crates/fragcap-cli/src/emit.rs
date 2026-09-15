@@ -127,9 +127,14 @@ impl<'w> Emitter<'w> {
         self.captured_events.take().unwrap_or_default()
     }
 
+    /// Whether ordinary human progress is eligible for this output mode.
+    pub fn allows_progress(&self) -> bool {
+        self.format == Format::Human && self.verbosity == Verbosity::Normal
+    }
+
     /// A human progress line, suppressed by quiet and silent and by JSON mode.
     pub fn progress(&mut self, line: &str) {
-        if self.format == Format::Human && self.verbosity == Verbosity::Normal {
+        if self.allows_progress() {
             let _ = writeln!(self.err, "{line}");
             #[cfg(all(feature = "etw", windows))]
             {

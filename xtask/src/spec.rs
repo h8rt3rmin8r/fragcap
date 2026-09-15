@@ -2,9 +2,8 @@
 
 //! Specification currency checks (slice S049).
 //!
-//! Two assertions keep the master specification honest about which release it
-//! describes, and keep changelog fragments honest about which specification
-//! sections they touched.
+//! Currency checks bind candidate Applies-To to package version, reviewed
+//! publication to current applicability, and fragment impact to specification.
 //!
 //! The version lock-step reads the `Applies-To` field from the specification's
 //! document-control block and asserts it equals the workspace package version.
@@ -26,6 +25,188 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+
+const PUBLISHED_IDENTITY: &str = "docs/published-release.json";
+const CURRENT_RELEASE_SURFACES: &[&str] = &[
+    "README.md",
+    "CONTRIBUTING.md",
+    SPEC_PATH,
+    "site/content/docs/index.mdx",
+    "site/content/docs/getting-started.mdx",
+    "site/content/docs/architecture.mdx",
+    "site/content/docs/contributing.mdx",
+    "site/content/docs/guides/packaging-and-migration.mdx",
+    "site/content/docs/reference/deep-capture-compatibility.mdx",
+    "site/content/docs/reference/output-formats.mdx",
+    "site/content/docs/reference/cli.mdx",
+    "docs/security/native-product-review-handoff.md",
+    "docs/maintainers/v0.10.0-release-handoff.md",
+];
+
+struct PublishedIdentity {
+    version: String,
+    release_url: String,
+}
+
+fn canonical_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (part.len() == 1 || !part.starts_with('0'))
+                && part.parse::<u64>().is_ok()
+        })
+}
+
+fn publication_date(date: &str) -> bool {
+    if date.len() != 10 || !date.is_ascii() || &date[4..5] != "-" || &date[7..8] != "-" {
+        return false;
+    }
+    let numbers = [&date[..4], &date[5..7], &date[8..]];
+    if numbers
+        .iter()
+        .any(|part| !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return false;
+    }
+    let year = numbers[0].parse::<u32>().unwrap();
+    let month = numbers[1].parse::<u32>().unwrap();
+    let day = numbers[2].parse::<u32>().unwrap();
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => 0,
+    };
+    year >= 1970 && day > 0 && day <= days
+}
+
+fn published_identity(source: &str) -> Result<PublishedIdentity, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(source).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or("publication identity must be an object")?;
+    let keys = [
+        "schema_version",
+        "version",
+        "source_revision",
+        "published_date",
+        "release_url",
+    ];
+    if object.len() != keys.len() || keys.iter().any(|key| !object.contains_key(*key)) {
+        return Err("publication identity has missing or unknown fields".into());
+    }
+    let string = |key| {
+        value[key]
+            .as_str()
+            .ok_or_else(|| format!("{key} must be a string"))
+    };
+    let version = string("version")?;
+    let revision = string("source_revision")?;
+    let date = string("published_date")?;
+    let release_url = string("release_url")?;
+    if value["schema_version"].as_u64() != Some(1)
+        || !canonical_version(version)
+        || revision.len() != 40
+        || !revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !publication_date(date)
+        || release_url != format!("https://github.com/h8rt3rmin8r/fragcap/releases/tag/v{version}")
+    {
+        return Err(
+            "publication identity has invalid schema, version, revision, date or official URL"
+                .into(),
+        );
+    }
+    Ok(PublishedIdentity {
+        version: version.into(),
+        release_url: release_url.into(),
+    })
+}
+
+fn current_applicability(source: &str, published: &PublishedIdentity) -> Vec<String> {
+    let expected = format!(
+        "Published baseline: [v{}]({}).",
+        published.version, published.release_url
+    );
+    let markers: Vec<_> = source
+        .lines()
+        .filter(|line| line.starts_with("Published baseline:"))
+        .collect();
+    let mut errors = Vec::new();
+    if markers.as_slice() != [expected.as_str()] {
+        errors.push("missing, duplicate or stale published-baseline marker".into());
+    }
+    for (index, raw) in source.lines().enumerate() {
+        // Only current-release sentence forms, not global older-version bans.
+        // Historical table/chronological preparation records remain valid.
+        let line = raw.replace('`', "").replace("**", "");
+        for word in line.split_whitespace() {
+            let token = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.');
+            let Some(version) = token
+                .strip_prefix('v')
+                .filter(|version| canonical_version(version))
+            else {
+                continue;
+            };
+            let current_claims = [
+                format!("{token} is the current release"),
+                format!("{token} is the current published baseline"),
+                format!("{token} remains the latest published baseline"),
+                format!("{token} remains the published baseline"),
+            ];
+            let current_conflict = version != published.version
+                && current_claims.iter().any(|claim| line.contains(claim));
+            let unpublished_claims = [
+                format!("{token} has not been published"),
+                format!("{token} is not published"),
+                format!("{token} is not a published release"),
+            ];
+            if current_conflict
+                || (version == published.version
+                    && unpublished_claims.iter().any(|claim| line.contains(claim)))
+            {
+                errors.push(format!(
+                    "contradictory current-release claim at line {}",
+                    index + 1
+                ));
+                break;
+            }
+        }
+    }
+    errors
+}
+
+fn check_publication(root: &Path) -> io::Result<usize> {
+    let identity = match published_identity(&fs::read_to_string(root.join(PUBLISHED_IDENTITY))?) {
+        Ok(identity) => identity,
+        Err(error) => {
+            eprintln!("spec: {PUBLISHED_IDENTITY}: {error}");
+            return Ok(1);
+        }
+    };
+    let mut problems = 0;
+    for path in CURRENT_RELEASE_SURFACES {
+        for error in current_applicability(&fs::read_to_string(root.join(path))?, &identity) {
+            eprintln!("spec: {path}: {error}");
+            problems += 1;
+        }
+    }
+    if problems == 0 {
+        println!("spec: {} current surfaces agree with reviewed published v{} (independent of candidate version)", CURRENT_RELEASE_SURFACES.len(), identity.version);
+    }
+    Ok(problems)
+}
 
 /// The specification whose `Applies-To` field the version check binds against.
 /// Repository-relative; the release gate matches a changed path against it too.
@@ -215,7 +396,7 @@ fn check_fragments(root: &Path) -> io::Result<usize> {
     Ok(problems)
 }
 
-/// Run both assertions. Returns the count of problems (0 on success), or an
+/// Run currency assertions. Returns the count of problems (0 on success), or an
 /// `Err` when a check could not run at all (the 2 exit code): the workspace
 /// version, the `Applies-To` field, or the fragment directory could not be read.
 pub fn run(root: &Path) -> io::Result<usize> {
@@ -255,6 +436,15 @@ pub fn run(root: &Path) -> io::Result<usize> {
         }
     }
 
+    // C. Actual publication, independently of the candidate workspace version.
+    match check_publication(root) {
+        Ok(n) => problems += n,
+        Err(error) => {
+            eprintln!("spec: could not read publication authority/current documentation ({error})");
+            could_not_run = true;
+        }
+    }
+
     if could_not_run {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -267,6 +457,106 @@ pub fn run(root: &Path) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_surface_inventory_is_unique_and_repository_relative() {
+        let mut paths = std::collections::BTreeSet::new();
+        for path in CURRENT_RELEASE_SURFACES
+            .iter()
+            .copied()
+            .chain([PUBLISHED_IDENTITY])
+        {
+            assert!(paths.insert(path), "duplicate publication surface: {path}");
+            assert!(
+                Path::new(path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "publication surface must stay repository-relative: {path}"
+            );
+            assert!(!path.contains('\\'), "inventory uses portable separators");
+        }
+        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 13);
+    }
+
+    #[test]
+    fn actual_publication_has_separate_reviewed_source_authority() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert_eq!(check_publication(root).unwrap(), 0);
+    }
+
+    fn publication_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1, "version": "0.10.0",
+            "source_revision": "787739edfa8d748e25cb4b5c4965f5c936850d16",
+            "published_date": "2026-09-15",
+            "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0"
+        })
+    }
+
+    #[test]
+    fn publication_identity_rejects_malformed_or_nonofficial_authority() {
+        let fixture = publication_fixture();
+        assert!(published_identity(&fixture.to_string()).is_ok());
+        for (key, invalid) in [
+            ("schema_version", serde_json::json!(2)),
+            ("version", serde_json::json!("0.010.0")),
+            ("version", serde_json::json!("0.10.0-prepared")),
+            ("source_revision", serde_json::json!("main")),
+            ("source_revision", serde_json::json!("G".repeat(40))),
+            ("published_date", serde_json::json!("2026-02-30")),
+            ("published_date", serde_json::json!("2026-00-01")),
+            (
+                "release_url",
+                serde_json::json!("https://example.test/v0.10.0"),
+            ),
+        ] {
+            let mut invalid_fixture = fixture.clone();
+            invalid_fixture[key] = invalid;
+            assert!(
+                published_identity(&invalid_fixture.to_string()).is_err(),
+                "{key}"
+            );
+        }
+        assert!(!publication_date("2025-02-29"));
+        assert!(publication_date("2024-02-29"));
+        let mut unknown = fixture.clone();
+        unknown["approved"] = serde_json::json!(true);
+        assert!(published_identity(&unknown.to_string()).is_err());
+        let mut missing = fixture;
+        missing.as_object_mut().unwrap().remove("source_revision");
+        assert!(published_identity(&missing.to_string()).is_err());
+    }
+
+    #[test]
+    fn current_baseline_rejects_drift_but_preserves_history_and_candidate_independence() {
+        let published = published_identity(&publication_fixture().to_string()).unwrap();
+        let marker = format!(
+            "Published baseline: [v{}]({}).",
+            published.version, published.release_url
+        );
+        assert!(current_applicability(&marker, &published).is_empty());
+        for bad in [
+            "".to_string(),
+            marker.replace("0.10.0", "0.9.0"),
+            format!("{marker}\n{marker}"),
+        ] {
+            assert!(!current_applicability(&bad, &published).is_empty());
+        }
+        for bad in [
+            "**v0.9.0 is the current release.**",
+            "S150 prepares the candidate. v0.9.0 remains the latest published baseline until publication.",
+            "v0.10.0 has not been published.",
+            "v0.10.0 is not published.",
+        ] {
+            assert!(!current_applicability(&format!("{marker}\n{bad}"), &published).is_empty());
+        }
+        let historical = format!("{marker}\n| v0.9.0 | 2026-09-05 | Historical release |\nS150 prepared v0.10.0 without publication.\nCandidate workspace: 0.11.0; S151 diagnostics are unreleased.");
+        assert!(current_applicability(&historical, &published).is_empty());
+        assert_ne!(
+            workspace_version_from("[workspace.package]\nversion = \"0.11.0\""),
+            Some(published.version)
+        );
+    }
 
     #[test]
     fn section_number_shapes() {
