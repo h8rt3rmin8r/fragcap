@@ -18,6 +18,8 @@
 
 **Alternatives considered**: Static environment-name checking is insufficient; repository snapshots alone become stale; approving via the owner token violates the manual approval boundary; a new token or generic network client is unnecessary.
 
+**Final-review permission correction (20:35 UTC)**: Primary [environment read documentation](https://docs.github.com/en/rest/deployments/environments#get-an-environment) and [allowance read documentation](https://docs.github.com/en/rest/deployments/branch-policies#list-deployment-branch-policies) specify Actions read for authenticated installation-token access. Public unauthenticated access does not establish the authority of `github.token` used in the workflow. [Workflow permission semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idpermissions) make omitted scopes none when a job overrides permissions. Explicit Actions read in defaults and the release override is the least-privilege reproducible path, with negative tests covering future job overrides. No third review is requested.
+
 ## Patch Preparation
 
 **Decision**: Prepare `release/0.10.1` using the installed version-only cargo-release command and existing release generators, without orchestrator execution, tags or publication.

@@ -28,6 +28,8 @@ Registry release automation now checks effective operator review and tag-only en
 
 2026-09-15 (20:18 UTC): S152 review identified that certification could make the early protection snapshot stale before GitHub release creation. Retain the identity check and independently re-fetch and validate protection immediately before `gh release create`, as already required immediately before registry execution. Regression checks reject absent or delayed effect-boundary guards, job-level failure overrides and misplaced dependency/environment fields. This closes the existing fail-closed contract without changing owner bypass, product behavior, dependencies, publication authority or independent acceptance.
 
+2026-09-15 (20:35 UTC): S152's second and final bot review identified missing authenticated API read authority in the release workflow. Grant explicit `actions: read` alongside the existing workflow `contents: read` default and release job `contents: write` override, because job permission maps replace defaults and both protection read endpoints require Actions read for installation tokens. Add test-first effective-permission regression checks for identity, release and publish, refusing absent, overridden or unnecessarily broad Actions authority. No new write permission, credential, administrative restriction, deployment approval or review round is introduced; owner bypass remains enabled.
+
 ## [0.10.0] - 2026-09-15
 
 ### Added

@@ -44,6 +44,8 @@ The validator reads bounded JSON supplied by commands that fetch fresh public AP
 
 Release steps fetch both documents in one shell step and immediately invoke the validator under `set -euo pipefail`; failed reads or checks prevent downstream effects. The identity job gates certification, the release job independently re-fetches immediately before GitHub release creation, and the publish job independently re-fetches after normal owner approval or a deliberate owner bypass and immediately before `publish --execute`. Job-level failure overrides and nested dependency/environment text refuse. Ordinary CI validates workflow wiring and pure negative tests without network policy or deployment approval. See the [contract](contracts/release-guard.md).
 
+Authenticated guard reads require explicit effective `actions: read` at the workflow default and release job override. Job permission maps replace defaults, so static tests reject an override that removes this authority, missing read access or unnecessary Actions write/read-all authority. Existing Contents read/write separation remains unchanged.
+
 ## Decision Log
 
 1. Keep owner-only required review but allow self-review because the owner also initiates release workflows; manual approval is still a second action. Reject an unapprovable self-review ban and invented reviewers.

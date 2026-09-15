@@ -14,6 +14,8 @@ The existing identity job first verifies exact release tag/workspace agreement, 
 
 Offline regression validation checks dependency and environment fields at their actual job indentation, not matching text inside a step. Identity, certification, release and publication jobs must not use a job-level `continue-on-error` override; guard steps also refuse conditional or nonblocking mutations. This is a bounded check of the pinned workflow shape, not a general YAML policy engine.
 
+Each guard-owning job requires explicit effective `actions: read` token authority for authenticated protection API reads. Identity and publish inherit the workflow permission map; release repeats Actions read in its job override alongside its existing Contents write permission. Job maps replace defaults rather than merge, so an override omitting Actions read refuses. Offline checks also reject implicit or broader Actions authority. No environment secret or new write permission is needed.
+
 ## Preparation Boundary
 
 No `v0.10.1` tag, release asset or registry upload is created during S152. The actual publication record remains v0.10.0. New patch notes and assembled changelog identify prepared content and retain all independent completion limits. Operator-installed product validation is neither simulated nor agent-executed.

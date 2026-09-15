@@ -34,3 +34,7 @@ No CRITICAL, HIGH, MEDIUM or LOW artifact-consistency findings. The supported ad
 ## Operator Policy Revision (20:00 UTC)
 
 The operator explicitly rejected disabling administrator bypass. Updated spec, plan, contracts and checklist require `can_admins_bypass=true`, preserving normal owner review and the tag-only rule and separating any later deliberate bypass from reviewer approval. Read-only cross-artifact reanalysis passes: all 10 requirements and 4 criteria retain coverage through the same 19 tasks; no constitution conflict, ambiguity, duplicate or unmapped task is introduced. Checklists remain 16/16 each. The initial false-policy result above is historical and superseded. Proceed with test-first exact-policy revision, fresh live readback and repeated current-head verification.
+
+## Final-Review Correction (20:35 UTC)
+
+Read-only review of the authenticated read-permission correction maps to existing FR-004/FR-005 and T005-T007/T018. The contract, plan and reproducible instructions require effective explicit Actions read for all three guard jobs, including replacement job maps. Scope, ten requirements, four criteria and 100 percent task coverage remain unchanged. No constitution deviation, new write permission or third review is authorized. The new regression reproduced missing authority before implementation and all 13 guard tests now pass; full verification and hosted handoff remain pending.

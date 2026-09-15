@@ -138,6 +138,36 @@ fn has_job_field(block: &str, requirement: &str) -> bool {
     fields == [requirement]
 }
 
+// Job permissions replace workflow defaults rather than merging with them.
+// Require the pinned explicit read-only map, never read-all/write-all authority.
+fn has_actions_read(block: &str, indent: usize) -> bool {
+    let prefix = " ".repeat(indent);
+    let declarations: Vec<_> = block
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            line.strip_prefix(&prefix)
+                .is_some_and(|field| field.starts_with("permissions:"))
+        })
+        .collect();
+    let [(offset, declaration)] = declarations.as_slice() else {
+        return false;
+    };
+    if *declaration != format!("{prefix}permissions:") {
+        return false;
+    }
+    let child = " ".repeat(indent + 2);
+    let fields: Vec<_> = block
+        .lines()
+        .skip(offset + 1)
+        .filter(|line| !line.trim().is_empty())
+        .take_while(|line| line.starts_with(&child))
+        .filter_map(|line| line.strip_prefix(&child))
+        .filter(|field| field.starts_with("actions:"))
+        .collect();
+    fields == ["actions: read"]
+}
+
 fn has_guard(job: &str) -> bool {
     let marker = "      - name: Verify registry approval protection\n";
     if job.matches(marker).count() != 1 {
@@ -177,6 +207,17 @@ fn validate_workflow(workflow: &str) -> Vec<String> {
         if !job(workflow, name).is_some_and(has_guard) {
             out.push(format!(
                 "{name} job must contain the exact fresh fail-closed protection step"
+            ));
+        }
+        if !job(workflow, name).is_some_and(|block| {
+            if job_fields(block).any(|field| field.starts_with("permissions:")) {
+                has_actions_read(block, 4)
+            } else {
+                has_actions_read(workflow.split("\njobs:\n").next().unwrap_or_default(), 0)
+            }
+        }) {
+            out.push(format!(
+                "{name} guard requires effective explicit actions: read token permission"
             ));
         }
     }
@@ -537,6 +578,45 @@ mod tests {
                 !validate_workflow(&delayed).is_empty(),
                 "accepted delayed guard before {name}"
             );
+        }
+    }
+
+    #[test]
+    fn guard_jobs_need_effective_read_only_actions_permission() {
+        let actual = include_str!("../../.github/workflows/release.yml");
+        let with_permissions = actual
+            .replace(
+                "permissions:\n  contents: read",
+                "permissions:\n  actions: read\n  contents: read",
+            )
+            .replace(
+                "permissions:\n      contents: write",
+                "permissions:\n      actions: read\n      contents: write",
+            );
+        assert!(validate_workflow(&with_permissions).is_empty());
+        for (from, to) in [
+            ("  actions: read\n", ""),
+            ("actions: read", "actions: none"),
+            ("actions: read", "actions: write"),
+            ("      actions: read\n", ""),
+        ] {
+            assert!(
+                !validate_workflow(&with_permissions.replace(from, to)).is_empty(),
+                "accepted permission drift {from}"
+            );
+        }
+        for name in ["identity", "publish"] {
+            let marker = format!("\n  {name}:\n");
+            for permissions in ["{}", "read-all", "write-all", "\n      contents: read"] {
+                let changed = with_permissions.replace(
+                    &marker,
+                    &format!("{marker}    permissions: {permissions}\n"),
+                );
+                assert!(
+                    !validate_workflow(&changed).is_empty(),
+                    "accepted {name} permission override {permissions}"
+                );
+            }
         }
     }
 

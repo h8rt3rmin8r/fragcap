@@ -6,6 +6,7 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -47,6 +48,7 @@ jobs:
     needs: package-certification
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@v4
