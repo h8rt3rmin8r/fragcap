@@ -22,6 +22,8 @@ Online CI discovered RUSTSEC-2026-0285 in the existing Rustls pin. Exact 0.23.45
 
 Revised-source foreground `cargo xtask ci` passed all gates with 287 CLI unit tests and 28 controlled Deep Capture command tests, followed by successful `cargo +1.88.0 build --workspace --locked`. A generated tool SBOM temporarily outside `target/` caused a text-lint failure during the preceding attempt; it was moved to the task-owned evidence directory before the successful run, not exempted from lint. Rebuilt documentation passed four generated-heading tests and all 12 production accessibility tests, including route checks at 320, 768, and 1440 pixels. This local site check used available pnpm 10.28.2; the pinned pnpm 9.15.0 online workflow remains authoritative. Revised files passed UTF-8/no-BOM, LF, single-final-newline, forbidden-dash, replacement-character, and diff sanity checks.
 
+The next online performance run exposed a separate old exact pin. Synchronizing the current performance manifest and performance/fuzz lockfiles changes only Rustls's version and checksum in those locks. Locked performance-harness compilation, `cargo xtask performance`, and `cargo xtask fuzz` then pass locally. Workloads, budgets, references, and approved soak evidence are untouched; final online short-profile and fuzz runs remain required.
+
 ## Exclusions
 
 No live capture, game, real trust mutation, or installed product test was run by the agent. Live compatibility remains optional operator-owned evidence against published releases. Issues #331, #333, #334, #372, and #278 remain open; issue #332 closes only after its controlled evidence and required PR checks pass and the operator merges.
