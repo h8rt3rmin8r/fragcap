@@ -23,8 +23,12 @@
 #   4. the release workflow builds artifacts, then waits on the `crates-io`
 #      environment gate before running `cargo xtask publish --execute`
 #
-# Step 3 is the authorization point required by the constitution. Step 4 is
-# the second one, because the environment gate needs a human to approve it.
+# Step 3 is the authorization point required by the constitution. Step 4 normally
+# requires a separate owner action: crates-io requires the owner reviewer, permits owner-initiated
+# self-review, retains administrator bypass, and permits only v* tag refs.
+# The workflow freshly verifies these settings before release creation and
+# immediately before registry execution. Verification is not deployment approval.
+# A deliberate owner bypass remains available and must be recorded as bypass.
 # The script consolidates the fiddly local half (step 1); it deliberately does
 # not touch either authorization gate.
 #

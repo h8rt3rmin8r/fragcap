@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Assert the tag matches the workspace version
         shell: bash
         run: |
@@ -26,6 +27,15 @@ jobs:
           declared=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           test "$tagged" = "$declared"
           echo "tag and workspace version agree on $declared"
+      - name: Verify registry approval protection
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method GET repos/h8rt3rmin8r/fragcap/environments/crates-io > "$RUNNER_TEMP/registry-environment.json"
+          gh api --method GET 'repos/h8rt3rmin8r/fragcap/environments/crates-io/deployment-branch-policies?per_page=100' > "$RUNNER_TEMP/registry-policies.json"
+          cargo run --quiet --package xtask -- release-guard "$RUNNER_TEMP/registry-environment.json" "$RUNNER_TEMP/registry-policies.json"
 
   package-certification:
     name: build and certify release packages
@@ -78,6 +88,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Verify registry approval protection
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method GET repos/h8rt3rmin8r/fragcap/environments/crates-io > "$RUNNER_TEMP/registry-environment.json"
+          gh api --method GET 'repos/h8rt3rmin8r/fragcap/environments/crates-io/deployment-branch-policies?per_page=100' > "$RUNNER_TEMP/registry-policies.json"
+          cargo run --quiet --package xtask -- release-guard "$RUNNER_TEMP/registry-environment.json" "$RUNNER_TEMP/registry-policies.json"
       - name: Publish in dependency order
         run: cargo run --package xtask -- publish --execute
         env:
