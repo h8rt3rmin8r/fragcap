@@ -45,6 +45,8 @@
 - [x] T016 Commit only S150/release files with conventional messages and repository co-author policy; automatically push release/0.10.0 and open official PR against main.
 - [ ] T017 Wait for first reviews, respond to every comment and resolve each actionable thread, request at most one second @Codex round, and finish only with green current-head CI and satisfied reviews; notify operator for merge.
 
+T017 remains incomplete: both authorized bot rounds and all five remediation threads are closed, but #413 records a hard Windows QUIC observation-loss finding during release verification. An unchanged diagnostic rerun is not acceptance of that breach. Production runtime investigation/fix is outside S150's approved documentation/readiness/version-preparation scope and is not silently added to this slice.
+
 ## Dependencies and Parallel Opportunities
 
 Setup precedes analysis and all implementation. T005 precedes T006/T007. T009 precedes T010. Documentation and static review mapping can be investigated independently in distinct files, but source corrections are integrated serially by the main agent. Release operations T013/T014 follow a clean committed preparation and require a full final gate. No task uses a sensitive installed binary. The read-only planning documentation audit already ran alongside local release research.

@@ -6,7 +6,7 @@ The required matrix contains HTTP/1.1, HTTP/2, WebSocket, gRPC, generic TCP, gen
 
 ## Limits and degradation
 
-The runtime publishes bounded failure-detail retention, accepted-connection task ownership, leaf-certificate cache occupancy, and application writer queue occupancy. Nested protocol work remains finite and joined beneath each accepted connection through the existing stream and attempt limits. Failure details and application observations discard the oldest detail only after their declared capacity is reached, and each such discard advances an exact counter. Forwarding remains independent from evidence retention.
+The runtime publishes bounded failure-detail retention, accepted-connection task ownership, leaf-certificate cache occupancy, and application writer queue occupancy. Nested protocol work remains finite and joined beneath each accepted connection through the existing stream and attempt limits. Failure details retain a bounded suffix by discarding the oldest detail when full. The application writer instead refuses a new observation when its bounded queue has no free slot. Each discarded or refused unit advances its exact counter. Forwarding remains independent from evidence retention.
 
 The registry freezes timing and resource ceilings before measurements are collected. Timing uses seven windows and permits one retry only inside the five-percent guard band. Loss, capacity, memory, disk, and cleanup rules are hard invariants and have no timing retry.
 

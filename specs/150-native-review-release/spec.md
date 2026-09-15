@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-15
 
-**Status**: Draft
+**Status**: Implemented; external verification pending (#413)
 
 **Input**: S150 bundles native documentation alignment under #331, independent-review readiness under #333, and preparation of a fresh operator-published release. It does not perform or certify the independent audit, run sensitive installed software, reproduce #372 against a real host, or close #334.
 
