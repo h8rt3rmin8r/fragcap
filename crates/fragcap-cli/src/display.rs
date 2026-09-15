@@ -36,6 +36,18 @@ pub(crate) fn selected_stdout_width(stdout_terminal: bool) -> usize {
     human_width(stdout_terminal, reported)
 }
 
+/// Select the bounded width of human diagnostics independently of stdout.
+pub(crate) fn selected_stderr_width(stderr_terminal: bool) -> usize {
+    #[cfg(windows)]
+    let reported = stderr_terminal
+        .then(|| terminal_size::terminal_size_of(std::io::stderr()))
+        .flatten()
+        .map(|(width, _)| usize::from(width.0));
+    #[cfg(not(windows))]
+    let reported = None;
+    human_width(stderr_terminal, reported)
+}
+
 #[cfg(windows)]
 fn reported_stdout_width() -> Option<usize> {
     terminal_size::terminal_size_of(std::io::stdout()).map(|(width, _)| usize::from(width.0))
@@ -54,6 +66,29 @@ fn human_width(stdout_terminal: bool, reported: Option<usize>) -> usize {
     } else {
         80
     }
+}
+
+/// Wrap on display-cell word boundaries, preserving indivisible exact tokens.
+pub(crate) fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
+    let avail = width.saturating_sub(indent).max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if display_width(&cur) + 1 + display_width(word) <= avail {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    let indent_str = " ".repeat(indent);
+    lines.join(&format!("\n{indent_str}"))
 }
 
 fn display_cell_width(c: char) -> usize {

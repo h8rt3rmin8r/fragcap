@@ -17,7 +17,7 @@ h3 = { version = "=0.0.8", default-features = false }
 h3-quinn = { version = "=0.0.10", default-features = false }
 http = "1.4"
 quinn = { version = "=0.11.11", default-features = false, features = ["platform-verifier", "ring", "runtime-tokio", "rustls"] }
-rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "1.0"
 tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
 

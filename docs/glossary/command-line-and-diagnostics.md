@@ -1,5 +1,50 @@
 # Command Line and Diagnostics
 
+## Authorization plan
+
+A complete description of the scope and consequences that an operator must review before approving an operation.
+
+The plan binds selected resources, effects, limits, sensitive outputs, and cleanup obligations to one exact identity. A [lifecycle event](command-line-and-diagnostics.md#lifecycle-event) reports what happened afterward; the plan alone is not evidence that an effect occurred.
+
+{: .matters }
+> Deep Capture presents a readable consequence summary alongside the complete canonical plan. Trust and sensitive-output consent remain visible, and neither a summary nor an earlier plan authorizes a different session.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture), [Terminal report](command-line-and-diagnostics.md#terminal-report)
+
+**References:**
+
+- [Native authorization contract](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#1721-deep-capture-invocation) (project primary source for exact plan-bound consent).
+
+## Session progress
+
+A presentation of the stages and counters actually observed while an operation is being performed.
+
+Progress distinguishes resource readiness from traffic observation and evidence reconciliation. Live packet counters and later delivered application observations have different timing and authority; neither may imply unavailable decryption or process ownership.
+
+{: .matters }
+> Deep Capture projects typed lifecycle stages into human progress while preserving existing live Capture counters. Application counters describe post-collection observations, and final artifact and cleanup truth remains independent.
+
+**See also:** [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event), [Live status block](command-line-and-diagnostics.md#live-status-block), [Terminal report](command-line-and-diagnostics.md#terminal-report)
+
+**References:**
+
+- [Progress and failure reporting](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#263-diagnostics) (project primary source for progress, output modes, and recovery).
+
+## Terminal report
+
+An immutable result that distinguishes an operation's outcome from its evidence completeness and resource cleanup.
+
+A partial or interrupted operation can retain useful sensitive evidence while releasing external resources, or leave unresolved owned cleanup obligations. These independent states must not be collapsed into a single success claim.
+
+{: .matters }
+> Deep Capture reports the actual post-run outcome, each artifact status and confirmed retained path, and each named cleanup result. Quiet retains this report; silent suppresses optional human text; JSON remains exclusively structured.
+
+**See also:** [Completion summary](command-line-and-diagnostics.md#completion-summary), [Authorization plan](command-line-and-diagnostics.md#authorization-plan)
+
+**References:**
+
+- [Session bundle](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#137-deep-capture-session-bundles) (project primary source for independent terminal and artifact authority).
+
 ## Readiness check
 
 One line of the `fragcap doctor` report: a section, a name, a detail, a status,

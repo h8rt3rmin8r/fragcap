@@ -81,6 +81,10 @@ abuse-case mapping, so adding its name to an inventory cannot satisfy review by
 itself. Reviewers remain responsible for detecting semantic changes inside an
 existing dependency or authority.
 
+## 2026-09-15 Rustls Security-Patch Review (S149)
+
+The PR audit discovered [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285) in the existing exact Rustls 0.23.43 pin. [Upstream's advisory](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc) identifies 0.23.45 as patched: it refuses TLS 1.3 handshake messages received across encryption-level boundaries. This tightens the existing TLS trust boundary without adding a protocol, authority, dependency name, provider, feature, or consent path. The session-authority and upstream-trust abuse row continues to own TLS identity and verification failures; the existing controlled native HTTPS, HTTP/2, non-HTTP TLS, QUIC, conformance, and facade lifecycle tests verify integration. The version 1 inventory and negative-test mappings remain unchanged, and the registry date records this limited semantic dependency review, not a new independent review or final feature completion.
+
 ## Scope boundary
 
 This review closes issue #323. Fuzzing, performance and soak tests, Windows

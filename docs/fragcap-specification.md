@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.69-draft \
+**Version:** 0.1.70-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-09-11 \
+**Date:** 2026-09-15 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -162,6 +162,7 @@ enforcement.
 | 0.1.67-draft | 2026-09-11 | W. Thompson | **Adds explicit guided calibration choices and exact-case intent (issue #406).** Extends sections 15, 17.2.1, 25, and 28. Ambiguous discovered targets and Steam executable metadata now emit content-derived `candidate-v1` identities and require one exact rerun selection before the existing confirmation plans. Local-store schema version 12 adds immutable optional launch-case assertion, routing strategy, and loopback family to each workflow. Every resume rebuilds current authority with those values; stale, duplicate, malformed, unused, unsupported, or topology-inconsistent selections stop before effects. Non-Steam topology authoring and final completion remain in parent issue #380. |
 | 0.1.68-draft | 2026-09-11 | W. Thompson | **Completes controlled guided-calibration acceptance (issue #380).** Extends sections 15, 17.2.1, 24.3, 25, and 28. One checked registry maps all thirteen parent criteria to exact controlled tests and is validated in ordinary CI. Stable confirmed selection can narrow an ambiguous non-Steam client-only declaration without collapsing Steam or publisher authority, and store version 13 adds update and anti-cheat to the no-effect pause vocabulary. Direct, Steam, and publisher defaults, complete visible plans, durable resume, refusal, cleanup, and ordinary Deep Capture handoff are regression-protected. S147 closes only the guided workflow; no real-game compatibility was demonstrated. Real-game validation is operator-owned, optional, and permitted only against a published release. |
 | 0.1.69-draft | 2026-09-11 | W. Thompson | **Makes the complete Deep Capture workflow discoverable from embedded help (issue #379).** Extends sections 17.2.2, 25, and 28. Root and workflow command help now lead from environment checks through target discovery, registration, calibration, and a managed Deep Capture launch, with Steam and direct or publisher examples. The Deep Capture page groups ordinary controls before advanced and sensitive controls, states compatibility and certificate-pinning limits, and names sensitive outputs. Human pre-session refusals and cleanup failures provide one bounded next command while JSON contracts remain unchanged. Width and parse tests cover the audited help surface without running a target or changing trust. |
+| 0.1.70-draft | 2026-09-15 | W. Thompson | **Completes native session presentation (issue #332).** Extends section 26.3 and the controlled acceptance record. Required human authorization now includes a plan-derived active-mode, trust, sensitive-output, retention, and recovery summary alongside unchanged canonical JSON. Typed lifecycle stages receive human progress; canonical six-state observation-delivery counters remain distinct from existing live packet counters. A post-run terminal report survives quiet, preserves actual session and artifact status, confirms retained paths, and names exact cleanup obligations and confirmation-gated recovery. JSON schemas, consent policy, protocols, storage, and effect authority remain unchanged. Controlled tests do not claim live game compatibility or final #334 completion. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4721,6 +4722,12 @@ retires only the exact owner record; it does not broaden legacy evidence into
 authority over unrelated files or processes.
 
 Compatibility calibration progress names confirmation, proxy readiness, managed launch, observation, fact persistence, finalization, and cleanup. Human output and structured events carry the same phase and terminal outcome without requiring a machine consumer to parse prose. Every refusal names the missing precondition and states that no calibration effects were applied.
+
+Native Deep Capture human authorization includes a readable consequence summary before the unchanged complete canonical plan and exact identifier. The summary distinguishes active target-scoped inspection from passive Capture, identifies launch and routing scope, the exact trust action and store, payload retention, optional HAR, TLS key-log and client-identity selection, sensitive evidence, retained bundle location, and exact cleanup/recovery consequences. Required plan and consent text survives quiet and silent; checked writes and flushes still precede input, and one complete exact plan remains the only session authorization authority.
+
+Typed preflight, proxy readiness, trust readiness, managed launch, observation, and cleanup events receive normal human progress without claiming unobserved target traffic, CA acceptance, decryption, or final-client ownership. Fact append and bundle finalization calls announce their attempted work, not success. Existing Capture counters remain live packet authority. Application observations are delivered after collection and reconciliation; fixed saturating counters show the first and every hundredth delivered record across canonical full, metadata-only, decrypted-unknown, encrypted-opaque, packet-only, and unavailable classes. They are not live proxy totals or compatibility proof; loss and ownership reconcile in terminal artifacts.
+
+After all coordinator reporting obligations finish, the human terminal report uses the actual complete, partial, interrupted, or failed outcome and remains visible under quiet. It reports every artifact's independent status and confirms retained paths only from present files, names each exact cleanup result and reason, and offers `fragcap doctor --fix` only for unresolved owned resource results. Sensitive or incomplete evidence remains retained independently from external cleanup. Partial or interrupted retry guidance requires fresh preparation and separate authorization. Silent suppresses optional terminal text, while existing errors remain unsuppressed; JSON retains its existing exclusive structured schemas and prompt-free exact input. New human prose uses shared display-cell wrapping at 40 through 80 columns, with deterministic redirected width and indivisible exact values preserved.
 
 ### 26.4 Failure Reporting
 

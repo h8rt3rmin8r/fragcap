@@ -19,7 +19,7 @@ pub mod residue;
 
 use fragcap::write_json_string;
 
-use crate::display::{display_width, pad_display};
+use crate::display::{display_width, pad_display, wrap_hanging};
 use crate::doctor::action::Action;
 use crate::exit::Exit;
 
@@ -682,31 +682,6 @@ fn status_field(status: Status, color: bool) -> String {
     };
     let pad = " ".repeat(5usize.saturating_sub(word.len()));
     format!("{code}{word}{ANSI_RESET}{pad}")
-}
-
-/// Wrap `text` on word boundaries so no line exceeds `width` columns, hanging
-/// continuations under `indent` spaces. A single word longer than the available
-/// width is left whole rather than split, so a path or URL stays intact.
-fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
-    let avail = width.saturating_sub(indent).max(1);
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for word in text.split_whitespace() {
-        if cur.is_empty() {
-            cur.push_str(word);
-        } else if display_width(&cur) + 1 + display_width(word) <= avail {
-            cur.push(' ');
-            cur.push_str(word);
-        } else {
-            lines.push(std::mem::take(&mut cur));
-            cur.push_str(word);
-        }
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    let indent_str = " ".repeat(indent);
-    lines.join(&format!("\n{indent_str}"))
 }
 
 #[cfg(test)]
