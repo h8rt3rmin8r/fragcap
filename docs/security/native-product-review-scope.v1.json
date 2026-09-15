@@ -14,7 +14,10 @@
       "tests": [
         {
           "path": "crates/fragcap/tests/public_api.rs",
-          "function": "cli_product_contract_does_not_bypass_the_stable_module"
+          "function": "cli_product_contract_does_not_bypass_the_stable_module",
+          "features": [
+            "deep-capture"
+          ]
         }
       ]
     },
@@ -28,7 +31,8 @@
       "tests": [
         {
           "path": "xtask/src/supply_chain.rs",
-          "function": "null_source_is_workspace_only_for_exact_workspace_members"
+          "function": "null_source_is_workspace_only_for_exact_workspace_members",
+          "features": []
         }
       ]
     },
@@ -43,7 +47,8 @@
       "tests": [
         {
           "path": "xtask/src/lint.rs",
-          "function": "clean_source_produces_no_findings"
+          "function": "clean_source_produces_no_findings",
+          "features": []
         }
       ]
     },
@@ -60,7 +65,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/http1_proxy.rs",
-          "function": "refuses_ambiguous_framing_before_connecting"
+          "function": "refuses_ambiguous_framing_before_connecting",
+          "features": []
         }
       ]
     },
@@ -75,7 +81,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/https_proxy.rs",
-          "function": "connect_fails_closed_for_wrong_name_and_untrusted_upstream"
+          "function": "connect_fails_closed_for_wrong_name_and_untrusted_upstream",
+          "features": []
         }
       ]
     },
@@ -88,7 +95,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/certificates.rs",
-          "function": "malformed_leaf_identities_are_refused"
+          "function": "malformed_leaf_identities_are_refused",
+          "features": []
         }
       ]
     },
@@ -101,7 +109,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/trust.rs",
-          "function": "explicit_authorization_adds_and_cleanup_removes_only_owned_entry"
+          "function": "explicit_authorization_adds_and_cleanup_removes_only_owned_entry",
+          "features": []
         }
       ]
     },
@@ -117,7 +126,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/authentication.rs",
-          "function": "listener_refuses_wrong_proof_before_payload_and_counts_it"
+          "function": "listener_refuses_wrong_proof_before_payload_and_counts_it",
+          "features": []
         }
       ]
     },
@@ -131,7 +141,8 @@
       "tests": [
         {
           "path": "crates/fragcap-proxy/tests/upstream.rs",
-          "function": "policy_refuses_listener_and_private_destinations_without_exact_grant"
+          "function": "policy_refuses_listener_and_private_destinations_without_exact_grant",
+          "features": []
         }
       ]
     },
@@ -146,7 +157,8 @@
       "tests": [
         {
           "path": "crates/fragcap-cli/tests/cli_bundle.rs",
-          "function": "export_is_a_separate_copy_with_an_exhaustive_manifest"
+          "function": "export_is_a_separate_copy_with_an_exhaustive_manifest",
+          "features": []
         }
       ]
     },
@@ -160,7 +172,10 @@
       "tests": [
         {
           "path": "crates/fragcap/tests/deep_capture_session.rs",
-          "function": "cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization"
+          "function": "cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization",
+          "features": [
+            "deep-capture"
+          ]
         }
       ]
     },
@@ -177,7 +192,8 @@
       "tests": [
         {
           "path": "xtask/src/package_certification.rs",
-          "function": "transferred_artifacts_must_match_the_certified_bytes"
+          "function": "transferred_artifacts_must_match_the_certified_bytes",
+          "features": []
         }
       ]
     }

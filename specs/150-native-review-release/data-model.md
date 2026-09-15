@@ -6,7 +6,7 @@ Current README plus authored non-historical site documentation contains parser-c
 
 ## Review scope registry
 
-A closed versioned registry contains twelve unique canonical areas, each with repository source paths, exact executable test references, and a named validation method. Missing, duplicate, unknown, ignored, or stale references fail. Registry validity means reproducibility readiness, not independence or successful execution.
+A closed versioned registry contains twelve unique canonical areas, each with repository source paths, exact executable test references, explicit package-feature arrays, and a named validation method. Git tracking, Cargo target ownership, and compiled test-harness discovery with defaults disabled protect against generated specimens and enclosing configuration that removes a test. Missing, duplicate, unknown, ignored, or stale references fail. Registry validity means reproducibility readiness, not independence or successful test execution.
 
 ## Independent review record template
 

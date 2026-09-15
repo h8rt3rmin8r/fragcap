@@ -10,7 +10,7 @@ An authorized reviewer records `git rev-parse HEAD`, the actual release tag and 
 
 ## Validation interfaces
 
-`cargo test -p fragcap-cli --test cli_reference --locked` parses current command examples without dispatch. `cargo xtask review-handoff` checks review-scope and not-started template readiness without host effects. Existing `published_examples_match_the_versioned_reader` validates manifest specimens through the product reader. `cargo xtask ci`, MSRV, docs build/check, and production accessibility remain required implementation evidence.
+`cargo test -p fragcap-cli --test cli_reference --locked` parses current command examples without dispatch. `cargo xtask review-handoff` checks review-scope and the workspace-version-bound not-started template without host effects. Test references declare exact package features, require Git-tracked Cargo ownership, and must appear in compiled harness `--list` output with defaults disabled; discovery does not execute those tests. Existing `published_examples_match_the_versioned_reader` requires `--features deep-capture` and validates manifest specimens through the product reader. `cargo xtask ci`, MSRV, docs build/check, and production accessibility remain required implementation evidence.
 
 ## Operator release and external review
 
