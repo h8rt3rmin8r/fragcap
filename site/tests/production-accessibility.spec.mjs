@@ -55,6 +55,16 @@ function publicRoutes() {
     .sort();
 }
 
+function expectedPublicRoutes() {
+  const contentDir = join(siteDir, 'content', 'docs');
+  const docs = exportedHtmlFiles(contentDir)
+    .filter((path) => path.endsWith('.mdx'))
+    .map((path) => relative(contentDir, path).split(sep).join('/').slice(0, -4))
+    .map((slug) => slug.replace(/(?:^|\/)index$/, ''))
+    .map((slug) => slug ? `/docs/${slug}` : '/docs');
+  return ['/', '/brand', '/disclaimer', '/license', ...docs].sort();
+}
+
 function contrastRatio(foreground, background) {
   const linear = (value) => {
     const channel = value / 255;
@@ -95,7 +105,7 @@ async function openSearch(page, query) {
 async function activateFirstSearchResult(page, query, destination) {
   const { results } = await openSearch(page, query);
   await results.first().click();
-  await expect(page).toHaveURL((url) => url.pathname === destination);
+  await expect(page, `${query} leading destination`).toHaveURL((url) => url.pathname === destination);
 }
 
 test.describe('production accessibility contract', () => {
@@ -107,7 +117,7 @@ test.describe('production accessibility contract', () => {
   for (const width of viewports) {
     test(`all public routes expose one primary region and keyboard bypass at ${width}px`, async ({ page }) => {
       const routes = publicRoutes();
-      expect(routes, 'public route population').toHaveLength(61);
+      expect(routes, 'exported routes match the complete content inventory').toEqual(expectedPublicRoutes());
       await page.setViewportSize({ width, height: 900 });
       for (const route of routes) {
         const response = await page.goto(route);
@@ -265,10 +275,42 @@ test.describe('production accessibility contract', () => {
       ['capture scope', '/docs/architecture'],
       ['Deep Capture', '/docs/architecture'],
       ['proxy-owned TLS key', '/docs/reference/output-formats'],
+      ['Library API', '/docs/reference/library-api'],
+      ['Doctor and troubleshooting', '/docs/guides/doctor-and-troubleshooting'],
     ];
 
     for (const [query, destination] of cases) {
       await activateFirstSearchResult(page, query, destination);
+    }
+  });
+
+  test('current native guidance internal links resolve to exported pages and anchors', async ({ page }) => {
+    const currentRoutes = [
+      '/docs', '/docs/architecture', '/docs/getting-started', '/docs/contributing',
+      '/docs/reference/cli', '/docs/reference/deep-capture-compatibility',
+      '/docs/reference/output-formats', '/docs/reference/library-api',
+      '/docs/guides/doctor-and-troubleshooting', '/docs/guides/security-and-privacy',
+      '/docs/guides/packaging-and-migration',
+    ];
+    const links = new Set();
+    for (const route of currentRoutes) {
+      await page.goto(route);
+      const hrefs = await page.getByRole('main').locator('a[href]').evaluateAll((anchors) => anchors.map((anchor) => anchor.href));
+      for (const href of hrefs) {
+        const url = new URL(href);
+        if (url.origin === new URL(page.url()).origin && url.pathname.startsWith('/docs')) links.add(url.href);
+      }
+    }
+    const routes = new Set(publicRoutes());
+    for (const href of links) {
+      const url = new URL(href);
+      expect(routes.has(url.pathname.replace(/\/$/, '')), `${href} exported destination`).toBe(true);
+      const response = await page.request.get(href);
+      expect(response.status(), `${href} response`).toBe(200);
+      if (url.hash) {
+        const exists = await page.evaluate(({ html, hash }) => Boolean(new DOMParser().parseFromString(html, 'text/html').getElementById(decodeURIComponent(hash.slice(1)))), { html: await response.text(), hash: url.hash });
+        expect(exists, `${href} target anchor`).toBe(true);
+      }
     }
   });
 

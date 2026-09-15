@@ -59,7 +59,7 @@ Raw observed bodies, WebSocket frames, generic stream chunks, and routed UDP dat
 
 `--har` requests `http.har`. Native HAR projection requires a complete reconciling application source and complete eligible HTTP transaction evidence. It does not fill unknown response status, size, timing, or body with guessed values or synthetic zeroes. Incomplete transactions and unavailable representations are omitted or declared under the projection contract. Projection is bounded and atomically published; it never outranks its application source.
 
-### TLS key logs are explicitly sensitive
+### Proxy-owned TLS key logs
 
 `--key-log` requests client-facing server TLS material under the session authority. Its exact retained path is available to the analyzer workflow, but upstream TLS never enters that key log. Empty or unavailable production remains an omission, not a decryption claim. Pinning and trust failures are not bypassed. Treat retained key logs as highly sensitive and review the exact manifest declaration before sharing.
 

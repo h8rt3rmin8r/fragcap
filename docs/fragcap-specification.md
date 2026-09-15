@@ -2,7 +2,7 @@
 
 **Status:** Draft \
 **Version:** 0.1.71-draft \
-**Applies-To:** 0.9.0 \
+**Applies-To:** 0.10.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-09-15 \
@@ -4840,6 +4840,9 @@ restated here. The scope of each release is:
 | v0.6.0 | 2026-08-22 | Truthful live status, target-scoped output, loss accounting, and evidence-based target discovery corrections | follow-on slices |
 | v0.7.0 | 2026-08-27 | Deep Capture architecture and MVP, compatibility facts, session bundles, readiness and cleanup, and target-discovery corrections | follow-on slices |
 | v0.8.0 | 2026-08-30 | Deep Capture compatibility calibration, public library-first session orchestration, managed direct-executable launch, and documentation accessibility and recovery corrections | S095 through S101 |
+| v0.9.0 | 2026-09-05 | Native protocols, scoped managed launches and routing, application artifacts and correlation, recovery, security/performance and relocated Windows integration evidence; final completion remains open | S102 through S129 |
+
+S150 prepares v0.10.0 from the subsequent supply-chain, final-package, stable API, discovery/authorization, guided calibration and session UX slices S130 through S150. This candidate is not a published-release row until operator publication; independent review #333 and final gate #334 remain outstanding.
 
 ### 27.4 Critical Path
 

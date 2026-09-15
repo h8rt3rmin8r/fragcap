@@ -36,12 +36,12 @@
 **Independent Test**: Version-bound controlled gates, changelog and notes validation, and operator publication instructions without tag or publish.
 
 - [x] T012 [US3] Write release/0.10.0 handoff under docs/maintainers/ and prepare short release-notes/v0.10.0.md from accumulated user-visible changes (FR-008, FR-011).
-- [ ] T013 [US3] Preview and perform configured local version-only preparation, update exact release-bound source/evidence through reviewed mechanical changes and regenerate existing goldens; preserve historical physical measurements.
-- [ ] T014 [US3] Assemble accumulated fragments into CHANGELOG.md with existing release task only on release/0.10.0; reconcile specification Applies-To and prepared-versus-published guidance.
+- [x] T013 [US3] Preview and perform configured local version-only preparation, update exact release-bound source/evidence through reviewed mechanical changes and regenerate existing goldens; preserve historical physical measurements.
+- [x] T014 [US3] Assemble accumulated fragments into CHANGELOG.md with existing release task only on release/0.10.0; reconcile specification Applies-To and prepared-versus-published guidance.
 
 ## Phase 6: Polish and Handoff
 
-- [ ] T015 Run full cargo xtask ci, declared MSRV build, docs build/check, site unit/accessibility checks, release-note validation, and encoding sanity checks; record read evidence in specs/150-native-review-release/acceptance.md.
+- [x] T015 Run full cargo xtask ci, declared MSRV build, docs build/check, site unit/accessibility checks, release-note validation, and encoding sanity checks; record read evidence in specs/150-native-review-release/acceptance.md.
 - [ ] T016 Commit only S150/release files with conventional messages and repository co-author policy; automatically push release/0.10.0 and open official PR against main.
 - [ ] T017 Wait for first reviews, respond to every comment and resolve each actionable thread, request at most one second @Codex round, and finish only with green current-head CI and satisfied reviews; notify operator for merge.
 
