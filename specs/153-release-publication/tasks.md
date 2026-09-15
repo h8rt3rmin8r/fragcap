@@ -20,7 +20,7 @@
 
 - [x] T005 [US1] Create and push annotated v0.10.1 selecting exact merged a7d2496, preserving existing tags; record tag/source identity in specs/153-release-publication/verification.md.
 - [ ] T006 [US1] Drive existing .github/workflows/release.yml to completion, requesting only an essential owner environment decision if held; retain failed/partial/retry evidence in specs/153-release-publication/verification.md.
-- [ ] T007 [US1] Download six official assets and exact-run summary into target/release-verification-v0.10.1/; independently reconcile checksum/size/report version and source without launching product.
+- [x] T007 [US1] Download six official assets and exact-run summary into target/release-verification-v0.10.1/; independently reconcile checksum/size/report version and source without launching product.
 - [ ] T008 [US1] Verify all ten non-yanked registry versions from xtask/src/publish.rs ORDER and all mandatory release jobs green; record scrubbed identities/digests in specs/153-release-publication/verification.md.
 
 ## Phase 4: User Story 2 - Reconcile published baseline
