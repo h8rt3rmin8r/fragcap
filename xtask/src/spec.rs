@@ -134,6 +134,60 @@ fn published_identity(source: &str) -> Result<PublishedIdentity, String> {
     })
 }
 
+/// Normalize only linked canonical version labels used by the claim grammar.
+/// Inline destinations may contain balanced or escaped parentheses; reference
+/// and shortcut links expose the same visible version without scanning URLs.
+fn release_claim_text(raw: &str) -> String {
+    let source = raw.replace('`', "").replace("**", "");
+    let mut remaining = source.as_str();
+    let mut visible = String::new();
+    while let Some(open) = remaining.find('[') {
+        visible.push_str(&remaining[..open]);
+        remaining = &remaining[open + 1..];
+        let Some(close) = remaining.find(']') else {
+            visible.push('[');
+            break;
+        };
+        let label = &remaining[..close];
+        if !label.strip_prefix('v').is_some_and(canonical_version) {
+            visible.push('[');
+            continue;
+        }
+        let tail = &remaining[close + 1..];
+        let end = if tail.starts_with('(') {
+            let mut depth = 0;
+            let mut escaped = false;
+            tail.char_indices().find_map(|(index, ch)| {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index + 1);
+                    }
+                }
+                None
+            })
+        } else if tail.starts_with('[') {
+            tail.find(']').map(|close| close + 1)
+        } else {
+            Some(0)
+        };
+        let Some(end) = end else {
+            visible.push('[');
+            continue;
+        };
+        visible.push_str(label);
+        remaining = &tail[end..];
+    }
+    visible.push_str(remaining);
+    visible
+}
+
 fn current_applicability(source: &str, published: &PublishedIdentity) -> Vec<String> {
     let expected = format!(
         "Published baseline: [v{}]({}).",
@@ -150,7 +204,7 @@ fn current_applicability(source: &str, published: &PublishedIdentity) -> Vec<Str
     for (index, raw) in source.lines().enumerate() {
         // Only current-release sentence forms, not global older-version bans.
         // Historical table/chronological preparation records remain valid.
-        let line = raw.replace('`', "").replace("**", "");
+        let line = release_claim_text(raw);
         for word in line.split_whitespace() {
             let token = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.');
             let Some(version) = token
@@ -494,6 +548,29 @@ mod tests {
     }
 
     #[test]
+    fn version_links_expose_visible_text_without_destination_version_claims() {
+        for linked in [
+            "[v0.9.0](https://example.test/releases/(old))",
+            "[v0.9.0](https://example.test/releases/\\(old\\))",
+            "[`v0.9.0`][previous-release]",
+            "[v0.9.0]",
+        ] {
+            assert_eq!(
+                release_claim_text(&format!("é {linked} is the current release.")),
+                "é v0.9.0 is the current release."
+            );
+        }
+        assert_eq!(
+            release_claim_text("[history](https://example.test/v0.9.0)"),
+            "[history](https://example.test/v0.9.0)"
+        );
+        assert_eq!(
+            release_claim_text("[v0.9.0](unfinished"),
+            "[v0.9.0](unfinished"
+        );
+    }
+
+    #[test]
     fn publication_identity_rejects_malformed_or_nonofficial_authority() {
         let fixture = publication_fixture();
         assert!(published_identity(&fixture.to_string()).is_ok());
@@ -544,6 +621,10 @@ mod tests {
         }
         for bad in [
             "**v0.9.0 is the current release.**",
+            "[v0.9.0](https://example.test) is the current release.",
+            "[`v0.9.0`](https://example.test/releases/(old)) remains the published baseline.",
+            "[v0.9.0][previous-release] is the current published baseline.",
+            "[v0.10.0](https://example.test) has not been published.",
             "S150 prepares the candidate. v0.9.0 remains the latest published baseline until publication.",
             "v0.10.0 has not been published.",
             "v0.10.0 is not published.",

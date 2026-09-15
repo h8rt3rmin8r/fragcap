@@ -29,6 +29,10 @@ The first integrated Doctor run passed 93 tests and failed one delayed-work test
 
 Hosted current-head checks and review disposition will be recorded on the PR and #414 after publication, rather than requiring an evidence-only source commit after every external transition.
 
+## First-Round Review Correction (2026-09-15)
+
+Automatic Codex review of `3ef67c9` raised one P2 comment: canonical version labels inside Markdown links bypassed the contradictory-claim scanner. The added linked stale/current-unpublished fixtures first failed (exit 101). The corrected normalization exposes canonical visible version labels for inline, reference and shortcut links, including balanced/escaped destination parentheses, without interpreting unrelated destination versions as claims. `cargo test -p xtask spec::tests --locked` then passed 13 tests with zero failures or ignored tests, targeted xtask Clippy passed, all 189 xtask tests passed and `cargo xtask spec` reconciled all thirteen actual surfaces. All comments/threads and the permitted second-round/current-head CI disposition are recorded on PR #415.
+
 ## Publication Evidence and Nonclaims
 
 Read-only GitHub evidence confirms v0.10.0 was published at 2026-09-15T15:55:49Z as a non-draft, non-prerelease tag rooted at `787739edfa8d748e25cb4b5c4965f5c936850d16`. Its release run 34990387334 completed all four jobs. The reviewed source record and thirteen explicit current-baseline markers are independent of candidate workspace version. Actual downloaded package identities and publication results remain in the updated maintainer handoff; nothing was installed or executed to reconcile those facts.
