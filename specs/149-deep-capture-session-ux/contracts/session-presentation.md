@@ -4,6 +4,8 @@
 
 Human modes receive an active-mode consequence summary followed by the unchanged complete canonical plan and exact plan identifier. Even quiet and silent retain this required text. JSON receives only existing plan and decision records and exact structured input, never human summaries or prompts. All plan writes and flushes remain checked before input.
 
+The complete plan retains its schema and digest algorithm. S149 corrects the pre-existing selected-HAR path value from `capture.har` to the actual producer's `http.har`, so a selected-HAR plan identifier intentionally changes to bind the correct artifact authority.
+
 ## Optional Progress and Terminal
 
 Normal human mode receives observed lifecycle transitions and cumulative inspection classes at the first and every hundredth observation. Quiet and silent suppress progress. A human terminal summary survives quiet and is suppressed by silent; existing errors remain unsuppressed. JSON events remain unchanged.

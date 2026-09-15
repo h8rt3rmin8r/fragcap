@@ -1315,6 +1315,74 @@ fn interrupted_or_failed_controlled_collection_retains_truthful_quiet_terminal_e
 }
 
 #[test]
+fn quiet_terminal_inventory_includes_optional_sensitive_artifacts_and_omissions() {
+    let _environment = controlled_environment().lock().unwrap();
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    for (selected, partial) in [(false, false), (true, false), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.db");
+        seed_target(&local, false);
+        let bundle = dir.path().join("bundle");
+        let mut args = vec![
+            "--quiet",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ];
+        if selected {
+            args.extend(["--har", "--key-log"]);
+        }
+        if partial {
+            std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
+        }
+        let (code, _out, err) = run(&args);
+        std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
+        assert_eq!(
+            code == 0,
+            !partial,
+            "selected={selected}, partial={partial}:\n{err}"
+        );
+        if selected {
+            let expected =
+                serde_json::to_string(&bundle.join("http.har").display().to_string()).unwrap();
+            assert!(
+                err.contains(&format!("\"har\": {expected}")),
+                "the complete plan must name the actual HAR output before authorization:\n{err}"
+            );
+        }
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+        for (role, filename) in [("har", "http.har"), ("tls-key-log", "tls-keylog.log")] {
+            let entry = manifest["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["role"] == role)
+                .unwrap();
+            let omitted = entry["completeness"] == "omitted";
+            let status = if omitted { "omitted" } else { "written" };
+            assert!(
+                err.contains(&format!("Artifact {role}: {status}.")),
+                "selected={selected}, partial={partial}:\n{err}"
+            );
+            if !omitted {
+                assert!(bundle.join(filename).is_file());
+                assert!(err.contains(&bundle.join(filename).display().to_string()));
+            }
+        }
+    }
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+}
+
+#[test]
 fn partial_controlled_session_writes_observed_facts_and_manifest() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();

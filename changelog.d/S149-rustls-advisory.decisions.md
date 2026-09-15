@@ -1,0 +1,2 @@
+<!-- spec-impact: none -->
+2026-09-15 (S149): The PR dependency audit discovered newly published RUSTSEC-2026-0285 in the existing Rustls 0.23.43 pin. Extend the dependency-free presentation plan only to exact-pinned Rustls 0.23.45, the upstream-patched version. Ignoring the advisory or weakening the audit is rejected. Retain ring-only provider selection, features, MSRV, and all trust/consent boundaries; refresh the threat-model review record and run the existing controlled protocol/security gates. No workflow or pinned process artifact is modified.

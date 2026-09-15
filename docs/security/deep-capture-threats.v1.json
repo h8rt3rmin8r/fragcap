@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-09-04",
-  "scope": "Native Deep Capture product paths shipped through S124",
+  "reviewed_on": "2026-09-15",
+  "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch",
   "protocol_families": [
     "generic-tcp",
     "generic-udp",

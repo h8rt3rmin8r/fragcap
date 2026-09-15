@@ -55,4 +55,4 @@ GATE: Passed before research and after design.
 
 ## Complexity Tracking
 
-No constitutional violation or new dependency requires justification.
+No constitutional violation or new dependency requires justification. The online PR audit requires one recorded version-only exception: exact Rustls 0.23.43 to upstream-patched 0.23.45 for RUSTSEC-2026-0285. Dependency names, selected features, ring provider, MSRV, schemas, consent, and scope remain unchanged; the semantic threat-model review record and controlled security/protocol gates cover the patch.

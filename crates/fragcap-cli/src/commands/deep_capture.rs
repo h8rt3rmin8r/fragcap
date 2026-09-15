@@ -1461,12 +1461,27 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 "manifest.json",
                 deep_capture_api::Sensitivity::Metadata,
             ),
+            ("har", "http.har", deep_capture_api::Sensitivity::Payload),
+            (
+                "tls-key-log",
+                "tls-keylog.log",
+                deep_capture_api::Sensitivity::Secret,
+            ),
         ];
         let mut results: Vec<_> = roles
             .into_iter()
             .map(|(role, path, sensitivity)| {
                 let full = bundle.join(path);
-                let status = if full.is_file() {
+                let selected = match role {
+                    "har" => snapshot.artifacts.har,
+                    "tls-key-log" => snapshot.artifacts.key_log,
+                    _ => true,
+                };
+                let status = if !selected {
+                    deep_capture_api::ArtifactStatus::Omitted {
+                        reason: "artifact was not requested".to_string(),
+                    }
+                } else if full.is_file() {
                     deep_capture_api::ArtifactStatus::Written
                 } else if let Err(error) = &write_result {
                     deep_capture_api::ArtifactStatus::Failed {
@@ -1482,7 +1497,8 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                     role: role.to_string(),
                     path: full,
                     sensitivity,
-                    required: role != "pcapng" || session_state == "complete",
+                    required: !matches!(role, "har" | "tls-key-log")
+                        && (role != "pcapng" || session_state == "complete"),
                     status,
                 }
             })
@@ -1983,7 +1999,7 @@ fn build_authorization_plan(
             "client_certificate": args.client_certificate.as_ref().map(|path| path.display().to_string()),
             "client_identity_ownership": if args.client_certificate.is_some() { "validated and retained in process before authorization" } else { "none" },
             "client_private_key": args.client_private_key.as_ref().map(|path| path.display().to_string()),
-            "har": if args.har { Some(bundle.join("capture.har").display().to_string()) } else { None },
+            "har": if args.har { Some(bundle.join("http.har").display().to_string()) } else { None },
             "key_log": if args.key_log { Some(bundle.join("tls-keylog.log").display().to_string()) } else { None },
             "sensitivity": "bundle may contain plaintext application traffic and credentials",
         },

@@ -94,7 +94,7 @@ The operator can distinguish completed, interrupted, partial, and failed session
 
 - Native readiness, plan-bound authorization, protocols, artifact retention, exact cleanup, packaging, and guided calibration are implemented by prior slices and remain policy authority.
 - Controlled implementation acceptance does not claim live game compatibility. Optional live validation belongs to the operator against published product bytes.
-- No dependency, storage, artifact schema, structured-event schema, trust policy, or protocol behavior change is needed.
+- No new dependency name, storage, artifact schema, structured-event schema, trust policy, or selected protocol change is needed. The online PR audit requires one version-only exception, exact Rustls 0.23.43 to upstream-patched 0.23.45 for RUSTSEC-2026-0285, recorded in the plan and research.
 
 ## Clarifications
 

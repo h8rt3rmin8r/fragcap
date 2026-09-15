@@ -13,7 +13,7 @@ The plan binds selected resources, effects, limits, sensitive outputs, and clean
 
 **References:**
 
-- [Native authorization contract](../fragcap-specification.md#1721-deep-capture-invocation) (project primary source for exact plan-bound consent).
+- [Native authorization contract](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#1721-deep-capture-invocation) (project primary source for exact plan-bound consent).
 
 ## Session progress
 
@@ -28,7 +28,7 @@ Progress distinguishes resource readiness from traffic observation and evidence 
 
 **References:**
 
-- [Progress and failure reporting](../fragcap-specification.md#263-diagnostics) (project primary source for progress, output modes, and recovery).
+- [Progress and failure reporting](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#263-diagnostics) (project primary source for progress, output modes, and recovery).
 
 ## Terminal report
 
@@ -43,7 +43,7 @@ A partial or interrupted operation can retain useful sensitive evidence while re
 
 **References:**
 
-- [Session bundle](../fragcap-specification.md#137-deep-capture-session-bundles) (project primary source for independent terminal and artifact authority).
+- [Session bundle](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#137-deep-capture-session-bundles) (project primary source for independent terminal and artifact authority).
 
 ## Readiness check
 
