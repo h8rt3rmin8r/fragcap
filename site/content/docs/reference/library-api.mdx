@@ -1,0 +1,29 @@
+---
+title: Library API
+description: Stable version-one Deep Capture contracts, exact authorization, adapters, cancellation, and controlled evidence.
+---
+
+## Stable entry point
+
+Import the curated `fragcap::deep_capture::api` surface. `DEEP_CAPTURE_API_VERSION` is 1, and `STABLE_API_EXPORTS` records its exact sorted inventory. Older top-level `deep_capture` exports remain for compatibility, but the curated module carries the explicit stability policy. API version is independent from product version and artifact schema versions.
+
+```rust
+use fragcap::deep_capture::api::{DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS};
+
+assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
+assert!(STABLE_API_EXPORTS.contains(&"SessionConfigBuilder"));
+```
+
+Use `SessionConfigBuilder` and `AdapterSetBuilder` for validated configuration and adapter composition. Side-effect-free preparation yields an immutable `SessionPlan`; `Authorization` binds to its exact `PlanId`. Checked session lifecycle operations own start, observation, stop, possible fact writes, cleanup, bundle finalization, and one typed `TerminalReport`. Caller adapters do not bypass plan authority, budgets, ownership, or cleanup.
+
+## Ownership and integration
+
+Session coordinators and adapter sets are thread-confined. Adapter traits do not implicitly promise `Send` or `Sync`. `CancellationToken` is the thread-safe cooperative request handle, observed at coordinator stage boundaries. Finite cooperative budgets are not a promise to preempt an arbitrary blocking third-party adapter. Preserve explicit cancellation, bounded stage work, and exact obligations in an integration.
+
+Evolvable public enums require fallback handling; do not exhaustively match the currently known variants and assume the set will never grow. Typed event-delivery failures, invalid transitions, preflight refusals, cleanup outcomes, and artifact outcomes remain distinct from successful session completion. Compatibility applicability is centralized in `fragcap-targets`, not reconstructed by each caller.
+
+## Reproducible examples, not operator execution
+
+The [native library example](https://github.com/h8rt3rmin8r/fragcap/blob/main/crates/fragcap/examples/native-deep-capture.rs) and [public API integration tests](https://github.com/h8rt3rmin8r/fragcap/blob/main/crates/fragcap/tests/public_api.rs) exercise the library without routing through the CLI. Controlled adapters require no game, account, capture driver, elevation, external service, or host trust mutation. They establish contract behavior, not universal real-target compatibility.
+
+Read the [source API documentation](https://github.com/h8rt3rmin8r/fragcap/blob/main/crates/fragcap/src/deep_capture/api.rs), [architecture](/docs/architecture), and [independent-review handoff](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/security/native-product-review-handoff.md) for ownership and review boundaries. Agents must not run installed sensitive product or real games as a substitute for operator validation on published bytes.

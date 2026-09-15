@@ -1,0 +1,40 @@
+---
+title: Security and privacy
+description: Deliberate scope, independent TLS boundaries, sensitive evidence, and exact cleanup.
+---
+
+## Capture and Deep Capture have different effects
+
+Capture is passive packet observability using driver packets plus external socket/process evidence. Deep Capture is deliberately active local proxy inspection for a selected authorized target. Neither mode injects, hooks, reads target memory, extracts target TLS keys, modifies target executables, installs interception drivers, or bypasses certificate pinning. Do not mistake implementation conformance for anti-cheat approval or permission to inspect software you do not own or have authorization to research.
+
+Deep Capture binds a complete immutable plan to exact authorization before effects. It owns one loopback endpoint and session capability, finite connections/tasks, scoped routing and upstream policy, and exact cleanup obligations. It is not an open proxy. No wildcard listener, silent system-wide routing fallback, or unconfirmed trust action is permitted. Child-environment routing is currently implemented; other selectable routing strategies refuse before effects.
+
+## Trust and cryptographic material
+
+Client-facing TLS uses the exact session CA and separately verified upstream TLS. Explicit upstream client credentials require a matching operator-owned certificate and private key. The private key is not written to session output. Trust is scoped to the exact owned CA in Windows CurrentUser Root, never silently LocalMachine or another user's store. Pinning, failed trust, wrong identity, unsupported protocol, and unscopable traffic do not downgrade silently.
+
+Optional TLS key logging captures only proxy-owned client-facing secrets, not upstream secrets or target-process keys. A key log can enable decryption of corresponding traffic and is highly sensitive even when the packet file looks harmless. Retain it only when needed and do not publish it casually.
+
+## Private evidence and sharing
+
+Packet captures may contain payloads and endpoints. Application records, HAR, process traces, proxy logs, compatibility notes, and manifests can expose URLs, cookies, tokens, identities, filesystem paths, or session material. Sensitive bundle protection precedes proxy startup. `--no-payload` is a packet-retention choice, not a claim that the entire bundle is anonymized or contains no sensitive metadata. Protocol/body retention and bounded omission are separate evidence facts.
+
+```powershell
+fragcap bundle export sample-bundle --out sample-share-copy
+```
+
+Export creates a separate atomic transformed copy with an exhaustive sharing manifest. The source remains unchanged; omissions and transformations must be reviewed before sending the copy. Export is not a blanket certification that every remaining ordinary artifact is safe for every audience. Keep raw evidence private and exclude local target/account names, private endpoints, host identifiers, credentials, and unreviewed notes from public issues.
+
+```powershell
+fragcap bundle cleanup sample-bundle --yes
+```
+
+This explicit confirmed action removes eligible sensitive evidence from the exact selected bundle, not unrelated files or all historical sessions. General lifecycle recovery is different: inspect Doctor and confirm exact owned obligations through `doctor --fix`. Cleanup failures preserve authority and are not silently reported clean.
+
+## Bounds are part of the evidence
+
+Connections, tasks, parser heads, streams, body retention/derivation, datagrams, event queues, deadlines and cleanup are finite. Forwarding and evidence retention have separate ownership; omitted or truncated evidence is counted rather than silently delaying forwarding or claiming full retention. The [performance registry and measurement contract](https://github.com/h8rt3rmin8r/fragcap/tree/main/performance) binds controlled scenarios, measurements and ceilings. It is not a universal latency guarantee for arbitrary targets or permission to widen bounds to hide failure.
+
+## Review status
+
+The [native threat model](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/security/deep-capture-threat-model.md), closed dependency policy, parser fuzz inventory, controlled failure matrix, conformance, and package certification provide reproducible engineering evidence. S150 adds the [independent-review handoff](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/security/native-product-review-handoff.md), not an independent audit verdict. [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333) and final gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) remain open.

@@ -1,57 +1,36 @@
 ---
 title: Getting started
-description: Verify fragcap, run a first Capture, and continue into a known-compatible Deep Capture session.
+description: Install published fragcap bytes, record passive packet truth, and explicitly calibrate a target before Deep Capture.
 ---
 
-<Callout title="Deep Capture is incomplete">
-These instructions describe the v0.9.0 native path, including managed launch,
-scoped IPv4 and IPv6 routing, supported application protocols, bounded evidence,
-recovery, and Windows integration. The final Deep Capture completion gate remains
-tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
+<Callout title="Release and completion status">
+These instructions include guided calibration and native functionality through S149, prepared for v0.10.0 by S150. v0.9.0 remains the published baseline until operator publication. Deep Capture is functional but incomplete: independent review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333) and final gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) remain open. Follow documentation matching your installed bytes.
 </Callout>
 
-fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.9.0 requires.
-
-<Callout title="Start with Capture">
-Capture remains useful when Deep Capture is unavailable. The `.fcapng` file is packet truth in both paths, and an unmodified pcapng analyzer can open it.
-</Callout>
+Capture passively records packets and attributes flows to processes. Deep Capture runs Capture beside an explicit target-scoped local proxy and adds application observations only for traffic reaching that proxy under the required trust and scope conditions. Start with Capture; use guided calibration when you deliberately want to investigate Deep Capture eligibility.
 
 ## Before you begin
 
-Live Capture and Deep Capture packet recording require Windows, an elevated terminal, and the separately installed Npcap driver in WinPcap API-compatible mode. [Wireshark](https://www.wireshark.org/download.html) is the recommended analyzer and its Windows installer can install Npcap. The Deep Capture proxy is included in fragcap. These tools follow fragcap's documented [dependency model](/docs/glossary/platform-and-distribution#dependency-model).
+Live packet recording requires Windows, an elevated terminal, and separately installed Npcap in WinPcap API-compatible mode. The native Deep Capture proxy is included. Neither mode reaches inside the target process. Do not configure a system-wide proxy, disable certificate verification, or attempt to bypass pinning.
 
 ```mermaid
-flowchart TD
-  fragcap["fragcap"]
-  npcap["Npcap: live packet capture"]
-  wireshark["Wireshark: packet analysis"]
-  proxy["fragcap-proxy: native Deep Capture proxy"]
-  capture["Capture: packet truth and process attribution"]
-  deep["Deep Capture: Capture plus compatible proxy observations"]
-  fragcap --> capture
-  fragcap --> deep
-  npcap --> capture
-  npcap --> deep
-  proxy --> deep
-  capture --> wireshark
-  deep --> wireshark
+flowchart TB
+  accTitle: Separate packet and application observation dependencies
+  fragcap["fragcap"] --> capture["Capture: passive packet truth"]
+  fragcap --> deep["Deep Capture: explicitly scoped observations"]
+  npcap["Separately installed Npcap"] --> capture
+  capture --> deep
+  proxy["Included native proxy"] --> deep
+  capture --> analyzer["Unmodified pcapng analyzer"]
 ```
 
-These tools have distinct jobs:
-
-- **Npcap is required for live packets.** fragcap never bundles, hosts, caches as its own, or redistributes Npcap. The published `doctor --fix` opens the official acquisition page after confirmation; a source build with the optional `net` feature may instead fetch and launch the vendor's signed installer after confirmation.
-- **Wireshark is recommended for analysis.** It opens `.fcapng` directly. The optional fragcap extcap integration adds a live fragcap source inside Wireshark.
-- **The Deep Capture proxy ships with fragcap.** Do not configure a system-wide proxy. fragcap prepares its target-scoped native proxy and exact purpose-specific CA identity for the complete authorization plan, then applies only the reviewed effects.
-
-Capture records the payload bytes it observes unless you select `--no-payload`. fragcap does not guess whether those bytes are encrypted. Deep Capture can add HTTP semantics only for traffic that follows the scoped proxy route and, for HTTPS, accepts the fragcap-owned local CA. It does not bypass certificate pinning or extract keys from a target process.
+Npcap supplies live packets, while attribution uses Windows socket and process evidence. Wireshark is an optional analyzer and can install Npcap. fragcap never bundles or redistributes Npcap. See the [dependency model](/docs/glossary/platform-and-distribution#dependency-model) and [security and privacy guide](/docs/guides/security-and-privacy).
 
 ## 1. Install fragcap and its prerequisites
 
-Download fragcap from the [release page](https://github.com/h8rt3rmin8r/fragcap/releases). Each release provides a Windows installer and a portable archive with a `.sha256` checksum. The installer adds `fragcap` to `PATH`; the archive can be unpacked and run directly.
+Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH`; the portable archive runs from its unpacked directory. Packages are unsigned, so a checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
 
-The installer is not code-signed, so Windows may show an Unknown Publisher SmartScreen warning. Verify the download against its published checksum before choosing **More info** and **Run anyway**.
-
-If Npcap is not installed, install Wireshark and leave **Install Npcap** selected. In the Npcap installer, leave **Install Npcap in WinPcap API-compatible Mode** selected. Current Npcap releases install loopback support automatically.
+If installing Npcap through Wireshark, leave **Install Npcap** selected and enable **WinPcap API-compatible Mode** in the Npcap installer. Loopback support is supplied by current Npcap installations.
 
 ![Wireshark Packet Capture screen with Install Npcap checked](/screenshots/03_wireshark_packet-capture_install-npcap.png)
 
@@ -59,222 +38,94 @@ If Npcap is not installed, install Wireshark and leave **Install Npcap** selecte
 
 ## 2. Verify the environment
 
-Open a terminal as Administrator and run:
+Open an elevated terminal and run:
 
 ```powershell
 fragcap doctor
 ```
 
-`doctor` is read-only. It reports environment, driver, process-event, interface, analyzer, and Deep Capture readiness without starting a capture, proxy, or trust change. A fully ready synthetic report has this structure:
+Doctor is read-only: it starts no capture, proxy, target, or trust change. It reports separate Capture and Deep Capture readiness, environment and driver checks, and native resource ownership and recovery guidance. Unavailable and indeterminate are not ready. Healthy completed history or deliberately retained sensitive evidence is not automatically stale residue to delete. Do not expect a universal synthetic all-green report.
 
-```text
-Identity
-  version                ok    0.9.0
-  binary                 ok    C:\Program Files\fragcap\fragcap.exe
-  catalog db             ok    C:\Users\you\AppData\Roaming\fragcap\catalog.db
-                               (present)
-  local db               ok    C:\Users\you\AppData\Roaming\fragcap\local.db
-                               (present)
-
-Platform
-  os                     ok    Windows 11
-  subsystem              ok    native
-  privilege              ok    elevated
-
-Capture driver
-  npcap                  ok    version 1.79
-  loopback adapter       ok    loopback capture supported
-  winpcap api mode       ok    WinPcap API compatible
-  live backend           ok    live capture backend is built in
-  socket-table backend   ok    socket-table attribution is built in
-
-Tracing
-  process events         ok    process-event session available
-
-Interfaces
-  adapter                ok    Ethernet 192.0.2.10
-
-Integration
-  analyzer extcap        ok    installed for the current user in
-                               C:\Users\you\AppData\Roaming\Wireshark\extcap
-
-Deep Capture
-  proxy backend          ok    fragcap-native 0.9.0
-  local CA trust         ok    no fragcap Deep Capture CA trust found
-  analyzer key log       ok    TLS key-log path is visible to this session
-  proxy ports            ok    no stale Deep Capture proxy ports found
-  proxy processes        ok    no orphaned Deep Capture proxy processes found
-  session manifests      ok    no stale Deep Capture manifests found
-  tls key logs           ok    no stale Deep Capture TLS key logs found
-  sensitive artifacts    ok    no sensitive Deep Capture sidecars found
-  session storage        ok    C:\Users\you\AppData\Roaming\fragcap\sessions
-                               (absent)
-
-Ready to capture.
-```
-
-The paths are observed defaults, not required arguments. `--catalog-db`, `--local-db`, and the corresponding environment variables are overrides for operators who deliberately keep stores elsewhere.
-
-If a row is not ready, follow the remediation printed beside it. Run `fragcap doctor --fix` only when you want the interactive action runner; it offers one named remediation at a time and asks before acting. Re-run plain `fragcap doctor` afterward to observe the result.
-
-To register fragcap as an optional Wireshark extcap source, run `fragcap extcap install`. This integration is convenient but does not block command-line Capture.
+Review named remediation first. `fragcap doctor --fix` is the individually confirmed action runner, not permission to repair everything. Re-run plain Doctor afterward. Optional `fragcap extcap install` adds a Wireshark source but is not required for command-line Capture. See [Doctor and troubleshooting](/docs/guides/doctor-and-troubleshooting).
 
 ## 3. Find a target
-
-Run the hero target command without a database argument:
 
 ```powershell
 fragcap targets
 ```
 
-It discovers installed titles, registers new findings in the default local store, and prints the current stored targets. This synthetic specimen matches the current columns:
+This command discovers installed titles, registers new findings in the effective local store, and lists stored targets. Ready targets precede targets needing setup. A row number is an ephemeral selector for that listing; the handle is stable. Capture readiness, engine detections, and sensitivity coverage do not establish Deep Capture compatibility. Do not substitute a Steam app identifier for a row number in `capture`.
 
-```text
-Ready to capture:
-  #  TARGET         CAPTURE  ENGINE       SENSITIVITIES
-  1  sample-target  ready    not scanned  not scanned
-
-Next command:  fragcap capture 1
-```
-
-Ready targets appear first under `Ready to capture`; targets whose launch chain is unresolved follow under `Needs setup`. Empty groups are omitted, handles are sorted inside each group, and row numbers continue across the complete listing. A row number is an ephemeral selector for the listing you just saw. The handle, such as `sample-target`, is stable for later human commands. `CAPTURE` reports whether fragcap has enough target information to start the passive path. `ENGINE` and `SENSITIVITIES` report detected products or an explicit scan-coverage state; neither column is a compatibility verdict.
-
-If the desired target is absent, run `fragcap targets add --help` or `fragcap targets scan --help` for the supported registration forms. Database flags remain optional overrides. Do not substitute a Steam app identifier for a row number in `capture`; register the title first, then use its listed row or handle.
+If a target is missing, inspect `fragcap targets add --help` or `fragcap targets scan --help`. Guided calibration can separately propose registration for an exactly resolved installed Steam identifier or display name. Managed stores have defaults; database flags are deliberate overrides, not required boilerplate.
 
 ## 4. Run the first Capture
-
-Use the labelled row and add an explicit bound and output:
 
 ```powershell
 fragcap capture 1 --duration 5m --out first-capture.fcapng
 ```
 
-If the target is not already running, start it after fragcap arms. For a Steam-anchored stored target, `fragcap capture 1 --launch --duration 5m --out first-capture.fcapng` can own the platform launch instead. Run `fragcap capture --help` for target, interface, scope, and stopping options.
+Start the target after Capture arms, or use an eligible prepared managed launch with `--launch`. Default `target` scope writes only packets bound to selected target roles. Unattributed and other-process exclusions have separate counters. Select `--scope all` only when deliberately retaining all acquired traffic with attribution state preserved.
 
-Capture observes packets on the selected interfaces and attributes matching flows to the target process when the available socket and process evidence permits it. The default `target` scope writes only packets bound to the selected target; unattributed and other-process packets are omitted and counted in the completion statistics. Use `--scope all` only when you deliberately need those packets retained with their attribution state marked. Payload bytes are retained by default for packets admitted by the selected scope; `--no-payload` is an explicit choice to retain metadata without payload bytes.
-
-Capture does not turn encrypted traffic into readable application messages. It also does not assume that a payload is encrypted. The capture lets you inspect what was actually present on the wire.
+Payload is retained by default for admitted packets. `--no-payload` selects metadata without packet payload bytes; it does not establish whether omitted bytes were encrypted. Capture does not decrypt traffic. Review `fragcap capture --help` and [Capture modes](/docs/guides/capture-modes) before changing modes or sinks.
 
 ## 5. Open the packet truth
 
-Open `first-capture.fcapng` in Wireshark or another pcapng-aware analyzer. The packets appear as an ordinary trace. Process image, role, stage, direction, and [attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity) appear in packet comments. An analyzer that ignores comments still reads the packets normally.
+Open `first-capture.fcapng` with an unmodified pcapng-aware analyzer. Process image, role, stage, direction, and attribution fidelity appear in standard packet comments. Ignoring annotations still leaves ordinary readable pcapng. Loss accounting describes acquired, omitted, dropped, and refused traffic rather than equating an empty trace with success.
 
-This completes the general first-run path. Continue only if you need application observations and the selected stored target already has current Deep Capture evidence.
+This completes the passive first-run path. Continue only for deliberately selected, authorized local inspection.
 
 ## 6. Check Deep Capture eligibility
 
-Replace the synthetic handle with the handle from your own target listing:
+Read existing facts without starting anything:
 
 ```powershell
 fragcap targets show sample-target
 ```
 
-`targets show` is read-only. It does not start a proxy or target, change trust, contact a catalog, or refresh evidence. Ordinary Deep Capture requires current facts proving that scoped proxy routing reached the final client through the exact cold managed launch case. This example uses Steam:
+Ordinary Deep Capture needs current applicable `proxy-routing = reached-client` evidence for the exact target/version, supported cold launch, route, loopback family, measurement case, backend/version, and fragcap version. Unknown, stale, conflicting, wrong-case, or launcher-only evidence does not pass. Protocol behavior, propagation, trust acceptance, and inspectability remain separate facts.
 
-```text
-compatibility:
-  proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
-```
-
-Proceed only when the routing fact is current for the selected target's exact `steam-protocol-cold` or `direct-exe-cold` launch case. Propagation, protocol behavior, CA acceptance, and inspectability describe separate observations without replacing that routing requirement.
-
-<Callout type="warn" title="Unknown requires an explicit measurement">
-If the detail view reports `unknown`, stale or conflicting routing facts, or evidence for another launch case, do not run ordinary Deep Capture. Close any warm target process and run reachability calibration for the exact target and cold launch case. Use `steam-protocol-cold` for a Steam-managed target or `direct-exe-cold` for an eligible direct target. Do not infer compatibility from the title, engine, launcher, executable, or another target. See the [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility).
-</Callout>
-
-Reachability calibration displays its complete plan before confirmation and never changes certificate trust:
+For missing or incomplete evidence, start guided calibration:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
+fragcap calibrate sample-target
 ```
 
-Review the resulting rows with `fragcap targets show sample-target`. When current same-case evidence says `proxy-routing = reached-client`, measure TLS behavior separately:
+Registration, executable setup or candidate selection, and every later effectful attempt have separate complete plans and confirmations. Requested protocols are measurement intent, not proof. The workflow measures reachability first when needed, then proposes useful concrete cases from fresh observations. Failure, decline, limitation, interruption, or partial result stops later effects and checkpoints coverage.
+
+Use the workflow identity and local-store-bound resume command printed by your run, not the specimen identity below:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
+fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
+fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 ```
 
-Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.
-
-For a Steam target, Steam must be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. v0.9.0 also supports eligible cold publisher chains and direct-executable launches from prevalidated paths; an already-running target remains a side-effect-free refusal.
+Resume rebuilds current authority and never reuses a prior plan or response. Pauses record operator-owned login, EULA, update, anti-cheat, gameplay, shutdown, or interruption work, not evidence. Cold direct, Steam platform, and declared publisher chains are supported. Warm applications remain yours to close normally; explicit `--restart-warm` observes shutdown and never kills a process. See [compatibility and calibration](/docs/reference/deep-capture-compatibility) for exact limits and advanced measurements.
 
 ## 7. Run a known-compatible Deep Capture
-
-Review the complete plan before continuing. It names the fully resolved target profile and managed launch authority, loopback and routing scope, exact session CA identity and current-user trust action, bundle and sensitive artifacts, millisecond deadlines, possible fact writes, cleanup obligations, and refusal boundaries. fragcap applies no listener, bundle, trust, launch, Capture, or fact effect until that exact plan is authorized. It never falls back to a system-wide proxy.
-
-For a target that passed the eligibility check, run:
 
 ```powershell
 fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-Answer the one prompt with a complete line only after reviewing the exact plan identifier and every effect. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Automation and JSON consumers use `--authorize-stdin`, read the emitted plan event, and return its exact identifier plus one LF without restarting the process. If prior-session recovery is pending, fragcap refuses before showing a new plan and directs you to `fragcap doctor --fix`. A plan also refuses if its prepared CA expires or its target authority changes while it is reviewed. The former Deep Capture `--trust-ca` and `--yes` booleans no longer authorize a run.
+Review the complete plan: target and managed launch authority, exact loopback and routing policy, session CA and current-user trust action, sensitive artifacts, millisecond deadlines, fact writes, cleanup obligations, and refusal boundaries. No listener, bundle, trust, launch, Capture, or fact effect occurs until exact authorization. Output failure, target drift, plan mismatch, expiry, or pending prior-session recovery refuses rather than broadening scope.
 
-Run `fragcap deep-capture --help` to review the current launch, duration, trust, and artifact options before changing this command.
+Interactive execution requires a complete response line. Structured execution requires `--authorize-stdin`: read the emitted plan event and return its exact identifier plus one LF in the same process. `--quiet` and `--silent` never hide required consent output or authorize effects. Retired trust booleans do not authorize a run. Omit optional HAR or key logging when unnecessary.
 
-Deep Capture support remains traffic-specific:
-
-| Traffic | What v0.9.0 can add beyond Capture |
-| --- | --- |
-| HTTP/1.1 and HTTP/2 | Protocol-faithful metadata, bounded raw bodies, supported content-decoding derivations, streaming timing, and explicit loss. |
-| HTTPS | The corresponding HTTP evidence across separately verified client-facing and upstream TLS boundaries. Certificate-pinned traffic is refused without downgrade. |
-| HTTP/3 and QUIC | Scoped, authenticated HTTP/3 request, response, stream, datagram, timing, refusal, and loss evidence for exact `h3` routes. |
-| WebSocket | Verified HTTP/1.1 and HTTP/2 upgrades, frames, bounded messages, compression outcomes, and terminals. |
-| SSE and gRPC | Incremental SSE events and bounded gRPC envelopes and status without inventing protobuf meaning. |
-| Generic TCP and non-HTTP TLS | Bounded directional plaintext or opaque encrypted chunks with exact terminal and omission evidence. |
-| Generic UDP | Metadata and bounded retained payload prefixes for authenticated scoped associations, independently from forwarding. |
-
-See the [complete traffic matrix and evidence labels](/docs/reference/deep-capture-compatibility) before drawing conclusions from absent application records.
+Supported paths include HTTP/1.1, HTTP/2, HTTPS, WebSocket, SSE, schema-free gRPC envelopes, generic TCP/UDP, separately verified non-HTTP TLS, and scoped QUIC/HTTP/3. Support is route-, trust-, and traffic-specific, not universal. Pinning is never bypassed. See the [traffic matrix](/docs/reference/deep-capture-compatibility) and [CLI reference](/docs/reference/cli#deep-capture).
 
 ## 8. Review the bundle and cleanup
 
-The completion output names `manifest.json` inside the new session directory. Read the manifest first. It indexes which artifacts were produced or omitted, the session state, and the cleanup result.
+Read `manifest.json` first. Session outcome, cleanup outcome, artifact finalization/completeness, loss, and traffic inspectability are independent. A complete operation does not prove every flow was inspectable. Partial evidence must not be silently relabeled complete. [Output formats](/docs/reference/output-formats) explains manifest version 2, packet truth, application JSON Lines version 2, bounded HAR, proxy-owned client-facing TLS key logs, post-collection correlation, durable cleanup streams, sensitivity, and omissions.
 
-- **`complete`** means the session operation completed and cleanup evidence was written. It does not mean every target flow was inspectable.
-- **`partial`** means useful packet or sidecar evidence exists even though a later operation failed. Keep the bundle and read its omissions and cleanup records.
-- **`failed`** means the operation failed before packet truth was produced. The manifest and cleanup records still describe what was attempted when they could be written.
-
-Bundle artifacts have different authority:
-
-| Artifact | Meaning |
-| --- | --- |
-| `capture.fcapng` | Packet truth and process attribution, readable by unmodified pcapng analyzers. |
-| `application.jsonl` | Sensitive HTTP or connection observations emitted by the proxy. Records may be partial or metadata-only. |
-| `http.har` | Optional [HAR](/docs/glossary/file-and-wire-formats#har) projection of complete observed HTTP semantics. Missing or partial facts remain explicit rather than becoming placeholders. |
-| `tls-keylog.log` | Optional, highly sensitive [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export). It is not extracted from the target process. |
-| `proxy.jsonl` and `process-trace.jsonl` | Sensitive diagnostic evidence about proxy and process activity. |
-| `compatibility.json` | Facts actually observed during this session, with launch and backend provenance. |
-| `cleanup.json` | Per-resource cleanup results, including failures that still require attention. |
-
-Packet captures can contain addresses and payload bytes. Application observations, proxy logs, process traces, HAR, and TLS key logs can expose URLs, identifiers, or session material. Keep the entire bundle private by default. Retain, inspect, and share sensitive sidecars and key logs with at least the same care as packet payloads, and scrub a copy rather than altering the original observation.
-
-After the session, run the read-only check again:
+Keep bundles private. Packet bytes, URLs, bodies, endpoints, process traces, and key material can expose sensitive information. `bundle export` makes a separate transformed copy with an exhaustive manifest; it does not edit the original. Sensitive cleanup is an explicit exact action, not a prerequisite to preserving legitimate completed evidence.
 
 ```powershell
 fragcap doctor
-```
-
-If it names stale CA trust, proxy state, or an unfinished manifest, review the path and then run:
-
-```powershell
 fragcap doctor --fix
 ```
 
-Cleanup actions remain individually confirmed. If trust cleanup is incomplete, fragcap preserves the manifest ownership evidence instead of presenting a false clean state. Re-run plain `doctor` and keep any remaining bundle and cleanup records until the report is clean.
-
-You now have both first-run outcomes: ordinary packet truth from Capture, and, only for a target whose current facts support the exact launch path, additional application observations and auditable cleanup from Deep Capture.
+Only run the second command to review named remediation. Exact owned recovery obligations must be reconciled; ambiguous ownership does not authorize unrelated removal. Keep remaining ownership records until recovery is resolved.
 
 ## 9. Uninstall or start fresh
 
-Ordinary MSI uninstall removes the program and its installer-owned machine effects while preserving your targets, writable catalog, profiles, captures, logs, settings, and Deep Capture bundles.
-
-If you deliberately want a clean account, select the unchecked **Remove all fragcap application and user data for my account for a fresh start** option during interactive removal. The dialog shows the exact `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap` roots. The operation is irreversible. fragcap reconciles exact recorded Deep Capture obligations first, then deletes accepted entries without following links or reparse points. Custom paths, exports, Npcap, Wireshark configuration, and independently managed extcap registrations remain untouched.
-
-Silent current-user removal requires both `FRAGCAP_FRESH_START=1` and `FRAGCAP_FRESH_START_SCOPE=current-user`. Administrators handling multiple profiles use a separate preview-bound flow:
-
-```powershell
-fragcap fresh-start --scope all-users --preview
-fragcap fresh-start --scope all-users --confirm <inventory-id> --yes --report .\fresh-start-report.json
-```
-
-Review every SID and exact root before the second command. If any profile, root, or entry changed, fragcap refuses and requires a new preview. Another profile's Deep Capture evidence remains because its Windows CurrentUser trust must be reconciled under that profile identity. Run current-user fresh-start or `fragcap doctor --fix` while signed in as the named user, confirm only the exact actions it offers, and retry before calling the account clean.
+Ordinary uninstall removes installer-owned program effects while preserving targets, writable stores, profiles, captures, settings, and bundles. Explicit fresh-start removal is irreversible and reconciles exact recorded current-user obligations before accepted data deletion. It does not follow links, broaden to custom paths, remove Npcap, or own another profile's CurrentUser trust. See [packaging and migration](/docs/guides/packaging-and-migration) for interactive, silent current-user, and preview-bound all-users workflows.

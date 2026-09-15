@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.70-draft \
+**Version:** 0.1.71-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -50,14 +50,7 @@ product's purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
 
-Two version fields in the header mean different things. **Applies-To** names the
-released software version this document describes. It tracks the workspace
-package version and is bound to it by `cargo xtask spec`, so the specification
-and the shipped artifact cannot drift (constitution P-11). **Version** is this
-document's own revision, recorded in the history below. As of this revision the
-released software runs from v0.1.0, the crates.io namespace-reservation stub
-carrying no functionality, through v0.8.0. The per-release scope is in section
-27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove that a candidate has been published. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.9.0. S150 prepares v0.10.0 for operator publication; independent review #333 and final gate #334 remain open. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -170,6 +163,7 @@ enforcement.
 
 fragcap is a Rust library and command line tool for game-network
 observability on Windows. Its shipped **Capture** mode captures network
+| 0.1.71-draft | 2026-09-15 | W. Thompson | **Prepares current native documentation and v0.10.0 independent-review readiness (S150, #411).** Corrects current product instructions, checks nonhistorical command examples without dispatch, links reader-validated manifest specimens, and publishes Doctor, security/privacy, packaging/migration and stable API guidance. A closed twelve-area handoff validates existing evidence and an explicitly not-started review record. Local version-only release preparation and controlled evidence do not tag, publish, perform installed sensitive-product execution, satisfy independent audit #333 or complete #334. |
 traffic belonging to a specific game client and attributes every captured
 packet to the process that produced it. It writes attributed captures to disk
 in a pcapng-compatible format, and streams them live to downstream consumers
@@ -4037,18 +4031,13 @@ rather than a repository subpath.
 /docs/contributing       Development setup, standards, workflow
 ```
 
-Getting started is ordered by the actual first-run sequence: install
-the capture driver with its required options, verify with diagnostics,
-capture a session, open the result.
+Getting started follows the actual first-run sequence: install digest-verified published bytes and separate driver prerequisites, observe readiness, resolve a target, record passive Capture, and open packet truth. The optional continuation uses guided calibration with separate registration/setup/session authorizations, resumable operator pauses, fresh exact-case applicability and a complete Deep Capture plan. Documentation distinguishes prepared candidate from published baseline.
 
 Getting started also sets three expectations that users otherwise form
 incorrectly and spend time disproving. Each comes from a measured
 finding in Appendix D.
 
-**Payloads are encrypted.** Both focal titles encrypt everything. Users
-get timing, sizing, endpoints, and attribution, not readable game
-packets. Section 19.6 states the position; getting started states it
-where a new user will actually encounter it.
+**Payload encryption is observed, not assumed.** Appendix D's focal titles encrypt their observed traffic. Capture preserves acquired packet truth rather than decrypting it or asserting all payloads are encrypted. Deep Capture adds semantics only for supported scoped traffic under its separate trust and protocol boundaries, without bypassing pinning.
 
 **The launcher-to-client handoff is not in the capture.** It happens on
 the command line, so no packet carries it. It is visible in process
@@ -4094,6 +4083,12 @@ verification and runs on a weekly schedule rather than per commit.
 `cargo xtask docs` starts the documentation site locally with hot
 reload. The task is the same entry point continuous integration uses,
 so local and built output cannot diverge through configuration drift.
+
+### 22.7 Native documentation and independent-review readiness
+
+Current architecture, getting started, CLI, compatibility, outputs, Doctor/troubleshooting, security/privacy, packaging/migration and stable API guidance trace to native source and controlled evidence. Current fenced fragcap commands across README and nonhistorical site pages are parser-checked without dispatch; Mermaid is not a command fence, and retired Deep Capture consent inputs are refused. Artifact specimens link to published schema/examples validated by actual product readers, not approximate new JSON or the target-schema validator.
+
+The twelve-area whole-product handoff maps architecture/threat model, dependencies, unsafe code, parsers, TLS, certificate issuance, trust, listener isolation, routing, artifacts, recovery and packaging to review methods and executable non-ignored evidence. `cargo xtask review-handoff` checks closed scope, confined existing source/test references and an exact not-started record. It does not perform independent review, populate future source/package identity, approve findings or close #333. Reviewer-owned installed Windows methods use frozen published certified bytes and actual finding dispositions and independent retests. Agent execution of installed sensitive software or real games is not substituted for operator validation.
 
 ## 23. Website and Brand
 

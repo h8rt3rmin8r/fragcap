@@ -462,15 +462,17 @@ fn strip_comment(line: &str) -> String {
 fn invocations(source: &str) -> Vec<Invocation> {
     let mut result = Vec::new();
     let mut in_fence = false;
+    let mut command_fence = false;
     let mut pending: Option<Invocation> = None;
 
     for (index, raw) in source.lines().enumerate() {
         let line_number = index + 1;
         if raw.trim_start().starts_with("```") {
             in_fence = !in_fence;
+            command_fence = in_fence && !raw.trim_start().starts_with("```mermaid");
             continue;
         }
-        if !in_fence {
+        if !in_fence || !command_fence {
             continue;
         }
         let mut line = strip_comment(raw).trim().to_string();
@@ -575,6 +577,72 @@ fn worked_invocations_parse_without_dispatch() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+fn current_documentation_paths(root: &Path) -> Vec<PathBuf> {
+    fn walk(directory: &Path, paths: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("current docs directory must exist") {
+            let path = entry.expect("current docs entry must be readable").path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap().to_str().unwrap();
+                if !matches!(name, "changelog" | "glossary") {
+                    walk(&path, paths);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "mdx") {
+                paths.push(path);
+            }
+        }
+    }
+    let mut paths = vec![root.join("README.md")];
+    walk(&root.join("site/content/docs"), &mut paths);
+    paths.sort();
+    paths
+}
+
+#[test]
+fn current_documentation_examples_parse_without_dispatch_or_retired_consent() {
+    let mut count = 0;
+    let mut failures = Vec::new();
+    for path in current_documentation_paths(&repository_root()) {
+        let source =
+            std::fs::read_to_string(&path).expect("current documentation must be readable");
+        for invocation in invocations(&source) {
+            count += 1;
+            match tokenize(&invocation.text) {
+                Ok(argv) => {
+                    if argv.iter().any(|arg| arg == "deep-capture")
+                        && argv
+                            .iter()
+                            .any(|arg| matches!(arg.as_str(), "--trust-ca" | "--yes"))
+                    {
+                        failures.push(format!(
+                            "{}:{} teaches retired consent: {}",
+                            path.display(),
+                            invocation.line,
+                            invocation.text
+                        ));
+                    }
+                    if let Err(error) = fragcap_cli::command().try_get_matches_from(argv) {
+                        failures.push(format!(
+                            "{}:{}: {}\n{}",
+                            path.display(),
+                            invocation.line,
+                            invocation.text,
+                            error.render()
+                        ));
+                    }
+                }
+                Err(error) => {
+                    failures.push(format!("{}:{}: {error}", path.display(), invocation.line))
+                }
+            }
+        }
+    }
+    assert!(
+        count > 0,
+        "current worked examples must not silently disappear"
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -684,5 +752,17 @@ fn example_parser_handles_quotes_comments_and_continuations() {
             "--path",
             "C:\\Games\\Sample Game"
         ]
+    );
+}
+
+#[test]
+fn example_parser_distinguishes_mermaid_from_commands() {
+    let source = "```mermaid\nfragcap --> capture\n```\n\n```powershell\nfragcap doctor\n```\n";
+    assert_eq!(
+        invocations(source),
+        vec![Invocation {
+            line: 6,
+            text: "fragcap doctor".into()
+        }]
     );
 }

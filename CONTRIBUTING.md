@@ -34,13 +34,7 @@ section.
 
 v0.9.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit native Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
 
-Deep Capture is functional but incomplete. Its CLI now uses the native Rust
-HTTP/1.1, CONNECT, and HTTPS path, while certificate trust effects use the native Windows API.
-[Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
-is the native-completion authority; contributors must not describe the feature
-as self-contained or feature-complete until #334 closes. S104 is the production
-HTTP/TLS and CLI cutover, not the completion of the remaining protocol, launch,
-transport, recovery, artifact, packaging, and conformance work.
+Deep Capture is native but functional and incomplete. Protocols, scoped routing, managed launch, artifacts, recovery, conformance, package certification, stable API and guided calibration have landed through S149. S150 prepares v0.10.0 documentation and [independent-review readiness](docs/security/native-product-review-handoff.md), not publication or security acceptance. [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333) and final gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) remain open under #278. Operator validation uses newly published bytes; agents do not run installed sensitive software or real games to satisfy acceptance.
 
 Npcap remains a separately installed prerequisite for live packet capture. fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer. The default workspace build and offline tests require neither Npcap nor administrative privilege.
 
