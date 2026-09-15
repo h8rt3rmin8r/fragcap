@@ -26,6 +26,7 @@ mod notes;
 mod package_certification;
 mod performance;
 mod publish;
+mod release_guard;
 mod review_handoff;
 mod skills;
 mod spec;
@@ -54,6 +55,7 @@ cargo xtask <command>
   ci         Run the full local check set in order
   docs       Documentation site: docs (dev), docs build, docs check
   publish    Registry publication in dependency order (--execute to publish)
+  release-guard Verify release workflow and supplied registry protection (not approval)
   notes      Validate and print the AI-written summary for a release
   changelog  Assemble fragments (--check or --release), or --normalize wrapping
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
@@ -111,6 +113,17 @@ fn main() -> ExitCode {
     let root = repo_root();
 
     match cmd.as_str() {
+        "release-guard" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            match release_guard::run(&root, &args) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("release-guard: could not run: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         "lint" => match lint::run(&root) {
             Ok(0) => {
                 println!("lint: clean");
@@ -490,6 +503,17 @@ fn main() -> ExitCode {
                 }
             }
             println!("ci: running supply-chain");
+            match release_guard::run(&root, &[]) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: release guard reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(error) => {
+                    eprintln!("ci: release guard could not run: {error}");
+                    return ExitCode::from(2);
+                }
+            }
             match supply_chain::run(&root, &[]) {
                 Ok(0) => {}
                 Ok(n) => {

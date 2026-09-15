@@ -447,7 +447,7 @@ mod tests {
     fn fixture() -> (Value, Value) {
         (
             json!({"schema_version":1,"review_state":"not-performed","areas":AREAS.map(|id|json!({"id":id,"method":"Inspect exact source and run controlled evidence independently.","sources":["README.md"],"tests":[{"path":"xtask/src/lint.rs","function":"clean_source_produces_no_findings","features":[]}]}))}),
-            json!({"schema_version":1,"state":"not-started","candidate":{"product_version":"0.10.0","source_revision":null,"lockfile_sha256":null,"packages":[]},"reviewer":null,"independence":null,"environment":null,"checks":[],"findings":[],"summary":null}),
+            json!({"schema_version":1,"state":"not-started","candidate":{"product_version":crate::spec::workspace_version(root()).unwrap(),"source_revision":null,"lockfile_sha256":null,"packages":[]},"reviewer":null,"independence":null,"environment":null,"checks":[],"findings":[],"summary":null}),
         )
     }
     #[test]
@@ -631,7 +631,10 @@ mod tests {
         let (_, mut template) = fixture();
         template["candidate"]["product_version"] = json!("0.9.0");
         assert!(!validate(root(), &fixture().0, &template).is_empty());
-        assert!(template_matches_version(&fixture().1, "0.10.0"));
+        assert!(template_matches_version(
+            &fixture().1,
+            &crate::spec::workspace_version(root()).unwrap()
+        ));
         assert!(!template_matches_version(&fixture().1, "0.11.0"));
     }
 }

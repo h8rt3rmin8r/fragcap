@@ -10,6 +10,26 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-15
+
+### Fixed
+
+Doctor now exposes `--timings`, identifies nested readiness operations and reports one-second elapsed progress while interactive read-only work remains pending, with automatic slow-completion timing and unchanged final reports, facts and fix authority. Current repository/site guidance is reconciled to published v0.10.0 with a reviewed offline publication check; S151 diagnostics remain unreleased until a later publication, and elevated field measurements, independent installed-build review/retest and final Deep Capture acceptance remain open.
+
+Registry release automation now checks effective operator review and tag-only environment protection before release creation and again immediately before publication. Missing or weakened protection fails closed; configuration verification never supplies deployment approval. S152 prepares the v0.10.1 Doctor patch while preserving the actual v0.10.0 publication record and all pending field and independent acceptance work.
+
+### Decisions
+
+2026-09-15: Reconcile pinned release guidance with actual v0.10.0 publication at `787739edfa8d748e25cb4b5c4965f5c936850d16` and successful release run 34990387334, preserving immutable release bytes and historical preparation records. A reviewed publication identity and fourteen current applicability markers are independent of candidate Cargo version; S151 diagnostics use one explicitly joined scoped worker, finite ordered observation transport and one-second shared cadence without timeout-to-unavailable or new effects. Correct the earlier unconfigured `crates-io` environment approval claim without modifying settings; future gate configuration, independent installed #333/#413 review/retest, actual elevated #372 measurements and final #334/#278 acceptance remain separate authorities.
+
+2026-09-15: Under explicit S152 authorization, protect existing `crates-io` environment id 21294112472 with sole operator User id 46768484, `prevent_self_review=false`, `can_admins_bypass=false` and exactly one tag `v*` allowance. Owner self-review keeps owner-initiated releases approvable but still requires a separate manual approval; this is not independent two-person authorization. Fresh authoritative readback verified every effective attribute and unchanged environment identity, without secret/variable mutations. Although current REST/GraphQL schemas omit the bypass mutation, the bounded environment request accepted it and independent public GET confirmed false; request success alone is not evidence. A bounded pure Rust guard checks fresh public records in release identity and post-approval publication steps, with offline negative/wiring tests in ordinary CI. Follow pinned `release/*` for version-only 0.10.1 preparation and existing release-only changelog/golden generation, rather than broad release orchestrator execution. Reconcile only first-party graph metadata and candidate review identity, preserving third-party sources, expiries, actual v0.10.0 tags/assets/publication markers, unsigned policy and explicitly unstarted independent review. Explicit user push/PR authority replaces the default pre-push pause; human merge, release tag/publication, deployment approval, #372 measurements, #333/#413 independent acceptance and final #331/#334/#278 remain separate. No installed sensitive product or real game was run.
+
+2026-09-15 (20:00 UTC): The operator explicitly rejected disabling administrator bypass during S152. Restore and independently verify `can_admins_bypass=true`, retaining the same owner reviewer, owner-initiated self-review and exact tag-only allowance. Revise the current policy, guard tests and release instructions to preserve the owner's deliberate override rather than treating the initial autonomous no-bypass choice as approved. Normal reviewer approval and an operator-selected administrator bypass are distinct actions and must be reported separately; no agent approves or bypasses a deployment. This supersedes S152's earlier false setting and leaves repository administration, secrets, variables, review/tag policy and all independent acceptance boundaries unchanged.
+
+2026-09-15 (20:18 UTC): S152 review identified that certification could make the early protection snapshot stale before GitHub release creation. Retain the identity check and independently re-fetch and validate protection immediately before `gh release create`, as already required immediately before registry execution. Regression checks reject absent or delayed effect-boundary guards, job-level failure overrides and misplaced dependency/environment fields. This closes the existing fail-closed contract without changing owner bypass, product behavior, dependencies, publication authority or independent acceptance.
+
+2026-09-15 (20:35 UTC): S152's second and final bot review identified missing authenticated API read authority in the release workflow. Grant explicit `actions: read` alongside the existing workflow `contents: read` default and release job `contents: write` override, because job permission maps replace defaults and both protection read endpoints require Actions read for installation tokens. Add test-first effective-permission regression checks for identity, release and publish, refusing absent, overridden or unnecessarily broad Actions authority. No new write permission, credential, administrative restriction, deployment approval or review round is introduced; owner bypass remains enabled.
+
 ## [0.10.0] - 2026-09-15
 
 ### Added
@@ -2191,6 +2211,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1
 [0.10.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0
 [0.9.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.9.0
 [0.8.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.8.0

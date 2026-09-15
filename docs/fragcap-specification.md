@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.72-draft \
-**Applies-To:** 0.10.0 \
+**Version:** 0.1.73-draft \
+**Applies-To:** 0.10.1 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-09-15 \
@@ -52,7 +52,7 @@ without further design negotiation.
 
 Published baseline: [v0.10.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0).
 
-Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.0, published 2026-09-15 from `787739edfa8d748e25cb4b5c4965f5c936850d16`. The reviewed `docs/published-release.json` and thirteen current baseline markers bind actual publication independently from candidate version. S151 Doctor diagnostics are unreleased. Independent review #333, installed retest #413 and final gate #334 remain open. Per-release scope is in section 27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.0, published 2026-09-15 from `787739edfa8d748e25cb4b5c4965f5c936850d16`. The reviewed `docs/published-release.json` and fourteen current baseline markers bind actual publication independently from candidate version. S152 prepares v0.10.1 with S151 Doctor diagnostics, which remain unreleased. Independent review #333, installed retest #413 and final gate #334 remain open. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -160,6 +160,7 @@ enforcement.
 | 0.1.70-draft | 2026-09-15 | W. Thompson | **Completes native session presentation (issue #332).** Extends section 26.3 and the controlled acceptance record. Required human authorization now includes a plan-derived active-mode, trust, sensitive-output, retention, and recovery summary alongside unchanged canonical JSON. Typed lifecycle stages receive human progress; canonical six-state observation-delivery counters remain distinct from existing live packet counters. A post-run terminal report survives quiet, preserves actual session and artifact status, confirms retained paths, and names exact cleanup obligations and confirmation-gated recovery. JSON schemas, consent policy, protocols, storage, and effect authority remain unchanged. Controlled tests do not claim live game compatibility or final #334 completion. |
 | 0.1.71-draft | 2026-09-15 | W. Thompson | **Prepares current native documentation and v0.10.0 independent-review readiness (S150, #411).** Corrects current product instructions, checks nonhistorical command examples without dispatch, links reader-validated manifest specimens, and publishes Doctor, security/privacy, packaging/migration and stable API guidance. A closed twelve-area handoff validates existing evidence and an explicitly not-started review record. Local version-only release preparation and controlled evidence do not tag, publish, perform installed sensitive-product execution, satisfy independent audit #333 or complete #334. |
 | 0.1.72-draft | 2026-09-15 | W. Thompson | Reconciles actual published v0.10.0 identity and current applicability under S151 (#414, parents #372/#331). Adds bounded owned slow-probe diagnostics, discoverable nested timing, one-second elapsed progress and controlled failure/suppression tests as explicitly unreleased source work. Publication is mechanically separate from candidate version; independent #333 review, #413 installed retest and final #334/#278 remain open. |
+| 0.1.73-draft | 2026-09-15 | W. Thompson | Configures and verifies existing registry approval protection under S152 (#416), with normal owner-required manual review, owner-initiated approval possible, administrator bypass explicitly retained at the operator's direction and tag-only release allowance. Fresh fail-closed metadata checks precede release creation and registry execution. Prepares v0.10.1 with S151 diagnostics while preserving actual v0.10.0, unsigned policy and all independent acceptance gates; no tag, publication, deployment approval or bypass is performed. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4257,6 +4258,8 @@ dependencies are not yet published at the declared version. The order
 is encoded in `cargo xtask publish`, which verifies each crate is
 available before publishing its dependents.
 
+The existing `crates-io` environment normally requires operator `h8rt3rmin8r` review before registry publication. Owner self-review is allowed because that account also initiates release workflows; administrator bypass remains explicitly enabled at the operator's direction, custom deployment policy permits only tag refs matching `v*`, and the identity job additionally checks exact tag/workspace equality. Normal approval and a deliberate administrator bypass remain available owner actions and must be reported distinctly. S152 verified effective configuration by authoritative readback. `cargo xtask release-guard` checks workflow wiring offline, or additionally checks two freshly fetched bounded public metadata documents when supplied. Missing, malformed, incomplete, unknown or mismatched policy fails closed before certification/release creation and again after the operator's approval or deliberate bypass immediately before registry execution. Configuration verification never approves or bypasses a deployment; later settings changes invalidate prior evidence. This is owner-controlled separate action, not independent two-person authorization.
+
 ### 24.5 Artifacts
 
 Each release publishes three Windows downloads, and a checksum accompanies every one: a portable archive containing the binary, the license, the project notice file, the exact release CycloneDX 1.5 software bill of materials, complete third-party dependency notices, and the barebones catalog store; an unsigned MSI installer carrying the same evidence beside the binary; and the barebones catalog store on its own. The user chooses among them. The catalog store (`catalog.db`) is placed beside the binary in both the archive and the installer, so the first-run bootstrap (section 15.3) can seed the writable per-user copy from it. The user-owned `local.db` is not shipped; it is created empty on first run.
@@ -4842,7 +4845,7 @@ restated here. The scope of each release is:
 | v0.9.0 | 2026-09-05 | Native protocols, scoped managed launches and routing, application artifacts and correlation, recovery, security/performance and relocated Windows integration evidence; final completion remains open | S102 through S129 |
 | v0.10.0 | 2026-09-15 | Supply chain, final package certification, stable API, discovery integrity, exact authorization, guided registration/setup and resumable calibration, help/session UX, current documentation and bounded native writer correction; independent audit and final completion remain open | S130 through S150 |
 
-v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S151 diagnostics are subsequent unreleased work. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
+v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S152 prepares v0.10.1 with subsequent S151 diagnostics and verified registry approval protection; this candidate is not published and S151 remains unreleased. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
 
 ### 27.4 Critical Path
 
