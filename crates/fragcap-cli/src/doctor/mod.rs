@@ -7,8 +7,8 @@
 //! this way is what makes the section 26.3 matrix, npcap present or absent, each
 //! non-default option present or absent, elevated or not, interfaces up or down,
 //! testable with hand-built inputs on any target, without the environment it
-//! describes. The thin [`probe`] gathers real inputs on Windows and is not unit
-//! tested; everything that decides or renders is here and in [`checks`].
+//! describes. The thin [`probe`] gathers real inputs on Windows; its diagnostic
+//! ownership is tested with injected work, while classifiers remain in [`checks`].
 
 pub mod action;
 pub mod checks;

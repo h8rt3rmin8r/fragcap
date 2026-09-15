@@ -20,7 +20,7 @@ use crate::color::{use_color, Stream};
 use crate::display::selected_stdout_width;
 use crate::doctor::action::Capabilities;
 use crate::doctor::probe::ProbeObserver;
-use crate::doctor::progress::{begin_line, complete_line, ProbeName};
+use crate::doctor::progress::{begin_line, complete_line, waiting_line, ProbeName};
 use crate::doctor::{checks, fix, probe};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
@@ -49,26 +49,14 @@ fn run_with_terminal(
     }
 
     if !args.fix {
-        let mut progress = DoctorProgress::new(
-            if !json && stdout_terminal {
-                Some(emitter)
-            } else {
-                None
-            },
-            args.timings,
-        );
-        let report = checks::run(&probe::gather_with(&mut progress));
-        let text = if json {
-            // The machine-readable form is never colorized.
-            progress.render_report(|| report.render_json())
-        } else {
-            let human_width = selected_stdout_width(stdout_terminal);
-            progress.render_report(|| {
-                report.render_human_with_width(use_color(Stream::Stdout), human_width)
-            })
-        };
-        let _ = write!(out, "{text}");
-        return Ok(report.exit());
+        return Ok(run_read_only(
+            args,
+            json,
+            out,
+            emitter,
+            stdout_terminal,
+            probe::gather_with,
+        ));
     }
 
     // The action layer is interactive and confirmation-driven; refuse it in any
@@ -108,6 +96,38 @@ fn run_with_terminal(
     ))
 }
 
+/// Inject gathering for command-contract tests without touching the host.
+fn run_read_only(
+    args: &DoctorArgs,
+    json: bool,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+    stdout_terminal: bool,
+    gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
+) -> Exit {
+    let enabled = !json && stdout_terminal && emitter.allows_progress();
+    let width = selected_stdout_width(stdout_terminal);
+    let color = !json && use_color(Stream::Stdout);
+    let work = move |observer: &mut dyn ProbeObserver| {
+        let report = checks::run(&gather(observer));
+        let text = probe::observe(observer, ProbeName::ReportRendering, || {
+            if json {
+                report.render_json()
+            } else {
+                report.render_human_with_width(color, width)
+            }
+        });
+        (text, report.exit())
+    };
+    let (text, exit) = if enabled {
+        probe::run_observed(&mut DoctorProgress::new(Some(emitter), args.timings), work)
+    } else {
+        work(&mut probe::NoopObserver)
+    };
+    let _ = write!(out, "{text}");
+    exit
+}
+
 struct DoctorProgress<'e, 'w> {
     emitter: Option<&'e mut Emitter<'w>>,
     timings: bool,
@@ -116,14 +136,6 @@ struct DoctorProgress<'e, 'w> {
 impl<'e, 'w> DoctorProgress<'e, 'w> {
     fn new(emitter: Option<&'e mut Emitter<'w>>, timings: bool) -> Self {
         DoctorProgress { emitter, timings }
-    }
-
-    fn render_report(&mut self, render: impl FnOnce() -> String) -> String {
-        self.begin(ProbeName::ReportRendering);
-        let started = std::time::Instant::now();
-        let text = render();
-        self.complete(ProbeName::ReportRendering, started.elapsed());
-        text
     }
 }
 
@@ -137,6 +149,12 @@ impl probe::ProbeObserver for DoctorProgress<'_, '_> {
     fn complete(&mut self, probe: ProbeName, elapsed: std::time::Duration) {
         if let Some(emitter) = self.emitter.as_deref_mut() {
             emitter.progress(&complete_line(probe, elapsed, self.timings));
+        }
+    }
+
+    fn waiting(&mut self, probe: ProbeName, elapsed: std::time::Duration) {
+        if let Some(emitter) = self.emitter.as_deref_mut() {
+            emitter.progress(&waiting_line(probe, elapsed));
         }
     }
 }
@@ -216,7 +234,7 @@ mod tests {
         let mut stderr = Vec::new();
         let mut emitter = Emitter::new(&mut stderr, Format::Human, Verbosity::Normal);
 
-        let _ = run_with_terminal(&args, false, &mut stdout, &mut emitter, false);
+        let _ = run_read_only(&args, false, &mut stdout, &mut emitter, false, fake_gather);
         drop(emitter);
         assert!(stderr.is_empty(), "redirected stdout suppresses progress");
 
@@ -224,8 +242,131 @@ mod tests {
         let mut stderr = Vec::new();
         let mut emitter = Emitter::new(&mut stderr, Format::Json, Verbosity::Normal);
 
-        let _ = run_with_terminal(&args, true, &mut stdout, &mut emitter, true);
+        let _ = run_read_only(&args, true, &mut stdout, &mut emitter, true, fake_gather);
         drop(emitter);
         assert!(stderr.is_empty(), "json suppresses progress");
+    }
+
+    fn fake_inputs() -> crate::doctor::Inputs {
+        use crate::doctor::*;
+        Inputs {
+            fragcap_version: "controlled-version".into(),
+            binary_path: None,
+            catalog_db_path: None,
+            catalog_db_present: false,
+            local_db_path: None,
+            local_db_present: false,
+            os: "controlled-platform".into(),
+            subsystem: Subsystem::Native,
+            privilege: Privilege::NotElevated,
+            npcap: None,
+            etw_available: None,
+            live_available: None,
+            socket_table_available: None,
+            interfaces: vec![],
+            interface_error: None,
+            extcap_installed: false,
+            extcap_dir: None,
+            extcap_system_installed: false,
+            extcap_system_dir: None,
+            target_entry_count: None,
+            deep_capture: DeepCaptureInputs {
+                session_dir: None,
+                session_dir_present: false,
+                proxy_backend: None,
+                proxy_backend_error: None,
+                ipv4_loopback: LoopbackReadiness::Undetermined,
+                ipv6_loopback: LoopbackReadiness::Undetermined,
+                analyzer_keylog_configured: false,
+                ca: DeepCaptureCa::Unknown("controlled-indeterminate".into()),
+                native_residue: residue::NativeResidueInventory::default(),
+            },
+        }
+    }
+
+    fn fake_gather(observer: &mut dyn ProbeObserver) -> crate::doctor::Inputs {
+        observer.begin(ProbeName::DeepCaptureReadiness);
+        observer.waiting(
+            ProbeName::DeepCaptureReadiness,
+            std::time::Duration::from_secs(2),
+        );
+        observer.complete(
+            ProbeName::DeepCaptureReadiness,
+            std::time::Duration::from_secs(2),
+        );
+        fake_inputs()
+    }
+
+    #[test]
+    fn supplied_facts_keep_final_reports_and_exits_identical_in_all_output_modes() {
+        let report = checks::run(&fake_inputs());
+        for json in [false, true] {
+            for terminal in [false, true] {
+                for verbosity in [Verbosity::Normal, Verbosity::Quiet, Verbosity::Silent] {
+                    let mut stdout = Vec::new();
+                    let mut stderr = Vec::new();
+                    let format = if json { Format::Json } else { Format::Human };
+                    let mut emitter = Emitter::new(&mut stderr, format, verbosity);
+                    let exit = run_read_only(
+                        &doctor_args(true, false),
+                        json,
+                        &mut stdout,
+                        &mut emitter,
+                        terminal,
+                        fake_gather,
+                    );
+                    drop(emitter);
+                    let expected = if json {
+                        report.render_json()
+                    } else {
+                        report.render_human_with_width(
+                            use_color(Stream::Stdout),
+                            selected_stdout_width(terminal),
+                        )
+                    };
+                    assert_eq!(stdout, expected.as_bytes());
+                    assert_eq!(exit, report.exit());
+                    let enabled = !json && terminal && verbosity == Verbosity::Normal;
+                    assert_eq!(!stderr.is_empty(), enabled);
+                    if enabled {
+                        let text = String::from_utf8(stderr).unwrap();
+                        assert!(text.contains("Deep Capture readiness in 2000 ms"));
+                        assert!(text.contains("report rendering"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failed_diagnostic_writes_preserve_original_report_and_exit() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut stdout = Vec::new();
+        let mut broken = Broken;
+        let mut emitter = Emitter::new(&mut broken, Format::Human, Verbosity::Normal);
+        let exit = run_read_only(
+            &doctor_args(true, false),
+            false,
+            &mut stdout,
+            &mut emitter,
+            true,
+            fake_gather,
+        );
+        let report = checks::run(&fake_inputs());
+        assert_eq!(exit, report.exit());
+        assert_eq!(
+            stdout,
+            report
+                .render_human_with_width(use_color(Stream::Stdout), selected_stdout_width(true))
+                .as_bytes()
+        );
     }
 }

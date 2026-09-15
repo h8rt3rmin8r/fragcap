@@ -45,6 +45,39 @@ A partial or interrupted operation can retain useful sensitive evidence while re
 
 - [Session bundle](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#137-deep-capture-session-bundles) (project primary source for independent terminal and artifact authority).
 
+## Doctor probe
+
+A named operation that gathers an environment fact for a diagnostic report.
+
+A probe's pending duration is separate from its result. Timing a phase or nested operation identifies where work is waiting, but does not prove why an external call is slow or whether the environment is ready. A [readiness check](command-line-and-diagnostics.md#readiness-check) classifies the facts only after gathering.
+
+{: .matters }
+> S151's unreleased Doctor diagnostics identify fixed phase and readiness leaf names during blocked work. One-second elapsed progress and completion timing stay on stderr; pending never becomes fabricated unavailability and final report contracts remain unchanged.
+
+**See also:** [Session progress](command-line-and-diagnostics.md#session-progress), [Scoped worker](command-line-and-diagnostics.md#scoped-worker)
+
+**References:**
+
+- [Doctor diagnostics](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#263-diagnostics) (project primary source for probing, readiness and output contracts).
+- [Rust Instant](https://doc.rust-lang.org/std/time/struct.Instant.html) (primary source for monotonic elapsed measurement).
+
+## Scoped worker
+
+A thread whose owning operation waits for it to finish before leaving its lifetime boundary.
+
+Scoped threads can borrow non-static data because their owner joins them before returning. A bounded channel can carry ordered fixed-size work observations back to a caller without moving that caller's borrowed output writer. Scope and joining establish lifetime ownership, not a cancellation mechanism or a bound on external work duration.
+
+{: .matters }
+> S151's unreleased interactive Doctor uses one serial scoped worker and a caller-thread progress coordinator. The finite observation channel disconnects before coordinator unwind joins work, preventing a full diagnostic channel from deadlocking its sender. No blocked probe is detached or reported unavailable merely for taking time.
+
+**See also:** [Doctor probe](command-line-and-diagnostics.md#doctor-probe), [Session progress](command-line-and-diagnostics.md#session-progress)
+
+**References:**
+
+- [Rust thread scope](https://doc.rust-lang.org/std/thread/fn.scope.html) (primary source for scoped thread lifetimes and joining).
+- [Rust scoped join](https://doc.rust-lang.org/std/thread/struct.ScopedJoinHandle.html) (primary source for explicit completion and panic propagation).
+- [Rust bounded synchronous channel](https://doc.rust-lang.org/std/sync/mpsc/fn.sync_channel.html) (primary source for ordered finite buffering and disconnection).
+
 ## Readiness check
 
 One line of the `fragcap doctor` report: a section, a name, a detail, a status,

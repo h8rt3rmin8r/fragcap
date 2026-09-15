@@ -2,9 +2,9 @@
 
 //! Gathering the real environment facts `doctor` classifies.
 //!
-//! Deliberately thin and deliberately not unit tested: everything worth
-//! asserting is a pure classifier over an injected [`Inputs`] (see
-//! [`super::checks`]). This module only reads the machine, read-only, and it
+//! Classifiers remain pure over injected [`Inputs`] (see [`super::checks`]).
+//! Observation ownership and delayed progress are tested with injected work,
+//! without probing the host. This module only reads the machine, and it
 //! never installs, downloads, or modifies the capture driver, which is the
 //! Licensing section's rule made mechanical here rather than remembered.
 //!
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 #[cfg(any(test, all(feature = "live", windows)))]
 use fragcap::core::{is_loopback_adapter, InterfaceInventory, SourceError};
 
-use super::progress::ProbeName;
+use super::progress::{PendingPhases, ProbeName};
 use super::{DeepCaptureCa, DeepCaptureInputs, Inputs, Privilege, ProxyBackendInfo, Subsystem};
 
 /// Receives progress events around doctor probe groups.
@@ -27,6 +27,9 @@ pub trait ProbeObserver {
 
     /// A probe has completed after `elapsed`.
     fn complete(&mut self, probe: ProbeName, elapsed: Duration);
+
+    /// Work is still pending, without any inferred readiness verdict.
+    fn waiting(&mut self, _probe: ProbeName, _elapsed: Duration) {}
 }
 
 /// An observer that keeps the existing silent behavior.
@@ -38,12 +41,95 @@ impl ProbeObserver for NoopObserver {
     fn complete(&mut self, _probe: ProbeName, _elapsed: Duration) {}
 }
 
-fn observe<T>(observer: &mut dyn ProbeObserver, probe: ProbeName, work: impl FnOnce() -> T) -> T {
+pub(crate) fn observe<T>(
+    observer: &mut dyn ProbeObserver,
+    probe: ProbeName,
+    work: impl FnOnce() -> T,
+) -> T {
+    observe_with(observer, probe, |_| work())
+}
+
+fn observe_with<T>(
+    observer: &mut dyn ProbeObserver,
+    probe: ProbeName,
+    work: impl FnOnce(&mut dyn ProbeObserver) -> T,
+) -> T {
     observer.begin(probe);
     let started = Instant::now();
-    let value = work();
+    let value = work(observer);
     observer.complete(probe, started.elapsed());
     value
+}
+
+enum ProbeEvent {
+    Begin(ProbeName, Instant),
+    Complete(ProbeName, Duration),
+}
+
+struct ChannelObserver(std::sync::mpsc::SyncSender<ProbeEvent>);
+
+impl ProbeObserver for ChannelObserver {
+    fn begin(&mut self, probe: ProbeName) {
+        let _ = self.0.send(ProbeEvent::Begin(probe, Instant::now()));
+    }
+
+    fn complete(&mut self, probe: ProbeName, elapsed: Duration) {
+        let _ = self.0.send(ProbeEvent::Complete(probe, elapsed));
+    }
+}
+
+/// Run serial probe work with caller-thread progress during blocking calls.
+///
+/// The sole worker is scoped and explicitly joined. Elapsed waiting is never a
+/// timeout or a reason to abandon work. Borrowed output writers stay on the
+/// caller thread; the finite channel carries only fixed phase/timing facts.
+pub(crate) fn run_observed<T: Send>(
+    observer: &mut dyn ProbeObserver,
+    work: impl FnOnce(&mut dyn ProbeObserver) -> T + Send,
+) -> T {
+    std::thread::scope(|scope| {
+        // Inside the closure so coordinator unwind drops/disconnects the
+        // receiver before scope joins. Otherwise a full channel could deadlock
+        // the worker during unwinding. Disconnected sends are best effort.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let worker = scope.spawn(move || work(&mut ChannelObserver(sender)));
+        let mut pending = PendingPhases::default();
+        let apply =
+            |event, pending: &mut PendingPhases, observer: &mut dyn ProbeObserver| match event {
+                ProbeEvent::Begin(name, started) => {
+                    pending.begin(name, started);
+                    observer.begin(name);
+                }
+                ProbeEvent::Complete(name, elapsed) => {
+                    pending.complete(name);
+                    observer.complete(name, elapsed);
+                }
+            };
+        'events: loop {
+            match receiver.recv_timeout(pending.delay(Instant::now())) {
+                Ok(event) => apply(event, &mut pending, observer),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Settle any completions already queued at the timer edge
+                    // before describing work as pending.
+                    loop {
+                        match receiver.try_recv() {
+                            Ok(event) => apply(event, &mut pending, observer),
+                            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'events,
+                        }
+                    }
+                    if let Some((name, elapsed)) = pending.waiting(Instant::now()) {
+                        observer.waiting(name, elapsed);
+                    }
+                }
+            }
+        }
+        match worker.join() {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
 }
 
 /// The analyzer extcap directories (per-user and machine-wide) and whether a
@@ -326,13 +412,17 @@ fn read_target_entry_count() -> Option<usize> {
     store.targets().ok().map(|targets| targets.len())
 }
 
-fn deep_capture_probe() -> DeepCaptureInputs {
+fn deep_capture_probe(observer: &mut dyn ProbeObserver) -> DeepCaptureInputs {
     let session_dir = crate::paths::deep_capture_session_dir();
     let session_dir_present = session_dir.as_ref().is_some_and(|p| p.is_dir());
     #[cfg(windows)]
-    let native_residue = super::residue::inventory(session_dir.as_deref());
+    let native_residue = observe(observer, ProbeName::NativeResidueInventory, || {
+        super::residue::inventory(session_dir.as_deref())
+    });
     #[cfg(not(windows))]
-    let mut native_residue = super::residue::inventory(session_dir.as_deref());
+    let mut native_residue = observe(observer, ProbeName::NativeResidueInventory, || {
+        super::residue::inventory(session_dir.as_deref())
+    });
     #[cfg(not(windows))]
     native_residue
         .findings
@@ -347,10 +437,12 @@ fn deep_capture_probe() -> DeepCaptureInputs {
             ownership_authority: "platform".to_string(),
             detail: "native Deep Capture is available only on Windows".to_string(),
         });
-    let scan = scan_deep_capture_root(session_dir.as_deref());
+    let scan = observe(observer, ProbeName::ManifestArtifactScan, || {
+        scan_deep_capture_root(session_dir.as_deref())
+    });
     let (proxy_backend, proxy_backend_error) = proxy_backend_status();
     let ca = if scan.errors.is_empty() {
-        probe_ca(&scan.manifests)
+        probe_ca(&scan.manifests, observer)
     } else {
         DeepCaptureCa::Unknown(scan.errors.join("; "))
     };
@@ -359,8 +451,12 @@ fn deep_capture_probe() -> DeepCaptureInputs {
         session_dir_present,
         proxy_backend,
         proxy_backend_error,
-        ipv4_loopback: loopback_readiness("127.0.0.1:0"),
-        ipv6_loopback: loopback_readiness("[::1]:0"),
+        ipv4_loopback: observe(observer, ProbeName::Ipv4Loopback, || {
+            loopback_readiness("127.0.0.1:0")
+        }),
+        ipv6_loopback: observe(observer, ProbeName::Ipv6Loopback, || {
+            loopback_readiness("[::1]:0")
+        }),
         analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
         ca,
         native_residue,
@@ -687,35 +783,39 @@ fn cleanup_targets(
 }
 
 #[cfg(windows)]
-fn read_ca_inventory() -> Result<CaInventory, String> {
+fn read_ca_inventory(observer: &mut dyn ProbeObserver) -> Result<CaInventory, String> {
     Ok(CaInventory {
-        current_user_root: crate::windows_cert::store_thumbprints(
-            crate::windows_cert::CURRENT_USER_ROOT,
-        )?,
-        local_machine_root: crate::windows_cert::store_thumbprints(
-            crate::windows_cert::LOCAL_MACHINE_ROOT,
-        )?,
+        current_user_root: observe(observer, ProbeName::CurrentUserCaStore, || {
+            crate::windows_cert::store_thumbprints(crate::windows_cert::CURRENT_USER_ROOT)
+        })?,
+        local_machine_root: observe(observer, ProbeName::MachineCaStore, || {
+            crate::windows_cert::store_thumbprints(crate::windows_cert::LOCAL_MACHINE_ROOT)
+        })?,
     })
 }
 
 #[cfg(windows)]
-fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
-    let identities = match manifest_ca_identities(manifests) {
+fn probe_ca(manifests: &[PathBuf], observer: &mut dyn ProbeObserver) -> DeepCaptureCa {
+    let identities = match observe(observer, ProbeName::ManifestCaIdentities, || {
+        manifest_ca_identities(manifests)
+    }) {
         Ok(identities) => identities,
         Err(reason) => return DeepCaptureCa::Unknown(reason),
     };
     if identities.is_empty() {
         return DeepCaptureCa::Absent;
     }
-    match read_ca_inventory() {
+    match read_ca_inventory(observer) {
         Ok(inventory) => classify_ca(&identities, &inventory),
         Err(reason) => DeepCaptureCa::Unknown(reason),
     }
 }
 
 #[cfg(not(windows))]
-fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
-    match manifest_ca_identities(manifests) {
+fn probe_ca(manifests: &[PathBuf], observer: &mut dyn ProbeObserver) -> DeepCaptureCa {
+    match observe(observer, ProbeName::ManifestCaIdentities, || {
+        manifest_ca_identities(manifests)
+    }) {
         Err(reason) => DeepCaptureCa::Unknown(reason),
         Ok(identities) if identities.is_empty() => DeepCaptureCa::Absent,
         Ok(_) => DeepCaptureCa::Unknown(
@@ -851,7 +951,7 @@ pub fn gather_with(observer: &mut dyn ProbeObserver) -> Inputs {
             });
         let target_entry_count =
             observe(observer, ProbeName::TargetStores, read_target_entry_count);
-        let deep_capture = observe(
+        let deep_capture = observe_with(
             observer,
             ProbeName::DeepCaptureReadiness,
             deep_capture_probe,
@@ -966,7 +1066,7 @@ fn gather_windows(observer: &mut dyn ProbeObserver) -> Inputs {
     let (fragcap_version, binary_path, catalog_db_path, local_db_path) =
         observe(observer, ProbeName::Identity, identity_fields);
     let target_entry_count = observe(observer, ProbeName::TargetStores, read_target_entry_count);
-    let deep_capture = observe(
+    let deep_capture = observe_with(
         observer,
         ProbeName::DeepCaptureReadiness,
         deep_capture_probe,
@@ -1046,6 +1146,132 @@ mod tests {
     use std::sync::Arc;
 
     use fragcap::core::{InterfaceRecord, LinkType};
+
+    #[test]
+    fn delayed_readiness_and_tracing_report_waiting_before_release_without_changing_facts() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct DelayedObserver {
+            release: std::sync::mpsc::Sender<()>,
+            finished: Arc<AtomicBool>,
+            active: Vec<ProbeName>,
+            waited: Vec<ProbeName>,
+            completed: Vec<ProbeName>,
+        }
+        impl ProbeObserver for DelayedObserver {
+            fn begin(&mut self, probe: ProbeName) {
+                self.active.push(probe);
+            }
+            fn complete(&mut self, probe: ProbeName, _: Duration) {
+                assert_eq!(self.active.pop(), Some(probe));
+                self.completed.push(probe);
+            }
+            fn waiting(&mut self, probe: ProbeName, elapsed: Duration) {
+                assert!(
+                    !self.finished.load(Ordering::SeqCst),
+                    "waiting must precede release"
+                );
+                assert!(elapsed >= super::super::progress::SLOW_PROBE);
+                assert_eq!(self.active.last(), Some(&probe));
+                self.waited.push(probe);
+                self.release.send(()).unwrap();
+            }
+        }
+        for (phase, leaf, supplied) in [
+            (
+                ProbeName::DeepCaptureReadiness,
+                Some(ProbeName::NativeResidueInventory),
+                None,
+            ),
+            (
+                ProbeName::DeepCaptureReadiness,
+                Some(ProbeName::MachineCaStore),
+                Some(false),
+            ),
+            (ProbeName::ProcessEventTracing, None, Some(true)),
+        ] {
+            let (release, released) = std::sync::mpsc::channel();
+            let finished = Arc::new(AtomicBool::new(false));
+            let worker_finished = finished.clone();
+            let mut observer = DelayedObserver {
+                release,
+                finished: finished.clone(),
+                active: vec![],
+                waited: vec![],
+                completed: vec![],
+            };
+            let value = run_observed(&mut observer, move |events| {
+                observe_with(events, phase, |events| {
+                    let delayed = || {
+                        // Finite fallback turns missing progress into a failed
+                        // assertion rather than leaving a surviving test worker.
+                        let _ = released.recv_timeout(Duration::from_secs(5));
+                        worker_finished.store(true, Ordering::SeqCst);
+                        supplied
+                    };
+                    if let Some(leaf) = leaf {
+                        observe(events, leaf, delayed)
+                    } else {
+                        delayed()
+                    }
+                })
+            });
+            assert_eq!(
+                value, supplied,
+                "pending never becomes fabricated unavailable"
+            );
+            assert!(finished.load(Ordering::SeqCst));
+            assert_eq!(observer.waited, vec![leaf.unwrap_or(phase)]);
+            assert!(observer.active.is_empty());
+            assert_eq!(observer.completed.last(), Some(&phase));
+        }
+    }
+
+    #[test]
+    fn worker_and_coordinator_panics_join_owned_work_even_with_a_full_event_channel() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Finished(Arc<AtomicBool>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct PanickingObserver;
+        impl ProbeObserver for PanickingObserver {
+            fn begin(&mut self, _: ProbeName) {
+                panic!("controlled coordinator failure");
+            }
+            fn complete(&mut self, _: ProbeName, _: Duration) {}
+        }
+        for coordinator_fails in [false, true] {
+            let finished = Arc::new(AtomicBool::new(false));
+            let worker_finished = finished.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut noop = NoopObserver;
+                let mut panicking = PanickingObserver;
+                let observer: &mut dyn ProbeObserver = if coordinator_fails {
+                    &mut panicking
+                } else {
+                    &mut noop
+                };
+                run_observed(observer, move |events| {
+                    let _finished = Finished(worker_finished);
+                    if !coordinator_fails {
+                        panic!("controlled worker failure");
+                    }
+                    // More than sixteen events would block a sender forever if
+                    // coordinator unwind retained its receiver during joining.
+                    for _ in 0..32 {
+                        observe(events, ProbeName::Identity, || ());
+                    }
+                });
+            }));
+            assert!(result.is_err(), "failure must not be success");
+            assert!(
+                finished.load(Ordering::SeqCst),
+                "worker destruction precedes return"
+            );
+        }
+    }
 
     fn test_inventory(records: Vec<InterfaceRecord>) -> InterfaceInventory {
         InterfaceInventory {

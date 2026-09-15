@@ -1262,8 +1262,10 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub yes: bool,
 
-    /// Show per-probe doctor timings on the interactive progress stream.
-    #[arg(long, hide = true)]
+    /// Show phase and nested readiness timings on interactive stderr progress.
+    ///
+    /// Read-only human terminal runs only; no JSON or final report changes.
+    #[arg(long)]
     pub timings: bool,
 }
 
@@ -1403,7 +1405,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn doctor_timings_hidden_flag_parses() {
+    fn doctor_timings_visible_flag_parses() {
         let cli = Cli::try_parse_from(["fragcap", "doctor", "--timings"]).expect("parse");
         match cli.command {
             Some(Command::Doctor(args)) => {
@@ -1413,6 +1415,13 @@ mod tests {
             }
             other => panic!("expected doctor command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn doctor_timings_is_discoverable_in_normal_help() {
+        let error = Cli::try_parse_from(["fragcap", "doctor", "--help"])
+            .expect_err("help is a parser-only display request");
+        assert!(error.to_string().contains("--timings"));
     }
 
     #[test]

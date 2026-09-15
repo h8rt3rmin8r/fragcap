@@ -12,11 +12,9 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-This page describes the public command tree prepared for v0.10.0. Its command headings,
-option tables, sink vocabulary, and executable examples are checked against the
-same parser used by the binary. Hidden test controls are excluded. clap's
-generated `help` and `version` controls remain available but are not repeated in
-every table.
+Published baseline: [v0.10.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0).
+
+This page describes the current source command tree, checked by the production parser without dispatch. The published v0.10.0 baseline includes the native API, guided calibration and command migrations below. S151's visible Doctor `--timings`, nested readiness timings and live elapsed diagnostics are unreleased; v0.10.0 retains the hidden completion-only timing option. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
 
 In the tables, `open` means the parser accepts a value whose grammar is explained
 in the Meaning column. `none` means clap declares no default; the application may
@@ -29,8 +27,7 @@ Running `fragcap` with no command lists registered targets and points at
 
 ## Retired command migration
 
-Older releases and their preserved changelog pages may refer to command forms
-that the current CLI no longer accepts. Use these replacements with v0.9.0:
+Older releases and their preserved changelog pages may refer to command forms that the current CLI no longer accepts. Use these replacements with the published v0.10.0 command surface:
 
 | Retired form | Current form |
 | --- | --- |
@@ -90,8 +87,7 @@ fragcap capture --process sample.exe --out capture.fcapng
 | `--target` | open | none | all | Explicit form of the stored-target selector. A numeric value is a row number, not a platform app id. |
 | `--wait` | open | none | all | Set the target acquisition timeout. With no value, wait until start or interruption. |
 
-`--roles` is enforced. `--direction in` and `--direction out` are recorded and
-reported, but v0.9.0 still writes both directions.
+`--roles` is enforced. `--direction in` and `--direction out` are recorded and reported, but v0.10.0 still writes both directions.
 
 ### Sink specifications
 
@@ -425,6 +421,7 @@ fragcap doctor
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--fix` | open | `false` | all | Offer remediations interactively. Refused with `--json` or non-interactive standard output. |
+| `--timings` | open | `false` | all | Unreleased S151: show phase and nested readiness completion timings on interactive stderr progress. No JSON or final report changes. Published v0.10.0 accepts this option but hides it and supplies only coarse completion timings. |
 | `--yes` | open | `false` | all | Pre-confirm offered actions with `--fix`; interactive standard output is still required. |
 
 ### `extcap`
