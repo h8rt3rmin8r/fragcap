@@ -55,6 +55,7 @@ use crate::emit::Emitter;
 use crate::events::{rfc3339_utc, Event};
 use crate::exit::{CliError, Exit};
 use crate::paths;
+use crate::session_ux;
 use crate::DeepCaptureAuthorizationInput;
 
 const CONTROLLED_TARGET_HANDLE: &str = "sample-target";
@@ -238,8 +239,13 @@ impl AuthorizationPlan {
             .expect("the authorization plan contains only serializable values");
         emitter
             .required_human_checked(&format!(
-                "Deep Capture authorization plan\n  plan id: {}\n{}\n",
-                self.id, rendered
+                "{}Deep Capture authorization plan\n  plan id: {}\n{}\n",
+                session_ux::authorization_summary(
+                    &self.canonical,
+                    crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+                ),
+                self.id,
+                rendered
             ))
             .map_err(|error| {
                 CliError::usage(format!(
@@ -1157,7 +1163,8 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     }
 }
 
-struct LibraryFactAdapter {
+struct LibraryFactAdapter<'e, 'w> {
+    emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     store: Rc<RefCell<Store>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
@@ -1165,12 +1172,16 @@ struct LibraryFactAdapter {
     family: DeepCaptureProxyFamilyArg,
 }
 
-impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
+impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter<'_, '_> {
     fn append(
         &mut self,
         target: &deep_capture_api::PreparedTarget,
         fact: &deep_capture_api::CompatibilityFact,
     ) -> deep_capture_api::FactWriteStatus {
+        self.emitter.borrow_mut().progress(session_ux::wrapped(
+            "Persisting a directly observed compatibility fact; requested protocols alone are not evidence.",
+            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+        ).trim_end());
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
             Err(error) => {
@@ -1279,6 +1290,10 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         bundle: &Path,
         snapshot: &deep_capture_api::TerminalSnapshot,
     ) -> Vec<deep_capture_api::ArtifactResult> {
+        self.emitter.borrow_mut().progress(session_ux::wrapped(
+            "Finalizing retained evidence and reconciling artifact, loss, process, and cleanup facts...",
+            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+        ).trim_end());
         if let Err(error) = fs::create_dir_all(bundle) {
             return vec![deep_capture_api::ArtifactResult {
                 role: "bundle-finalization".to_string(),
@@ -1538,6 +1553,7 @@ struct LibraryEventAdapter<'a, 'e, 'w> {
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     bundle: PathBuf,
+    progress: session_ux::SessionProgress,
 }
 
 impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
@@ -1546,6 +1562,10 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
         event: &deep_capture_api::DeepCaptureEvent,
     ) -> Result<(), deep_capture_api::StageFailure> {
         let mut emitter = self.emitter.borrow_mut();
+        let width = crate::display::selected_stderr_width(std::io::stderr().is_terminal());
+        if let Some(text) = session_ux::lifecycle_progress(event, width) {
+            emitter.progress(text.trim_end());
+        }
         match event {
             deep_capture_api::DeepCaptureEvent::Plan { plan, .. } => {
                 {
@@ -1571,7 +1591,6 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     proxy_backend: plan.proxy_backend.name.clone(),
                     trust_state: "confirmation-present".to_string(),
                 });
-                emitter.progress("Deep Capture preflight passed");
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
                     let protocol = self
                         .args
@@ -1639,10 +1658,20 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 });
                 emitter.event(&Event::DeepCaptureTrust {
                     session_id: session_id.clone(),
-                    state: trust.state,
-                    action: trust.action,
+                    state: trust.state.clone(),
+                    action: trust.action.clone(),
                     thumbprint: trust.thumbprint,
                 });
+                emitter.progress(
+                    session_ux::wrapped(
+                        &format!(
+                            "Session trust state: {}; action: {}.",
+                            trust.state, trust.action
+                        ),
+                        width,
+                    )
+                    .trim_end(),
+                );
             }
             deep_capture_api::DeepCaptureEvent::LaunchStarted { session_id, .. } => {
                 let target = self
@@ -1667,20 +1696,28 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 session_id,
                 observation,
                 ..
-            } => emitter.event(&Event::DeepCaptureApplication {
-                session_id: session_id.clone(),
-                flow_id: observation.flow_id.map(|flow_id| flow_id.to_string()),
-                proxy_connection_id: observation.proxy_connection_id.clone(),
-                protocol: observation.protocol.clone(),
-                inspectability: observation.inspectability.as_str().to_string(),
-                classification_schema_version: observation.classification.schema_version(),
-                family: observation.classification.family().as_str().to_string(),
-                detection: observation.classification.detection().as_str().to_string(),
-                classification_reason: observation
-                    .classification
-                    .reason()
-                    .map(|reason| reason.as_str().to_string()),
-            }),
+            } => {
+                emitter.event(&Event::DeepCaptureApplication {
+                    session_id: session_id.clone(),
+                    flow_id: observation.flow_id.map(|flow_id| flow_id.to_string()),
+                    proxy_connection_id: observation.proxy_connection_id.clone(),
+                    protocol: observation.protocol.clone(),
+                    inspectability: observation.inspectability.as_str().to_string(),
+                    classification_schema_version: observation.classification.schema_version(),
+                    family: observation.classification.family().as_str().to_string(),
+                    detection: observation.classification.detection().as_str().to_string(),
+                    classification_reason: observation
+                        .classification
+                        .reason()
+                        .map(|reason| reason.as_str().to_string()),
+                });
+                if let Some(text) = self
+                    .progress
+                    .observe(observation.classification.inspectability(), width)
+                {
+                    emitter.progress(text.trim_end());
+                }
+            }
             deep_capture_api::DeepCaptureEvent::Cleanup { .. } => {}
             deep_capture_api::DeepCaptureEvent::Terminal { report, .. } => {
                 let classification_summary = report.classification_summary();
@@ -1833,18 +1870,6 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     classification_summary.by_detection.get("failed").unwrap_or(&0),
                     classification_summary.unclassified_lost,
                 ));
-                if report
-                    .failures
-                    .iter()
-                    .any(|failure| failure.stage == deep_capture_api::Stage::Bundle)
-                {
-                    emitter.progress("Deep Capture bundle finalization failed");
-                } else {
-                    emitter.progress(&format!(
-                        "Deep Capture bundle written to {}",
-                        self.bundle.join("manifest.json").display()
-                    ));
-                }
             }
             _ => {}
         }
@@ -2444,6 +2469,7 @@ pub(crate) fn run_with_outcome(
             mode,
         }),
         facts: Box::new(LibraryFactAdapter {
+            emitter: Rc::clone(&emitter),
             store: Rc::clone(&store),
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
@@ -2468,6 +2494,7 @@ pub(crate) fn run_with_outcome(
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             bundle: bundle.clone(),
+            progress: session_ux::SessionProgress::default(),
         }),
     };
     let prepared = match deep_capture_api::DeepCapture::preflight(config, &mut adapters) {
@@ -2563,6 +2590,15 @@ pub(crate) fn run_with_outcome(
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
+    emitter
+        .borrow_mut()
+        .terminal_human(&session_ux::terminal_summary(
+            report.snapshot.outcome,
+            report.is_complete(),
+            &report.artifacts,
+            &report.snapshot.cleanup,
+            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+        ));
     if report.is_complete() {
         Ok(RunOutcome {
             observations: report.snapshot.observations,

@@ -152,6 +152,14 @@ impl<'w> Emitter<'w> {
         Ok(())
     }
 
+    /// A terminal human report, retained under quiet but suppressed by silent.
+    /// Required consent text and errors use their separate unsuppressed paths.
+    pub fn terminal_human(&mut self, text: &str) {
+        if self.format == Format::Human && self.verbosity != Verbosity::Silent {
+            let _ = write!(self.err, "{text}");
+        }
+    }
+
     /// Flush the diagnostic stream before reading an interactive answer.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.err.flush()
@@ -285,6 +293,41 @@ mod tests {
         assert!(emit(Format::Human, Verbosity::Normal, |e| e.progress("armed")).contains("armed"));
         assert!(emit(Format::Human, Verbosity::Quiet, |e| e.progress("armed")).is_empty());
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.progress("armed")).is_empty());
+    }
+
+    #[test]
+    fn session_ux_terminal_and_required_consent_have_distinct_mode_contracts() {
+        for verbosity in [Verbosity::Normal, Verbosity::Quiet, Verbosity::Silent] {
+            let human = emit(Format::Human, verbosity, |e| {
+                e.required_human("required plan\n");
+                e.progress("observed stage");
+                e.terminal_human("terminal outcome\n");
+                e.error("failure");
+            });
+            assert!(human.contains("required plan") && human.contains("error: failure"));
+            assert_eq!(
+                human.contains("observed stage"),
+                verbosity == Verbosity::Normal
+            );
+            assert_eq!(
+                human.contains("terminal outcome"),
+                verbosity != Verbosity::Silent
+            );
+            let json = emit(Format::Json, verbosity, |e| {
+                e.required_human("required plan\n");
+                e.progress("observed stage");
+                e.terminal_human("terminal outcome\n");
+                e.error("failure");
+            });
+            assert!(
+                !json.contains("required plan")
+                    && !json.contains("observed stage")
+                    && !json.contains("terminal outcome")
+            );
+            assert!(json
+                .lines()
+                .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()));
+        }
     }
 
     // `progress_written` and its reader are `etw`+`windows`-gated (see the
