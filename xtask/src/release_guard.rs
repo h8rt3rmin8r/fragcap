@@ -122,6 +122,22 @@ fn normalized(text: &str) -> Vec<&str> {
         .collect()
 }
 
+fn job_fields(block: &str) -> impl Iterator<Item = &str> {
+    block.lines().filter_map(|line| {
+        line.strip_prefix("    ")
+            .filter(|field| !field.starts_with(char::is_whitespace))
+            .map(str::trim)
+    })
+}
+
+fn has_job_field(block: &str, requirement: &str) -> bool {
+    let key = format!("{}:", requirement.split_once(':').unwrap().0);
+    let fields: Vec<_> = job_fields(block)
+        .filter(|field| field.starts_with(&key))
+        .collect();
+    fields == [requirement]
+}
+
 fn has_guard(job: &str) -> bool {
     let marker = "      - name: Verify registry approval protection\n";
     if job.matches(marker).count() != 1 {
@@ -133,12 +149,44 @@ fn has_guard(job: &str) -> bool {
     normalized(&rest[..end]) == normalized(GUARD_STEP)
 }
 
+fn guard_immediately_precedes(block: &str, step: &str) -> bool {
+    let Some(start) = block.find("      - name: Verify registry approval protection\n") else {
+        return false;
+    };
+    let rest = &block[start..];
+    let Some(next) = rest.find("\n      - ") else {
+        return false;
+    };
+    rest[next + 1..].lines().next() == Some(format!("      - name: {step}").as_str())
+}
+
 fn validate_workflow(workflow: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for name in ["identity", "publish"] {
+    for name in ["identity", "package-certification", "release", "publish"] {
+        if job(workflow, name).is_some_and(|block| {
+            job_fields(block).any(|field| {
+                field.starts_with("continue-on-error:") && field != "continue-on-error: false"
+            })
+        }) {
+            out.push(format!(
+                "{name} job must not ignore guard or prerequisite failures"
+            ));
+        }
+    }
+    for name in ["identity", "release", "publish"] {
         if !job(workflow, name).is_some_and(has_guard) {
             out.push(format!(
                 "{name} job must contain the exact fresh fail-closed protection step"
+            ));
+        }
+    }
+    for (name, step) in [
+        ("release", "Create the release"),
+        ("publish", "Publish in dependency order"),
+    ] {
+        if !job(workflow, name).is_some_and(|block| guard_immediately_precedes(block, step)) {
+            out.push(format!(
+                "{name} effect must immediately follow fresh protection verification"
             ));
         }
     }
@@ -148,7 +196,7 @@ fn validate_workflow(workflow: &str) -> Vec<String> {
         ("publish", "needs: release"),
         ("publish", "environment: crates-io"),
     ] {
-        if !job(workflow, name).is_some_and(|block| normalized(block).contains(&requirement)) {
+        if !job(workflow, name).is_some_and(|block| has_job_field(block, requirement)) {
             out.push(format!("{name} job requires {requirement}"));
         }
     }
@@ -434,6 +482,61 @@ mod tests {
             ("-- release-guard", "-- notes"),
         ] {
             assert!(!validate_workflow(&actual.replace(from, to)).is_empty(), "accepted guard mutation {from}");
+        }
+    }
+
+    #[test]
+    fn effect_jobs_cannot_ignore_failure_or_hide_required_fields_in_steps() {
+        let actual = include_str!("../../.github/workflows/release.yml");
+        for name in ["identity", "package-certification", "release", "publish"] {
+            let marker = format!("\n  {name}:\n");
+            let changed =
+                actual.replace(&marker, &format!("{marker}    continue-on-error: true\n"));
+            assert!(
+                !validate_workflow(&changed).is_empty(),
+                "accepted nonblocking {name}"
+            );
+        }
+        for requirement in [
+            "needs: identity",
+            "needs: package-certification",
+            "needs: release",
+            "environment: crates-io",
+        ] {
+            let changed = actual.replace(
+                &format!("    {requirement}\n"),
+                &format!("          {requirement}\n"),
+            );
+            assert!(
+                !validate_workflow(&changed).is_empty(),
+                "accepted nested {requirement}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_creation_and_publication_need_immediately_preceding_fresh_guards() {
+        let actual = include_str!("../../.github/workflows/release.yml");
+        let release = job(actual, "release").unwrap();
+        let without_guard = actual.replacen(
+            release,
+            &release.replace(GUARD_STEP.trim_start_matches('\n'), ""),
+            1,
+        );
+        assert!(
+            !validate_workflow(&without_guard).is_empty(),
+            "accepted release creation without fresh readback"
+        );
+        for name in ["Create the release", "Publish in dependency order"] {
+            let marker = format!("\n      - name: {name}\n");
+            let delayed = actual.replace(
+                &marker,
+                &format!("\n      - name: Delay after readback\n        run: sleep 2700{marker}"),
+            );
+            assert!(
+                !validate_workflow(&delayed).is_empty(),
+                "accepted delayed guard before {name}"
+            );
         }
     }
 

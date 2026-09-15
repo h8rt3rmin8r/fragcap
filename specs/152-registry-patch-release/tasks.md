@@ -40,7 +40,7 @@
 ## Phase 5: Cross-Cutting Verification and Handoff
 
 - [x] T016 Run targeted tests, full watched cargo xtask ci/MSRV and documentation site build/unit/browser contracts; record exact evidence in specs/152-registry-patch-release/verification.md.
-- [ ] T017 Check UTF-8/no-BOM/LF, no mojibake, clean patch scope and unchanged published-release.json; commit with conventional message and required co-author trailer, then automatically push release/0.10.1 and open official PR against main.
+- [x] T017 Check UTF-8/no-BOM/LF, no mojibake, clean patch scope and unchanged published-release.json; commit with conventional message and required co-author trailer, then automatically push release/0.10.1 and open official PR against main.
 - [ ] T018 Monitor current-head hosted CI and every bot review, reply to all comments, verify corrections and resolve threads; retain at most one manual second review request in specs/152-registry-patch-release/verification.md.
 - [ ] T019 Update #416/project tracking to PR review with truthful dispositions and hand the official green PR to the operator, without closing independent #372/#331/#333/#413/#334/#278 or deferred #155/#94 and without merge/tag/publication.
 

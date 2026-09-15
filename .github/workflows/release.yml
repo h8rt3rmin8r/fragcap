@@ -72,6 +72,15 @@ jobs:
           set -euo pipefail
           cargo run --quiet --package xtask -- notes "${GITHUB_REF_NAME#v}" > notes.md
           cat notes.md
+      - name: Verify registry approval protection
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method GET repos/h8rt3rmin8r/fragcap/environments/crates-io > "$RUNNER_TEMP/registry-environment.json"
+          gh api --method GET 'repos/h8rt3rmin8r/fragcap/environments/crates-io/deployment-branch-policies?per_page=100' > "$RUNNER_TEMP/registry-policies.json"
+          cargo run --quiet --package xtask -- release-guard "$RUNNER_TEMP/registry-environment.json" "$RUNNER_TEMP/registry-policies.json"
       - name: Create the release
         shell: bash
         env:

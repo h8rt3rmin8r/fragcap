@@ -48,6 +48,18 @@ The subsequent watched `cargo xtask msrv` built the entire workspace at the decl
 
 Issue #416 now explicitly documents retained administrator bypass and normal owner review, with completed configuration criteria and CI/review still pending. A fresh open-issue inventory contains only the same nine known items, without new incoming issues.
 
+## Official PR (2026-09-15 20:11 UTC)
+
+Conventional commit `40bd566c5f2e7d82fcc25827aa4a77b0cb47fc76` includes the required Codex co-author trailer. Explicit user permission authorized its automatic push to `release/0.10.1` and official [PR #417](https://github.com/h8rt3rmin8r/fragcap/pull/417) against main. The tracked working tree was clean after push. Issue #416 remains open, Status In progress, Stage PR review and Slice S152. Automatic Codex review started on the initial PR head; no manual review request has been used.
+
+## Workflow Regression Follow-Up (2026-09-15)
+
+Local review identified a bounded static-check weakness: matching normalized dependency fields anywhere in a job could accept nested step text, and job-level `continue-on-error` was not rejected. A new negative test failed against the initial implementation with `accepted nonblocking identity`. Minimal job-indentation checks and fail-closed failure overrides then passed all 11 guard tests and the full 200 task-runner tests, exit 0. This strengthens existing FR-004/FR-005 without changing operator policy, product behavior, workflow effects or dependencies. Repeated full local verification and the authorized second review will cover the corrected final head.
+
 ## Pending Hosted Gates and Handoff
 
-Current-head hosted CI and all review dispositions remain pending. No S152 PR, commit, push or manual second-review request has occurred yet. #416/project is In progress with Slice S152. Field #372, independent #333/#413, documentation/final #331/#334/#278 and deferred #155/#94 remain open. Completion will be recorded only after actual commands/checks/reviews succeed.
+Automatic first-round Codex review completed on `40bd566` at 20:16 UTC with one P2 finding ([discussion](https://github.com/h8rt3rmin8r/fragcap/pull/417#discussion_r4019813300)): certification can make the identity snapshot stale before release creation. A new regression test failed with `accepted release creation without fresh readback`. The release job now independently fetches/verifies protection immediately before creation, and the static checker rejects missing or delayed release/publication guards. All 12 guard tests and all 201 task-runner tests pass, exit 0. The early check remains for certification. Current instructions/contracts and the dated changelog decision agree with the corrected three-boundary workflow. No environment setting was changed. Full corrected local gates, push, comment disposition and the one permitted manual second review remain pending.
+
+At 20:21 UTC the complete corrected local CI and subsequent MSRV build both finished, combined exit 0. The current three-boundary guard passed newly fetched public environment/allowance records, short notes validation and conventions lint, exit 0. The rebuilt site again exported 74 pages, passed 4/4 unit tests and all 13 production browser contracts (2.6 minutes), exit 0. The reviewer received an acknowledgment linking the exact correction and red/green evidence; resolution follows the verified push. Final hosted checks/review evidence will be recorded on PR #417 and reconciled here when available.
+
+Current-head hosted CI and all review dispositions remain pending. Field #372, independent #333/#413, documentation/final #331/#334/#278 and deferred #155/#94 remain open. Completion will be recorded only after actual commands/checks/reviews succeed.

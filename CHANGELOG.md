@@ -26,6 +26,8 @@ Registry release automation now checks effective operator review and tag-only en
 
 2026-09-15 (20:00 UTC): The operator explicitly rejected disabling administrator bypass during S152. Restore and independently verify `can_admins_bypass=true`, retaining the same owner reviewer, owner-initiated self-review and exact tag-only allowance. Revise the current policy, guard tests and release instructions to preserve the owner's deliberate override rather than treating the initial autonomous no-bypass choice as approved. Normal reviewer approval and an operator-selected administrator bypass are distinct actions and must be reported separately; no agent approves or bypasses a deployment. This supersedes S152's earlier false setting and leaves repository administration, secrets, variables, review/tag policy and all independent acceptance boundaries unchanged.
 
+2026-09-15 (20:18 UTC): S152 review identified that certification could make the early protection snapshot stale before GitHub release creation. Retain the identity check and independently re-fetch and validate protection immediately before `gh release create`, as already required immediately before registry execution. Regression checks reject absent or delayed effect-boundary guards, job-level failure overrides and misplaced dependency/environment fields. This closes the existing fail-closed contract without changing owner bypass, product behavior, dependencies, publication authority or independent acceptance.
+
 ## [0.10.0] - 2026-09-15
 
 ### Added
