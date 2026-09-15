@@ -26,7 +26,7 @@ Run eligible interactive Doctor gather/classify/render in one scoped worker with
 
 **Constraints**: Borrowed Emitter/output stay on caller thread. Receiver drops before scoped joining on coordinator failure; disconnected event sends are best effort. Explicit join propagates work panic. No detached work, deadline, verdict fabrication, new host effect, altered probe order or consent. Existing aggregate ETW session availability and teardown semantics remain unchanged.
 
-**Scale/Scope**: Doctor seams and thirteen current applicability surfaces, currency gate and Doctor guidance; immutable history excluded.
+**Scale/Scope**: Doctor seams and fourteen current applicability surfaces, currency gate and Doctor guidance; immutable history excluded. Round-two review added the already in-scope Doctor guide to the initially incomplete thirteen-surface inventory.
 
 ## Constitution Check
 

@@ -10,7 +10,7 @@ One second is anomaly threshold and minimum repeat interval. Active start instan
 
 ## Published Identity
 
-Schema version 1, semantic release version, exact forty-character lowercase hexadecimal source commit, UTC publication date and canonical official release URL define actual publication. A finite source-defined inventory of thirteen unique relative contained readable current surfaces defines required baseline markers (not configurable by the publication record). Candidate workspace version is deliberately independent.
+Schema version 1, semantic release version, exact forty-character lowercase hexadecimal source commit, UTC publication date and canonical official release URL define actual publication. A finite source-defined inventory of fourteen unique relative contained readable current surfaces, including the Doctor guide, defines required baseline markers (not configurable by the publication record). Candidate workspace version is deliberately independent.
 
 ## Failure Transitions
 

@@ -35,6 +35,7 @@ const CURRENT_RELEASE_SURFACES: &[&str] = &[
     "site/content/docs/getting-started.mdx",
     "site/content/docs/architecture.mdx",
     "site/content/docs/contributing.mdx",
+    "site/content/docs/guides/doctor-and-troubleshooting.mdx",
     "site/content/docs/guides/packaging-and-migration.mdx",
     "site/content/docs/reference/deep-capture-compatibility.mdx",
     "site/content/docs/reference/output-formats.mdx",
@@ -529,7 +530,9 @@ mod tests {
             );
             assert!(!path.contains('\\'), "inventory uses portable separators");
         }
-        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 13);
+        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 14);
+        assert!(CURRENT_RELEASE_SURFACES
+            .contains(&"site/content/docs/guides/doctor-and-troubleshooting.mdx"));
     }
 
     #[test]

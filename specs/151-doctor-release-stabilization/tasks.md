@@ -30,7 +30,7 @@
 
 - [x] T010 [US2] Add and run a failing actual-publication baseline regression in `xtask/src/spec.rs` before documentation correction.
 - [x] T011 [US2] Implement strict reviewed identity, contained surface inventory and pure marker/contradiction checks in `xtask/src/spec.rs`, with negative/malformed/history/candidate tests.
-- [x] T012 [US2] Add `docs/published-release.json` and reconcile thirteen current repository/site applicability surfaces, CLI version claims and master release history under `docs/fragcap-specification.md`.
+- [x] T012 [US2] Add `docs/published-release.json` and reconcile fourteen current repository/site applicability surfaces (including the Doctor guide added during round-two review), CLI version claims and master release history under `docs/fragcap-specification.md`.
 - [x] T013 [US2] Reconcile actual publication/review instructions and unconfigured registry-approval claims in `docs/{maintainers/v0.10.0-release-handoff,security/native-product-review-handoff}.md` without settings mutations.
 
 ## Phase 5: Polish and Handoff
