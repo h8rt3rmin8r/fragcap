@@ -24,6 +24,10 @@ Revised-source foreground `cargo xtask ci` passed all gates with 287 CLI unit te
 
 The next online performance run exposed a separate old exact pin. Synchronizing the current performance manifest and performance/fuzz lockfiles changes only Rustls's version and checksum in those locks. Locked performance-harness compilation, `cargo xtask performance`, and `cargo xtask fuzz` then pass locally. Workloads, budgets, references, and approved soak evidence are untouched; final online short-profile and fuzz runs remain required.
 
+## External Review and Handoff
+
+Official [PR #410](https://github.com/h8rt3rmin8r/fragcap/pull/410) closes only #332 after operator merge. The first Codex review's optional-artifact finding was fixed in `fe07abc`, answered with regression evidence, and resolved. The one authorized manual second review completed on that commit with no new findings and a thumbs-up reaction. Active harness pin/lock synchronization in `316e7d5` does not change the reviewed product source. No third round is requested. Current-head checks remain tracked on the PR, with the operator handoff withheld until they are green; no static completion checkbox substitutes for that gate.
+
 ## Exclusions
 
 No live capture, game, real trust mutation, or installed product test was run by the agent. Live compatibility remains optional operator-owned evidence against published releases. Issues #331, #333, #334, #372, and #278 remain open; issue #332 closes only after its controlled evidence and required PR checks pass and the operator merges.

@@ -37,7 +37,11 @@
 
 - [x] T011 Record every #332 criterion with exact executable references in specs/149-deep-capture-session-ux/acceptance.md; update docs/fragcap-specification.md, docs/fragcap-spec-outline.md, docs/plans/README.md, and changelog.d/S149-deep-capture-session-ux.added.md without completion claims (FR-009).
 - [x] T012 Run controlled tests and complete foreground cargo xtask ci; inspect git diff and text hygiene, then record evidence in specs/149-deep-capture-session-ux/acceptance.md (FR-007 through FR-009, SC-001 through SC-005).
-- [ ] T013 Commit, push codex/s149-deep-capture-session-ux, publish PR with issue traceability, handle every review and required check, and request operator merge review. At most one manually triggered second review round (SC-005).
+- [x] T013 Commit, push codex/s149-deep-capture-session-ux, publish PR with issue traceability, handle received review findings, and complete at most one manually triggered second review round (SC-005). See the external delivery gate below for current-head checks and operator handoff.
+
+## External Delivery Gate
+
+PR #410 is the live authority for current-head checks and review state. The first Codex finding was corrected and resolved, and the one authorized second review completed without new findings on `fe07abc`. Subsequent active-harness synchronization changes only the already-reviewed Rustls pin and lock checksums, not product source. SC-005 remains required: wait until every current-head required check is green and every arrived finding is handled before requesting the operator's final review and merge ritual. Completed repository tasks do not assert completion of still-running external checks, independent review issue #333, or the native feature gate #334. The agent never merges this PR.
 
 ## Dependencies and Execution Order
 
