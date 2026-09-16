@@ -14,35 +14,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::packets;
+use common::{assert_valid_pcapng_stream, epb_payloads, expected_payloads, packets, walk};
 
 use fragcap_core::stats::CaptureStats;
 use fragcap_core::traits::Sink;
 use fragcap_core::LinkType;
 use fragcap_sink::{
-    Acceptor, ConnShutdown, Connection, DisconnectReason, Format, InterfaceSpec, SinkFactory,
-    Stopper, StreamSink,
+    Acceptor, ConnShutdown, Connection, DisconnectReason, Format, InterfaceSpec, RotatingFileSink,
+    RotationPolicy, SinkFactory, Stopper, StreamSink,
 };
 
 const SNAP: u32 = 262_144;
 
-/// A writer that accepts a consumer's header (the first bytes) and then stalls
-/// on every packet, honoring a stop flag so the sink can reap it.
-struct StallWriter {
+#[derive(Clone, Default)]
+struct StallControl {
+    armed: Arc<AtomicBool>,
+    blocked: Arc<AtomicBool>,
+    released: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
-    accepted: u64,
-    header_budget: u64,
+}
+
+/// Accept the complete header before arming, then acknowledge a blocked write.
+struct StallWriter {
+    control: StallControl,
 }
 
 impl Write for StallWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Let the header through so the encoder builds, then stall.
-        if self.accepted < self.header_budget {
-            self.accepted += buf.len() as u64;
+        if !self.control.armed.load(Ordering::Acquire) {
             return Ok(buf.len());
         }
+        self.control.blocked.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if self.stop.load(Ordering::Acquire) {
+            if self.control.released.load(Ordering::Acquire) {
+                return Ok(buf.len());
+            }
+            if self.control.stop.load(Ordering::Acquire) || Instant::now() >= deadline {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::ConnectionAborted,
                     "stopped",
@@ -68,6 +76,7 @@ impl ConnShutdown for StallShutdown {
 struct OneStallAcceptor {
     yielded: AtomicBool,
     stop: Arc<AtomicBool>,
+    control: StallControl,
 }
 
 impl OneStallAcceptor {
@@ -75,6 +84,7 @@ impl OneStallAcceptor {
         OneStallAcceptor {
             yielded: AtomicBool::new(false),
             stop: Arc::new(AtomicBool::new(false)),
+            control: StallControl::default(),
         }
     }
 }
@@ -85,15 +95,12 @@ impl Acceptor for OneStallAcceptor {
             return None;
         }
         if !self.yielded.swap(true, Ordering::AcqRel) {
-            let stop = Arc::new(AtomicBool::new(false));
             return Some(Connection {
                 id: "stall#0".to_string(),
                 writer: Box::new(StallWriter {
-                    stop: Arc::clone(&stop),
-                    accepted: 0,
-                    header_budget: 256,
+                    control: self.control.clone(),
                 }),
-                shutdown: Box::new(StallShutdown(stop)),
+                shutdown: Box::new(StallShutdown(Arc::clone(&self.control.stop))),
             });
         }
         while !self.stop.load(Ordering::Acquire) {
@@ -122,8 +129,9 @@ fn factory() -> SinkFactory {
 #[test]
 fn a_stalled_consumer_is_disconnected_after_the_timeout_with_drops_counted() {
     let timeout = Duration::from_millis(200);
-    let mut sink =
-        StreamSink::with_settings(factory(), Box::new(OneStallAcceptor::new()), 2, timeout);
+    let acceptor = OneStallAcceptor::new();
+    let control = acceptor.control.clone();
+    let mut sink = StreamSink::with_settings(factory(), Box::new(acceptor), 2, timeout);
     let handle = sink.reports_handle();
 
     // Wait for the stalled consumer to register.
@@ -133,6 +141,7 @@ fn a_stalled_consumer_is_disconnected_after_the_timeout_with_drops_counted() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
+    control.armed.store(true, Ordering::Release);
     // Offer packets until the sink disconnects the stalled consumer.
     let pkts = packets(500, 64);
     let deadline = Instant::now() + timeout * 20;
@@ -162,10 +171,75 @@ fn a_stalled_consumer_is_disconnected_after_the_timeout_with_drops_counted() {
         "the disconnect reason is the backpressure timeout"
     );
     assert!(reports[0].dropped > 0, "packets were dropped for it");
-    assert!(
-        reports[0].written <= reports[0].offered - reports[0].dropped,
-        "per-consumer accounting is honest"
-    );
+    assert_eq!(reports[0].offered, reports[0].written + reports[0].dropped);
+}
+
+#[test]
+fn a_stalled_consumer_is_isolated_and_its_drops_are_counted() {
+    // Fresh scenarios, not retries: each must pass on Linux and Windows.
+    for scenario in 0..20 {
+        let acceptor = OneStallAcceptor::new();
+        let control = acceptor.control.clone();
+        let mut sink =
+            StreamSink::with_settings(factory(), Box::new(acceptor), 4, Duration::from_secs(30));
+        let handle = sink.reports_handle();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sink.active_consumers() != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "scenario {scenario}: registration"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("also.fcapng");
+        let mut file_sink =
+            RotatingFileSink::create(&file_path, RotationPolicy::None, factory()).unwrap();
+        let pkts = packets(100, 4096);
+        control.armed.store(true, Ordering::Release);
+        let first_submission = Instant::now();
+        sink.write(&pkts[0]).unwrap();
+        file_sink.write(&pkts[0]).unwrap();
+        assert!(first_submission.elapsed() < Duration::from_secs(5));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !control.blocked.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "scenario {scenario}: blocked write"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The writer cannot drain: four slots accept and the remaining offers
+        // necessarily encounter a full queue, independent of kernel buffering.
+        let started = Instant::now();
+        for packet in &pkts[1..] {
+            sink.write(packet).expect("nonblocking stream submission");
+            file_sink.write(packet).unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        Box::new(file_sink)
+            .finish(&CaptureStats::default())
+            .unwrap();
+        // Drain the in-flight packet and four accepted queue slots. This
+        // separates genuine queue refusals from the unwritten terminal tail:
+        // an unbounded queue would write all 100 and fail the exact assertion.
+        // Timeout and its dropped unwritten tail retain their separate test.
+        control.released.store(true, Ordering::Release);
+        Box::new(sink).finish(&CaptureStats::default()).unwrap();
+        let file_bytes = std::fs::read(file_path).unwrap();
+        assert_valid_pcapng_stream(&file_bytes, 1);
+        assert_eq!(epb_payloads(&walk(&file_bytes)), expected_payloads(&pkts));
+        let reports = handle.lock().unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].offered, 100);
+        assert_eq!(
+            reports[0].written, 5,
+            "one in-flight packet and four queue slots"
+        );
+        assert_eq!(reports[0].dropped, 95, "only the refused queue offers");
+        assert_eq!(reports[0].offered, reports[0].written + reports[0].dropped);
+        assert_eq!(reports[0].reason, DisconnectReason::CaptureEnded);
+    }
 }
 
 #[test]

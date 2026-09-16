@@ -20,18 +20,32 @@
 //! `docs check` already runs because the linter and the glossary exist.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Documentation tooling is non-interactive and cannot open console windows.
+fn hidden_command(executable: &str) -> Command {
+    let mut command = Command::new(executable);
+    command.stdin(Stdio::null());
+    if cfg!(windows) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+    }
+    command
+}
 
 /// A `pnpm` command. On Windows `pnpm` is a `.cmd` shim that the process
 /// creation API cannot spawn directly, so it is run through `cmd /C`; elsewhere
 /// it is a real executable on PATH.
 fn pnpm() -> Command {
     if cfg!(windows) {
-        let mut c = Command::new("cmd");
+        let mut c = hidden_command("cmd");
         c.args(["/C", "pnpm"]);
         c
     } else {
-        Command::new("pnpm")
+        hidden_command("pnpm")
     }
 }
 
@@ -46,7 +60,7 @@ fn has_pnpm() -> bool {
 
 /// Whether a command is available (runs `<cmd> --version` and checks success).
 fn has(cmd: &str) -> bool {
-    Command::new(cmd)
+    hidden_command(cmd)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -55,7 +69,7 @@ fn has(cmd: &str) -> bool {
 
 /// Run one focused CLI-reference contract variant.
 fn cli_reference(root: &Path, net: bool) -> i32 {
-    let mut command = Command::new(env!("CARGO"));
+    let mut command = hidden_command(env!("CARGO"));
     command.current_dir(root).args([
         "test",
         "-p",
@@ -80,11 +94,26 @@ fn cli_reference(root: &Path, net: bool) -> i32 {
 /// `docs check`: run the documentation linter and CLI-reference contracts.
 /// Returns the 0/1/2 code so the `ci` aggregate can branch on could-not-run.
 pub fn check(root: &Path) -> i32 {
+    match crate::docs_coverage::run(root) {
+        Ok(problems) if problems.is_empty() => {
+            println!("docs: eleven-topic native traceability passes (not independent acceptance)");
+        }
+        Ok(problems) => {
+            for problem in problems {
+                eprintln!("docs-coverage: {problem}");
+            }
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("docs-coverage: could not run: {error}");
+            return 2;
+        }
+    }
     if !has("bash") {
         eprintln!("docs: bash is required to run scripts/lint-docs.sh");
         return 2;
     }
-    let lint = match Command::new("bash")
+    let lint = match hidden_command("bash")
         .current_dir(root)
         .arg("scripts/lint-docs.sh")
         .arg("check")
