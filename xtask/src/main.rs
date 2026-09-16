@@ -17,6 +17,7 @@ mod changelog;
 mod conformance;
 mod deps;
 mod docs;
+mod docs_coverage;
 mod failure_matrix;
 mod fuzz;
 mod guided_calibration_acceptance;

@@ -286,6 +286,12 @@ fn hidden_output(root: &Path, executable: &str, args: &[&str]) -> io::Result<Out
     Ok(output)
 }
 
+/// Reuse exact Cargo ownership, feature validation and harness discovery.
+/// Discovery lists tests without dispatching product or test effects.
+pub(crate) fn discover_references(root: &Path, scope: &Value) -> io::Result<Vec<String>> {
+    validate_executable_evidence(root, scope, &EvidenceInventory::read(root)?)
+}
+
 fn discovered_test(listed: &str, name: &str) -> Result<(), String> {
     if listed.lines().any(|line| line == format!("{name}: test")) {
         Ok(())

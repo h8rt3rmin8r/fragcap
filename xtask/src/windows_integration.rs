@@ -1037,7 +1037,7 @@ fn child_output(
 }
 
 #[cfg(windows)]
-fn resume_child(process_id: u32) -> io::Result<()> {
+pub(crate) fn resume_child(process_id: u32) -> io::Result<()> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -1077,11 +1077,11 @@ fn resume_child(process_id: u32) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-struct WindowsJob(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct WindowsJob(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl WindowsJob {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -1108,7 +1108,7 @@ impl WindowsJob {
         Ok(job)
     }
 
-    fn assign(&self, child: &std::process::Child) -> io::Result<()> {
+    pub(crate) fn assign(&self, child: &std::process::Child) -> io::Result<()> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 

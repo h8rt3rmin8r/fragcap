@@ -162,18 +162,21 @@ fn two_clients_each_receive_the_full_stream() {
 }
 
 #[test]
-fn a_stalled_consumer_is_isolated_and_its_drops_are_counted() {
-    // A large disconnect timeout so the stalled consumer is not disconnected
-    // mid-run; a small queue so its backpressure bites quickly.
-    let (mut sink, addr) = bind(4, Duration::from_secs(30));
+fn an_accepting_tcp_consumer_and_file_receive_every_packet() {
+    // Kernel buffering is not a controlled stall. Verify the accepting TCP
+    // path here; positive stalled-consumer loss lives in streaming_backpressure.
+    let (mut sink, addr) = bind(1024, Duration::from_secs(5));
     let handle = sink.reports_handle();
 
-    // The stalled consumer connects and never reads.
-    let _slow = TcpStream::connect(addr).expect("connect slow");
+    // Read concurrently, with capacity for the complete offered workload.
+    let client = TcpStream::connect(addr).expect("connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let reader = std::thread::spawn(move || read_all(client));
     wait_registered(&sink, 1);
 
-    // A file sink attached to the same run must be wholly unaffected by the
-    // stalled network consumer (specification 14.4, SC-004).
+    // The independent file sink and healthy TCP stream receive identical truth.
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("also.fcapng");
     let mut file_sink =
@@ -182,15 +185,12 @@ fn a_stalled_consumer_is_isolated_and_its_drops_are_counted() {
     let pkts = packets(100, 4096);
     let started = Instant::now();
     for p in &pkts {
-        // Both writes are non-blocking and never fail from the pipeline's view,
-        // even though one consumer has stopped reading entirely.
         sink.write(p).expect("stream write");
         file_sink.write(p).expect("file write");
     }
-    // Capture was never stalled by the dead consumer: 100 writes complete fast.
     assert!(
         started.elapsed() < Duration::from_secs(5),
-        "the stalled consumer did not stall capture"
+        "stream submission did not stall capture"
     );
 
     Box::new(file_sink)
@@ -205,20 +205,19 @@ fn a_stalled_consumer_is_isolated_and_its_drops_are_counted() {
     assert_valid_pcapng_stream(&file_bytes, 1);
     assert_eq!(epb_payloads(&walk(&file_bytes)), expected_payloads(&pkts));
 
-    // The stalled consumer had packets dropped on its own connection, counted.
+    // A healthy consumer has no loss; reports still reconcile exactly.
     let rs = reports(&handle);
-    assert_eq!(rs.len(), 1, "the stalled consumer reported");
+    assert_eq!(rs.len(), 1, "the accepting consumer reported");
     assert_eq!(rs[0].offered, 100, "every packet was offered to it");
-    assert!(rs[0].dropped > 0, "the stalled consumer dropped packets");
-    // Per-consumer accounting is honest: what it wrote never exceeds what its
-    // queue accepted (offered minus the backpressure drops).
-    assert!(
-        rs[0].written <= rs[0].offered - rs[0].dropped,
-        "written ({}) exceeds accepted ({} - {})",
-        rs[0].written,
-        rs[0].offered,
-        rs[0].dropped
+    assert_eq!(
+        rs[0].dropped, 0,
+        "a reading consumer with sufficient queue capacity"
     );
+    assert_eq!(rs[0].written, 100);
+    let stream_bytes = reader.join().unwrap();
+    assert_valid_pcapng_stream(&stream_bytes, 1);
+    assert_eq!(epb_payloads(&walk(&stream_bytes)), expected_payloads(&pkts));
+    assert_eq!(rs[0].offered, rs[0].written + rs[0].dropped);
 }
 
 #[test]

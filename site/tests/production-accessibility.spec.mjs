@@ -289,6 +289,7 @@ test.describe('production accessibility contract', () => {
       '/docs', '/docs/architecture', '/docs/getting-started', '/docs/contributing',
       '/docs/reference/cli', '/docs/reference/deep-capture-compatibility',
       '/docs/reference/output-formats', '/docs/reference/library-api',
+      '/docs/reference/native-documentation',
       '/docs/guides/doctor-and-troubleshooting', '/docs/guides/security-and-privacy',
       '/docs/guides/packaging-and-migration',
     ];

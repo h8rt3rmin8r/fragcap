@@ -1,0 +1,32 @@
+---
+title: Native documentation readiness
+description: Current contract coverage and its boundary from independent whole-product acceptance.
+---
+
+The current native contract is documented against published [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1), source `a7d24962999d38d7ff130722859d473543864862`. S154's coverage inventory and regression improvements are candidate engineering changes until this PR merges and later ships; they do not change those published bytes.
+
+## Current contract coverage
+
+| Topic | Current guidance |
+| --- | --- |
+| Architecture | [Ownership and native composition](/docs/architecture) |
+| Setup | [Installation, prerequisites and first run](/docs/getting-started) |
+| CLI | [Commands, options and worked invocations](/docs/reference/cli) |
+| Protocols and routing | [Exact supported traffic and calibration](/docs/reference/deep-capture-compatibility) |
+| Refusals | [Trust, pinning, scope and unsupported outcomes](/docs/reference/deep-capture-compatibility#traffic-support) |
+| Artifacts and correlation | [Evidence authority, bounded retention and packet correlation](/docs/reference/output-formats) |
+| Diagnostics and recovery | [Separate readiness and exact owned-resource recovery](/docs/guides/doctor-and-troubleshooting) |
+| Security and privacy | [Consent, sensitivity and explicit sharing](/docs/guides/security-and-privacy) |
+| Bounds | [Finite work and observable omissions](/docs/guides/security-and-privacy#bounds-are-part-of-the-evidence) |
+| Packaging and migration | [Published certified packages and retained state](/docs/guides/packaging-and-migration) |
+| Public API | [Stable facade and controlled adapters](/docs/reference/library-api) |
+
+The repository's `docs/audits/native-documentation-coverage.v1.json` maps these eleven closed topics to current authored pages and exact existing executable tests, including artifact readers, correlation, routing and refusal contracts. `cargo xtask docs check` rejects missing or duplicate topics, invalid paths, absent or ignored test references, and references excluded under their declared Cargo features. It also runs the existing documentation linter and parses current fenced command examples under default and network-capable command trees without dispatching them. Production site tests check exported destinations and anchors.
+
+This is a maintained traceability inventory, not automatic proof of every prose statement. Existing tests demonstrate controlled behavior; reviewers still compare the meaning of the guidance with the implementation. Artifact specimens are checked by actual product readers, not a replacement approximate schema validator.
+
+## Engineering readiness is not independent acceptance
+
+Documentation engineering child [#421](https://github.com/h8rt3rmin8r/fragcap/issues/421) advances parent [#331](https://github.com/h8rt3rmin8r/fragcap/issues/331). Independent whole-product review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333), installed Windows retesting under [#413](https://github.com/h8rt3rmin8r/fragcap/issues/413), and final completion [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) and [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278) remain outstanding. Ordinary PR bot review does not substitute for that independent installed review. Final documentation must reconcile its actual findings before the parent closes.
+
+Optional installed reproduction is operator-owned and uses published bytes. Agents do not run the installed sensitive product, launch real games or mutate host trust. Absence of optional real-game measurements is not a controlled implementation gate and is never reported as a compatibility pass. Consent, scoped routing, reversible exact recovery, retained administrator bypass and unsigned-package policy remain unchanged.

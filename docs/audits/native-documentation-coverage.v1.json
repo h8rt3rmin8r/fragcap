@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "topics": [
+    {
+      "id": "architecture",
+      "page": "site/content/docs/architecture.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "cli_product_contract_does_not_bypass_the_stable_module",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "setup",
+      "page": "site/content/docs/getting-started.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_doctor.rs",
+          "function": "absent_npcap_blocks_with_a_remediation_and_exits_one",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "cli",
+      "page": "site/content/docs/reference/cli.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_reference.rs",
+          "function": "public_reference_matches_command_tree",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "protocols-routing",
+      "page": "site/content/docs/reference/deep-capture-compatibility.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/protocol_classification.rs",
+          "function": "every_published_family_has_one_identified_full_or_metadata_cell",
+          "features": [
+            "deep-capture"
+          ]
+        },
+        {
+          "path": "crates/fragcap/tests/deep_capture_routing.rs",
+          "function": "every_strategy_is_declared_but_only_available_ones_can_authorize",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refusals",
+      "page": "site/content/docs/reference/deep-capture-compatibility.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/protocol_classification.rs",
+          "function": "unknown_unsupported_and_failed_are_pairwise_distinct",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "artifacts-correlation",
+      "page": "site/content/docs/reference/output-formats.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/native_conformance.rs",
+          "function": "complete_bundle_authorities_reconcile_from_one_synthetic_session",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diagnostics-recovery",
+      "page": "site/content/docs/guides/doctor-and-troubleshooting.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_doctor.rs",
+          "function": "mode_verdicts_keep_deep_only_failures_out_of_capture",
+          "features": []
+        },
+        {
+          "path": "crates/fragcap/tests/deep_capture_journal.rs",
+          "function": "applied_owned_effect_produces_one_exact_idempotent_recovery_action",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "security-privacy",
+      "page": "site/content/docs/guides/security-and-privacy.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_bundle.rs",
+          "function": "export_is_a_separate_copy_with_an_exhaustive_manifest",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "bounds",
+      "page": "site/content/docs/guides/security-and-privacy.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/lifecycle.rs",
+          "function": "configuration_refuses_non_loopback_and_zero_bounds",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "packaging-migration",
+      "page": "site/content/docs/guides/packaging-and-migration.mdx",
+      "tests": [
+        {
+          "path": "xtask/src/package_certification.rs",
+          "function": "transferred_artifacts_must_match_the_certified_bytes",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "public-api",
+      "page": "site/content/docs/reference/library-api.mdx",
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "version_one_inventory_is_curated_and_sorted",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    }
+  ]
+}
