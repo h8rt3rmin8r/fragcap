@@ -34,7 +34,9 @@
 - [x] T012 Add dated decisions and fixes/docs fragments in changelog.d/ and append chronological S154 narrative to docs/plans/README.md.
 - [x] T013 Run proportionate complete local gates, inspect diff/encoding and record evidence in specs/154-regression-documentation/verification.md.
 - [x] T014 Commit, push and publish official PR closing #420/#421, linking open #331; reconcile GitHub Project slice/stage tracking.
-- [ ] T015 Address every actual review, request at most one second round, verify all required final-head CI and provide human merge handoff with review evidence in specs/154-regression-documentation/verification.md (FR-008, SC-004).
+- [x] T015 Address every actual review, request at most one second round, verify all required reviewed-implementation CI and prepare human merge handoff with review evidence in specs/154-regression-documentation/verification.md (FR-008, SC-004).
+
+The reviewed implementation checkpoint is db50c0159b0fe3dacfb19e1aef595b28018c4ae6, with all 23 executed checks successful and the final Codex review reconciled. Human handoff remains gated on successful checks for the final evidence-only commit as well. That exact-head result is recorded externally on PR #422 before notifying the owner, avoiding another recursive evidence commit. No third bot review is permitted.
 
 ## Dependencies and execution order
 
