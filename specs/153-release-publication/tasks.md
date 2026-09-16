@@ -37,8 +37,8 @@
 
 - [x] T013 Run full local cargo xtask ci, short notes, specification, documentation/site and strict encoding/diff checks; record exact outcomes in specs/153-release-publication/verification.md.
 - [x] T014 Commit and push bounded records branch, open official human-merge PR with actual released source identity distinct from PR source; record URL in specs/153-release-publication/verification.md.
-- [ ] T015 Satisfy every received review comment and all applicable current-head PR checks within the two-round review cap; reconcile S153 tracker and final evidence in specs/153-release-publication/verification.md.
-- [ ] T016 Deliver fully live release/checksum/green-check links and separate human-owned records merge/independent acceptance handoff in specs/153-release-publication/verification.md.
+- [x] T015 Satisfy every received review comment and all applicable current-head PR checks within the two-round review cap; reconcile S153 tracker and final evidence in specs/153-release-publication/verification.md.
+- [x] T016 Deliver fully live release/checksum/green-check links and separate human-owned records merge/independent acceptance handoff in specs/153-release-publication/verification.md.
 
 ## Dependencies and Execution Order
 
