@@ -52,7 +52,7 @@ A named operation that gathers an environment fact for a diagnostic report.
 A probe's pending duration is separate from its result. Timing a phase or nested operation identifies where work is waiting, but does not prove why an external call is slow or whether the environment is ready. A [readiness check](command-line-and-diagnostics.md#readiness-check) classifies the facts only after gathering.
 
 {: .matters }
-> S151's unreleased Doctor diagnostics identify fixed phase and readiness leaf names during blocked work. One-second elapsed progress and completion timing stay on stderr; pending never becomes fabricated unavailability and final report contracts remain unchanged.
+> v0.10.1 ships S151 Doctor diagnostics that identify fixed phase and readiness leaf names during blocked work. One-second elapsed progress and completion timing stay on stderr; pending never becomes fabricated unavailability and final report contracts remain unchanged.
 
 **See also:** [Session progress](command-line-and-diagnostics.md#session-progress), [Scoped worker](command-line-and-diagnostics.md#scoped-worker)
 
@@ -68,7 +68,7 @@ A thread whose owning operation waits for it to finish before leaving its lifeti
 Scoped threads can borrow non-static data because their owner joins them before returning. A bounded channel can carry ordered fixed-size work observations back to a caller without moving that caller's borrowed output writer. Scope and joining establish lifetime ownership, not a cancellation mechanism or a bound on external work duration.
 
 {: .matters }
-> S151's unreleased interactive Doctor uses one serial scoped worker and a caller-thread progress coordinator. The finite observation channel disconnects before coordinator unwind joins work, preventing a full diagnostic channel from deadlocking its sender. No blocked probe is detached or reported unavailable merely for taking time.
+> v0.10.1 ships S151 interactive Doctor with one serial scoped worker and a caller-thread progress coordinator. The finite observation channel disconnects before coordinator unwind joins work, preventing a full diagnostic channel from deadlocking its sender. No blocked probe is detached or reported unavailable merely for taking time.
 
 **See also:** [Doctor probe](command-line-and-diagnostics.md#doctor-probe), [Session progress](command-line-and-diagnostics.md#session-progress)
 
