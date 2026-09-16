@@ -47,3 +47,7 @@ Generate tasks, then run the blocking read-only cross-artifact analysis before i
 ## Complexity Tracking
 
 No constitution violations or new product architecture.
+
+## First-review correction
+
+2026-09-16: The first Codex review correctly identifies that hidden dev descendants do not receive the invoking console's cancellation event. An attached-console exception would conflict with the repository's mandatory hidden-launch rule. Reuse the existing Windows integration runner's suspended child, non-inheritable kill-on-close Job Object and thread-resume helpers through narrow crate visibility instead. The dev shim cannot launch before assignment; normal shim exit closes the job, and abrupt xtask exit lets Windows close it. Assignment/resume failure kills and reaps the exact already-owned child. Finite build/check launch behavior remains unchanged. Two controlled Windows subprocess tests prove both normal shim exit and abrupt owner exit release shim and descendant listener ports within two seconds, without launching the actual site or sensitive product.

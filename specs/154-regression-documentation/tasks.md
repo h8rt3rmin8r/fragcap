@@ -33,7 +33,7 @@
 
 - [x] T012 Add dated decisions and fixes/docs fragments in changelog.d/ and append chronological S154 narrative to docs/plans/README.md.
 - [x] T013 Run proportionate complete local gates, inspect diff/encoding and record evidence in specs/154-regression-documentation/verification.md.
-- [ ] T014 Commit, push and publish official PR closing #420/#421, linking open #331; reconcile GitHub Project slice/stage tracking.
+- [x] T014 Commit, push and publish official PR closing #420/#421, linking open #331; reconcile GitHub Project slice/stage tracking.
 - [ ] T015 Address every actual review, request at most one second round, verify all required final-head CI and provide human merge handoff with review evidence in specs/154-regression-documentation/verification.md (FR-008, SC-004).
 
 ## Dependencies and execution order
