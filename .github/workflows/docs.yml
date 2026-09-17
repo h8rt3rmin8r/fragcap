@@ -5,7 +5,9 @@
 # On the default branch it builds and then deploys to GitHub Pages.
 #
 # Node and pnpm are pinned so a Pages build matches the local build the lockfile
-# was produced with (Node 24, pnpm 9.15). This workflow is a pinned artifact;
+# was produced with (Node 24, pnpm 10.26). pnpm 10.26 is the first pinned
+# release that enforces the workspace allowBuilds policy. This workflow is a
+# pinned artifact;
 # the reasoning for the version pins is recorded in the changelog decisions
 # fragment for slice S18c.
 name: docs
@@ -26,7 +28,7 @@ concurrency:
 
 env:
   NODE_VERSION: "24"
-  PNPM_VERSION: "9.15.0"
+  PNPM_VERSION: "10.26.0"
 
 jobs:
   build:

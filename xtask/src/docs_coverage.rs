@@ -145,15 +145,49 @@ fn obsolete_text_problems(page: &str, source: &str) -> Vec<String> {
         .collect()
 }
 
+fn markdown_fence(line: &str) -> Option<(u8, usize, &str)> {
+    let indentation = line
+        .bytes()
+        .take_while(|candidate| *candidate == b' ')
+        .count();
+    if indentation > 3 {
+        return None;
+    }
+    let trimmed = &line[indentation..];
+    let marker = *trimmed.as_bytes().first()?;
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let width = trimmed
+        .as_bytes()
+        .iter()
+        .take_while(|candidate| **candidate == marker)
+        .count();
+    (width >= 3).then(|| (marker, width, &trimmed[width..]))
+}
+
 fn authored_headings(source: &str) -> Vec<String> {
     let mut headings = Vec::new();
-    let mut fenced = false;
+    let mut fence = None;
     for line in source.lines() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
+        if let Some((marker, width, suffix)) = markdown_fence(line) {
+            match fence {
+                None => {
+                    fence = Some((marker, width));
+                    continue;
+                }
+                Some((opening_marker, opening_width))
+                    if marker == opening_marker
+                        && width >= opening_width
+                        && suffix.trim().is_empty() =>
+                {
+                    fence = None;
+                    continue;
+                }
+                Some(_) => {}
+            }
         }
-        if !fenced {
+        if fence.is_none() {
             if let Some(heading) = line
                 .strip_prefix("## ")
                 .or_else(|| line.strip_prefix("### "))
@@ -600,10 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn heading_discovery_ignores_fenced_examples() {
+    fn heading_discovery_ignores_exact_backtick_and_tilde_fences() {
         assert_eq!(
-            authored_headings("## Kept\n```markdown\n## Ignored\n```\n### Also kept\n"),
-            ["Kept", "Also kept"]
+            authored_headings(
+                "## Kept\n~~~~markdown\n## Ignored tilde\n~~~\n## Still ignored tilde\n```\n## Also ignored tilde\n~~~~~\n### Also kept\n```markdown\n## Ignored backtick\n~~~~\n## Still ignored backtick\n````\n### Final\n"
+            ),
+            ["Kept", "Also kept", "Final"]
         );
     }
 

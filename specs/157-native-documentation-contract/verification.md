@@ -8,7 +8,7 @@
 
 ## Test-first evidence
 
-Before the version-two registry existed, the focused documentation-coverage run failed because `docs/audits/native-documentation-coverage.v2.json` was absent. The seven mutation and parser tests already present passed, while the committed-inventory test failed at the intended new authority boundary. After the version-two registry and current documentation were implemented, all eight focused tests passed.
+Before the version-two registry existed, the focused documentation-coverage run failed because `docs/audits/native-documentation-coverage.v2.json` was absent. The seven mutation and parser tests already present passed, while the committed-inventory test failed at the intended new authority boundary. After the version-two registry, current documentation, and review mutations were implemented, all nine focused tests passed.
 
 ## Focused verification
 
@@ -23,6 +23,7 @@ cargo test -p fragcap --test native_conformance --features deep-capture publishe
 cargo test -p fragcap --test goldens
 cargo test -p fragcap --test native_conformance --features deep-capture
 cargo test -p fragcap --test public_api --features deep-capture
+pnpm dlx pnpm@10.26.0 --dir site install --frozen-lockfile --force
 cargo xtask docs build
 pnpm --dir site test:unit
 pnpm --dir site test:accessibility
@@ -32,12 +33,13 @@ cargo xtask spec
 
 Results:
 
-- Documentation coverage: 8 passed.
+- Documentation coverage: 9 passed.
 - Default CLI command corpus: 9 passed.
 - Network-capable CLI command corpus: 9 passed.
 - Manifest specimen reader: 1 focused public-reader test passed; the complete native conformance suite passed 4 tests.
 - Packet goldens: 7 passed.
 - Stable public API: 9 passed.
+- Pinned pnpm install: 491 packages installed from the frozen lockfile; esbuild was the only dependency lifecycle script executed, followed by the site package's own postinstall.
 - Static site: 75 pages exported successfully.
 - Site unit suite: 4 passed.
 - Production accessibility suite: 14 passed with zero skipped.
@@ -53,9 +55,9 @@ cargo xtask ci
 
 Result: passed with `ci: all checks passed`. This included format, Clippy, workspace tests, lint, dependency policy, license, supply-chain, package certification, wrappers, vendored skill integrity, documentation coverage, specification impact, calibration acceptance, threat model, review handoff, immutable review candidate, fuzz inventory, failure matrix, native protocol conformance, performance authority, and Windows integration authority.
 
-The first hosted pull-request documentation job rejected the new pnpm workspace policy because pnpm 9 requires a nonempty `packages` field. Adding the site root as the sole workspace package made the policy valid for both the pinned hosted pnpm 9 toolchain and the newer local pnpm toolchain; the corrected head is the review authority.
+The first hosted pull-request documentation job rejected the new pnpm workspace policy because pnpm requires a nonempty `packages` field. Adding the site root as the sole workspace package made the policy structurally valid. Second-round review then found that pinned pnpm 9 ignored `allowBuilds`, which was added in pnpm 10.26.0. The site manifest and hosted workflow now pin 10.26.0 together, and that exact toolchain regenerated the frozen lockfile byte-identically while enforcing the esbuild-only policy.
 
-The first Codex review identified that obsolete-backend language was checked only on topic-owned pages. The correction enumerates every nonhistorical site MDX page independently from topic ownership and adds a mutation check proving an otherwise unowned page cannot reintroduce an external-backend instruction.
+The first Codex review identified that obsolete-backend language was checked only on topic-owned pages. The correction enumerates every nonhistorical site MDX page independently from topic ownership and adds a mutation check proving an otherwise unowned page cannot reintroduce an external-backend instruction. The second and final review also found that the heading parser recognized only backtick fences. The parser now recognizes both Markdown fence markers and closes only on the opening marker at an equal or greater width; mutations cover shorter and mismatched apparent closers.
 
 ## Architecture decision
 
