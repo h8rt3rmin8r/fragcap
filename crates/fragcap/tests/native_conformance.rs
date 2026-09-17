@@ -13,8 +13,9 @@ use fragcap::deep_capture::{
     compatibility_fact_candidates, project_application_har, read_application_prefix,
     read_lifecycle_prefix, read_resource_journal, validate_v2, ApplicationArtifactLease,
     ApplicationStreamStatus, CalibrationPhase, CompatibilityObservation, CorrelationState,
-    Inspectability, JournalStatus, LifecycleStreamStatus, LifecycleWriter, ProtocolClassification,
-    ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+    Inspectability, JournalStatus, LifecycleStreamStatus, LifecycleWriter, ManifestDocument,
+    ManifestVersion, ProtocolClassification, ResourceJournal, ResourceKind, ResourceState,
+    ResourceTransition,
 };
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
@@ -28,6 +29,31 @@ use fragcap_proxy::{
     SocksAddressType, SocksReplyCode, SseObserver, WebSocketObserver,
 };
 use serde_json::{json, Value};
+
+#[test]
+fn published_manifest_examples_use_the_versioned_product_reader() {
+    for bytes in [
+        include_bytes!("../../../docs/schema/examples/deep-capture-manifest-v2-complete.json")
+            .as_slice(),
+        include_bytes!("../../../docs/schema/examples/deep-capture-manifest-v2-partial.json")
+            .as_slice(),
+        include_bytes!("../../../docs/schema/examples/deep-capture-manifest-v2-crash-prefix.json")
+            .as_slice(),
+    ] {
+        assert_eq!(
+            ManifestDocument::parse(bytes).unwrap().version(),
+            ManifestVersion::NativeV2
+        );
+    }
+    assert_eq!(
+        ManifestDocument::parse(include_bytes!(
+            "../../../docs/schema/examples/deep-capture-manifest-v1.json"
+        ))
+        .unwrap()
+        .version(),
+        ManifestVersion::LegacyV1
+    );
+}
 
 #[test]
 fn complete_bundle_authorities_reconcile_from_one_synthetic_session() {

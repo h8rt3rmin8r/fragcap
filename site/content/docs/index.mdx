@@ -6,7 +6,7 @@ description: Process-attributed Capture and explicit, target-scoped Deep Capture
 Published baseline: [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1).
 
 <Callout title="Deep Capture status">
-Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied current documentation and independent-review readiness, not an independent audit. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278) and final gate #334 remain open. v0.10.1 adds S151 slow-probe Doctor diagnostics and S152 owner-controlled registry protection.
+Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied independent-review readiness, not an audit. v0.10.1 adds S151 slow-probe Doctor diagnostics and S152 owner-controlled registry protection. Current source after that release adds documentation, review-intake and deterministic package-certification engineering. Independent review #333, installed retest #413, documentation reconciliation #331, final gate #334 and epic #278 remain open.
 </Callout>
 
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
@@ -39,7 +39,7 @@ Two prerequisites, before anything else:
 The **[Glossary](/docs/glossary)** defines the vocabulary the rest of these pages
 assume, one term to a heading.
 
-[Native documentation readiness](/docs/reference/native-documentation) maps the current contract to eleven checked topics and explains why engineering evidence does not complete independent whole-product acceptance.
+[Native product contract](/docs/reference/native-documentation) maps thirteen required current topics, sections and examples to executable authorities while keeping published bytes, current source and external acceptance separate.
 
 ## The security posture
 

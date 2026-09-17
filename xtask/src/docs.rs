@@ -40,13 +40,15 @@ fn hidden_command(executable: &str) -> Command {
 /// creation API cannot spawn directly, so it is run through `cmd /C`; elsewhere
 /// it is a real executable on PATH.
 fn pnpm() -> Command {
-    if cfg!(windows) {
+    let mut command = if cfg!(windows) {
         let mut c = hidden_command("cmd");
         c.args(["/C", "pnpm"]);
         c
     } else {
         hidden_command("pnpm")
-    }
+    };
+    command.env("PNPM_CONFIG_CONFIRM_MODULES_PURGE", "false");
+    command
 }
 
 /// Whether pnpm is available (runs `pnpm --version` and checks success).
@@ -96,7 +98,9 @@ fn cli_reference(root: &Path, net: bool) -> i32 {
 pub fn check(root: &Path) -> i32 {
     match crate::docs_coverage::run(root) {
         Ok(problems) if problems.is_empty() => {
-            println!("docs: eleven-topic native traceability passes (not independent acceptance)");
+            println!(
+                "docs: thirteen-topic native product contract passes (not independent acceptance)"
+            );
         }
         Ok(problems) => {
             for problem in problems {
@@ -159,7 +163,11 @@ pub fn build(root: &Path) -> i32 {
         eprintln!("docs: pnpm is required to build the documentation site");
         return 2;
     }
-    let built = pnpm().current_dir(&site).arg("build").status();
+    let built = pnpm()
+        .env("CI", "true")
+        .current_dir(&site)
+        .arg("build")
+        .status();
     if !matches!(built, Ok(s) if s.success()) {
         eprintln!("docs: the site build failed");
         return 1;
