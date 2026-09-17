@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.74-draft \
+**Version:** 0.1.75-draft \
 **Applies-To:** 0.10.1 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -162,6 +162,7 @@ enforcement.
 | 0.1.72-draft | 2026-09-15 | W. Thompson | Reconciles actual published v0.10.0 identity and current applicability under S151 (#414, parents #372/#331). Adds bounded owned slow-probe diagnostics, discoverable nested timing, one-second elapsed progress and controlled failure/suppression tests as explicitly unreleased source work. Publication is mechanically separate from candidate version; independent #333 review, #413 installed retest and final #334/#278 remain open. |
 | 0.1.73-draft | 2026-09-15 | W. Thompson | Configures and verifies existing registry approval protection under S152 (#416), with normal owner-required manual review, owner-initiated approval possible, administrator bypass explicitly retained at the operator's direction and tag-only release allowance. Fresh fail-closed metadata checks precede release creation and registry execution. Prepares v0.10.1 with S151 diagnostics while preserving actual v0.10.0, unsigned policy and all independent acceptance gates; no tag, publication, deployment approval or bypass is performed. |
 | 0.1.74-draft | 2026-09-15 | W. Thompson | Reconciles verified actual v0.10.1 publication under S153 (#418), including S151 Doctor diagnostics and S152 owner-controlled registry protection. Exact merged source, six certified public assets, owner deployment approval, all ten non-yanked registry versions and all four successful release jobs are verified before current publication markers change. Historical v0.10.0 evidence, unsigned policy and independent #333/#413 and final #331/#334/#278 acceptance remain unchanged; no installed sensitive product is agent-run. |
+| 0.1.75-draft | 2026-09-16 | W. Thompson | Reconciles the omitted S154 documentation and deterministic stalled-consumer evidence lineage, then adds S155 independent-review intake under #423. Extends sections 22.7, 25.2, 27.3, and 28.1. An immutable registry binds the v0.10.1 source, lockfile, release run and six public files. A strict completed-record validator checks candidate identity, twelve-area coverage, installed cases and finding dispositions without certifying reviewer independence. Disposable hosted Windows replay records separate portable and installed controlled smoke through the existing package authority. The immutable CLI cannot perform the source-only QUIC harness, so #333/#413 and final #331/#334/#278 remain open. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4097,6 +4098,8 @@ The eleven-topic `docs/audits/native-documentation-coverage.v1.json` inventory i
 
 The twelve-area whole-product handoff maps architecture/threat model, dependencies, unsafe code, parsers, TLS, certificate issuance, trust, listener isolation, routing, artifacts, recovery and packaging to review methods and executable non-ignored evidence. `cargo xtask review-handoff` checks closed scope, confined existing source/test references and an exact not-started record. It does not perform independent review, populate future source/package identity, approve findings or close #333. Reviewer-owned installed Windows methods use frozen published certified bytes and actual finding dispositions and independent retests. Agent execution of installed sensitive software or real games is not substituted for operator validation.
 
+S155 freezes v0.10.1 candidate identity in a machine-readable registry and adds `cargo xtask review-record`. With no record path, the command validates only immutable publication identity and explicitly reports that independent review has not been performed. With a separate reviewer-owned record, it enforces closed bounded public-safe evidence, all twelve area results, required installed cases, critical/high remediation and separate retest, medium ownership and exact summary reconciliation. A blocker-free result remains mechanical input because automation cannot prove reviewer authenticity or independence.
+
 ## 23. Website and Brand
 
 ### 23.1 Site Structure
@@ -4347,6 +4350,8 @@ No game is required. Runs on a Windows runner with the capture driver
 installed.
 
 Compatibility calibration adds a controlled target path to Tier 1. The target reports its own inherited proxy variables, sends synthetic loopback traffic, and can drive routing, TLS, partial-evidence, and cleanup outcomes through the production bundle and fact-store paths. This proves orchestration and contract behavior without a game account, capture driver, remote service, or real trust-store mutation. It does not prove how a real Steam or publisher launch behaves; that remains a private Tier 3 manual measurement whose public summary must be scrubbed.
+
+Published-package replay is a disposable hosted Windows evidence tier over immutable user-downloadable bytes rather than a locally rebuilt candidate. The workflow verifies all six v0.10.1 file sizes and digests before effects, then reuses package certification to run distinct portable and installed controlled native smoke under exact-program firewall containment. Its bounded report preserves executable identity, positive loopback observation, zero unexpected process or non-loopback observations and cleanup reconciliation for each surface. This is reproducible implementation-authored evidence, not independent whole-product acceptance. The shipped controlled target covers HTTP and HTTPS but cannot expose the source-only QUIC performance harness, so installed QUIC retest #413 remains external.
 
 Guided calibration tests additionally freeze repeatable candidate normalization, content-derived candidate identity, evidence-order independence, explicit ambiguous target, Steam metadata, and stored non-Steam client selection, duplicate and stale refusal, reachability-first ordering, deterministic multi-session execution, separate plan responses, exact case non-repetition across processes, the closed fourteen-attempt bound, distinct bundle destinations, final-client candidate eligibility, launcher and unknown exclusion, strongest same-session inspectability selection, exact fact reassessment before progression, every stop boundary, warm preservation, structured attempt and coverage fields, and parseable durable continuation commands. Store tests cover migrations through version 13, checkpoint and exact-case intent round trip, closed vocabulary and canonical-set refusal, bounded exact attempt history, target cascade, revision races, complete-row stored-client selection, and unsupported record versions. Controlled command tests cover fresh identity, second-process resume, current-fact suppression, completed no-effect resume, in-flight interruption, target drift, every explicit pause including update and anti-cheat, durable bundle ordinals, distinct fresh plans, IPv6 propagation, unsupported routing, launch assertion mismatch, inferred direct, Steam, and publisher cases, and complete plan visibility. Controlled reachability and TLS runs must prove that a requested protocol remains distinct from observed traffic and from the current exact fact that alone suppresses future work.
 
@@ -4851,6 +4856,8 @@ restated here. The scope of each release is:
 
 v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S153 verifies subsequent v0.10.1 publication with S151 diagnostics, retained owner administrator bypass and verified registry approval protection. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
 
+S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability without changing v0.10.1. S155 binds the immutable v0.10.1 review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. Neither slice supplies independent reviewer identity or the missing installed QUIC retest, so #333 and #413 remain open.
+
 ### 27.4 Critical Path
 
 ```mermaid
@@ -4892,6 +4899,7 @@ shipped as of the release this document applies to.
 
 Issue #278 is the sole completion authority for native Rust Deep Capture. S104
 closes #290 and removes the production Python and external proxy prerequisite.
+S155 adds exact published-build replay and bounded independent-review findings intake without changing this completion authority. Green hosted execution and pull-request review do not replace #333's independent whole-product judgment. The installed controlled target cannot run the source-only QUIC performance harness, so #413 also remains open until separately reproduced against an appropriate published candidate.
 S102 establishes a library-owned, loopback-only,
 finite-capacity runtime foundation. S103 completes authenticated admission,
 bounded upstream policy, session certificate and trust ownership, raw event

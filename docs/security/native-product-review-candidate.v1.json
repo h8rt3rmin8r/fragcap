@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "product_version": "0.10.1",
+  "tag": "v0.10.1",
+  "source_revision": "a7d24962999d38d7ff130722859d473543864862",
+  "lockfile_sha256": "64dfe4d023e5e4f4ab7526e701db3178ca8eeaddb9f8c28932d9151f052cc089",
+  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1",
+  "release_run_id": 35033304343,
+  "target": "x86_64-pc-windows-msvc",
+  "features": ["etw", "live", "native-deep-capture", "socket-table"],
+  "assets": [
+    {
+      "role": "standalone-catalog",
+      "filename": "catalog.db",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/catalog.db",
+      "size_bytes": 90112,
+      "sha256": "d1da331be8e1c33b58f53b35e6a331755bfbc315d75be811214cc83488104fff"
+    },
+    {
+      "role": "standalone-catalog-checksum",
+      "filename": "catalog.db.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/catalog.db.sha256",
+      "size_bytes": 77,
+      "sha256": "bc7cf4fb3499d1fdc605d23e1bc51b904273d7eada20a959a7b140d756293901"
+    },
+    {
+      "role": "portable-zip",
+      "filename": "fragcap-0.10.1-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64-pc-windows-msvc.zip",
+      "size_bytes": 6525562,
+      "sha256": "652882bea0705b397f6a1a012fce828f0f808635f993e1d133902e0642f5e786"
+    },
+    {
+      "role": "portable-zip-checksum",
+      "filename": "fragcap-0.10.1-x86_64-pc-windows-msvc.zip.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64-pc-windows-msvc.zip.sha256",
+      "size_bytes": 108,
+      "sha256": "c307b02c64e52bfb7d57c90fe3451d2e6eb094a2228b802c34c8e24643a088ce"
+    },
+    {
+      "role": "windows-msi",
+      "filename": "fragcap-0.10.1-x86_64.msi",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64.msi",
+      "size_bytes": 6823936,
+      "sha256": "309b4cf467bf29521524065a807002843b2b97274f3d4036b0f9a8af1b374356"
+    },
+    {
+      "role": "windows-msi-checksum",
+      "filename": "fragcap-0.10.1-x86_64.msi.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64.msi.sha256",
+      "size_bytes": 92,
+      "sha256": "767ef4fd7a7284a692541d3dffe348d5db8b70892d0d4afcb141a2cd1941128b"
+    }
+  ],
+  "predecessor": {
+    "version": "0.8.0",
+    "filename": "fragcap-0.8.0-x86_64.msi",
+    "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.8.0/fragcap-0.8.0-x86_64.msi",
+    "size_bytes": 3436544,
+    "sha256": "eaf2554b1da3721400c1b00f5ea0a298455f59454b0084e617ed2efcdcf83901"
+  }
+}

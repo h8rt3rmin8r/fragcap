@@ -485,6 +485,53 @@ Param(
         return $result
     }
 
+    function Invoke-ControlledSmoke {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [ValidateSet('portable','installed')]
+            [string]$Surface,
+
+            [Parameter(Mandatory=$true)]
+            [string]$Executable,
+
+            [Parameter(Mandatory=$true)]
+            [string]$ScratchRoot,
+
+            [Parameter(Mandatory=$true)]
+            [hashtable]$BaseEnvironment
+        )
+        $surfaceRoot = Join-Path $ScratchRoot "smoke-$Surface"
+        $profile = Join-Path $surfaceRoot 'User'
+        $environment = $BaseEnvironment.Clone()
+        $environment.APPDATA = Join-Path $profile 'AppData\Roaming'
+        $environment.LOCALAPPDATA = Join-Path $profile 'AppData\Local'
+        $environment.FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable
+        [void][System.IO.Directory]::CreateDirectory($environment.APPDATA)
+        [void][System.IO.Directory]::CreateDirectory($environment.LOCALAPPDATA)
+        $localDb = Join-Path $surfaceRoot 'local.db'
+        $bundle = Join-Path $surfaceRoot 'bundle'
+        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', "Package Certification $Surface", '--db', $localDb, '--anchor', "package:certification:$Surface", '--exe', $Executable, '--socket-holder', 'yes') -Environment $environment)
+        $firewallRuleName = "fragcap-package-certification-$Surface-$([guid]::NewGuid().ToString('N'))"
+        if (-not $script:TopLevelCmdlet.ShouldProcess($Executable, "Block non-loopback $Surface smoke traffic for the exact packaged executable")) { throw "$Surface smoke network containment was not established" }
+        [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
+        [void]$script:SmokeFirewallRules.Add($firewallRuleName)
+        try {
+            $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', "package_certification_$Surface", '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+            if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw "$Surface controlled native smoke did not produce expected evidence" }
+            if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "$Surface controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
+            if ($smoke.Observation.process_paths.Count -lt 1) { throw "$Surface controlled native smoke recorded no executable path" }
+            if ($smoke.Observation.unexpected_process_paths.Count -ne 0) { throw "$Surface controlled native smoke launched unexpected executables: $($smoke.Observation.unexpected_process_paths -join ', ')" }
+            if ($smoke.Observation.non_loopback_addresses.Count -ne 0 -or -not $smoke.Observation.loopback_observed -or $smoke.Observation.observed_addresses.Count -lt 1) { throw "$Surface controlled native smoke was not completely loopback-contained" }
+            return [ordered]@{ surface = $Surface; executable_sha256 = Get-Sha256 -Path $Executable; backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; cleanup = 'reconciled'; complete = $true }
+        } finally {
+            if ($script:TopLevelCmdlet.ShouldProcess($firewallRuleName, "Remove $Surface package-certification smoke firewall rule")) {
+                Remove-NetFirewallRule -Name $firewallRuleName -ErrorAction Stop
+                [void]$script:SmokeFirewallRules.Remove($firewallRuleName)
+            }
+        }
+    }
+
     function Test-UserFixture {
         [CmdletBinding()]
         Param(
@@ -508,7 +555,7 @@ Param(
     $installDirectory = $null
     $currentProductCode = $null
     $predecessorProductCode = $null
-    $smokeFirewallRuleName = $null
+    $script:SmokeFirewallRules = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
 #_______________________________________________________________________________
 ## Execute Operations
@@ -569,12 +616,6 @@ Param(
         $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $testProfile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $testProfile 'AppData\Local'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
-        $smokeProfile = Join-Path $scratch 'SmokeUser'
-        $smokeEnvironment = $cleanEnvironment.Clone()
-        $smokeEnvironment.APPDATA = Join-Path $smokeProfile 'AppData\Roaming'
-        $smokeEnvironment.LOCALAPPDATA = Join-Path $smokeProfile 'AppData\Local'
-        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.APPDATA)
-        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
         $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
         if (-not $buildIdentity.official -or $buildIdentity.target -ne $contract.release_identity.target -or $buildIdentity.architecture -ne $contract.release_identity.architecture -or $buildIdentity.deep_capture_backend -ne $contract.release_identity.deep_capture_backend -or (Compare-Object -ReferenceObject @($contract.release_identity.features | Sort-Object) -DifferenceObject @($buildIdentity.features | Sort-Object))) { throw 'packaged binary build identity differs from the release contract' }
@@ -585,19 +626,8 @@ Param(
         if ($versionInfo.FileVersion -ne "$($buildIdentity.version).0" -or $versionInfo.ProductVersion -ne $buildIdentity.version -or $versionInfo.ProductName -ne 'fragcap' -or $versionInfo.OriginalFilename -ne 'fragcap.exe') { throw 'PE version resource disagrees with build identity' }
         $doctor = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'doctor') -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
         if ($doctor.Stdout -notmatch 'fragcap-native') { throw 'packaged Doctor output does not expose the native backend' }
-        $localDb = Join-Path $scratch 'local.db'
-        $bundle = Join-Path $scratch 'bundle'
-        [void](Invoke-Fragcap -Executable $zipExe -Arguments @('targets', 'add', 'Package Certification', '--db', $localDb, '--anchor', 'package:certification', '--exe', $zipExe, '--socket-holder', 'yes') -Environment $cleanEnvironment)
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
-        $smokeFirewallRuleName = "fragcap-package-certification-$([guid]::NewGuid().ToString('N'))"
-        if (-not $PSCmdlet.ShouldProcess($zipExe, 'Block non-loopback smoke traffic for the exact packaged executable')) { throw 'smoke network containment was not established' }
-        [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
-        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $smokeEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
-        if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
-        if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "packaged controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
-        if ($smoke.Observation.process_paths.Count -lt 1) { throw 'packaged controlled native smoke recorded no executable path' }
-        if ($smoke.Observation.unexpected_process_paths.Count -ne 0) { throw "packaged controlled native smoke launched unexpected executables: $($smoke.Observation.unexpected_process_paths -join ', ')" }
-        if ($PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule')) { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop; $smokeFirewallRuleName = $null }
+        $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment
         $installDirectory = Join-Path $scratch 'installed'
         $userFixturePaths = [ordered]@{
             'capture' = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap\captures\preserved.fcapng'
@@ -633,6 +663,8 @@ Param(
         Test-UserFixture -Digests $userDigests
         if ($seededDefender -and -not (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { throw 'clean install removed the pre-existing Defender exclusion' }
         $lifecycle.Add([pscustomobject]@{ id = 'clean-install'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$clean.ElapsedSeconds; complete = $true })
+        $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
+        $installedSmoke = Invoke-ControlledSmoke -Surface 'installed' -Executable $installedExecutable -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'NOTICE'), 'Delete owned file before repair')) { Remove-Item -LiteralPath (Join-Path $installDirectory 'NOTICE') -Force }
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'LICENSE'), 'Alter owned file before repair')) { [System.IO.File]::WriteAllText((Join-Path $installDirectory 'LICENSE'), 'altered', [System.Text.UTF8Encoding]::new($false)) }
         $repair = Invoke-MsiOperation -Case 'repair' -Arguments @('/fa', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'repair.log')
@@ -716,7 +748,7 @@ Param(
         )
         $entryRows = @($contract.shared_entries | ForEach-Object { $entryFile = Get-Item -LiteralPath (Join-Path $zipRoot $_.path); [pscustomobject]@{ path = $_.path; role = $_.role; size_bytes = $entryFile.Length; sha256 = Get-Sha256 -Path $entryFile.FullName; signature = $_.signature; complete = $true } })
         $reportIdentity = [ordered]@{ product = $contract.release_identity.product; target = $contract.release_identity.target; architecture = $contract.release_identity.architecture; pe_machine = $contract.release_identity.pe_machine; features = @($contract.release_identity.features); deep_capture_backend = $contract.release_identity.deep_capture_backend }
-        $report = [ordered]@{ schema_version = 2; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; complete = $true }; lifecycle = @($lifecycle); fresh_start = [ordered]@{ preserve_by_default = $true; current_user_cleanup = $true; custom_paths_preserved = $true; deep_capture_reconciled = $true; clean_reinstall = $true; complete = $true }; findings = @(); complete = $true }
+        $report = [ordered]@{ schema_version = 3; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smokes = @($portableSmoke, $installedSmoke); lifecycle = @($lifecycle); fresh_start = [ordered]@{ preserve_by_default = $true; current_user_cleanup = $true; custom_paths_preserved = $true; deep_capture_reconciled = $true; clean_reinstall = $true; complete = $true }; findings = @(); complete = $true }
         $json = $report | ConvertTo-Json -Depth 16
         if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt [int]$contract.report_limits.max_report_bytes) { throw 'certification report exceeds its byte bound' }
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($reportFile))
@@ -727,7 +759,9 @@ Param(
         Write-ShruggieLog "$($_.Exception.Message) [$($_.InvocationInfo.ScriptLineNumber)]" -Level Error -Source Certification
         exit 1
     } finally {
-        if ($smokeFirewallRuleName -and $PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule during final cleanup')) { try { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop } catch { Write-ShruggieLog "Firewall cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup } }
+        foreach ($smokeFirewallRuleName in @($script:SmokeFirewallRules)) {
+            if ($PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule during final cleanup')) { try { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop; [void]$script:SmokeFirewallRules.Remove($smokeFirewallRuleName) } catch { Write-ShruggieLog "Firewall cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup } }
+        }
         foreach ($cleanupProductCode in @($currentProductCode, $predecessorProductCode) | Where-Object { $_ } | Select-Object -Unique) {
             if ((Get-ProductRegistrationCount -ProductCode $cleanupProductCode) -gt 0 -and $PSCmdlet.ShouldProcess($cleanupProductCode, 'Uninstall registered certification product during final cleanup')) {
                 try {

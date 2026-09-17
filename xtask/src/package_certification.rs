@@ -470,6 +470,7 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "New-NetFirewallRule",
             "Get-NetTCPConnection",
             "Get-NetUDPEndpoint",
+            "Invoke-ControlledSmoke",
             "unexpected_process_paths",
             "fragcap\\captures\\preserved.fcapng",
             "Wireshark\\extcap\\fragcap.exe",
@@ -490,6 +491,8 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "fresh start removed independently managed Wireshark extcap registration",
             "clean-reinstall-after-fresh-start",
             "preserve_by_default = $true",
+            "schema_version = 3",
+            "smokes = @($portableSmoke, $installedSmoke)",
             "## End of script",
         ],
         &mut problems,
@@ -539,27 +542,35 @@ fn validate_report(
         return Ok(problems);
     }
     let report: Value = serde_json::from_slice(&bytes).map_err(invalid_data)?;
+    let schema_version = report["schema_version"].as_u64();
+    let smoke_key = if schema_version == Some(2) {
+        "smoke"
+    } else {
+        "smokes"
+    };
+    let mut expected_keys = vec![
+        "schema_version",
+        "contract_sha256",
+        "release_identity",
+        "build_identity",
+        "artifacts",
+        "entries",
+        "pe_inspections",
+        "lifecycle",
+        "fresh_start",
+        "findings",
+        "complete",
+        smoke_key,
+    ];
+    expected_keys.sort_unstable();
     exact_keys(
         &report,
-        &[
-            "schema_version",
-            "contract_sha256",
-            "release_identity",
-            "build_identity",
-            "artifacts",
-            "entries",
-            "pe_inspections",
-            "smoke",
-            "lifecycle",
-            "fresh_start",
-            "findings",
-            "complete",
-        ],
+        &expected_keys,
         "certification report",
         &mut problems,
     );
-    if report["schema_version"] != 2 {
-        problems.push("report schema_version must be 2".into());
+    if !matches!(schema_version, Some(2 | 3)) {
+        problems.push("report schema_version must be 2 or 3".into());
     }
     if report["contract_sha256"] != sha256(contract_bytes) {
         problems.push("report contract digest does not match current contract".into());
@@ -879,8 +890,73 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
         problems
             .push("report must contain two complete identity-bound unsigned PE inspections".into());
     }
+    if report["schema_version"] == 2 {
+        validate_legacy_smoke(&report["smoke"], problems);
+        return;
+    }
+    let smoke_rows = report["smokes"].as_array();
+    let expected_smoke_surfaces = BTreeSet::from(["installed", "portable"]);
+    let mut observed_smoke_surfaces = BTreeSet::new();
+    for smoke in smoke_rows.into_iter().flatten() {
+        exact_keys(
+            smoke,
+            &[
+                "surface",
+                "executable_sha256",
+                "backend",
+                "network",
+                "process_observation",
+                "network_observation",
+                "samples",
+                "observed_product_process_count",
+                "observed_system_process_count",
+                "observed_endpoint_count",
+                "observed_non_loopback_attempt_count",
+                "loopback_socket_observed",
+                "cleanup",
+                "complete",
+            ],
+            "smoke report row",
+            problems,
+        );
+        let surface = smoke["surface"].as_str().unwrap_or_default();
+        if !expected_smoke_surfaces.contains(surface)
+            || !observed_smoke_surfaces.insert(surface)
+            || smoke["complete"] != true
+            || smoke["cleanup"] != "reconciled"
+            || smoke["backend"] != "fragcap-native"
+            || smoke["network"] != "loopback-only"
+            || smoke["process_observation"] != "complete"
+            || smoke["network_observation"] != "firewall-contained-and-socket-observed"
+            || !is_sha256(smoke["executable_sha256"].as_str().unwrap_or_default())
+            || smoke["samples"].as_u64().is_none_or(|samples| samples == 0)
+            || smoke["observed_product_process_count"]
+                .as_u64()
+                .is_none_or(|processes| processes == 0)
+            || smoke["observed_system_process_count"].as_u64().is_none()
+            || smoke["observed_endpoint_count"]
+                .as_u64()
+                .is_none_or(|endpoints| endpoints == 0)
+            || smoke["observed_non_loopback_attempt_count"].as_u64() != Some(0)
+            || smoke["loopback_socket_observed"] != true
+        {
+            problems.push(format!(
+                "packaged native smoke {surface} is incomplete, uncontained, or unreconciled"
+            ));
+        }
+    }
+    if observed_smoke_surfaces != expected_smoke_surfaces
+        || smoke_rows.is_none_or(|rows| rows.len() != 2)
+    {
+        problems.push(format!(
+            "smoke surface set mismatch: {observed_smoke_surfaces:?}"
+        ));
+    }
+}
+
+fn validate_legacy_smoke(smoke: &Value, problems: &mut Vec<String>) {
     exact_keys(
-        &report["smoke"],
+        smoke,
         &[
             "backend",
             "network",
@@ -894,32 +970,26 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
             "loopback_socket_observed",
             "complete",
         ],
-        "smoke report",
+        "legacy smoke report",
         problems,
     );
-    if report["smoke"]["complete"] != true
-        || report["smoke"]["backend"] != "fragcap-native"
-        || report["smoke"]["network"] != "loopback-only"
-        || report["smoke"]["process_observation"] != "complete"
-        || report["smoke"]["network_observation"] != "firewall-contained-and-socket-observed"
-        || report["smoke"]["samples"]
-            .as_u64()
-            .is_none_or(|samples| samples == 0)
-        || report["smoke"]["observed_product_process_count"]
+    if smoke["complete"] != true
+        || smoke["backend"] != "fragcap-native"
+        || smoke["network"] != "loopback-only"
+        || smoke["process_observation"] != "complete"
+        || smoke["network_observation"] != "firewall-contained-and-socket-observed"
+        || smoke["samples"].as_u64().is_none_or(|samples| samples == 0)
+        || smoke["observed_product_process_count"]
             .as_u64()
             .is_none_or(|processes| processes == 0)
-        || report["smoke"]["observed_system_process_count"]
+        || smoke["observed_system_process_count"].as_u64().is_none()
+        || smoke["observed_endpoint_count"].as_u64().is_none()
+        || smoke["observed_non_loopback_attempt_count"]
             .as_u64()
             .is_none()
-        || report["smoke"]["observed_endpoint_count"]
-            .as_u64()
-            .is_none()
-        || report["smoke"]["observed_non_loopback_attempt_count"]
-            .as_u64()
-            .is_none()
-        || !report["smoke"]["loopback_socket_observed"].is_boolean()
+        || !smoke["loopback_socket_observed"].is_boolean()
     {
-        problems.push("packaged native smoke is incomplete".into());
+        problems.push("legacy packaged native smoke is incomplete".into());
     }
 }
 
@@ -1196,7 +1266,10 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let mut value = serde_json::json!({"schema_version": 2, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "complete": true}, "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
+        let portable_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "d".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
+        let mut installed_smoke = portable_smoke.clone();
+        installed_smoke["surface"] = Value::String("installed".into());
+        let mut value = serde_json::json!({"schema_version": 3, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smokes": [portable_smoke, installed_smoke], "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
             std::process::id()
@@ -1206,6 +1279,20 @@ mod tests {
             .unwrap()
             .is_empty());
         let valid = value.clone();
+        let mut legacy = valid.clone();
+        legacy["schema_version"] = Value::from(2);
+        let mut legacy_smoke = legacy["smokes"][0].clone();
+        let legacy_smoke_object = legacy_smoke.as_object_mut().unwrap();
+        legacy_smoke_object.remove("surface");
+        legacy_smoke_object.remove("executable_sha256");
+        legacy_smoke_object.remove("cleanup");
+        let legacy_object = legacy.as_object_mut().unwrap();
+        legacy_object.remove("smokes");
+        legacy_object.insert("smoke".into(), legacy_smoke);
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(validate_report(&contract, contract_bytes, &path)
+            .unwrap()
+            .is_empty());
         macro_rules! rejects {
             ($label:literal, $mutation:expr) => {{
                 let mut candidate = valid.clone();
@@ -1241,7 +1328,19 @@ mod tests {
             candidate["build_identity"]["features"] = serde_json::json!(["live"]);
         });
         rejects!("prohibited", |candidate: &mut Value| {
-            candidate["smoke"]["network"] = Value::String("python-fetch".into());
+            candidate["smokes"][0]["network"] = Value::String("python-fetch".into());
+        });
+        rejects!("missing-installed-smoke", |candidate: &mut Value| {
+            candidate["smokes"].as_array_mut().unwrap().pop();
+        });
+        rejects!("duplicate-smoke-surface", |candidate: &mut Value| {
+            candidate["smokes"][1]["surface"] = Value::String("portable".into());
+        });
+        rejects!("unexpected-network", |candidate: &mut Value| {
+            candidate["smokes"][1]["observed_non_loopback_attempt_count"] = Value::from(1);
+        });
+        rejects!("incomplete-installed-smoke", |candidate: &mut Value| {
+            candidate["smokes"][1]["complete"] = Value::Bool(false);
         });
         rejects!("unsigned-policy", |candidate: &mut Value| {
             candidate["pe_inspections"][0]["signature"] = Value::String("valid".into());
