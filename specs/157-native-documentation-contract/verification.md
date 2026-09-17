@@ -53,6 +53,8 @@ cargo xtask ci
 
 Result: passed with `ci: all checks passed`. This included format, Clippy, workspace tests, lint, dependency policy, license, supply-chain, package certification, wrappers, vendored skill integrity, documentation coverage, specification impact, calibration acceptance, threat model, review handoff, immutable review candidate, fuzz inventory, failure matrix, native protocol conformance, performance authority, and Windows integration authority.
 
+The first hosted pull-request documentation job rejected the new pnpm workspace policy because pnpm 9 requires a nonempty `packages` field. Adding the site root as the sole workspace package made the policy valid for both the pinned hosted pnpm 9 toolchain and the newer local pnpm toolchain; the corrected head is the review authority.
+
 ## Architecture decision
 
 The shared Cargo test discovery intentionally recognizes supported integration-test authorities. Rather than weakening it to infer nested library unit tests, S157 added a public integration test that reads all committed manifest examples through `ManifestDocument`. The site build now sets noninteractive pnpm environment values and permits only the exact pinned `esbuild` install script required by the static-site toolchain.
