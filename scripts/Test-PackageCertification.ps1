@@ -514,8 +514,8 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($environment.LOCALAPPDATA)
         $localDb = Join-Path $surfaceRoot 'local.db'
         $bundle = Join-Path $surfaceRoot 'bundle'
-        $targetHandle = "package_certification_$Surface"
-        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', "Package Certification $Surface", '--db', $localDb, '--anchor', "package:certification:$Surface", '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
+        $targetHandle = 'package_certification'
+        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', 'Package Certification', '--db', $localDb, '--anchor', 'package:certification', '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
         $firewallRuleName = "fragcap-package-certification-$Surface-$([guid]::NewGuid().ToString('N'))"
         if (-not $script:TopLevelCmdlet.ShouldProcess($Executable, "Block non-loopback $Surface smoke traffic for the exact packaged executable")) { throw "$Surface smoke network containment was not established" }
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
