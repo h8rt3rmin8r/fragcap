@@ -48,7 +48,7 @@
 - [x] T017 Run focused Rust tests, PowerShell parsing and both PowerShell compliance authorities without executing the product locally
 - [x] T018 Run `cargo xtask ci`, inspect all output and perform UTF-8, LF, forbidden-dash and mojibake checks across every changed file
 - [x] T019 Push the authorized branch, open the official pull request closing #425 and move Project 3 Stage to PR review
-- [ ] T020 Wait for final-head hosted checks, require both affected workflows green without rerun, address every review within two rounds and update issue evidence
+- [x] T020 Wait for final-head hosted checks, require both affected workflows green without rerun, address every review within two rounds and update issue evidence
 
 ## Dependencies
 
