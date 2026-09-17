@@ -29,6 +29,7 @@ mod performance;
 mod publish;
 mod release_guard;
 mod review_handoff;
+mod review_record;
 mod skills;
 mod spec;
 mod supply_chain;
@@ -67,6 +68,7 @@ cargo xtask <command>
   windows-integration Validate or run the finite native Windows integration matrix
   threat-model Validate native Deep Capture threats and executable evidence
   review-handoff Validate twelve-area independent-review readiness (not approval)
+  review-record Validate immutable candidate or a reviewer-owned completed record (not approval)
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
   supply-chain Validate the closed dependency policy and release evidence
   package-certification Validate final Windows package and lifecycle evidence
@@ -274,6 +276,18 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+
+        "review-record" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            match review_record::run(&root, &args) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("review-record: could not run: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
 
         "fuzz" => match fuzz::run(&root) {
             Ok(0) => ExitCode::SUCCESS,
@@ -619,6 +633,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: review handoff could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: validating immutable independent-review candidate");
+            match review_record::run(&root, &[]) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: review candidate reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: review candidate could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

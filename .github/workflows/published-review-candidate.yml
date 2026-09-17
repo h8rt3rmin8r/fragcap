@@ -1,0 +1,71 @@
+name: Published review candidate
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/published-review-candidate.yml
+      - docs/security/native-product-review-candidate.v1.json
+      - integration/windows-package-contract-v1.json
+      - scripts/Test-PackageCertification.ps1
+      - xtask/src/main.rs
+      - xtask/src/package_certification.rs
+      - xtask/src/review_record.rs
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: published-review-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    name: replay exact v0.10.1 packages
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Validate immutable candidate authority
+        run: cargo xtask review-record
+
+      - name: Download and verify every published byte
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Get-Content -Raw -LiteralPath docs/security/native-product-review-candidate.v1.json | ConvertFrom-Json -Depth 32
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'published-review-candidate'
+          [void][System.IO.Directory]::CreateDirectory($artifactRoot)
+          foreach ($asset in $candidate.assets) {
+            $destination = Join-Path $artifactRoot $asset.filename
+            curl.exe --fail --silent --show-error --location $asset.url --output $destination
+            if ((Get-Item -LiteralPath $destination).Length -ne [int64]$asset.size_bytes) { throw "Published asset size mismatch: $($asset.filename)" }
+            if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) { throw "Published asset digest mismatch: $($asset.filename)" }
+          }
+          $predecessor = Join-Path $env:RUNNER_TEMP $candidate.predecessor.filename
+          curl.exe --fail --silent --show-error --location $candidate.predecessor.url --output $predecessor
+          if ((Get-Item -LiteralPath $predecessor).Length -ne [int64]$candidate.predecessor.size_bytes) { throw 'Predecessor size mismatch' }
+          if ((Get-FileHash -LiteralPath $predecessor -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidate.predecessor.sha256) { throw 'Predecessor digest mismatch' }
+          "FRAGCAP_REVIEW_ARTIFACTS=$artifactRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FRAGCAP_REVIEW_PREDECESSOR=$predecessor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Replay portable and installed certification surfaces
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory $env:FRAGCAP_REVIEW_ARTIFACTS -PredecessorPath $env:FRAGCAP_REVIEW_PREDECESSOR -ReportPath target/published-review/report.json -Confirm:$false
+          if ($LASTEXITCODE -ne 0) { throw "Published candidate replay exited $LASTEXITCODE" }
+          cargo xtask package-certification validate-report target/published-review/report.json $env:FRAGCAP_REVIEW_ARTIFACTS
+
+      - name: Upload bounded sanitized replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-review-candidate-summary
+          path: target/published-review/report.json
+          if-no-files-found: error
+          retention-days: 30
