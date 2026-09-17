@@ -6,13 +6,13 @@
 
 ## Summary
 
-Replace the package campaign's timing-sensitive positive socket assertion with strict parsing of the product's structured `deep_capture.proxy_started` and terminal `deep_capture.calibration_phase` evidence. Preserve firewall containment and all sampled negative evidence, emit package report schema 4 with schema-3 read compatibility, validate every authority independently in Rust, and produce closed bounded predicate diagnostics from PowerShell. Local work remains static and unit-level; exact package execution occurs only on disposable hosted Windows.
+Replace the package campaign's timing-sensitive positive socket assertion with strict Rust parsing of the product's structured `deep_capture.proxy_started` and terminal `deep_capture.calibration_phase` evidence. Preserve firewall containment and all sampled negative evidence, emit package report schema 4 with schema-3 read compatibility, validate every authority independently in Rust, and keep PowerShell limited to bounded orchestration and host observation. Local work remains static and unit-level; exact package execution occurs only on disposable hosted Windows.
 
 ## Technical Context
 
 **Language/Version**: Rust 2021 with MSRV 1.88; PowerShell 7 on GitHub-hosted Windows
 
-**Primary Dependencies**: Rust standard library, existing `serde_json`, existing `xtask`, PowerShell JSON conversion and Windows networking/firewall cmdlets
+**Primary Dependencies**: Rust standard library, existing `serde_json`, existing `xtask`, PowerShell orchestration and Windows networking/firewall cmdlets
 
 **Storage**: Versioned bounded package-certification JSON report and existing transient hosted scratch data
 
@@ -37,7 +37,7 @@ Replace the package campaign's timing-sensitive positive socket assertion with s
 - **P-4**: Pass. Every observed non-loopback endpoint and unexpected process remains failing evidence. Absence of a polling sample is no longer mislabeled as loss.
 - **P-5**: Pass. Capture formats and analyzer behavior do not change.
 - **P-6**: Pass. The slice reuses existing product terms. `predicate diagnostic` is confined to the slice contract and does not enter product documentation as a new domain term.
-- **P-7**: Pass. PowerShell performs bounded package and host orchestration plus strict structured event extraction. The reusable report contract and exhaustive mutation validation remain in Rust.
+- **P-7**: Pass. PowerShell performs bounded package and host orchestration. Rust owns strict structured event extraction, the reusable report contract and exhaustive mutation validation.
 - **P-8**: Pass. PowerShell and Markdown follow repository standards, with both wrapper compliance authorities required.
 - **P-9**: Pass. Structured events are validated as observed. Socket samples remain reported exactly as diagnostic evidence, including zero observations, rather than being fabricated or required.
 - **P-10**: Pass. Target storage and resolution are unchanged.
@@ -83,7 +83,7 @@ docs/
 └── plans/README.md
 ```
 
-**Structure Decision**: Extend the single existing package-certification script and Rust validator. Do not add a second campaign, parser or report authority.
+**Structure Decision**: Extend the single existing package-certification script and Rust validator. The wrapper delegates product-event parsing to the validator, so no second campaign or report authority is introduced.
 
 ## Complexity Tracking
 

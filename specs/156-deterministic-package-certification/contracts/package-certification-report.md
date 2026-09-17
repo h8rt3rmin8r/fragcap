@@ -16,7 +16,7 @@ Endpoint count and exact-loopback sampling are observations, not success prerequ
 
 ## Diagnostics
 
-The script reports failed predicates from a closed ordered vocabulary. It emits at most sixteen identifiers and at most 1 KiB, without raw event data, paths, addresses, process identifiers, payloads or credentials.
+The Rust event validator and PowerShell host observer report failed predicates from closed ordered vocabularies. The wrapper emits at most sixteen identifiers and at most 1 KiB, without raw event data, paths, addresses, process identifiers, payloads or credentials. The validator rejects a terminal reached-client event that does not follow proxy startup.
 
 ## Compatibility
 

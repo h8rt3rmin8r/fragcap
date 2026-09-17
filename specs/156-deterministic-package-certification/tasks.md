@@ -8,7 +8,7 @@
 ## Phase 2: Foundational
 
 - [x] T003 Add schema-4 smoke builders and schema-2/schema-3 compatibility fixtures in `xtask/src/package_certification.rs`
-- [x] T004 Add a bounded structured-event parser and closed predicate evaluator in `scripts/Test-PackageCertification.ps1`
+- [x] T004 Add a bounded structured-event parser and closed predicate evaluator in `xtask/src/package_certification.rs`
 
 ## Phase 3: User Story 1 - Certify deterministic controlled reachability (P1)
 
@@ -17,7 +17,7 @@
 **Independent test**: A schema-4 report with zero sampled endpoints validates when structured evidence is complete, while every observed non-loopback or unexpected-owner mutation fails.
 
 - [x] T005 [US1] Add failing zero-endpoint and deterministic-authority contract tests in `xtask/src/package_certification.rs`
-- [x] T006 [US1] Replace free-text and socket-positive assertions with exact NDJSON event validation in `scripts/Test-PackageCertification.ps1`
+- [x] T006 [US1] Replace free-text and socket-positive assertions with Rust-owned exact NDJSON event validation invoked by `scripts/Test-PackageCertification.ps1`
 - [x] T007 [US1] Preserve descendant process, firewall, non-loopback, finite child and cleanup checks in `scripts/Test-PackageCertification.ps1`
 
 ## Phase 4: User Story 2 - Diagnose failed predicates safely (P1)
@@ -26,7 +26,7 @@
 
 **Independent test**: Each independently mutated predicate yields its expected stable identifier and public output remains within count, byte and content bounds.
 
-- [x] T008 [US2] Add deterministic closed predicate collection and bounded rendering in `scripts/Test-PackageCertification.ps1`
+- [x] T008 [US2] Add deterministic closed event predicates in Rust and bounded host-observation rendering in `scripts/Test-PackageCertification.ps1`
 - [x] T009 [US2] Add static script markers and diagnostic contract checks in `xtask/src/package_certification.rs`
 - [x] T010 [US2] Add exhaustive independent mutation coverage for positive authority, containment, ownership, schema, uniqueness and cleanup in `xtask/src/package_certification.rs`
 
@@ -66,4 +66,4 @@
 
 ## Implementation Strategy
 
-Write the schema-4 positive fixture and mutations first, including a valid zero-endpoint observation. Implement strict report validation, then change PowerShell event extraction and predicate evaluation until the contract tests and static markers pass. Finish documentation, local static gates and full CI, then rely on the two hosted Windows workflows for product-level proof.
+Write the schema-4 positive fixture and mutations first, including a valid zero-endpoint observation. Implement strict report and event-stream validation in Rust, then keep PowerShell limited to bounded orchestration and host observation until the contract tests and static markers pass. Finish documentation, local static gates and full CI, then rely on the two hosted Windows workflows for product-level proof.

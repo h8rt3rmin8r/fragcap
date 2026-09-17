@@ -144,17 +144,6 @@ Param(
         return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 
-    function Get-StringSha256 {
-        [CmdletBinding()]
-        Param(
-            [Parameter(Mandatory=$true)]
-            [string]$Value
-        )
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
-        $digest = [System.Security.Cryptography.SHA256]::HashData($bytes)
-        return [System.Convert]::ToHexString($digest).ToLowerInvariant()
-    }
-
     function Test-IsLoopbackAddress {
         [CmdletBinding()]
         Param(
@@ -499,56 +488,32 @@ Param(
         return $result
     }
 
-    function Get-ControlledSmokeEvidence {
+    function Get-ValidatedSmokeSessionEvidence {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true)]
-            [string]$Stderr
+            [string]$Stderr,
+
+            [Parameter(Mandatory=$true)]
+            [string]$SurfaceRoot
         )
-        $events = [System.Collections.Generic.List[object]]::new()
-        $invalidLineCount = 0
-        foreach ($line in @($Stderr -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-            try {
-                $event = $line | ConvertFrom-Json -Depth 32 -ErrorAction Stop
-                if ($null -ne $event.event) { $events.Add($event) }
-            } catch {
-                $invalidLineCount++
-            }
-        }
-        $proxyEvents = @($events | Where-Object { $_.event -ceq 'deep_capture.proxy_started' })
-        $terminalEvents = @($events | Where-Object { $_.event -ceq 'deep_capture.calibration_phase' -and $_.stage -ceq 'complete' })
-        $proxy = if ($proxyEvents.Count -eq 1) { $proxyEvents[0] } else { $null }
-        $terminal = if ($terminalEvents.Count -eq 1) { $terminalEvents[0] } else { $null }
-        $parsedAddress = $null
-        $addressIsLoopback = $false
-        $addressFamily = ''
-        $proxyPort = 0
-        $proxyPortValid = $false
-        if ($null -ne $proxy -and [System.Net.IPAddress]::TryParse([string]$proxy.listen_addr, [ref]$parsedAddress)) {
-            $addressIsLoopback = [System.Net.IPAddress]::IsLoopback($parsedAddress)
-            if ($parsedAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $addressFamily = 'ipv4' }
-            if ($parsedAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { $addressFamily = 'ipv6' }
-        }
-        if ($null -ne $proxy -and [int]::TryParse([string]$proxy.listen_port, [ref]$proxyPort)) { $proxyPortValid = $proxyPort -ge 1 -and $proxyPort -le 65535 }
-        return [pscustomobject]@{
-            event_count = $events.Count
-            invalid_line_count = $invalidLineCount
-            proxy_count = $proxyEvents.Count
-            terminal_count = $terminalEvents.Count
-            proxy = $proxy
-            terminal = $terminal
-            proxy_address_is_loopback = $addressIsLoopback
-            proxy_address_family = $addressFamily
-            proxy_port_valid = $proxyPortValid
+        $eventFile = Join-Path $SurfaceRoot 'events.ndjson'
+        $summaryFile = Join-Path $SurfaceRoot 'session-evidence.json'
+        [System.IO.File]::WriteAllText($eventFile, $Stderr, [System.Text.UTF8Encoding]::new($false))
+        try {
+            $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+            $manifest = Join-Path $repositoryRoot 'xtask\Cargo.toml'
+            $validation = Invoke-HiddenProcess -FilePath 'cargo.exe' -ArgumentList @('run', '--quiet', '--manifest-path', $manifest, '--', 'package-certification', 'validate-smoke-events', $eventFile, $summaryFile) -TimeoutSeconds 60
+            if ($validation.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $summaryFile)) { throw 'structured event validation failed' }
+            return Get-Content -Raw -LiteralPath $summaryFile | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        } finally {
+            Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
         }
     }
 
     function Get-SmokePredicateFailures {
         [CmdletBinding()]
         Param(
-            [Parameter(Mandatory=$true)]
-            [pscustomobject]$Evidence,
-
             [Parameter(Mandatory=$true)]
             [pscustomobject]$Observation,
 
@@ -557,16 +522,6 @@ Param(
         )
         $failures = [System.Collections.Generic.List[string]]::new()
         if (-not $FirewallInstalled) { $failures.Add('firewall.not-installed') }
-        if ($Evidence.event_count -gt 32 -or $Evidence.invalid_line_count -ne 0) { $failures.Add('events.invalid-or-unbounded') }
-        if ($Evidence.proxy_count -ne 1) { $failures.Add('proxy-start.count') }
-        if ($Evidence.terminal_count -ne 1) { $failures.Add('reached-client.count') }
-        if ($null -ne $Evidence.proxy -and ($Evidence.proxy.backend -cne 'fragcap-native' -or [string]::IsNullOrWhiteSpace([string]$Evidence.proxy.version))) { $failures.Add('proxy-start.backend') }
-        if ($null -ne $Evidence.proxy -and (-not $Evidence.proxy_address_is_loopback -or [string]::IsNullOrEmpty($Evidence.proxy_address_family))) { $failures.Add('proxy-start.loopback') }
-        if ($null -ne $Evidence.proxy -and -not $Evidence.proxy_port_valid) { $failures.Add('proxy-start.port') }
-        if ($null -ne $Evidence.terminal -and ($Evidence.terminal.phase -cne 'reachability' -or $Evidence.terminal.launch_case -cne 'direct-exe-warm')) { $failures.Add('reached-client.case') }
-        if ($null -ne $Evidence.terminal -and ($Evidence.terminal.proxy_backend -cne 'fragcap-native' -or $Evidence.terminal.routing_strategy -cne 'child-environment' -or $Evidence.terminal.protocol -cne 'routing')) { $failures.Add('reached-client.route') }
-        if ($null -ne $Evidence.terminal -and $Evidence.terminal.status -cne 'reached-client') { $failures.Add('reached-client.status') }
-        if ($null -ne $Evidence.proxy -and $null -ne $Evidence.terminal -and ([string]::IsNullOrWhiteSpace([string]$Evidence.proxy.session_id) -or [string]$Evidence.proxy.session_id -cne [string]$Evidence.terminal.session_id -or [string]$Evidence.proxy.version -cne [string]$Evidence.terminal.proxy_backend_version -or $Evidence.proxy_address_family -cne [string]$Evidence.terminal.address_family)) { $failures.Add('session.mismatch') }
         if (-not $Observation.complete -or $Observation.samples -lt 1) { $failures.Add('observation.incomplete') }
         if ($Observation.process_paths.Count -lt 1) { $failures.Add('process.none') }
         if ($Observation.unexpected_process_paths.Count -ne 0) { $failures.Add('process.unexpected') }
@@ -614,14 +569,17 @@ Param(
             } catch {
                 throw "$Surface smoke predicates failed: invocation.failed"
             }
-            $evidence = Get-ControlledSmokeEvidence -Stderr $smoke.Stderr
-            $failures = @(Get-SmokePredicateFailures -Evidence $evidence -Observation $smoke.Observation -FirewallInstalled $firewallInstalled)
+            try {
+                $sessionEvidence = Get-ValidatedSmokeSessionEvidence -Stderr $smoke.Stderr -SurfaceRoot $surfaceRoot
+            } catch {
+                throw "$Surface smoke predicates failed: structured-events.invalid"
+            }
+            $failures = @(Get-SmokePredicateFailures -Observation $smoke.Observation -FirewallInstalled $firewallInstalled)
             if ($failures.Count -ne 0) {
                 $diagnostic = "$Surface smoke predicates failed: $($failures -join ',')"
                 if ([System.Text.Encoding]::UTF8.GetByteCount($diagnostic) -gt 1024) { throw 'smoke predicate diagnostic exceeded its byte bound' }
                 throw $diagnostic
             }
-            $sessionEvidence = [ordered]@{ schema_version = 1; session_id_sha256 = Get-StringSha256 -Value ([string]$evidence.proxy.session_id); proxy_event = 'deep_capture.proxy_started'; proxy_event_count = $evidence.proxy_count; proxy_backend = 'fragcap-native'; proxy_address_family = $evidence.proxy_address_family; proxy_port_valid = $true; phase_event = 'deep_capture.calibration_phase'; terminal_event_count = $evidence.terminal_count; phase = 'reachability'; launch_case = 'direct-exe-warm'; routing_strategy = 'child-environment'; protocol = 'routing'; stage = 'complete'; status = 'reached-client' }
             $socketObservation = [ordered]@{ samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed }
             return [ordered]@{ surface = $Surface; executable_sha256 = Get-Sha256 -Path $Executable; backend = 'fragcap-native'; network = 'loopback-only'; firewall_containment = 'outbound-non-loopback-blocked'; process_observation = 'complete'; structured_reachability = 'proxy-started-and-reached-client'; session_evidence = $sessionEvidence; socket_observation = $socketObservation; cleanup = 'reconciled'; complete = $true }
         } finally {
