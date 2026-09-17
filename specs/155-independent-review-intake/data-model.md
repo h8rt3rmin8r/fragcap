@@ -47,7 +47,7 @@ There are exactly twelve area results. Duplicate, missing or unknown areas are i
 - `candidate_revision`: exact reviewed source revision.
 - `reproduction`, `impact`, `evidence`, `owner`, `linked_issue`, `disposition`, `remediation`, `retest`: bounded typed facts.
 
-Critical and high findings require a fixed candidate distinct from the reviewed candidate and a separately attributed passed retest. Medium findings require an owner and explicit disposition. No severity supports implicit risk acceptance.
+Critical and high findings require a fixed candidate distinct from the reviewed candidate and a separately attributed passed retest with a nonempty different reviewer identity. Disposition is exactly `remediated`, `accepted-by-owner`, `rejected` or `not-reproducible`; critical and high findings require `remediated`. Medium findings require an owner and explicit disposition. No severity supports implicit risk acceptance.
 
 ## EvidenceReference
 

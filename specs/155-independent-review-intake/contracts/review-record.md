@@ -18,7 +18,7 @@ The record contains each area in `docs/security/native-product-review-scope.v1.j
 
 ## Findings gate
 
-Critical and high findings cannot be accepted or waived. They require remediation on a distinct fixed candidate and a separate passed independent retest. Medium findings require an owner, linked disposition and explicit terminal decision. Any unresolved required result blocks completion.
+Critical and high findings cannot be accepted or waived. They require remediation on a distinct fixed candidate and a separate passed independent retest whose reviewer identifier is nonempty and differs from the original reviewer. Finding disposition is closed to `remediated`, `accepted-by-owner`, `rejected` or `not-reproducible`; critical and high findings require `remediated`. Medium findings require an owner and explicit terminal decision. Any unresolved required result blocks completion.
 
 ## Public safety
 

@@ -17,6 +17,12 @@ const WORKFLOW: &str = ".github/workflows/published-review-candidate.yml";
 const MAX_RECORD_BYTES: usize = 512 * 1024;
 const MAX_STRING_CHARS: usize = 4096;
 const MAX_ARRAY_ITEMS: usize = 128;
+const TERMINAL_DISPOSITIONS: [&str; 4] = [
+    "remediated",
+    "accepted-by-owner",
+    "rejected",
+    "not-reproducible",
+];
 const AREAS: [&str; 12] = [
     "architecture",
     "dependencies",
@@ -447,8 +453,10 @@ fn validate_findings(
         validate_evidence(&finding["evidence"], "finding", problems);
         let severity = finding["severity"].as_str().unwrap_or_default();
         let disposition = finding["disposition"].as_str().unwrap_or_default();
-        if disposition == "open" {
-            problems.push(format!("finding {id} remains open"));
+        if !TERMINAL_DISPOSITIONS.contains(&disposition) {
+            problems.push(format!(
+                "finding {id} disposition is not an allowed terminal decision"
+            ));
         }
         if severity == "medium"
             && finding["owner"]
@@ -505,7 +513,13 @@ fn validate_remediation(
         "retest",
         problems,
     );
-    if finding["retest"]["reviewer_id"] == reviewer_id
+    required_text(&finding["retest"], "reviewer_id", "retest", problems);
+    let retest_reviewer = finding["retest"]["reviewer_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    if retest_reviewer.is_empty()
+        || retest_reviewer == reviewer_id.trim()
         || finding["retest"]["candidate_revision"] != fixed
         || finding["retest"]["outcome"] != "passed"
     {
@@ -605,11 +619,11 @@ fn validate_bounds(value: &Value, path: &str, problems: &mut Vec<String>) {
                     "{path} string exceeds {MAX_STRING_CHARS} characters"
                 ));
             }
-            let lower = text.to_ascii_lowercase();
-            if text.contains("C:\\Users\\")
-                || text.contains("C:/Users/")
-                || lower.contains("begin private key")
-                || lower.contains("begin rsa private key")
+            if contains_public_record_secret(text)
+                || contains_local_path(text)
+                || contains_private_endpoint(text)
+                || contains_host_identifier(text)
+                || contains_raw_payload_marker(text)
             {
                 problems.push(format!(
                     "{path} contains host-sensitive or private material"
@@ -631,6 +645,96 @@ fn validate_bounds(value: &Value, path: &str, problems: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+fn contains_public_record_secret(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "authorization: bearer ",
+        "authorization: basic ",
+        "password=",
+        "password:",
+        "passwd=",
+        "api_key=",
+        "apikey=",
+        "access_token=",
+        "client_secret=",
+        "secret=",
+        "token=",
+        "begin private key",
+        "begin rsa private key",
+        "begin ec private key",
+        "begin openssh private key",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn contains_local_path(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if text.contains("\\\\")
+        || ["/home/", "/users/", "/var/", "/tmp/", "~/."]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(2)).any(|index| {
+        bytes[index].is_ascii_alphabetic()
+            && bytes[index + 1] == b':'
+            && matches!(bytes[index + 2], b'\\' | b'/')
+            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric())
+    })
+}
+
+fn contains_private_endpoint(text: &str) -> bool {
+    text.split(|character: char| !(character.is_ascii_hexdigit() || matches!(character, '.' | ':')))
+        .filter(|token| !token.is_empty())
+        .filter_map(|token| token.parse::<std::net::IpAddr>().ok())
+        .any(|address| match address {
+            std::net::IpAddr::V4(address) => {
+                address.is_private()
+                    || address.is_loopback()
+                    || address.is_link_local()
+                    || address.is_unspecified()
+            }
+            std::net::IpAddr::V6(address) => {
+                address.is_loopback()
+                    || address.is_unique_local()
+                    || address.is_unicast_link_local()
+                    || address.is_unspecified()
+            }
+        })
+}
+
+fn contains_host_identifier(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "hostname=",
+        "hostname:",
+        "computername=",
+        "computername:",
+        "machine-id",
+        "machine_id",
+        "host-id",
+        "host_id",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn contains_raw_payload_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "raw payload",
+        "raw_payload",
+        "payload=",
+        "payload_hex",
+        "payload_base64",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn exact_keys(value: &Value, expected: &[&str], context: &str, problems: &mut Vec<String>) {
@@ -815,6 +919,10 @@ mod tests {
         medium["checks"][11]["findings"] = serde_json::json!(["F-2"]);
         medium["summary"]["finding_counts"]["medium"] = Value::from(1);
         assert!(!validate_record(&medium, &candidate).is_empty());
+
+        medium["findings"][0]["owner"] = Value::String("owner".into());
+        medium["findings"][0]["disposition"] = Value::String("investigating".into());
+        assert!(!validate_record(&medium, &candidate).is_empty());
     }
 
     #[test]
@@ -827,7 +935,27 @@ mod tests {
         record["checks"][4]["findings"] = serde_json::json!(["F-3"]);
         record["summary"]["finding_counts"]["high"] = Value::from(1);
         assert!(validate_record(&record, &candidate).is_empty());
+        record["findings"][0]["retest"]["reviewer_id"] = Value::String("   ".into());
+        assert!(!validate_record(&record, &candidate).is_empty());
         record["findings"][0]["retest"]["reviewer_id"] = Value::String("reviewer-1".into());
         assert!(!validate_record(&record, &candidate).is_empty());
+    }
+
+    #[test]
+    fn public_record_sensitive_classes_are_rejected() {
+        for sensitive in [
+            "Authorization: Bearer review-secret",
+            "password=review-secret",
+            r"\\private-host\review\evidence.json",
+            "/home/reviewer/evidence.json",
+            "https://10.0.0.5/evidence",
+            "hostname=review-station-17",
+            "raw_payload=deadbeef",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+        ] {
+            assert_invalid(|record| {
+                record["summary"]["limitations"] = serde_json::json!([sensitive]);
+            });
+        }
     }
 }
