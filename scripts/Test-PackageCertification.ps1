@@ -632,6 +632,8 @@ Param(
         if ($doctor.Stdout -notmatch 'fragcap-native') { throw 'packaged Doctor output does not expose the native backend' }
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
         $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment
+        $portableSmokeLocalDb = Join-Path $scratch 'smoke-portable\local.db'
+        $portableSmokeBundle = Join-Path $scratch 'smoke-portable\bundle'
         $installDirectory = Join-Path $scratch 'installed'
         $userFixturePaths = [ordered]@{
             'capture' = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap\captures\preserved.fcapng'
@@ -726,7 +728,7 @@ Param(
         }
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
         if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
-        if (-not (Test-Path -LiteralPath $localDb) -or -not (Test-Path -LiteralPath $bundle)) { throw 'fresh start removed custom database or bundle paths' }
+        if (-not (Test-Path -LiteralPath $portableSmokeLocalDb) -or -not (Test-Path -LiteralPath $portableSmokeBundle)) { throw 'fresh start removed custom database or bundle paths' }
         $msiRoamingRoot = Join-Path $env:APPDATA 'fragcap'
         $msiLocalRoot = Join-Path $env:LOCALAPPDATA 'fragcap'
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
