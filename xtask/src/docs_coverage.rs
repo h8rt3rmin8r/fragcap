@@ -30,6 +30,11 @@ const EXAMPLE_AUTHORITIES: [&str; 5] = [
 ];
 const CURRENT_SOURCE_BOUNDARY: [&str; 4] = ["S154", "S155", "S156", "S157"];
 const COMPLETION_BOUNDARY: [u64; 5] = [333, 413, 331, 334, 278];
+const OBSOLETE_CURRENT_TEXT: [&str; 3] = [
+    "S154's coverage inventory and regression improvements are candidate",
+    "mitmdump",
+    "external proxy backend",
+];
 
 pub fn run(root: &Path) -> io::Result<Vec<String>> {
     let inventory: Value = serde_json::from_str(&fs::read_to_string(root.join(REGISTRY))?)
@@ -83,6 +88,61 @@ fn confined_text(root: &Path, path: &str) -> Result<String, String> {
         return Err("not a bounded regular file".into());
     }
     fs::read_to_string(candidate).map_err(|error| error.to_string())
+}
+
+fn current_documentation_pages(root: &Path) -> Result<Vec<String>, String> {
+    fn walk(root: &Path, directory: &Path, pages: &mut Vec<String>) -> Result<(), String> {
+        let mut entries = fs::read_dir(directory)
+            .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
+        entries.sort_by_key(fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "current documentation path is a symbolic link: {}",
+                    path.display()
+                ));
+            }
+            if file_type.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                if !matches!(name, "changelog" | "glossary") {
+                    walk(root, &path, pages)?;
+                }
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|extension| extension == "mdx")
+            {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| error.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                pages.push(relative);
+            }
+        }
+        Ok(())
+    }
+
+    let mut pages = Vec::new();
+    walk(root, &root.join("site/content/docs"), &mut pages)?;
+    pages.sort();
+    Ok(pages)
+}
+
+fn obsolete_text_problems(page: &str, source: &str) -> Vec<String> {
+    let folded = source.to_ascii_lowercase();
+    OBSOLETE_CURRENT_TEXT
+        .iter()
+        .filter(|obsolete| folded.contains(&obsolete.to_ascii_lowercase()))
+        .map(|obsolete| format!("current page {page}: obsolete text `{obsolete}`"))
+        .collect()
 }
 
 fn authored_headings(source: &str) -> Vec<String> {
@@ -207,7 +267,6 @@ fn validate(root: &Path, inventory: &Value) -> Vec<String> {
 
     let mut topic_ids = BTreeSet::new();
     let mut authority_references = Vec::new();
-    let mut current_pages = BTreeSet::new();
     for (index, topic) in inventory["topics"]
         .as_array()
         .into_iter()
@@ -238,7 +297,6 @@ fn validate(root: &Path, inventory: &Value) -> Vec<String> {
         if !current {
             problems.push(format!("topic {id}: not a current authored page: {page}"));
         } else {
-            current_pages.insert(page.to_string());
             match confined_text(root, page) {
                 Ok(source) => {
                     let headings = authored_headings(&source);
@@ -366,21 +424,16 @@ fn validate(root: &Path, inventory: &Value) -> Vec<String> {
         problems.push("completion boundary must be exactly #333, #413, #331, #334 and #278".into());
     }
 
-    for page in current_pages {
-        if let Ok(source) = confined_text(root, &page) {
-            for obsolete in [
-                "S154's coverage inventory and regression improvements are candidate",
-                "mitmdump",
-                "external proxy backend",
-            ] {
-                if source
-                    .to_ascii_lowercase()
-                    .contains(&obsolete.to_ascii_lowercase())
-                {
-                    problems.push(format!("current page {page}: obsolete text `{obsolete}`"));
+    match current_documentation_pages(root) {
+        Ok(pages) => {
+            for page in pages {
+                match confined_text(root, &page) {
+                    Ok(source) => problems.extend(obsolete_text_problems(&page, &source)),
+                    Err(reason) => problems.push(format!("current page {page}: {reason}")),
                 }
             }
         }
+        Err(reason) => problems.push(format!("current documentation corpus: {reason}")),
     }
     problems
 }
@@ -551,6 +604,28 @@ mod tests {
         assert_eq!(
             authored_headings("## Kept\n```markdown\n## Ignored\n```\n### Also kept\n"),
             ["Kept", "Also kept"]
+        );
+    }
+
+    #[test]
+    fn obsolete_language_scan_owns_every_nonhistorical_site_page() {
+        let pages = current_documentation_pages(root()).unwrap();
+        for required in [
+            "site/content/docs/index.mdx",
+            "site/content/docs/contributing.mdx",
+            "site/content/docs/reference/target-schema.mdx",
+        ] {
+            assert!(pages.iter().any(|page| page == required), "{required}");
+        }
+        assert!(pages
+            .iter()
+            .all(|page| !page.contains("/changelog/") && !page.contains("/glossary/")));
+        assert_eq!(
+            obsolete_text_problems(
+                "site/content/docs/reference/unowned.mdx",
+                "Configure the external proxy backend here."
+            ),
+            ["current page site/content/docs/reference/unowned.mdx: obsolete text `external proxy backend`"]
         );
     }
 }

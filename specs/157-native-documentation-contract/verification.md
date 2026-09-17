@@ -55,6 +55,8 @@ Result: passed with `ci: all checks passed`. This included format, Clippy, works
 
 The first hosted pull-request documentation job rejected the new pnpm workspace policy because pnpm 9 requires a nonempty `packages` field. Adding the site root as the sole workspace package made the policy valid for both the pinned hosted pnpm 9 toolchain and the newer local pnpm toolchain; the corrected head is the review authority.
 
+The first Codex review identified that obsolete-backend language was checked only on topic-owned pages. The correction enumerates every nonhistorical site MDX page independently from topic ownership and adds a mutation check proving an otherwise unowned page cannot reintroduce an external-backend instruction.
+
 ## Architecture decision
 
 The shared Cargo test discovery intentionally recognizes supported integration-test authorities. Rather than weakening it to infer nested library unit tests, S157 added a public integration test that reads all committed manifest examples through `ManifestDocument`. The site build now sets noninteractive pnpm environment values and permits only the exact pinned `esbuild` install script required by the static-site toolchain.
