@@ -894,6 +894,11 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
         validate_legacy_smoke(&report["smoke"], problems);
         return;
     }
+    let certified_executable_sha256 = entry_rows
+        .into_iter()
+        .flatten()
+        .find(|row| row["path"] == "fragcap.exe")
+        .and_then(|row| row["sha256"].as_str());
     let smoke_rows = report["smokes"].as_array();
     let expected_smoke_surfaces = BTreeSet::from(["installed", "portable"]);
     let mut observed_smoke_surfaces = BTreeSet::new();
@@ -929,6 +934,7 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
             || smoke["process_observation"] != "complete"
             || smoke["network_observation"] != "firewall-contained-and-socket-observed"
             || !is_sha256(smoke["executable_sha256"].as_str().unwrap_or_default())
+            || smoke["executable_sha256"].as_str() != certified_executable_sha256
             || smoke["samples"].as_u64().is_none_or(|samples| samples == 0)
             || smoke["observed_product_process_count"]
                 .as_u64()
@@ -1266,7 +1272,7 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let portable_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "d".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
+        let portable_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "c".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
         let mut installed_smoke = portable_smoke.clone();
         installed_smoke["surface"] = Value::String("installed".into());
         let mut value = serde_json::json!({"schema_version": 3, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smokes": [portable_smoke, installed_smoke], "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
@@ -1335,6 +1341,9 @@ mod tests {
         });
         rejects!("duplicate-smoke-surface", |candidate: &mut Value| {
             candidate["smokes"][1]["surface"] = Value::String("portable".into());
+        });
+        rejects!("unbound-smoke-digest", |candidate: &mut Value| {
+            candidate["smokes"][1]["executable_sha256"] = Value::String("d".repeat(64));
         });
         rejects!("unexpected-network", |candidate: &mut Value| {
             candidate["smokes"][1]["observed_non_loopback_attempt_count"] = Value::from(1);

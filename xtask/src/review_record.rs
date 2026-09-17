@@ -23,6 +23,57 @@ const TERMINAL_DISPOSITIONS: [&str; 4] = [
     "rejected",
     "not-reproducible",
 ];
+struct PublishedAsset {
+    role: &'static str,
+    filename: &'static str,
+    url: &'static str,
+    size_bytes: u64,
+    sha256: &'static str,
+}
+const PUBLISHED_ASSETS: [PublishedAsset; 6] = [
+    PublishedAsset {
+        role: "standalone-catalog",
+        filename: "catalog.db",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/catalog.db",
+        size_bytes: 90_112,
+        sha256: "d1da331be8e1c33b58f53b35e6a331755bfbc315d75be811214cc83488104fff",
+    },
+    PublishedAsset {
+        role: "standalone-catalog-checksum",
+        filename: "catalog.db.sha256",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/catalog.db.sha256",
+        size_bytes: 77,
+        sha256: "bc7cf4fb3499d1fdc605d23e1bc51b904273d7eada20a959a7b140d756293901",
+    },
+    PublishedAsset {
+        role: "portable-zip",
+        filename: "fragcap-0.10.1-x86_64-pc-windows-msvc.zip",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64-pc-windows-msvc.zip",
+        size_bytes: 6_525_562,
+        sha256: "652882bea0705b397f6a1a012fce828f0f808635f993e1d133902e0642f5e786",
+    },
+    PublishedAsset {
+        role: "portable-zip-checksum",
+        filename: "fragcap-0.10.1-x86_64-pc-windows-msvc.zip.sha256",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64-pc-windows-msvc.zip.sha256",
+        size_bytes: 108,
+        sha256: "c307b02c64e52bfb7d57c90fe3451d2e6eb094a2228b802c34c8e24643a088ce",
+    },
+    PublishedAsset {
+        role: "windows-msi",
+        filename: "fragcap-0.10.1-x86_64.msi",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64.msi",
+        size_bytes: 6_823_936,
+        sha256: "309b4cf467bf29521524065a807002843b2b97274f3d4036b0f9a8af1b374356",
+    },
+    PublishedAsset {
+        role: "windows-msi-checksum",
+        filename: "fragcap-0.10.1-x86_64.msi.sha256",
+        url: "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.1/fragcap-0.10.1-x86_64.msi.sha256",
+        size_bytes: 92,
+        sha256: "767ef4fd7a7284a692541d3dffe348d5db8b70892d0d4afcb141a2cd1941128b",
+    },
+];
 const AREAS: [&str; 12] = [
     "architecture",
     "dependencies",
@@ -159,14 +210,10 @@ fn validate_candidate(candidate: &Value, published: &Value) -> Vec<String> {
     {
         problems.push("candidate feature closure is not the official set".into());
     }
-    let expected_roles = BTreeSet::from([
-        "portable-zip",
-        "portable-zip-checksum",
-        "standalone-catalog",
-        "standalone-catalog-checksum",
-        "windows-msi",
-        "windows-msi-checksum",
-    ]);
+    let expected_roles = PUBLISHED_ASSETS
+        .iter()
+        .map(|asset| asset.role)
+        .collect::<BTreeSet<_>>();
     let assets = candidate["assets"].as_array();
     let mut roles = BTreeSet::new();
     let mut filenames = BTreeSet::new();
@@ -181,6 +228,19 @@ fn validate_candidate(candidate: &Value, published: &Value) -> Vec<String> {
         let filename = asset["filename"].as_str().unwrap_or_default();
         if !roles.insert(role) || !filenames.insert(filename) {
             problems.push("candidate assets contain a duplicate role or filename".into());
+        }
+        let expected = PUBLISHED_ASSETS
+            .iter()
+            .find(|expected| expected.role == role);
+        if expected.is_none_or(|expected| {
+            asset["filename"] != expected.filename
+                || asset["url"] != expected.url
+                || asset["size_bytes"] != expected.size_bytes
+                || asset["sha256"] != expected.sha256
+        }) {
+            problems.push(format!(
+                "candidate asset {role} differs from the frozen published identity"
+            ));
         }
         if Path::new(filename)
             .file_name()
@@ -242,13 +302,13 @@ fn validate_record(record: &Value, candidate: &Value) -> Vec<String> {
     validate_reviewer(&record["reviewer"], &mut problems);
     validate_independence(&record["independence"], &mut problems);
     validate_environment(&record["environment"], &mut problems);
-    let finding_ids = validate_findings(
+    let findings = validate_findings(
         &record["findings"],
         record["reviewer"]["id"].as_str().unwrap_or_default(),
         candidate["source_revision"].as_str().unwrap_or_default(),
         &mut problems,
     );
-    validate_checks(&record["checks"], &finding_ids, &mut problems);
+    validate_checks(&record["checks"], &findings, &mut problems);
     validate_summary(record, &mut problems);
     problems
 }
@@ -352,15 +412,29 @@ fn validate_environment(value: &Value, problems: &mut Vec<String>) {
     );
 }
 
-fn validate_checks(value: &Value, finding_ids: &BTreeSet<String>, problems: &mut Vec<String>) {
+fn validate_checks(value: &Value, findings: &BTreeMap<String, String>, problems: &mut Vec<String>) {
     validate_results(value, &AREAS, "area result", problems);
+    let mut references = BTreeMap::<String, usize>::new();
     for row in value.as_array().into_iter().flatten() {
         let area = row["id"].as_str().unwrap_or_default();
         for finding in row["findings"].as_array().into_iter().flatten() {
             let id = finding.as_str().unwrap_or_default();
-            if !finding_ids.contains(id) {
-                problems.push(format!("area {area} references unknown finding {id}"));
+            match findings.get(id) {
+                None => problems.push(format!("area {area} references unknown finding {id}")),
+                Some(finding_area) if finding_area != area => problems.push(format!(
+                    "area {area} references finding {id} declared for {finding_area}"
+                )),
+                Some(_) => {
+                    *references.entry(id.to_string()).or_default() += 1;
+                }
             }
+        }
+    }
+    for id in findings.keys() {
+        if references.get(id).copied() != Some(1) {
+            problems.push(format!(
+                "finding {id} must be referenced exactly once by its declared area"
+            ));
         }
     }
 }
@@ -408,11 +482,11 @@ fn validate_findings(
     reviewer_id: &str,
     reviewed_revision: &str,
     problems: &mut Vec<String>,
-) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
+) -> BTreeMap<String, String> {
+    let mut findings = BTreeMap::new();
     let Some(rows) = value.as_array() else {
         problems.push("findings must be an array".into());
-        return ids;
+        return findings;
     };
     for finding in rows {
         exact_keys(
@@ -435,10 +509,11 @@ fn validate_findings(
             problems,
         );
         let id = finding["id"].as_str().unwrap_or_default();
-        if id.is_empty() || !ids.insert(id.to_string()) {
+        let area = finding["area"].as_str().unwrap_or_default();
+        if id.is_empty() || findings.insert(id.to_string(), area.to_string()).is_some() {
             problems.push(format!("finding has an empty or duplicate id {id}"));
         }
-        if !AREAS.contains(&finding["area"].as_str().unwrap_or_default())
+        if !AREAS.contains(&area)
             || !["critical", "high", "medium", "low", "informational"]
                 .contains(&finding["severity"].as_str().unwrap_or_default())
             || finding["candidate_revision"] != reviewed_revision
@@ -472,7 +547,7 @@ fn validate_findings(
             validate_remediation(finding, reviewer_id, reviewed_revision, problems);
         }
     }
-    ids
+    findings
 }
 
 fn validate_remediation(
@@ -857,6 +932,29 @@ mod tests {
     }
 
     #[test]
+    fn published_candidate_assets_are_frozen_field_for_field() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let candidate = read_json(&repository.join(CANDIDATE), MAX_RECORD_BYTES).unwrap();
+        let published = read_json(&repository.join(PUBLISHED), MAX_RECORD_BYTES).unwrap();
+        assert!(validate_candidate(&candidate, &published).is_empty());
+        for (field, replacement) in [
+            ("filename", Value::String("substituted.zip".into())),
+            (
+                "url",
+                Value::String("https://example.invalid/substituted".into()),
+            ),
+            ("size_bytes", Value::from(1)),
+            ("sha256", Value::String("0".repeat(64))),
+        ] {
+            let mut changed = candidate.clone();
+            changed["assets"][0][field] = replacement;
+            assert!(validate_candidate(&changed, &published)
+                .iter()
+                .any(|problem| problem.contains("frozen published identity")));
+        }
+    }
+
+    #[test]
     fn mutations_are_rejected_independently() {
         type Mutation = Box<dyn Fn(&mut Value)>;
         let mutations: Vec<Mutation> = vec![
@@ -923,6 +1021,31 @@ mod tests {
         medium["findings"][0]["owner"] = Value::String("owner".into());
         medium["findings"][0]["disposition"] = Value::String("investigating".into());
         assert!(!validate_record(&medium, &candidate).is_empty());
+    }
+
+    #[test]
+    fn each_finding_belongs_to_exactly_one_matching_area() {
+        let candidate = candidate();
+        let mut valid = record(&candidate);
+        valid["findings"] = serde_json::json!([{
+            "id":"F-AREA","area":"tls","severity":"medium","candidate_revision":"a".repeat(40),"reproduction":"method","impact":"impact","evidence":[evidence("finding")],"owner":"owner","linked_issue":"https://example.invalid/issues/area","disposition":"accepted-by-owner","remediation":null,"retest":null
+        }]);
+        valid["checks"][4]["findings"] = serde_json::json!(["F-AREA"]);
+        valid["summary"]["finding_counts"]["medium"] = Value::from(1);
+        assert!(validate_record(&valid, &candidate).is_empty());
+
+        let mut omitted = valid.clone();
+        omitted["checks"][4]["findings"] = serde_json::json!([]);
+        assert!(!validate_record(&omitted, &candidate).is_empty());
+
+        let mut misplaced = valid.clone();
+        misplaced["checks"][4]["findings"] = serde_json::json!([]);
+        misplaced["checks"][11]["findings"] = serde_json::json!(["F-AREA"]);
+        assert!(!validate_record(&misplaced, &candidate).is_empty());
+
+        let mut duplicated = valid.clone();
+        duplicated["checks"][4]["findings"] = serde_json::json!(["F-AREA", "F-AREA"]);
+        assert!(!validate_record(&duplicated, &candidate).is_empty());
     }
 
     #[test]

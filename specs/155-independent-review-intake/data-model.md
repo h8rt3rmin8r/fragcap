@@ -37,7 +37,7 @@ Each asset has a stable role, filename, HTTPS URL, byte size and SHA-256 digest.
 - `findings`: zero or more finding identifiers.
 - `limitations`: bounded public-safe list.
 
-There are exactly twelve area results. Duplicate, missing or unknown areas are invalid. `failed` and `indeterminate` remain acceptance blockers.
+There are exactly twelve area results. Duplicate, missing or unknown areas are invalid. Every finding is referenced exactly once by its declared area. `failed` and `indeterminate` remain acceptance blockers.
 
 ## Finding
 
@@ -63,6 +63,6 @@ Paths, payloads, credentials, host identifiers and key material are prohibited f
 - Retains all version 2 package, identity, lifecycle, residue and payload fields.
 - Replaces singular `smoke` with `smokes` containing exactly two rows.
 - Row `surface` is exactly `portable` or `installed` and unique.
-- Each row records executable identity, backend identity, reached-client state, complete sample count, unexpected process paths, non-loopback observations, loopback observations and cleanup state.
+- Each row records executable identity, backend identity, reached-client state, complete sample count, unexpected process paths, non-loopback observations, loopback observations and cleanup state. Both executable digests equal the certified `fragcap.exe` entry digest.
 
 Both rows must pass independently. Missing, duplicate or incomplete rows fail validation.

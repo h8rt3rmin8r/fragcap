@@ -14,7 +14,7 @@ The only top-level keys are `schema_version`, `state`, `candidate`, `reviewer`, 
 
 ## Required coverage
 
-The record contains each area in `docs/security/native-product-review-scope.v1.json` exactly once. It also identifies methods and evidence for listener binding, destination refusal, trust recovery, artifact protection and export, parser abuse, installer lifecycle and the installed QUIC retest owned by #413.
+The record contains each area in `docs/security/native-product-review-scope.v1.json` exactly once. Every finding is referenced exactly once by the area it declares; omitted, duplicate and cross-area references fail validation. It also identifies methods and evidence for listener binding, destination refusal, trust recovery, artifact protection and export, parser abuse, installer lifecycle and the installed QUIC retest owned by #413.
 
 ## Findings gate
 
