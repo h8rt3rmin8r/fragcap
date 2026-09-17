@@ -1,0 +1,401 @@
+{
+  "schema_version": 2,
+  "published_baseline": {
+    "version": "0.10.1",
+    "source_revision": "a7d24962999d38d7ff130722859d473543864862"
+  },
+  "current_source_boundary": [
+    "S154",
+    "S155",
+    "S156",
+    "S157"
+  ],
+  "topics": [
+    {
+      "id": "architecture",
+      "page": "site/content/docs/architecture.mdx",
+      "sections": [
+        "Capture: passive packet truth",
+        "Deep Capture: explicit proxy observations beside Capture",
+        "Trust and routing boundaries",
+        "Output authority and correlation",
+        "Security boundary"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "cli_product_contract_does_not_bypass_the_stable_module",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "setup",
+      "page": "site/content/docs/getting-started.mdx",
+      "sections": [
+        "Before you begin",
+        "1. Install fragcap and its prerequisites",
+        "2. Verify the environment",
+        "4. Run the first Capture",
+        "7. Run a known-compatible Deep Capture",
+        "8. Review the bundle and cleanup"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_doctor.rs",
+          "function": "absent_npcap_blocks_with_a_remediation_and_exits_one",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "current-command-corpus"
+      ]
+    },
+    {
+      "id": "capture-modes",
+      "page": "site/content/docs/guides/capture-modes.mdx",
+      "sections": [
+        "`file`",
+        "`stream`",
+        "`ring`",
+        "Every discard is counted"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/pipeline.rs",
+          "function": "every_fixture_in_the_corpus_runs_end_to_end",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "packet-goldens"
+      ]
+    },
+    {
+      "id": "cli",
+      "page": "site/content/docs/reference/cli.mdx",
+      "sections": [
+        "Retired command migration",
+        "Global options",
+        "Capture",
+        "Targets",
+        "Environment",
+        "Data",
+        "Output routing"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_reference.rs",
+          "function": "public_reference_matches_command_tree",
+          "features": []
+        },
+        {
+          "path": "crates/fragcap-cli/tests/cli_reference.rs",
+          "function": "current_documentation_examples_parse_without_dispatch_or_retired_consent",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "current-command-corpus"
+      ]
+    },
+    {
+      "id": "protocols-routing",
+      "page": "site/content/docs/reference/deep-capture-compatibility.mdx",
+      "sections": [
+        "Traffic support",
+        "Local target matrix",
+        "Evidence and freshness",
+        "Calibrating an unknown target",
+        "Publishing compatibility evidence"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/protocol_classification.rs",
+          "function": "every_published_family_has_one_identified_full_or_metadata_cell",
+          "features": [
+            "deep-capture"
+          ]
+        },
+        {
+          "path": "crates/fragcap/tests/deep_capture_routing.rs",
+          "function": "every_strategy_is_declared_but_only_available_ones_can_authorize",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "refusals",
+      "page": "site/content/docs/reference/deep-capture-compatibility.mdx",
+      "sections": [
+        "Traffic support",
+        "Evidence and freshness"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/protocol_classification.rs",
+          "function": "unknown_unsupported_and_failed_are_pairwise_distinct",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "artifacts-correlation",
+      "page": "site/content/docs/reference/output-formats.mdx",
+      "sections": [
+        "Capture outputs",
+        "Native manifest version 2",
+        "Artifact authority and lifetime",
+        "Application JSON Lines version 2",
+        "Correlation and omission vocabulary",
+        "Cleanup and sharing"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/native_conformance.rs",
+          "function": "complete_bundle_authorities_reconcile_from_one_synthetic_session",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "manifest-specimens",
+        "packet-goldens",
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "diagnostics-recovery",
+      "page": "site/content/docs/guides/doctor-and-troubleshooting.mdx",
+      "sections": [
+        "Read first, repair separately",
+        "Recovery is exact ownership, not a sweep",
+        "A stalled check"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_doctor.rs",
+          "function": "mode_verdicts_keep_deep_only_failures_out_of_capture",
+          "features": []
+        },
+        {
+          "path": "crates/fragcap/tests/deep_capture_journal.rs",
+          "function": "applied_owned_effect_produces_one_exact_idempotent_recovery_action",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "current-command-corpus",
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "security-privacy",
+      "page": "site/content/docs/guides/security-and-privacy.mdx",
+      "sections": [
+        "Capture and Deep Capture have different effects",
+        "Trust and cryptographic material",
+        "Private evidence and sharing",
+        "Review status"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_bundle.rs",
+          "function": "export_is_a_separate_copy_with_an_exhaustive_manifest",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "manifest-specimens",
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "bounds",
+      "page": "site/content/docs/guides/security-and-privacy.mdx",
+      "sections": [
+        "Bounds are part of the evidence"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap-proxy/tests/lifecycle.rs",
+          "function": "configuration_refuses_non_loopback_and_zero_bounds",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "native-bundle-contract"
+      ]
+    },
+    {
+      "id": "packaging-migration",
+      "page": "site/content/docs/guides/packaging-and-migration.mdx",
+      "sections": [
+        "Official bytes",
+        "Upgrade without losing research",
+        "Fresh start is irreversible and explicit"
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/package_certification.rs",
+          "function": "transferred_artifacts_must_match_the_certified_bytes",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "manifest-specimens"
+      ]
+    },
+    {
+      "id": "public-api",
+      "page": "site/content/docs/reference/library-api.mdx",
+      "sections": [
+        "Stable entry point",
+        "Ownership and integration",
+        "Reproducible examples, not operator execution"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "version_one_inventory_is_curated_and_sorted",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ],
+      "example_authorities": [
+        "stable-api-contract"
+      ]
+    },
+    {
+      "id": "completion-status",
+      "page": "site/content/docs/reference/native-documentation.mdx",
+      "sections": [
+        "Published release and current source",
+        "Contract map",
+        "Executable example authority",
+        "Engineering completeness and external acceptance",
+        "Reconciliation point"
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/docs_coverage.rs",
+          "function": "committed_inventory_has_complete_current_source_authorities",
+          "features": []
+        }
+      ],
+      "example_authorities": [
+        "current-command-corpus",
+        "native-bundle-contract"
+      ]
+    }
+  ],
+  "example_authorities": [
+    {
+      "id": "current-command-corpus",
+      "kind": "command-corpus",
+      "paths": [],
+      "tests": [
+        {
+          "path": "crates/fragcap-cli/tests/cli_reference.rs",
+          "function": "current_documentation_examples_parse_without_dispatch_or_retired_consent",
+          "features": []
+        },
+        {
+          "path": "crates/fragcap-cli/tests/cli_reference.rs",
+          "function": "current_command_corpus_owns_readme_and_every_current_site_page",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "manifest-specimens",
+      "kind": "committed-artifact",
+      "paths": [
+        "docs/schema/examples/deep-capture-manifest-v1.json",
+        "docs/schema/examples/deep-capture-manifest-v2-complete.json",
+        "docs/schema/examples/deep-capture-manifest-v2-partial.json",
+        "docs/schema/examples/deep-capture-manifest-v2-crash-prefix.json"
+      ],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/native_conformance.rs",
+          "function": "published_manifest_examples_use_the_versioned_product_reader",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packet-goldens",
+      "kind": "controlled-contract",
+      "paths": [],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/goldens.rs",
+          "function": "every_fixture_matches_its_committed_golden",
+          "features": []
+        },
+        {
+          "path": "crates/fragcap/tests/goldens.rs",
+          "function": "every_fixture_matches_its_committed_jsonl_golden",
+          "features": []
+        }
+      ]
+    },
+    {
+      "id": "native-bundle-contract",
+      "kind": "controlled-contract",
+      "paths": [],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/native_conformance.rs",
+          "function": "complete_bundle_authorities_reconcile_from_one_synthetic_session",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stable-api-contract",
+      "kind": "controlled-contract",
+      "paths": [],
+      "tests": [
+        {
+          "path": "crates/fragcap/tests/public_api.rs",
+          "function": "version_one_inventory_is_curated_and_sorted",
+          "features": [
+            "deep-capture"
+          ]
+        }
+      ]
+    }
+  ],
+  "completion_boundary": [
+    333,
+    413,
+    331,
+    334,
+    278
+  ]
+}

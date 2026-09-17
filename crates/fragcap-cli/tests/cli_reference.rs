@@ -600,6 +600,18 @@ fn current_documentation_paths(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+fn current_command_corpus_owns_readme_and_every_current_site_page() {
+    let root = repository_root();
+    let paths = current_documentation_paths(&root);
+    assert_eq!(paths.first(), Some(&root.join("README.md")));
+    assert!(paths.contains(&root.join("site/content/docs/reference/native-documentation.mdx")));
+    assert!(paths.iter().all(|path| {
+        let relative = path.strip_prefix(&root).unwrap().to_string_lossy();
+        !relative.contains("changelog") && !relative.contains("glossary")
+    }));
+}
+
+#[test]
 fn current_documentation_examples_parse_without_dispatch_or_retired_consent() {
     let mut count = 0;
     let mut failures = Vec::new();

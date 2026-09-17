@@ -1,18 +1,25 @@
 ---
-title: Native documentation readiness
-description: Current contract coverage and its boundary from independent whole-product acceptance.
+title: Native product contract
+description: Complete current documentation authority and its boundary from published releases and external acceptance.
 ---
 
-The current native contract is documented against published [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1), source `a7d24962999d38d7ff130722859d473543864862`. S154's coverage inventory and regression improvements are candidate engineering changes until this PR merges and later ships; they do not change those published bytes.
+This page is the entry point for the current native product contract. It maps each required operator, integrator, and reviewer topic to current guidance and executable evidence. It does not turn controlled engineering evidence into independent review or live-title compatibility.
 
-## Current contract coverage
+## Published release and current source
 
-| Topic | Current guidance |
+The downloadable baseline is [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1), source `a7d24962999d38d7ff130722859d473543864862`. Documentation that must match installed bytes should follow that release identity.
+
+Current source also includes later engineering work. S154 established the first closed documentation inventory and production-site regressions. S155 added bounded independent-review intake and hosted replay authorities. S156 replaced a transient package-certification loopback assertion with deterministic structured evidence. S157 completes this documentation contract. Those source changes are not part of the published v0.10.1 bytes and do not silently redefine the release.
+
+## Contract map
+
+| Topic | Current authority |
 | --- | --- |
-| Architecture | [Ownership and native composition](/docs/architecture) |
+| Architecture | [Ownership, composition, trust and output boundaries](/docs/architecture) |
 | Setup | [Installation, prerequisites and first run](/docs/getting-started) |
-| CLI | [Commands, options and worked invocations](/docs/reference/cli) |
-| Protocols and routing | [Exact supported traffic and calibration](/docs/reference/deep-capture-compatibility) |
+| Capture modes | [File, stream and ring behavior with loss accounting](/docs/guides/capture-modes) |
+| CLI | [Commands, options, migrations and worked invocations](/docs/reference/cli) |
+| Protocols and routing | [Exact supported traffic, routing and calibration](/docs/reference/deep-capture-compatibility) |
 | Refusals | [Trust, pinning, scope and unsupported outcomes](/docs/reference/deep-capture-compatibility#traffic-support) |
 | Artifacts and correlation | [Evidence authority, bounded retention and packet correlation](/docs/reference/output-formats) |
 | Diagnostics and recovery | [Separate readiness and exact owned-resource recovery](/docs/guides/doctor-and-troubleshooting) |
@@ -20,13 +27,24 @@ The current native contract is documented against published [v0.10.1](https://gi
 | Bounds | [Finite work and observable omissions](/docs/guides/security-and-privacy#bounds-are-part-of-the-evidence) |
 | Packaging and migration | [Published certified packages and retained state](/docs/guides/packaging-and-migration) |
 | Public API | [Stable facade and controlled adapters](/docs/reference/library-api) |
+| Completion status | This release, source, review, retest and final-gate boundary |
 
-The repository's `docs/audits/native-documentation-coverage.v1.json` maps these eleven closed topics to current authored pages and exact existing executable tests, including artifact readers, correlation, routing and refusal contracts. `cargo xtask docs check` rejects missing or duplicate topics, invalid paths, absent or ignored test references, and references excluded under their declared Cargo features. It also runs the existing documentation linter and parses current fenced command examples under default and network-capable command trees without dispatching them. Production site tests check exported destinations and anchors.
+The version-two registry at `docs/audits/native-documentation-coverage.v2.json` binds all thirteen topics to exact current pages, required headings, example authorities and non-ignored executable tests. `cargo xtask docs check` refuses missing, duplicate, unknown, unsafe, historical-as-current, absent, ignored, feature-inapplicable or out-of-order authorities.
 
-This is a maintained traceability inventory, not automatic proof of every prose statement. Existing tests demonstrate controlled behavior; reviewers still compare the meaning of the guidance with the implementation. Artifact specimens are checked by actual product readers, not a replacement approximate schema validator.
+## Executable example authority
 
-## Engineering readiness is not independent acceptance
+Every current `fragcap` invocation in the README and nonhistorical site pages passes through the production command parser without dispatch under the applicable command trees. Retired Deep Capture consent switches remain rejected. Parser acceptance proves the command shape, not that an installed command ran or that its target is compatible.
 
-Documentation engineering child [#421](https://github.com/h8rt3rmin8r/fragcap/issues/421) advances parent [#331](https://github.com/h8rt3rmin8r/fragcap/issues/331). Independent whole-product review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333), installed Windows retesting under [#413](https://github.com/h8rt3rmin8r/fragcap/issues/413), and final completion [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334) and [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278) remain outstanding. Ordinary PR bot review does not substitute for that independent installed review. Final documentation must reconcile its actual findings before the parent closes.
+Committed manifest specimens pass through the versioned product reader. Packet pcapng and JSON Lines examples remain exact generated goldens. Application, HAR, process, proxy, cleanup, correlation and stable API examples use controlled product tests when a shortened standalone specimen would omit lifecycle or authority facts. JSON syntax alone is never accepted as product authority.
 
-Optional installed reproduction is operator-owned and uses published bytes. Agents do not run the installed sensitive product, launch real games or mutate host trust. Absence of optional real-game measurements is not a controlled implementation gate and is never reported as a compatibility pass. Consent, scoped routing, reversible exact recovery, retained administrator bypass and unsigned-package policy remain unchanged.
+## Engineering completeness and external acceptance
+
+Deep Capture is native, functional and incomplete. The current source has controlled protocol, routing, launch, evidence, cleanup, recovery, packaging, API and documentation contracts. It does not claim universal decryption, certificate-pinning bypass, compatibility with an unmeasured title, or final feature approval.
+
+The external boundaries remain separate and open: independent whole-product review [#333](https://github.com/h8rt3rmin8r/fragcap/issues/333), installed QUIC performance retest [#413](https://github.com/h8rt3rmin8r/fragcap/issues/413), documentation parent [#331](https://github.com/h8rt3rmin8r/fragcap/issues/331), final completion gate [#334](https://github.com/h8rt3rmin8r/fragcap/issues/334), and native Deep Capture epic [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278). Green CI, package certification, hosted replay, bot review and this closed inventory do not substitute for those outcomes.
+
+## Reconciliation point
+
+Later independent findings amend the current contract at the page and executable authority that owns the affected fact. They are not inferred in advance. Parent #331 closes only after actual review and installed-retest findings are reconciled, while #334 and #278 retain the sole authority to change the public completion state.
+
+Optional installed reproduction is operator-owned and uses digest-verified published bytes. Agents do not run the installed sensitive product, launch real games or mutate host trust to validate these pages. Consent, scoped routing, reversible exact cleanup, retained administrator control and unsigned-package policy remain unchanged.
