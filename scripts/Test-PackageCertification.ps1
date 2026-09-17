@@ -504,7 +504,13 @@ Param(
             $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
             $manifest = Join-Path $repositoryRoot 'xtask\Cargo.toml'
             $validation = Invoke-HiddenProcess -FilePath 'cargo.exe' -ArgumentList @('run', '--quiet', '--manifest-path', $manifest, '--', 'package-certification', 'validate-smoke-events', $eventFile, $summaryFile) -TimeoutSeconds 60
-            if ($validation.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $summaryFile)) { throw 'structured event validation failed' }
+            if ($validation.ExitCode -ne 0) {
+                $predicateDiagnostics = ([string]$validation.Stderr).Trim()
+                if ([string]::IsNullOrEmpty($predicateDiagnostics)) { throw 'structured-events.invalid' }
+                if (($predicateDiagnostics -split "`r?`n").Count -gt 16 -or [System.Text.Encoding]::UTF8.GetByteCount($predicateDiagnostics) -gt 1024) { throw 'structured-events.diagnostic-overflow' }
+                throw $predicateDiagnostics
+            }
+            if (-not (Test-Path -LiteralPath $summaryFile)) { throw 'structured-events.invalid' }
             return Get-Content -Raw -LiteralPath $summaryFile | ConvertFrom-Json -Depth 16 -ErrorAction Stop
         } finally {
             Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
@@ -572,7 +578,9 @@ Param(
             try {
                 $sessionEvidence = Get-ValidatedSmokeSessionEvidence -Stderr $smoke.Stderr -SurfaceRoot $surfaceRoot
             } catch {
-                throw "$Surface smoke predicates failed: structured-events.invalid"
+                $predicateDiagnostics = [string]$_.Exception.Message
+                if ([System.Text.Encoding]::UTF8.GetByteCount($predicateDiagnostics) -gt 1024) { $predicateDiagnostics = 'structured-events.diagnostic-overflow' }
+                throw "$Surface smoke predicates failed: $predicateDiagnostics"
             }
             $failures = @(Get-SmokePredicateFailures -Observation $smoke.Observation -FirewallInstalled $firewallInstalled)
             if ($failures.Count -ne 0) {

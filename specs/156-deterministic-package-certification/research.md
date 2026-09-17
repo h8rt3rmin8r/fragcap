@@ -36,6 +36,8 @@
 
 **Decision**: PowerShell owns the child process and transfers its bounded NDJSON through disposable scratch. A Rust package-certification subcommand parses and validates the event stream, enforces event chronology, and returns only the closed session summary that PowerShell places in the report.
 
+The wrapper transports any Rust-owned predicate codes without replacing them. Report validation also requires distinct session identity digests for the portable and installed rows, preventing one execution from being reused as both pieces of evidence.
+
 **Rationale**: This avoids adding a shipped product command while honoring the repository rule that wrappers do not own product-output semantics. The same Rust authority supplies mutation coverage and independently rejects every invalid report projection.
 
 **Rejected alternatives**: Parsing product events in PowerShell makes the wrapper a second semantic authority. Leaving only report validation in Rust cannot reject reordered source events after projection.

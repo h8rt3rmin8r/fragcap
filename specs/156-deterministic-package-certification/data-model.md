@@ -5,7 +5,7 @@
 - `schema_version`: exact integer `4`.
 - All package, release identity, artifact, entry, PE inspection, lifecycle, fresh-start, findings and completion fields retain their schema-3 meaning.
 - `smokes`: exactly two unique rows, one `portable` and one `installed`.
-- Each smoke row is closed and validates independently.
+- Each smoke row is closed and validates independently. The two `session_id_sha256` values must be distinct so neither execution can be reused for the other surface.
 
 ## ControlledSmokeV4
 

@@ -493,6 +493,9 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "validate-smoke-events",
             "invocation.failed",
             "structured-events.invalid",
+            "structured-events.diagnostic-overflow",
+            "$validation.Stderr",
+            "throw $predicateDiagnostics",
             "unexpected_process_paths",
             "fragcap\\captures\\preserved.fcapng",
             "Wireshark\\extcap\\fragcap.exe",
@@ -1054,6 +1057,7 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
     let smoke_rows = report["smokes"].as_array();
     let expected_smoke_surfaces = BTreeSet::from(["installed", "portable"]);
     let mut observed_smoke_surfaces = BTreeSet::new();
+    let mut observed_session_ids = BTreeSet::new();
     for smoke in smoke_rows.into_iter().flatten() {
         let surface = smoke["surface"].as_str().unwrap_or_default();
         let valid_surface = expected_smoke_surfaces.contains(surface);
@@ -1075,6 +1079,14 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
                 diagnostic_surface,
                 problems,
             );
+            if let Some(session_id) = smoke["session_evidence"]["session_id_sha256"]
+                .as_str()
+                .filter(|session_id| is_sha256(session_id))
+            {
+                if !observed_session_ids.insert(session_id) {
+                    problems.push("session.identity-reused".into());
+                }
+            }
         }
     }
     if observed_smoke_surfaces != expected_smoke_surfaces
@@ -1841,6 +1853,7 @@ mod tests {
         });
         let mut installed_smoke = portable_smoke.clone();
         installed_smoke["surface"] = Value::String("installed".into());
+        installed_smoke["session_evidence"]["session_id_sha256"] = Value::String("e".repeat(64));
         let mut value = serde_json::json!({"schema_version": 4, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smokes": [portable_smoke, installed_smoke], "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
@@ -2015,6 +2028,14 @@ mod tests {
             |candidate: &mut Value| {
                 candidate["smokes"][0]["session_evidence"]["session_id_sha256"] =
                     Value::String("bad".into());
+            }
+        );
+        rejects_with!(
+            "reused-session-evidence",
+            "session.identity-reused",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["session_evidence"] =
+                    candidate["smokes"][0]["session_evidence"].clone();
             }
         );
         rejects_with!(

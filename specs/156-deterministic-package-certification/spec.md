@@ -79,7 +79,7 @@ A release or review workflow needs a strict current report contract that disting
 - **FR-007**: Mutation tests MUST independently invalidate every required field, closed token, uniqueness rule, cross-field invariant, positive authority, containment authority and cleanup authority.
 - **FR-008**: Each failed predicate MUST produce one stable diagnostic identifier from a closed vocabulary, in deterministic order and within explicit count and byte bounds.
 - **FR-009**: Public diagnostics and reports MUST NOT contain raw local paths, arbitrary endpoint values, payloads, credentials, capability material, private keys, host identifiers or unbounded stderr.
-- **FR-010**: Portable and installed smoke surfaces MUST remain separate, unique and independently complete, and both executable digests MUST match the certified package entry.
+- **FR-010**: Portable and installed smoke surfaces MUST remain separate, unique and independently complete, their session identity digests MUST be distinct, and both executable digests MUST match the certified package entry.
 - **FR-011**: Pinned script changes MUST have a dated decision record. Documentation MUST identify structured evidence as positive authority and socket polling as negative and diagnostic evidence.
 - **FR-012**: Product execution MUST occur only on disposable hosted Windows infrastructure. Local verification is limited to source, parsing, unit, contract and static checks.
 - **FR-013**: Both the published-review-candidate and Windows package-certification workflows MUST pass from the final pull-request head without retries, waivers or relaxed assertions.
