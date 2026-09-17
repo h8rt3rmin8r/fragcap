@@ -49,7 +49,7 @@
 - [x] T018 Mark every completed task and final verification command in `specs/155-independent-review-intake/tasks.md`
 - [x] T019 Run focused Rust tests, static PowerShell parsing, workflow lint and all quickstart checks from `specs/155-independent-review-intake/quickstart.md`
 - [x] T020 Run `cargo xtask ci`, inspect the complete output and perform UTF-8, LF, forbidden-dash and mojibake sanity checks across every changed file
-- [ ] T021 Reconcile issue #423 and Project 3 stage with the final pull-request state
+- [x] T021 Reconcile issue #423 and Project 3 stage with the final pull-request state
 
 ## Dependencies
 
