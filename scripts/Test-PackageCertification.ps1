@@ -218,7 +218,10 @@ Param(
                     [System.Threading.Thread]::Sleep(10)
                 }
                 $line = $lineTask.GetAwaiter().GetResult()
-                if ($null -eq $line) { throw 'process closed diagnostics before emitting an authorization plan' }
+                if ($null -eq $line) {
+                    $diagnostics = if ($stderrPrefix.Count -gt 0) { $stderrPrefix -join "`n" } else { '<none>' }
+                    throw "process closed diagnostics before emitting an authorization plan; preceding diagnostics: $diagnostics"
+                }
                 $stderrPrefix.Add($line)
                 if ($stderrPrefix.Count -gt 16 -or ($stderrPrefix -join "`n").Length -gt 262144) { throw 'authorization preamble exceeded its bound' }
                 try { $event = $line | ConvertFrom-Json -Depth 32 } catch { $event = $null }
@@ -511,13 +514,14 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($environment.LOCALAPPDATA)
         $localDb = Join-Path $surfaceRoot 'local.db'
         $bundle = Join-Path $surfaceRoot 'bundle'
-        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', "Package Certification $Surface", '--db', $localDb, '--anchor', "package:certification:$Surface", '--exe', $Executable, '--socket-holder', 'yes') -Environment $environment)
+        $targetHandle = "package_certification_$Surface"
+        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', "Package Certification $Surface", '--db', $localDb, '--anchor', "package:certification:$Surface", '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
         $firewallRuleName = "fragcap-package-certification-$Surface-$([guid]::NewGuid().ToString('N'))"
         if (-not $script:TopLevelCmdlet.ShouldProcess($Executable, "Block non-loopback $Surface smoke traffic for the exact packaged executable")) { throw "$Surface smoke network containment was not established" }
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', "package_certification_$Surface", '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+            $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
             if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw "$Surface controlled native smoke did not produce expected evidence" }
             if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "$Surface controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
             if ($smoke.Observation.process_paths.Count -lt 1) { throw "$Surface controlled native smoke recorded no executable path" }
