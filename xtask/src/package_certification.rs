@@ -15,6 +15,8 @@ const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const WIX_SOURCE: &str = "crates/fragcap-cli/wix/main.wxs";
 const HARNESS: &str = "scripts/Test-PackageCertification.ps1";
 const MAX_CONTRACT_BYTES: u64 = 128 * 1024;
+const MAX_SMOKE_EVENT_BYTES: usize = 256 * 1024;
+const MAX_SMOKE_EVENT_COUNT: usize = 32;
 
 pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let bytes = fs::read(root.join(CONTRACT))?;
@@ -24,11 +26,26 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     if arguments.is_empty() {
         return report(problems);
     }
+    if arguments.first().map(String::as_str) == Some("validate-smoke-events")
+        && arguments.len() == 3
+    {
+        let input = fs::read(&arguments[1])?;
+        match summarize_smoke_events(&input) {
+            Ok(summary) if problems.is_empty() => {
+                let mut encoded = serde_json::to_vec(&summary).map_err(invalid_data)?;
+                encoded.push(b'\n');
+                fs::write(&arguments[2], encoded)?;
+            }
+            Ok(_) => {}
+            Err(event_problems) => problems.extend(event_problems),
+        }
+        return report(problems);
+    }
     if arguments.first().map(String::as_str) != Some("validate-report")
         || !(2..=3).contains(&arguments.len())
     {
         return Err(invalid_input(
-            "use validate-report <report.json> [artifact-directory]",
+            "use validate-report <report.json> [artifact-directory] or validate-smoke-events <events.ndjson> <summary.json>",
         ));
     }
     problems.extend(validate_report(
@@ -471,6 +488,14 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "Get-NetTCPConnection",
             "Get-NetUDPEndpoint",
             "Invoke-ControlledSmoke",
+            "Get-ValidatedSmokeSessionEvidence",
+            "Get-SmokePredicateFailures",
+            "validate-smoke-events",
+            "invocation.failed",
+            "structured-events.invalid",
+            "structured-events.diagnostic-overflow",
+            "$validation.Stderr",
+            "throw $predicateDiagnostics",
             "unexpected_process_paths",
             "fragcap\\captures\\preserved.fcapng",
             "Wireshark\\extcap\\fragcap.exe",
@@ -491,7 +516,7 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "fresh start removed independently managed Wireshark extcap registration",
             "clean-reinstall-after-fresh-start",
             "preserve_by_default = $true",
-            "schema_version = 3",
+            "schema_version = 4",
             "smokes = @($portableSmoke, $installedSmoke)",
             "## End of script",
         ],
@@ -526,6 +551,136 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
         problems.push("official package contract may not enable the net feature".into());
     }
     problems
+}
+
+fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
+    let mut problems = Vec::new();
+    if bytes.len() > MAX_SMOKE_EVENT_BYTES {
+        return Err(vec!["events.invalid-or-unbounded".into()]);
+    }
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => return Err(vec!["events.invalid-or-unbounded".into()]),
+    };
+    let lines = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    if lines.len() > MAX_SMOKE_EVENT_COUNT {
+        problems.push("events.invalid-or-unbounded".into());
+    }
+    for line in lines.into_iter().take(MAX_SMOKE_EVENT_COUNT + 1) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(event) if event["event"].as_str().is_some() => events.push(event),
+            _ => {
+                if !problems
+                    .iter()
+                    .any(|problem| problem == "events.invalid-or-unbounded")
+                {
+                    problems.push("events.invalid-or-unbounded".into());
+                }
+            }
+        }
+    }
+    let proxy_events = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event["event"] == "deep_capture.proxy_started")
+        .collect::<Vec<_>>();
+    let terminal_events = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event["event"] == "deep_capture.calibration_phase" && event["stage"] == "complete"
+        })
+        .collect::<Vec<_>>();
+    if proxy_events.len() != 1 {
+        problems.push("proxy-start.count".into());
+    }
+    if terminal_events.len() != 1 {
+        problems.push("reached-client.count".into());
+    }
+    let proxy = (proxy_events.len() == 1).then(|| proxy_events[0]);
+    let terminal = (terminal_events.len() == 1).then(|| terminal_events[0]);
+    let address_family = proxy.and_then(|(_, event)| {
+        event["listen_addr"]
+            .as_str()
+            .and_then(|address| address.parse::<std::net::IpAddr>().ok())
+            .filter(std::net::IpAddr::is_loopback)
+            .map(|address| match address {
+                std::net::IpAddr::V4(_) => "ipv4",
+                std::net::IpAddr::V6(_) => "ipv6",
+            })
+    });
+    if let Some((_, event)) = proxy {
+        if event["backend"] != "fragcap-native"
+            || event["version"]
+                .as_str()
+                .is_none_or(|version| version.is_empty())
+        {
+            problems.push("proxy-start.backend".into());
+        }
+        if address_family.is_none() {
+            problems.push("proxy-start.loopback".into());
+        }
+        if event["listen_port"]
+            .as_u64()
+            .is_none_or(|port| !(1..=65_535).contains(&port))
+        {
+            problems.push("proxy-start.port".into());
+        }
+    }
+    if let Some((_, event)) = terminal {
+        if event["phase"] != "reachability" || event["launch_case"] != "direct-exe-warm" {
+            problems.push("reached-client.case".into());
+        }
+        if event["proxy_backend"] != "fragcap-native"
+            || event["routing_strategy"] != "child-environment"
+            || event["protocol"] != "routing"
+        {
+            problems.push("reached-client.route".into());
+        }
+        if event["status"] != "reached-client" {
+            problems.push("reached-client.status".into());
+        }
+    }
+    if let (Some((proxy_position, proxy)), Some((terminal_position, terminal))) = (proxy, terminal)
+    {
+        if proxy["session_id"]
+            .as_str()
+            .is_none_or(|session| session.is_empty())
+            || proxy["session_id"] != terminal["session_id"]
+            || proxy["version"] != terminal["proxy_backend_version"]
+            || address_family.is_none_or(|family| terminal["address_family"] != family)
+        {
+            problems.push("session.mismatch".into());
+        }
+        if terminal_position <= proxy_position {
+            problems.push("event.order".into());
+        }
+    }
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let (_, proxy) = proxy.expect("one proxy event was validated");
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "session_id_sha256": sha256(proxy["session_id"].as_str().expect("session id was validated").as_bytes()),
+        "proxy_event": "deep_capture.proxy_started",
+        "proxy_event_count": 1,
+        "proxy_backend": "fragcap-native",
+        "proxy_address_family": address_family.expect("address family was validated"),
+        "proxy_port_valid": true,
+        "phase_event": "deep_capture.calibration_phase",
+        "terminal_event_count": 1,
+        "phase": "reachability",
+        "launch_case": "direct-exe-warm",
+        "routing_strategy": "child-environment",
+        "protocol": "routing",
+        "stage": "complete",
+        "status": "reached-client"
+    }))
 }
 
 fn validate_report(
@@ -569,8 +724,8 @@ fn validate_report(
         "certification report",
         &mut problems,
     );
-    if !matches!(schema_version, Some(2 | 3)) {
-        problems.push("report schema_version must be 2 or 3".into());
+    if !matches!(schema_version, Some(2..=4)) {
+        problems.push("report schema_version must be 2, 3, or 4".into());
     }
     if report["contract_sha256"] != sha256(contract_bytes) {
         problems.push("report contract digest does not match current contract".into());
@@ -902,61 +1057,295 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
     let smoke_rows = report["smokes"].as_array();
     let expected_smoke_surfaces = BTreeSet::from(["installed", "portable"]);
     let mut observed_smoke_surfaces = BTreeSet::new();
+    let mut observed_session_ids = BTreeSet::new();
     for smoke in smoke_rows.into_iter().flatten() {
-        exact_keys(
-            smoke,
-            &[
-                "surface",
-                "executable_sha256",
-                "backend",
-                "network",
-                "process_observation",
-                "network_observation",
-                "samples",
-                "observed_product_process_count",
-                "observed_system_process_count",
-                "observed_endpoint_count",
-                "observed_non_loopback_attempt_count",
-                "loopback_socket_observed",
-                "cleanup",
-                "complete",
-            ],
-            "smoke report row",
-            problems,
-        );
         let surface = smoke["surface"].as_str().unwrap_or_default();
-        if !expected_smoke_surfaces.contains(surface)
-            || !observed_smoke_surfaces.insert(surface)
-            || smoke["complete"] != true
-            || smoke["cleanup"] != "reconciled"
-            || smoke["backend"] != "fragcap-native"
-            || smoke["network"] != "loopback-only"
-            || smoke["process_observation"] != "complete"
-            || smoke["network_observation"] != "firewall-contained-and-socket-observed"
-            || !is_sha256(smoke["executable_sha256"].as_str().unwrap_or_default())
-            || smoke["executable_sha256"].as_str() != certified_executable_sha256
-            || smoke["samples"].as_u64().is_none_or(|samples| samples == 0)
-            || smoke["observed_product_process_count"]
-                .as_u64()
-                .is_none_or(|processes| processes == 0)
-            || smoke["observed_system_process_count"].as_u64().is_none()
-            || smoke["observed_endpoint_count"]
-                .as_u64()
-                .is_none_or(|endpoints| endpoints == 0)
-            || smoke["observed_non_loopback_attempt_count"].as_u64() != Some(0)
-            || smoke["loopback_socket_observed"] != true
-        {
-            problems.push(format!(
-                "packaged native smoke {surface} is incomplete, uncontained, or unreconciled"
-            ));
+        let valid_surface = expected_smoke_surfaces.contains(surface);
+        if !valid_surface || !observed_smoke_surfaces.insert(surface) {
+            problems.push("smoke.surface.invalid".into());
+        }
+        let diagnostic_surface = if valid_surface { surface } else { "invalid" };
+        if report["schema_version"] == 3 {
+            validate_schema_3_smoke(
+                smoke,
+                certified_executable_sha256,
+                diagnostic_surface,
+                problems,
+            );
+        } else {
+            validate_schema_4_smoke(
+                smoke,
+                certified_executable_sha256,
+                diagnostic_surface,
+                problems,
+            );
+            if let Some(session_id) = smoke["session_evidence"]["session_id_sha256"]
+                .as_str()
+                .filter(|session_id| is_sha256(session_id))
+            {
+                if !observed_session_ids.insert(session_id) {
+                    problems.push("session.identity-reused".into());
+                }
+            }
         }
     }
     if observed_smoke_surfaces != expected_smoke_surfaces
         || smoke_rows.is_none_or(|rows| rows.len() != 2)
     {
+        problems.push("smoke.surface-set.invalid".into());
+    }
+}
+
+fn validate_schema_3_smoke(
+    smoke: &Value,
+    certified_executable_sha256: Option<&str>,
+    surface: &str,
+    problems: &mut Vec<String>,
+) {
+    exact_keys(
+        smoke,
+        &[
+            "surface",
+            "executable_sha256",
+            "backend",
+            "network",
+            "process_observation",
+            "network_observation",
+            "samples",
+            "observed_product_process_count",
+            "observed_system_process_count",
+            "observed_endpoint_count",
+            "observed_non_loopback_attempt_count",
+            "loopback_socket_observed",
+            "cleanup",
+            "complete",
+        ],
+        "smoke report row",
+        problems,
+    );
+    if smoke["complete"] != true
+        || smoke["cleanup"] != "reconciled"
+        || smoke["backend"] != "fragcap-native"
+        || smoke["network"] != "loopback-only"
+        || smoke["process_observation"] != "complete"
+        || smoke["network_observation"] != "firewall-contained-and-socket-observed"
+        || !is_sha256(smoke["executable_sha256"].as_str().unwrap_or_default())
+        || smoke["executable_sha256"].as_str() != certified_executable_sha256
+        || smoke["samples"].as_u64().is_none_or(|samples| samples == 0)
+        || smoke["observed_product_process_count"]
+            .as_u64()
+            .is_none_or(|processes| processes == 0)
+        || smoke["observed_system_process_count"].as_u64().is_none()
+        || smoke["observed_endpoint_count"]
+            .as_u64()
+            .is_none_or(|endpoints| endpoints == 0)
+        || smoke["observed_non_loopback_attempt_count"].as_u64() != Some(0)
+        || smoke["loopback_socket_observed"] != true
+    {
         problems.push(format!(
-            "smoke surface set mismatch: {observed_smoke_surfaces:?}"
+            "schema-3 packaged native smoke {surface} is incomplete, uncontained, or unreconciled"
         ));
+    }
+}
+
+fn validate_schema_4_smoke(
+    smoke: &Value,
+    certified_executable_sha256: Option<&str>,
+    surface: &str,
+    problems: &mut Vec<String>,
+) {
+    exact_keys(
+        smoke,
+        &[
+            "surface",
+            "executable_sha256",
+            "backend",
+            "network",
+            "firewall_containment",
+            "process_observation",
+            "structured_reachability",
+            "session_evidence",
+            "socket_observation",
+            "cleanup",
+            "complete",
+        ],
+        "schema-4 smoke report row",
+        problems,
+    );
+    let checks = [
+        (smoke["complete"] == true, "smoke.complete.invalid"),
+        (smoke["cleanup"] == "reconciled", "smoke.cleanup.invalid"),
+        (
+            smoke["backend"] == "fragcap-native",
+            "smoke.backend.invalid",
+        ),
+        (smoke["network"] == "loopback-only", "smoke.network.invalid"),
+        (
+            smoke["firewall_containment"] == "outbound-non-loopback-blocked",
+            "smoke.firewall-containment.invalid",
+        ),
+        (
+            smoke["process_observation"] == "complete",
+            "smoke.process-observation.invalid",
+        ),
+        (
+            smoke["structured_reachability"] == "proxy-started-and-reached-client",
+            "smoke.structured-reachability.invalid",
+        ),
+        (
+            is_sha256(smoke["executable_sha256"].as_str().unwrap_or_default())
+                && smoke["executable_sha256"].as_str() == certified_executable_sha256,
+            "smoke.executable-digest.invalid",
+        ),
+    ];
+    for (valid, diagnostic) in checks {
+        if !valid {
+            problems.push(format!("{surface}:{diagnostic}"));
+        }
+    }
+    validate_session_evidence(&smoke["session_evidence"], surface, problems);
+    validate_socket_observation(&smoke["socket_observation"], surface, problems);
+}
+
+fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec<String>) {
+    exact_keys(
+        evidence,
+        &[
+            "schema_version",
+            "session_id_sha256",
+            "proxy_event",
+            "proxy_event_count",
+            "proxy_backend",
+            "proxy_address_family",
+            "proxy_port_valid",
+            "phase_event",
+            "terminal_event_count",
+            "phase",
+            "launch_case",
+            "routing_strategy",
+            "protocol",
+            "stage",
+            "status",
+        ],
+        "session evidence",
+        problems,
+    );
+    let checks = [
+        (
+            evidence["schema_version"] == 1,
+            "session.schema-version.invalid",
+        ),
+        (
+            is_sha256(evidence["session_id_sha256"].as_str().unwrap_or_default()),
+            "session.identity.invalid",
+        ),
+        (
+            evidence["proxy_event"] == "deep_capture.proxy_started",
+            "session.proxy-event.invalid",
+        ),
+        (
+            evidence["proxy_event_count"].as_u64() == Some(1),
+            "session.proxy-event-count.invalid",
+        ),
+        (
+            evidence["proxy_backend"] == "fragcap-native",
+            "session.proxy-backend.invalid",
+        ),
+        (
+            matches!(
+                evidence["proxy_address_family"].as_str(),
+                Some("ipv4" | "ipv6")
+            ),
+            "session.proxy-address-family.invalid",
+        ),
+        (
+            evidence["proxy_port_valid"] == true,
+            "session.proxy-port.invalid",
+        ),
+        (
+            evidence["phase_event"] == "deep_capture.calibration_phase",
+            "session.phase-event.invalid",
+        ),
+        (
+            evidence["terminal_event_count"].as_u64() == Some(1),
+            "session.terminal-event-count.invalid",
+        ),
+        (evidence["phase"] == "reachability", "session.phase.invalid"),
+        (
+            evidence["launch_case"] == "direct-exe-warm",
+            "session.launch-case.invalid",
+        ),
+        (
+            evidence["routing_strategy"] == "child-environment",
+            "session.routing-strategy.invalid",
+        ),
+        (
+            evidence["protocol"] == "routing",
+            "session.protocol.invalid",
+        ),
+        (evidence["stage"] == "complete", "session.stage.invalid"),
+        (
+            evidence["status"] == "reached-client",
+            "session.status.invalid",
+        ),
+    ];
+    for (valid, diagnostic) in checks {
+        if !valid {
+            problems.push(format!("{surface}:{diagnostic}"));
+        }
+    }
+}
+
+fn validate_socket_observation(observation: &Value, surface: &str, problems: &mut Vec<String>) {
+    exact_keys(
+        observation,
+        &[
+            "samples",
+            "observed_product_process_count",
+            "observed_system_process_count",
+            "observed_endpoint_count",
+            "observed_non_loopback_attempt_count",
+            "loopback_socket_observed",
+        ],
+        "socket observation",
+        problems,
+    );
+    let checks = [
+        (
+            observation["samples"]
+                .as_u64()
+                .is_some_and(|samples| samples > 0),
+            "socket.samples.invalid",
+        ),
+        (
+            observation["observed_product_process_count"]
+                .as_u64()
+                .is_some_and(|processes| processes > 0),
+            "socket.product-process-count.invalid",
+        ),
+        (
+            observation["observed_system_process_count"]
+                .as_u64()
+                .is_some(),
+            "socket.system-process-count.invalid",
+        ),
+        (
+            observation["observed_endpoint_count"].as_u64().is_some(),
+            "socket.endpoint-count.invalid",
+        ),
+        (
+            observation["observed_non_loopback_attempt_count"].as_u64() == Some(0),
+            "socket.non-loopback-observed",
+        ),
+        (
+            observation["loopback_socket_observed"].is_boolean(),
+            "socket.loopback-diagnostic.invalid",
+        ),
+    ];
+    for (valid, diagnostic) in checks {
+        if !valid {
+            problems.push(format!("{surface}:{diagnostic}"));
+        }
     }
 }
 
@@ -1064,7 +1453,7 @@ fn exact_keys(value: &Value, expected: &[&str], label: &str, problems: &mut Vec<
     let observed = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
     let expected = expected.iter().copied().collect::<BTreeSet<_>>();
     if observed != expected {
-        problems.push(format!("{label} keys mismatch: {observed:?}"));
+        problems.push(format!("{label} keys mismatch"));
     }
 }
 
@@ -1168,6 +1557,160 @@ mod tests {
             .any(|problem| problem.contains("keys mismatch")));
     }
 
+    fn smoke_events() -> Vec<Value> {
+        vec![
+            serde_json::json!({
+                "event": "deep_capture.proxy_started",
+                "session_id": "session-1",
+                "backend": "fragcap-native",
+                "version": "0.10.1",
+                "listen_addr": "127.0.0.1",
+                "listen_port": 49152
+            }),
+            serde_json::json!({
+                "event": "deep_capture.calibration_phase",
+                "session_id": "session-1",
+                "phase": "reachability",
+                "launch_case": "direct-exe-warm",
+                "proxy_backend": "fragcap-native",
+                "proxy_backend_version": "0.10.1",
+                "routing_strategy": "child-environment",
+                "address_family": "ipv4",
+                "protocol": "routing",
+                "stage": "complete",
+                "status": "reached-client"
+            }),
+        ]
+    }
+
+    fn encode_events(events: &[Value]) -> Vec<u8> {
+        let mut encoded = events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes();
+        encoded.push(b'\n');
+        encoded
+    }
+
+    #[test]
+    fn structured_smoke_events_are_ordered_closed_and_mutation_complete() {
+        let valid = smoke_events();
+        let summary = summarize_smoke_events(&encode_events(&valid)).unwrap();
+        assert_eq!(summary["status"], "reached-client");
+        assert_eq!(summary["proxy_address_family"], "ipv4");
+        assert_eq!(summary["session_id_sha256"], sha256(b"session-1"));
+
+        macro_rules! rejects_event {
+            ($label:literal, $expected:literal, $mutation:expr) => {{
+                let mut events = valid.clone();
+                $mutation(&mut events);
+                let problems = summarize_smoke_events(&encode_events(&events)).unwrap_err();
+                assert!(
+                    problems.iter().any(|problem| problem == $expected),
+                    "{} mutation must emit {}; problems: {problems:?}",
+                    $label,
+                    $expected
+                );
+            }};
+        }
+
+        rejects_event!("proxy count", "proxy-start.count", |events: &mut Vec<
+            Value,
+        >| {
+            events.insert(0, events[0].clone());
+        });
+        rejects_event!(
+            "terminal count",
+            "reached-client.count",
+            |events: &mut Vec<Value>| {
+                events.push(events[1].clone());
+            }
+        );
+        rejects_event!("backend", "proxy-start.backend", |events: &mut Vec<
+            Value,
+        >| {
+            events[0]["backend"] = Value::String("other".into());
+        });
+        rejects_event!("version", "proxy-start.backend", |events: &mut Vec<
+            Value,
+        >| {
+            events[0]["version"] = Value::String(String::new());
+        });
+        rejects_event!("loopback", "proxy-start.loopback", |events: &mut Vec<
+            Value,
+        >| {
+            events[0]["listen_addr"] = Value::String("192.0.2.1".into());
+        });
+        rejects_event!("port", "proxy-start.port", |events: &mut Vec<Value>| {
+            events[0]["listen_port"] = Value::from(0);
+        });
+        rejects_event!("phase", "reached-client.case", |events: &mut Vec<Value>| {
+            events[1]["phase"] = Value::String("tls".into());
+        });
+        rejects_event!("launch case", "reached-client.case", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["launch_case"] = Value::String("direct-exe-cold".into());
+        });
+        rejects_event!(
+            "terminal backend",
+            "reached-client.route",
+            |events: &mut Vec<Value>| {
+                events[1]["proxy_backend"] = Value::String("other".into());
+            }
+        );
+        rejects_event!("routing", "reached-client.route", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["routing_strategy"] = Value::String("system-proxy".into());
+        });
+        rejects_event!("protocol", "reached-client.route", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["protocol"] = Value::String("https".into());
+        });
+        rejects_event!("status", "reached-client.status", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["status"] = Value::String("inconclusive".into());
+        });
+        rejects_event!("session", "session.mismatch", |events: &mut Vec<Value>| {
+            events[1]["session_id"] = Value::String("session-2".into());
+        });
+        rejects_event!("backend version", "session.mismatch", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["proxy_backend_version"] = Value::String("0.10.0".into());
+        });
+        rejects_event!("address family", "session.mismatch", |events: &mut Vec<
+            Value,
+        >| {
+            events[1]["address_family"] = Value::String("ipv6".into());
+        });
+        rejects_event!("event order", "event.order", |events: &mut Vec<Value>| {
+            events.swap(0, 1);
+        });
+        assert_eq!(
+            summarize_smoke_events(b"not-json\n").unwrap_err(),
+            vec![
+                "events.invalid-or-unbounded".to_string(),
+                "proxy-start.count".to_string(),
+                "reached-client.count".to_string()
+            ]
+        );
+        assert_eq!(
+            summarize_smoke_events(&vec![b'x'; MAX_SMOKE_EVENT_BYTES + 1]).unwrap_err(),
+            vec!["events.invalid-or-unbounded".to_string()]
+        );
+        let too_many = vec![serde_json::json!({"event": "other"}); MAX_SMOKE_EVENT_COUNT + 1];
+        assert!(summarize_smoke_events(&encode_events(&too_many))
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem == "events.invalid-or-unbounded"));
+    }
+
     #[test]
     fn recursive_checksum_and_missing_lifecycle_are_rejected() {
         let mut value = contract();
@@ -1240,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_report_reconciles_and_duplicate_row_fails() {
+    fn complete_report_reconciles_and_mutations_fail() {
         let contract_bytes = include_bytes!("../../integration/windows-package-contract-v1.json");
         let contract = contract();
         let mut artifacts = contract["primary_artifacts"]
@@ -1272,10 +1815,46 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let portable_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "c".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
+        let portable_smoke = serde_json::json!({
+            "surface": "portable",
+            "executable_sha256": "c".repeat(64),
+            "backend": "fragcap-native",
+            "network": "loopback-only",
+            "firewall_containment": "outbound-non-loopback-blocked",
+            "process_observation": "complete",
+            "structured_reachability": "proxy-started-and-reached-client",
+            "session_evidence": {
+                "schema_version": 1,
+                "session_id_sha256": "d".repeat(64),
+                "proxy_event": "deep_capture.proxy_started",
+                "proxy_event_count": 1,
+                "proxy_backend": "fragcap-native",
+                "proxy_address_family": "ipv4",
+                "proxy_port_valid": true,
+                "phase_event": "deep_capture.calibration_phase",
+                "terminal_event_count": 1,
+                "phase": "reachability",
+                "launch_case": "direct-exe-warm",
+                "routing_strategy": "child-environment",
+                "protocol": "routing",
+                "stage": "complete",
+                "status": "reached-client"
+            },
+            "socket_observation": {
+                "samples": 1,
+                "observed_product_process_count": 1,
+                "observed_system_process_count": 0,
+                "observed_endpoint_count": 0,
+                "observed_non_loopback_attempt_count": 0,
+                "loopback_socket_observed": false
+            },
+            "cleanup": "reconciled",
+            "complete": true
+        });
         let mut installed_smoke = portable_smoke.clone();
         installed_smoke["surface"] = Value::String("installed".into());
-        let mut value = serde_json::json!({"schema_version": 3, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smokes": [portable_smoke, installed_smoke], "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
+        installed_smoke["session_evidence"]["session_id_sha256"] = Value::String("e".repeat(64));
+        let mut value = serde_json::json!({"schema_version": 4, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smokes": [portable_smoke, installed_smoke], "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
             std::process::id()
@@ -1285,7 +1864,17 @@ mod tests {
             .unwrap()
             .is_empty());
         let valid = value.clone();
-        let mut legacy = valid.clone();
+        let historical_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "c".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
+        let mut historical_installed = historical_smoke.clone();
+        historical_installed["surface"] = Value::String("installed".into());
+        let mut schema_3 = valid.clone();
+        schema_3["schema_version"] = Value::from(3);
+        schema_3["smokes"] = serde_json::json!([historical_smoke, historical_installed]);
+        fs::write(&path, serde_json::to_vec(&schema_3).unwrap()).unwrap();
+        assert!(validate_report(&contract, contract_bytes, &path)
+            .unwrap()
+            .is_empty());
+        let mut legacy = schema_3.clone();
         legacy["schema_version"] = Value::from(2);
         let mut legacy_smoke = legacy["smokes"][0].clone();
         let legacy_smoke_object = legacy_smoke.as_object_mut().unwrap();
@@ -1313,6 +1902,20 @@ mod tests {
                 );
             }};
         }
+        macro_rules! rejects_with {
+            ($label:literal, $expected:literal, $mutation:expr) => {{
+                let mut candidate = valid.clone();
+                $mutation(&mut candidate);
+                fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+                let problems = validate_report(&contract, contract_bytes, &path).unwrap();
+                assert!(
+                    problems.iter().any(|problem| problem.contains($expected)),
+                    "{} mutation must emit {}; problems: {problems:?}",
+                    $label,
+                    $expected
+                );
+            }};
+        }
         rejects!("missing", |candidate: &mut Value| {
             candidate["entries"].as_array_mut().unwrap().pop();
         });
@@ -1333,23 +1936,244 @@ mod tests {
         rejects!("mis-featured", |candidate: &mut Value| {
             candidate["build_identity"]["features"] = serde_json::json!(["live"]);
         });
-        rejects!("prohibited", |candidate: &mut Value| {
-            candidate["smokes"][0]["network"] = Value::String("python-fetch".into());
-        });
+        rejects_with!(
+            "prohibited",
+            "smoke.network.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["network"] = Value::String("python-fetch".into());
+            }
+        );
         rejects!("missing-installed-smoke", |candidate: &mut Value| {
             candidate["smokes"].as_array_mut().unwrap().pop();
         });
-        rejects!("duplicate-smoke-surface", |candidate: &mut Value| {
-            candidate["smokes"][1]["surface"] = Value::String("portable".into());
+        rejects_with!(
+            "duplicate-smoke-surface",
+            "smoke.surface.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["surface"] = Value::String("portable".into());
+            }
+        );
+        let mut private_surface = valid.clone();
+        let private_value = "private-local-value".repeat(128);
+        private_surface["smokes"][0]["surface"] = Value::String(private_value.clone());
+        fs::write(&path, serde_json::to_vec(&private_surface).unwrap()).unwrap();
+        let private_problems = validate_report(&contract, contract_bytes, &path).unwrap();
+        assert!(private_problems
+            .iter()
+            .any(|problem| problem == "smoke.surface.invalid"));
+        assert!(private_problems
+            .iter()
+            .all(|problem| !problem.contains(&private_value)));
+        rejects_with!(
+            "unbound-smoke-digest",
+            "smoke.executable-digest.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["executable_sha256"] = Value::String("d".repeat(64));
+            }
+        );
+        rejects_with!(
+            "unexpected-network",
+            "socket.non-loopback-observed",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["socket_observation"]
+                    ["observed_non_loopback_attempt_count"] = Value::from(1);
+            }
+        );
+        rejects_with!(
+            "incomplete-installed-smoke",
+            "smoke.complete.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["complete"] = Value::Bool(false);
+            }
+        );
+        rejects_with!(
+            "firewall",
+            "smoke.firewall-containment.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["firewall_containment"] = Value::String("absent".into());
+            }
+        );
+        rejects_with!(
+            "process-observation",
+            "smoke.process-observation.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["process_observation"] = Value::String("partial".into());
+            }
+        );
+        rejects_with!(
+            "structured-reachability",
+            "smoke.structured-reachability.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["structured_reachability"] =
+                    Value::String("socket-sampled".into());
+            }
+        );
+        rejects_with!(
+            "cleanup",
+            "smoke.cleanup.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["cleanup"] = Value::String("residue".into());
+            }
+        );
+        rejects_with!(
+            "session-schema",
+            "session.schema-version.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["schema_version"] = Value::from(2);
+            }
+        );
+        rejects_with!(
+            "session-identity",
+            "session.identity.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["session_id_sha256"] =
+                    Value::String("bad".into());
+            }
+        );
+        rejects_with!(
+            "reused-session-evidence",
+            "session.identity-reused",
+            |candidate: &mut Value| {
+                candidate["smokes"][1]["session_evidence"] =
+                    candidate["smokes"][0]["session_evidence"].clone();
+            }
+        );
+        rejects_with!(
+            "proxy-event",
+            "session.proxy-event.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["proxy_event"] =
+                    Value::String("missing".into());
+            }
+        );
+        rejects_with!(
+            "proxy-event-count",
+            "session.proxy-event-count.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["proxy_event_count"] = Value::from(2);
+            }
+        );
+        rejects_with!(
+            "proxy-backend",
+            "session.proxy-backend.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["proxy_backend"] =
+                    Value::String("other".into());
+            }
+        );
+        rejects_with!(
+            "proxy-family",
+            "session.proxy-address-family.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["proxy_address_family"] =
+                    Value::String("wildcard".into());
+            }
+        );
+        rejects_with!(
+            "proxy-port",
+            "session.proxy-port.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["proxy_port_valid"] = Value::Bool(false);
+            }
+        );
+        rejects_with!(
+            "phase-event",
+            "session.phase-event.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["phase_event"] =
+                    Value::String("missing".into());
+            }
+        );
+        rejects_with!(
+            "terminal-event-count",
+            "session.terminal-event-count.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["terminal_event_count"] = Value::from(2);
+            }
+        );
+        rejects_with!("phase", "session.phase.invalid", |candidate: &mut Value| {
+            candidate["smokes"][0]["session_evidence"]["phase"] = Value::String("tls".into());
         });
-        rejects!("unbound-smoke-digest", |candidate: &mut Value| {
-            candidate["smokes"][1]["executable_sha256"] = Value::String("d".repeat(64));
+        rejects_with!(
+            "launch-case",
+            "session.launch-case.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["launch_case"] =
+                    Value::String("steam-protocol-cold".into());
+            }
+        );
+        rejects_with!(
+            "routing",
+            "session.routing-strategy.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["routing_strategy"] =
+                    Value::String("system-proxy".into());
+            }
+        );
+        rejects_with!(
+            "protocol",
+            "session.protocol.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["protocol"] =
+                    Value::String("https".into());
+            }
+        );
+        rejects_with!("stage", "session.stage.invalid", |candidate: &mut Value| {
+            candidate["smokes"][0]["session_evidence"]["stage"] = Value::String("observing".into());
         });
-        rejects!("unexpected-network", |candidate: &mut Value| {
-            candidate["smokes"][1]["observed_non_loopback_attempt_count"] = Value::from(1);
+        rejects_with!(
+            "status",
+            "session.status.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["status"] =
+                    Value::String("inconclusive".into());
+            }
+        );
+        rejects_with!(
+            "samples",
+            "socket.samples.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["socket_observation"]["samples"] = Value::from(0);
+            }
+        );
+        rejects_with!(
+            "product-process",
+            "socket.product-process-count.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["socket_observation"]["observed_product_process_count"] =
+                    Value::from(0);
+            }
+        );
+        rejects_with!(
+            "system-process",
+            "socket.system-process-count.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["socket_observation"]["observed_system_process_count"] =
+                    Value::String("zero".into());
+            }
+        );
+        rejects_with!(
+            "endpoint-count",
+            "socket.endpoint-count.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["socket_observation"]["observed_endpoint_count"] =
+                    Value::String("zero".into());
+            }
+        );
+        rejects_with!(
+            "loopback-diagnostic",
+            "socket.loopback-diagnostic.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["socket_observation"]["loopback_socket_observed"] =
+                    Value::String("false".into());
+            }
+        );
+        rejects!("mixed-schema", |candidate: &mut Value| {
+            candidate["smokes"][0]["network_observation"] =
+                Value::String("firewall-contained-and-socket-observed".into());
         });
-        rejects!("incomplete-installed-smoke", |candidate: &mut Value| {
-            candidate["smokes"][1]["complete"] = Value::Bool(false);
+        rejects!("unknown-schema", |candidate: &mut Value| {
+            candidate["schema_version"] = Value::from(5);
         });
         rejects!("unsigned-policy", |candidate: &mut Value| {
             candidate["pe_inspections"][0]["signature"] = Value::String("valid".into());

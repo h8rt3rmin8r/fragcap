@@ -488,6 +488,54 @@ Param(
         return $result
     }
 
+    function Get-ValidatedSmokeSessionEvidence {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$Stderr,
+
+            [Parameter(Mandatory=$true)]
+            [string]$SurfaceRoot
+        )
+        $eventFile = Join-Path $SurfaceRoot 'events.ndjson'
+        $summaryFile = Join-Path $SurfaceRoot 'session-evidence.json'
+        [System.IO.File]::WriteAllText($eventFile, $Stderr, [System.Text.UTF8Encoding]::new($false))
+        try {
+            $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+            $manifest = Join-Path $repositoryRoot 'xtask\Cargo.toml'
+            $validation = Invoke-HiddenProcess -FilePath 'cargo.exe' -ArgumentList @('run', '--quiet', '--manifest-path', $manifest, '--', 'package-certification', 'validate-smoke-events', $eventFile, $summaryFile) -TimeoutSeconds 60
+            if ($validation.ExitCode -ne 0) {
+                $predicateDiagnostics = ([string]$validation.Stderr).Trim()
+                if ([string]::IsNullOrEmpty($predicateDiagnostics)) { throw 'structured-events.invalid' }
+                if (($predicateDiagnostics -split "`r?`n").Count -gt 16 -or [System.Text.Encoding]::UTF8.GetByteCount($predicateDiagnostics) -gt 1024) { throw 'structured-events.diagnostic-overflow' }
+                throw $predicateDiagnostics
+            }
+            if (-not (Test-Path -LiteralPath $summaryFile)) { throw 'structured-events.invalid' }
+            return Get-Content -Raw -LiteralPath $summaryFile | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        } finally {
+            Remove-Item -LiteralPath $eventFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Get-SmokePredicateFailures {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [pscustomobject]$Observation,
+
+            [Parameter(Mandatory=$true)]
+            [bool]$FirewallInstalled
+        )
+        $failures = [System.Collections.Generic.List[string]]::new()
+        if (-not $FirewallInstalled) { $failures.Add('firewall.not-installed') }
+        if (-not $Observation.complete -or $Observation.samples -lt 1) { $failures.Add('observation.incomplete') }
+        if ($Observation.process_paths.Count -lt 1) { $failures.Add('process.none') }
+        if ($Observation.unexpected_process_paths.Count -ne 0) { $failures.Add('process.unexpected') }
+        if ($Observation.non_loopback_addresses.Count -ne 0) { $failures.Add('network.non-loopback') }
+        if ($failures.Count -gt 16) { throw 'smoke predicate diagnostic count exceeded its bound' }
+        return @($failures)
+    }
+
     function Invoke-ControlledSmoke {
         [CmdletBinding()]
         Param(
@@ -519,15 +567,29 @@ Param(
         $firewallRuleName = "fragcap-package-certification-$Surface-$([guid]::NewGuid().ToString('N'))"
         if (-not $script:TopLevelCmdlet.ShouldProcess($Executable, "Block non-loopback $Surface smoke traffic for the exact packaged executable")) { throw "$Surface smoke network containment was not established" }
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
+        $firewallInstalled = $true
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
-            if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw "$Surface controlled native smoke did not produce expected evidence" }
-            if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "$Surface controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
-            if ($smoke.Observation.process_paths.Count -lt 1) { throw "$Surface controlled native smoke recorded no executable path" }
-            if ($smoke.Observation.unexpected_process_paths.Count -ne 0) { throw "$Surface controlled native smoke launched unexpected executables: $($smoke.Observation.unexpected_process_paths -join ', ')" }
-            if ($smoke.Observation.non_loopback_addresses.Count -ne 0 -or -not $smoke.Observation.loopback_observed -or $smoke.Observation.observed_addresses.Count -lt 1) { throw "$Surface controlled native smoke was not completely loopback-contained" }
-            return [ordered]@{ surface = $Surface; executable_sha256 = Get-Sha256 -Path $Executable; backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; cleanup = 'reconciled'; complete = $true }
+            try {
+                $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+            } catch {
+                throw "$Surface smoke predicates failed: invocation.failed"
+            }
+            try {
+                $sessionEvidence = Get-ValidatedSmokeSessionEvidence -Stderr $smoke.Stderr -SurfaceRoot $surfaceRoot
+            } catch {
+                $predicateDiagnostics = [string]$_.Exception.Message
+                if ([System.Text.Encoding]::UTF8.GetByteCount($predicateDiagnostics) -gt 1024) { $predicateDiagnostics = 'structured-events.diagnostic-overflow' }
+                throw "$Surface smoke predicates failed: $predicateDiagnostics"
+            }
+            $failures = @(Get-SmokePredicateFailures -Observation $smoke.Observation -FirewallInstalled $firewallInstalled)
+            if ($failures.Count -ne 0) {
+                $diagnostic = "$Surface smoke predicates failed: $($failures -join ',')"
+                if ([System.Text.Encoding]::UTF8.GetByteCount($diagnostic) -gt 1024) { throw 'smoke predicate diagnostic exceeded its byte bound' }
+                throw $diagnostic
+            }
+            $socketObservation = [ordered]@{ samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed }
+            return [ordered]@{ surface = $Surface; executable_sha256 = Get-Sha256 -Path $Executable; backend = 'fragcap-native'; network = 'loopback-only'; firewall_containment = 'outbound-non-loopback-blocked'; process_observation = 'complete'; structured_reachability = 'proxy-started-and-reached-client'; session_evidence = $sessionEvidence; socket_observation = $socketObservation; cleanup = 'reconciled'; complete = $true }
         } finally {
             if ($script:TopLevelCmdlet.ShouldProcess($firewallRuleName, "Remove $Surface package-certification smoke firewall rule")) {
                 Remove-NetFirewallRule -Name $firewallRuleName -ErrorAction Stop
@@ -754,7 +816,7 @@ Param(
         )
         $entryRows = @($contract.shared_entries | ForEach-Object { $entryFile = Get-Item -LiteralPath (Join-Path $zipRoot $_.path); [pscustomobject]@{ path = $_.path; role = $_.role; size_bytes = $entryFile.Length; sha256 = Get-Sha256 -Path $entryFile.FullName; signature = $_.signature; complete = $true } })
         $reportIdentity = [ordered]@{ product = $contract.release_identity.product; target = $contract.release_identity.target; architecture = $contract.release_identity.architecture; pe_machine = $contract.release_identity.pe_machine; features = @($contract.release_identity.features); deep_capture_backend = $contract.release_identity.deep_capture_backend }
-        $report = [ordered]@{ schema_version = 3; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smokes = @($portableSmoke, $installedSmoke); lifecycle = @($lifecycle); fresh_start = [ordered]@{ preserve_by_default = $true; current_user_cleanup = $true; custom_paths_preserved = $true; deep_capture_reconciled = $true; clean_reinstall = $true; complete = $true }; findings = @(); complete = $true }
+        $report = [ordered]@{ schema_version = 4; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smokes = @($portableSmoke, $installedSmoke); lifecycle = @($lifecycle); fresh_start = [ordered]@{ preserve_by_default = $true; current_user_cleanup = $true; custom_paths_preserved = $true; deep_capture_reconciled = $true; clean_reinstall = $true; complete = $true }; findings = @(); complete = $true }
         $json = $report | ConvertTo-Json -Depth 16
         if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt [int]$contract.report_limits.max_report_bytes) { throw 'certification report exceeds its byte bound' }
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($reportFile))
