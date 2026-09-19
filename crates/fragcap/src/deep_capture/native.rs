@@ -25,7 +25,8 @@ pub use fragcap_proxy::{
 use super::{
     ApplicationConnectionWindow, BackendDescriptor, Budget, ClassificationSummary, CleanupResult,
     CleanupStatus, CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint,
-    ProtocolClassification, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
+    ObservationDrain, ProtocolClassification, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan,
+    Stage, StageFailure,
 };
 
 /// Finite native runtime limits selected by the library consumer.
@@ -528,37 +529,44 @@ struct NativeProxyLease {
     application_classification_summary: Option<ClassificationSummary>,
 }
 
-impl ProxyLease for NativeProxyLease {
-    fn route(&self) -> Result<ProxyRoute, StageFailure> {
-        let endpoint = self.lease.endpoint();
-        Ok(ProxyRoute::new(
-            LoopbackEndpoint::new(endpoint)
-                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?,
-            (
-                self.lease.proxy_url(),
-                self.lease.capability_proof().socks5h_url(endpoint),
-            ),
-            self.lease.capability_proof().proxy_authorization(),
-            self.lease.ca_der().to_vec(),
-            self.lease.ca_sha1_thumbprint().to_string(),
-            self.lease.authority_generation(),
-            self.controlled_lab
-                .as_ref()
-                .map(|lab| (lab.http_origin, lab.https_origin)),
-        ))
-    }
-
-    fn observations(
+impl NativeProxyLease {
+    fn collect_observation_drain(
         &mut self,
         budget: Budget,
-    ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+    ) -> Result<ObservationDrain, StageFailure> {
         let observation = self
             .lease
             .observation(budget.remaining())
             .map_err(|error| StageFailure::new(Stage::Observe, error.code, error.detail))?;
+        let complete = observation.state == fragcap_proxy::LifecycleState::Stopped
+            && observation.live_connections == 0
+            && observation.resources.connection_tasks_current == 0;
+        let incomplete_detail = (!complete).then(|| {
+            format!(
+                "native proxy observation drain incomplete: state={:?}, live_connections={}, connection_tasks_current={}",
+                observation.state,
+                observation.live_connections,
+                observation.resources.connection_tasks_current,
+            )
+        });
         self.observations_lost = observation.protocol.observations_dropped_oldest;
-        Ok(observation
-            .application
+        let observations = self.map_observations(observation.application);
+        if complete {
+            Ok(ObservationDrain::complete(observations))
+        } else {
+            Ok(ObservationDrain::incomplete(
+                observations,
+                "observation-drain-incomplete",
+                incomplete_detail.expect("incomplete detail exists for an incomplete drain"),
+            ))
+        }
+    }
+
+    fn map_observations(
+        &self,
+        observations: Vec<fragcap_proxy::ProxyObservation>,
+    ) -> Vec<CompatibilityObservation> {
+        observations
             .into_iter()
             .map(|value| {
                 let (
@@ -626,7 +634,40 @@ impl ProxyLease for NativeProxyLease {
                     classification,
                 }
             })
-            .collect())
+            .collect()
+    }
+}
+
+impl ProxyLease for NativeProxyLease {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        let endpoint = self.lease.endpoint();
+        Ok(ProxyRoute::new(
+            LoopbackEndpoint::new(endpoint)
+                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?,
+            (
+                self.lease.proxy_url(),
+                self.lease.capability_proof().socks5h_url(endpoint),
+            ),
+            self.lease.capability_proof().proxy_authorization(),
+            self.lease.ca_der().to_vec(),
+            self.lease.ca_sha1_thumbprint().to_string(),
+            self.lease.authority_generation(),
+            self.controlled_lab
+                .as_ref()
+                .map(|lab| (lab.http_origin, lab.https_origin)),
+        ))
+    }
+
+    fn observations(
+        &mut self,
+        budget: Budget,
+    ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        self.collect_observation_drain(budget)
+            .map(|drain| drain.into_parts().0)
+    }
+
+    fn drain_observations(&mut self, budget: Budget) -> Result<ObservationDrain, StageFailure> {
+        self.collect_observation_drain(budget)
     }
 
     fn observations_lost(&self) -> u64 {

@@ -140,7 +140,6 @@ impl PreparedSession {
             sequence: 0,
             interrupted: false,
             facts_persisted: false,
-            observation_started: None,
             route_verification: None,
             resource_journal: None,
             cleanup_lifecycle: None,
@@ -174,7 +173,6 @@ pub struct DeepCaptureSession<'a> {
     sequence: u64,
     interrupted: bool,
     facts_persisted: bool,
-    observation_started: Option<Duration>,
     route_verification: Option<RouteVerification>,
     resource_journal: Option<ResourceJournal>,
     cleanup_lifecycle: Option<LifecycleWriter>,
@@ -671,7 +669,6 @@ impl DeepCaptureSession<'_> {
             return Ok(());
         }
         let started = self.adapters.clock.monotonic_elapsed();
-        self.observation_started = Some(started);
         let budget = self.remaining_budget(started, self.plan.deadlines.observation);
         let capture_target = self.capture.token.clone();
         if !self.record_resource(
@@ -827,45 +824,36 @@ impl DeepCaptureSession<'_> {
             );
             self.record_cleanup(result);
         }
-        if self.deadline_expired(started, self.plan.deadlines.shutdown) {
-            self.fail(
-                Stage::ProxyStop,
-                "shutdown-deadline-exceeded",
-                "stop operations returned after the shutdown deadline",
-            );
-        }
         if let Some(proxy) = self.proxy.as_mut() {
-            let observation_started = self.observation_started.unwrap_or(started);
             let elapsed = self.adapters.clock.monotonic_elapsed();
             let budget = Budget::new(
                 self.plan
                     .deadlines
-                    .observation
-                    .saturating_sub(elapsed.saturating_sub(observation_started)),
+                    .shutdown
+                    .saturating_sub(elapsed.saturating_sub(started)),
             );
-            match proxy.observations(budget) {
-                Ok(observations) => {
+            match proxy.drain_observations(budget) {
+                Ok(drain) => {
                     self.classification_records_lost = self
                         .classification_records_lost
                         .saturating_add(proxy.observations_lost());
                     self.application_classification_summary =
                         proxy.application_classification_summary();
+                    let (observations, status) = drain.into_parts();
                     self.extend_observations(observations);
+                    if let ObservationDrainStatus::Incomplete { code, detail } = status {
+                        self.fail(Stage::Observe, code, detail);
+                    }
                 }
                 Err(error) => self.failures.push(error),
             }
-            if self.deadline_expired(observation_started, self.plan.deadlines.observation)
-                && !self
-                    .failures
-                    .iter()
-                    .any(|failure| failure.code == "observation-deadline-exceeded")
-            {
-                self.fail(
-                    Stage::Observe,
-                    "observation-deadline-exceeded",
-                    "proxy observations returned after the shared observation deadline",
-                );
-            }
+        }
+        if self.deadline_expired(started, self.plan.deadlines.shutdown) {
+            self.fail(
+                Stage::ProxyStop,
+                "shutdown-deadline-exceeded",
+                "stop and observation drain returned after the shutdown deadline",
+            );
         }
         if let Some(routing) = self.routing.as_ref() {
             self.route_verification = Some(routing.verify(&self.observations));
