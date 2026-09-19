@@ -199,6 +199,94 @@ impl ProxyLease for BudgetProxyRun {
     }
 }
 
+struct IncompleteDrainProxy(Ledger);
+impl ProxyBackend for IncompleteDrainProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "incomplete-drain".into(),
+            version: "1".into(),
+        }
+    }
+
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(IncompleteDrainProxyRun(self.0.clone())))
+    }
+}
+
+struct IncompleteDrainProxyRun(Ledger);
+impl ProxyLease for IncompleteDrainProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+
+    fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        Ok(Vec::new())
+    }
+
+    fn drain_observations(&mut self, _: Budget) -> Result<ObservationDrain, StageFailure> {
+        self.0.borrow_mut().push("proxy.observe.incomplete".into());
+        Ok(ObservationDrain::incomplete(
+            Vec::new(),
+            "controlled-drain-incomplete",
+            "controlled proxy retained unfinished observation work",
+        ))
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        self.0.borrow_mut().push("proxy.stop".into());
+        released("proxy-process")
+    }
+
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        self.0.borrow_mut().push("proxy.cleanup".into());
+        vec![released("proxy-material")]
+    }
+}
+
+struct FailingDrainProxy(Ledger);
+impl ProxyBackend for FailingDrainProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "failing-drain".into(),
+            version: "1".into(),
+        }
+    }
+
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(FailingDrainProxyRun(self.0.clone())))
+    }
+}
+
+struct FailingDrainProxyRun(Ledger);
+impl ProxyLease for FailingDrainProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+
+    fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        Ok(Vec::new())
+    }
+
+    fn drain_observations(&mut self, _: Budget) -> Result<ObservationDrain, StageFailure> {
+        self.0.borrow_mut().push("proxy.observe.failed".into());
+        Err(StageFailure::new(
+            Stage::Observe,
+            "controlled-drain-failed",
+            "controlled proxy observation drain failed",
+        ))
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        self.0.borrow_mut().push("proxy.stop".into());
+        released("proxy-process")
+    }
+
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        self.0.borrow_mut().push("proxy.cleanup".into());
+        vec![released("proxy-material")]
+    }
+}
+
 struct SharedClock(Rc<RefCell<Duration>>);
 impl SessionClock for SharedClock {
     fn wall_now(&mut self) -> SystemTime {
@@ -234,7 +322,69 @@ impl CaptureRunner for TimedCapture {
         })
     }
     fn stop(&mut self, _: Budget) -> CleanupResult {
-        *self.0.borrow_mut() = Duration::from_secs(9);
+        *self.0.borrow_mut() = Duration::from_secs(11);
+        released("capture")
+    }
+}
+
+struct LateObservationCapture(Rc<RefCell<Duration>>);
+impl CaptureRunner for LateObservationCapture {
+    fn prepare(
+        &mut self,
+        _: &SessionConfig,
+        _: &PreparedTarget,
+        _: LoopbackEndpoint,
+    ) -> Result<PreparedCapture, PreflightRefusal> {
+        Ok(PreparedCapture {
+            token: "late-observation".into(),
+        })
+    }
+
+    fn run(
+        &mut self,
+        _: &PreparedCapture,
+        _: &AppliedRoute,
+        _: Budget,
+    ) -> Result<CaptureRunResult, StageFailure> {
+        *self.0.borrow_mut() = Duration::from_secs(11);
+        Ok(CaptureRunResult {
+            observations: Vec::new(),
+            interrupted: false,
+        })
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        released("capture")
+    }
+}
+
+struct LateShutdownCapture(Rc<RefCell<Duration>>);
+impl CaptureRunner for LateShutdownCapture {
+    fn prepare(
+        &mut self,
+        _: &SessionConfig,
+        _: &PreparedTarget,
+        _: LoopbackEndpoint,
+    ) -> Result<PreparedCapture, PreflightRefusal> {
+        Ok(PreparedCapture {
+            token: "late-shutdown".into(),
+        })
+    }
+
+    fn run(
+        &mut self,
+        _: &PreparedCapture,
+        _: &AppliedRoute,
+        _: Budget,
+    ) -> Result<CaptureRunResult, StageFailure> {
+        Ok(CaptureRunResult {
+            observations: Vec::new(),
+            interrupted: false,
+        })
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        *self.0.borrow_mut() = Duration::from_secs(11);
         released("capture")
     }
 }
@@ -1266,7 +1416,7 @@ fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned() {
 }
 
 #[test]
-fn proxy_observation_uses_only_the_original_observation_budget_remaining() {
+fn complete_proxy_drain_uses_shutdown_budget_after_capture_window_closes() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let elapsed = Rc::new(RefCell::new(Duration::ZERO));
     let proxy_budget = Rc::new(RefCell::new(None));
@@ -1283,8 +1433,96 @@ fn proxy_observation_uses_only_the_original_observation_budget_remaining() {
         .into_session(environment)
         .run_to_completion(authorization);
 
-    assert_eq!(*proxy_budget.borrow(), Some(Duration::from_secs(1)));
+    assert_eq!(*proxy_budget.borrow(), Some(Duration::from_secs(7)));
     assert!(report.snapshot.failures.is_empty());
+}
+
+#[test]
+fn incomplete_proxy_drain_fails_specifically_and_cleanup_continues() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(IncompleteDrainProxy(ledger.clone()));
+
+    let report = run_with(environment);
+
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "controlled-drain-incomplete"));
+    assert!(ledger
+        .borrow()
+        .iter()
+        .any(|call| call == "proxy.observe.incomplete"));
+    assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+}
+
+#[test]
+fn failed_proxy_drain_fails_specifically_and_cleanup_continues() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(FailingDrainProxy(ledger.clone()));
+
+    let report = run_with(environment);
+
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "controlled-drain-failed"));
+    assert!(ledger
+        .borrow()
+        .iter()
+        .any(|call| call == "proxy.observe.failed"));
+    assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+}
+
+#[test]
+fn capture_return_after_observation_deadline_fails_and_cleanup_continues() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let elapsed = Rc::new(RefCell::new(Duration::ZERO));
+    let mut environment = adapters(&ledger);
+    environment.clock = Box::new(SharedClock(elapsed.clone()));
+    environment.capture = Box::new(LateObservationCapture(elapsed));
+    let mut bounded = config();
+    bounded.deadlines.observation = Duration::from_secs(10);
+
+    let prepared = DeepCapture::preflight(bounded, &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session(environment)
+        .run_to_completion(authorization);
+
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "observation-deadline-exceeded"));
+    assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+}
+
+#[test]
+fn stop_return_after_shutdown_deadline_fails_and_cleanup_continues() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let elapsed = Rc::new(RefCell::new(Duration::ZERO));
+    let mut environment = adapters(&ledger);
+    environment.clock = Box::new(SharedClock(elapsed.clone()));
+    environment.capture = Box::new(LateShutdownCapture(elapsed));
+    let mut bounded = config();
+    bounded.deadlines.shutdown = Duration::from_secs(10);
+
+    let prepared = DeepCapture::preflight(bounded, &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session(environment)
+        .run_to_completion(authorization);
+
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "shutdown-deadline-exceeded"));
+    assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
 }
 
 #[test]

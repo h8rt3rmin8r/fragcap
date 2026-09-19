@@ -74,6 +74,13 @@ pub trait ProxyLease {
         &mut self,
         budget: Budget,
     ) -> Result<Vec<CompatibilityObservation>, StageFailure>;
+    /// Collect terminal observations with explicit bounded completion evidence.
+    ///
+    /// The default preserves compatibility for adapters whose successful
+    /// observation call already means complete collection.
+    fn drain_observations(&mut self, budget: Budget) -> Result<ObservationDrain, StageFailure> {
+        self.observations(budget).map(ObservationDrain::complete)
+    }
     /// Observations discarded by bounded proxy retention before collection.
     fn observations_lost(&self) -> u64 {
         0
@@ -84,6 +91,53 @@ pub trait ProxyLease {
     }
     fn stop(&mut self, budget: Budget) -> CleanupResult;
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult>;
+}
+
+/// Bounded terminal collection of proxy observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservationDrain {
+    observations: Vec<CompatibilityObservation>,
+    status: ObservationDrainStatus,
+}
+
+impl ObservationDrain {
+    /// Declare that all terminal observations were collected within the supplied budget.
+    pub fn complete(observations: Vec<CompatibilityObservation>) -> Self {
+        Self {
+            observations,
+            status: ObservationDrainStatus::Complete,
+        }
+    }
+
+    /// Retain partial observations while declaring terminal collection incomplete.
+    pub fn incomplete(
+        observations: Vec<CompatibilityObservation>,
+        code: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            observations,
+            status: ObservationDrainStatus::Incomplete {
+                code: code.into(),
+                detail: detail.into(),
+            },
+        }
+    }
+
+    /// Consume the drain into retained evidence and its completion authority.
+    pub fn into_parts(self) -> (Vec<CompatibilityObservation>, ObservationDrainStatus) {
+        (self.observations, self.status)
+    }
+}
+
+/// Structured completion authority for one bounded proxy observation drain.
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObservationDrainStatus {
+    /// Every terminal observation represented by the stopped proxy was collected.
+    Complete,
+    /// Partial observations remain truthful but terminal collection is incomplete.
+    Incomplete { code: String, detail: String },
 }
 
 /// Replaceable loopback proxy backend.

@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 
 use fragcap::deep_capture::{
     run_controlled_native_requests, ArtifactRequests, BackendDescriptor, Budget, CleanupStatus,
-    Deadlines, LaunchCase, LoopbackEndpoint, NativeProxyAdapter, PlanId, PreparedTarget,
-    ProxyBackend, RoutingPlan, SessionMode, SessionPlan,
+    Deadlines, LaunchCase, LoopbackEndpoint, NativeProxyAdapter, ObservationDrainStatus, PlanId,
+    PreparedTarget, ProxyBackend, RoutingPlan, SessionMode, SessionPlan,
 };
 use fragcap::targets::CompatibilityProtocol;
 
@@ -70,9 +70,11 @@ fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route
         lease.stop(Budget::new(Duration::from_secs(2))).status,
         CleanupStatus::Released
     );
-    let observations = lease
-        .observations(Budget::new(Duration::from_secs(1)))
+    let (observations, drain_status) = lease
+        .drain_observations(Budget::new(Duration::from_secs(1)))
+        .map(fragcap::deep_capture::ObservationDrain::into_parts)
         .unwrap();
+    assert_eq!(drain_status, ObservationDrainStatus::Complete);
     let http = observations
         .iter()
         .find(|item| item.protocol == "http")
