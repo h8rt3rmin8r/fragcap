@@ -473,6 +473,18 @@ impl ApplicationArtifactLease {
             dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
         >,
     ) -> io::Result<Self> {
+        Self::open_correlated_with_writer_start(path, session_id, capacity, correlation, || {})
+    }
+
+    fn open_correlated_with_writer_start(
+        path: impl Into<PathBuf>,
+        session_id: impl Into<String>,
+        capacity: usize,
+        correlation: Arc<
+            dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
+        >,
+        writer_start: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -501,9 +513,11 @@ impl ApplicationArtifactLease {
         });
         let worker_account = Arc::clone(&account);
         let worker_classification_summary = Arc::clone(&classification_summary);
+        let (ready_send, ready_receive) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("fragcap-application-writer".to_string())
             .spawn(move || {
+                writer_start();
                 writer_loop(
                     file,
                     &session_id,
@@ -514,8 +528,18 @@ impl ApplicationArtifactLease {
                     connections,
                     correlation,
                     worker_classification_summary,
+                    ready_send,
                 )
             })?;
+        if ready_receive.recv().is_err() {
+            sink.retired.store(true, Ordering::Release);
+            let sender = sink.sender.lock().expect("application sender lock").take();
+            drop(sender);
+            let _ = worker.join();
+            return Err(io::Error::other(
+                "application writer stopped before readiness",
+            ));
+        }
         Ok(Self {
             path,
             sink,
@@ -584,6 +608,7 @@ fn writer_loop(
     connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
     reconciled_classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
+    ready: mpsc::SyncSender<()>,
 ) -> io::Result<()> {
     let mut writer = application_writer(file);
     let mut sequence = 0_u64;
@@ -614,6 +639,9 @@ fn writer_loop(
     let mut classification_summary = ClassificationSummary::default();
     let mut pending_storage = Vec::with_capacity(64);
     let mut pending_serialized_bytes = 0_u64;
+    ready
+        .send(())
+        .map_err(|_| io::Error::other("application writer readiness receiver disconnected"))?;
     loop {
         let event = match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(event) => event,
@@ -2602,6 +2630,67 @@ mod tests {
     };
 
     #[test]
+    fn writer_start_blocks_lease_publication_until_consumer_is_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ready.jsonl");
+        let (entered_send, entered_receive) = mpsc::sync_channel(1);
+        let (release_send, release_receive) = mpsc::sync_channel(1);
+        let opener = std::thread::spawn(move || {
+            ApplicationArtifactLease::open_correlated_with_writer_start(
+                path,
+                "ready-session",
+                4_096,
+                Arc::new(|_| ApplicationCorrelation::default()),
+                move || {
+                    entered_send.send(()).unwrap();
+                    release_receive.recv().unwrap();
+                },
+            )
+        });
+
+        entered_receive.recv().unwrap();
+        assert!(!opener.is_finished());
+        release_send.send(()).unwrap();
+
+        let mut lease = opener.join().unwrap().unwrap();
+        let sink = lease.sink();
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "ready-session",
+                1,
+                None,
+                None,
+                ApplicationEventKind::HttpStreamOpen,
+            )),
+            EventDisposition::Accepted
+        );
+        lease.finish().unwrap();
+        let accounting = sink.accounting();
+        assert_eq!(accounting.queue_capacity, 4_096);
+        assert_eq!(accounting.queue_current, 0);
+        assert_eq!(accounting.dropped_events, 0);
+    }
+
+    #[test]
+    fn writer_start_failure_settles_worker_before_refusal() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = ApplicationArtifactLease::open_correlated_with_writer_start(
+            directory.path().join("failed.jsonl"),
+            "failed-session",
+            4_096,
+            Arc::new(|_| ApplicationCorrelation::default()),
+            || panic!("controlled writer startup failure"),
+        )
+        .err()
+        .expect("startup failure must refuse the lease");
+
+        assert_eq!(
+            error.to_string(),
+            "application writer stopped before readiness"
+        );
+    }
+
+    #[test]
     fn streaming_failures_and_limits_are_not_classified_as_full() {
         let classification = |outcome| {
             application_event_classification(&ApplicationEvent::now(
@@ -2812,6 +2901,7 @@ mod tests {
             EventDisposition::Accepted
         );
 
+        let (ready, _readiness) = mpsc::sync_channel(1);
         assert!(writer_loop(
             file,
             "session",
@@ -2822,6 +2912,7 @@ mod tests {
             Arc::new(Mutex::new(BTreeMap::new())),
             Arc::new(|_| ApplicationCorrelation::default()),
             Arc::new(Mutex::new(None)),
+            ready,
         )
         .is_err());
         assert!(retired.load(Ordering::Acquire));
@@ -3267,6 +3358,7 @@ mod tests {
         );
         let sender = Arc::clone(&sink.sender);
         drop(sink.sender.lock().unwrap().take());
+        let (ready, _readiness) = mpsc::sync_channel(1);
         writer_loop(
             file,
             "session",
@@ -3281,6 +3373,7 @@ mod tests {
                 ..ApplicationCorrelation::default()
             }),
             Arc::new(Mutex::new(None)),
+            ready,
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
@@ -3340,6 +3433,7 @@ mod tests {
         );
         let sender = Arc::clone(&sink.sender);
         drop(sink.sender.lock().unwrap().take());
+        let (ready, _readiness) = mpsc::sync_channel(1);
         writer_loop(
             file,
             "session",
@@ -3354,6 +3448,7 @@ mod tests {
                 ..ApplicationCorrelation::default()
             }),
             Arc::new(Mutex::new(None)),
+            ready,
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();

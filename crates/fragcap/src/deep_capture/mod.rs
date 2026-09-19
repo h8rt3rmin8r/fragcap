@@ -9,8 +9,8 @@
 //! owned resource receives one bounded cleanup attempt.
 //!
 //! Adapters must cooperatively honor the [`Budget`] passed to blocking calls.
-//! Rust cannot safely preempt an arbitrary trait method. A late successful
-//! return is still classified as a deadline failure by the coordinator.
+//! Rust cannot safely preempt an arbitrary trait method. Coordinated lifecycle
+//! stages retain finite budgets and structured completion evidence.
 
 mod adapters;
 pub mod api;

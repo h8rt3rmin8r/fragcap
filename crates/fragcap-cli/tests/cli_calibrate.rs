@@ -4,8 +4,9 @@
 
 mod common;
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use common::{run, run_with_authorization};
 use fragcap::profile::FidelityTier;
@@ -271,9 +272,113 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for FixedAuthorization {
     }
 }
 
-fn controlled_environment() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+struct ControlledEnvironment;
+
+impl ControlledEnvironment {
+    fn lock(&self) -> ControlledEnvironmentGuard {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = CONTROLLED_ENVIRONMENT_NAMES
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
+        ControlledEnvironmentGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+const CONTROLLED_ENVIRONMENT_NAMES: &[&str] = &[
+    "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+    "FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER",
+    "FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS",
+    "FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT",
+    "FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DUPLICATE",
+    "FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS",
+    "FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_DRIFT",
+];
+
+struct ControlledEnvironmentGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl Drop for ControlledEnvironmentGuard {
+    fn drop(&mut self) {
+        for (name, previous) in self.previous.drain(..) {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+fn controlled_environment() -> ControlledEnvironment {
+    ControlledEnvironment
+}
+
+fn controlled_environment_guard() -> ControlledEnvironmentGuard {
+    controlled_environment().lock()
+}
+
+struct EnvironmentValueGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvironmentValueGuard {
+    fn set(name: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let guard = Self::preserve(name);
+        std::env::set_var(name, value);
+        guard
+    }
+
+    fn preserve(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for EnvironmentValueGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
+#[test]
+fn controlled_environment_recovers_after_an_owned_panic() {
+    let panic = std::thread::spawn(|| {
+        let _environment = controlled_environment_guard();
+        panic!("controlled environment poison regression");
+    })
+    .join();
+    assert!(panic.is_err());
+
+    let _environment = controlled_environment_guard();
+}
+
+#[test]
+fn controlled_environment_value_restores_on_unwind() {
+    let _environment = controlled_environment_guard();
+    const NAME: &str = "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE";
+    let previous = std::env::var_os(NAME);
+    let unwind = std::panic::catch_unwind(|| {
+        let _value = EnvironmentValueGuard::set(NAME, "controlled-unwind-value");
+        panic!("controlled environment restoration regression");
+    });
+
+    assert!(unwind.is_err());
+    assert_eq!(std::env::var_os(NAME), previous);
 }
 
 fn powershell_words(command: &str) -> Vec<String> {
@@ -996,7 +1101,7 @@ fn current_positive_candidate_reports_requested_coverage_without_effects() {
 
 #[test]
 fn missing_routing_runs_all_observed_protocols_before_handoff() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("reachability-with-candidates");
@@ -1046,7 +1151,7 @@ fn missing_routing_runs_all_observed_protocols_before_handoff() {
 
 #[test]
 fn current_routing_runs_requested_and_newly_observed_protocol_attempts() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("protocol");
@@ -1116,7 +1221,7 @@ fn current_routing_runs_requested_and_newly_observed_protocol_attempts() {
 
 #[test]
 fn partial_protocol_attempt_reassesses_facts_but_never_claims_completion() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("partial-protocol");
@@ -1238,7 +1343,7 @@ fn calibrate_target_inputs_are_mutually_exclusive() {
 
 #[test]
 fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     for (selector, json, response, expected_status, expected_code) in [
         ("75000", false, b"no\n".to_vec(), "declined", 0),
         ("75000", true, b"wrong-plan\n".to_vec(), "invalid", 2),
@@ -1270,7 +1375,7 @@ fn unregistered_target_decline_and_invalid_exact_input_write_no_target_row() {
 
 #[test]
 fn invalid_registration_plan_returns_to_the_same_calibration_store() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let mut authorization = FixedAuthorization {
@@ -1304,7 +1409,7 @@ fn invalid_registration_plan_returns_to_the_same_calibration_store() {
 
 #[test]
 fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("must-not-exist");
@@ -1388,7 +1493,7 @@ fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
 
 #[test]
 fn steam_client_decline_and_invalid_structured_input_preserve_the_target() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     for (json, response, expected_status, expected_code) in [
         (false, b"no\n".to_vec(), "declined", 0),
         (true, b"wrong-plan\n".to_vec(), "invalid", 2),
@@ -1433,7 +1538,7 @@ fn steam_client_decline_and_invalid_structured_input_preserve_the_target() {
 
 #[test]
 fn every_present_launch_value_bypasses_steam_client_setup_unchanged() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     for launch_entries in [
         serde_json::json!({"observed_exe": "launcher.exe", "socket_holder": "unresolved"}),
         serde_json::json!([]),
@@ -1471,7 +1576,7 @@ fn every_present_launch_value_bypasses_steam_client_setup_unchanged() {
 
 #[test]
 fn steam_client_setup_refuses_discovery_drift_before_mutation() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_DRIFT");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1507,7 +1612,7 @@ fn steam_client_setup_refuses_discovery_drift_before_mutation() {
 
 #[test]
 fn steam_client_setup_refuses_ambiguous_candidate_reproduction() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1543,7 +1648,7 @@ fn steam_client_setup_refuses_ambiguous_candidate_reproduction() {
 
 #[test]
 fn steam_client_setup_reports_initial_discovery_ambiguity() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::set_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS", "1");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1592,7 +1697,7 @@ fn steam_client_setup_reports_initial_discovery_ambiguity() {
 
 #[test]
 fn explicit_candidate_selects_one_ambiguous_discovered_target() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::set_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS", "1");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1643,7 +1748,7 @@ fn explicit_candidate_selects_one_ambiguous_discovered_target() {
 
 #[test]
 fn explicit_candidate_selects_one_ambiguous_steam_client() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::set_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS", "1");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1875,7 +1980,7 @@ fn malformed_and_unused_candidates_stop_before_workflow_creation() {
 
 #[test]
 fn duplicate_candidate_authority_is_refused_without_a_target_write() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::set_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DUPLICATE", "1");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -2009,7 +2114,7 @@ fn unsupported_routing_and_mismatched_launch_assertions_refuse_before_effects() 
 
 #[test]
 fn steam_client_setup_refuses_changed_or_missing_target_authority() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     for mutation in [TargetMutation::Change, TargetMutation::Delete] {
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("local.db");
@@ -2047,7 +2152,7 @@ fn steam_client_setup_refuses_changed_or_missing_target_authority() {
 
 #[test]
 fn confirmed_registration_refuses_rediscovery_drift_before_writing_a_target() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -2072,7 +2177,7 @@ fn confirmed_registration_refuses_rediscovery_drift_before_writing_a_target() {
 
 #[test]
 fn confirmed_registration_preserves_rediscovery_ambiguity_diagnostics() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS");
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -2106,7 +2211,7 @@ fn confirmed_registration_preserves_rediscovery_ambiguity_diagnostics() {
 
 #[test]
 fn numeric_discovery_selector_continues_by_registered_stable_id() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let stable_id = fragcap::targets::identifier::anchored_id("steam:75000");
@@ -2245,7 +2350,7 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
 
 #[test]
 fn missing_routing_runs_reachability_then_observed_protocol() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("reachability");
@@ -2669,7 +2774,7 @@ fn declined_and_wrong_authorization_never_claim_completion() {
 
 #[test]
 fn one_invocation_runs_reachability_and_all_current_useful_protocol_attempts() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("sequence");
@@ -2774,7 +2879,7 @@ fn one_invocation_runs_reachability_and_all_current_useful_protocol_attempts() {
 
 #[test]
 fn declining_a_later_plan_stops_before_its_bundle_or_fact_effects() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("decline-sequence");
@@ -2824,7 +2929,7 @@ fn declining_a_later_plan_stops_before_its_bundle_or_fact_effects() {
 
 #[test]
 fn interrupting_a_later_authorization_retains_interrupted_guidance() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("interrupt-sequence");
@@ -2869,7 +2974,7 @@ fn interrupting_a_later_authorization_retains_interrupted_guidance() {
 
 #[test]
 fn target_drift_during_a_later_plan_stops_before_later_effects() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("drift-sequence");
@@ -2917,7 +3022,7 @@ fn target_drift_during_a_later_plan_stops_before_later_effects() {
 
 #[test]
 fn a_later_bundle_collision_stops_before_authorization_or_overwrite() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("collision-sequence");
@@ -2968,7 +3073,7 @@ fn a_later_bundle_collision_stops_before_authorization_or_overwrite() {
 
 #[test]
 fn omitted_bundle_uses_a_distinct_default_session_root_for_every_attempt() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     seed_target(&local, false);
@@ -3015,7 +3120,7 @@ fn omitted_bundle_uses_a_distinct_default_session_root_for_every_attempt() {
 
 #[test]
 fn a_paused_workflow_resumes_with_a_fresh_plan_and_durable_bundle_ordinal() {
-    let _environment = controlled_environment().lock().unwrap();
+    let _environment = controlled_environment().lock();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("resumed-workflow");
