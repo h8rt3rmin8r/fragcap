@@ -513,8 +513,40 @@ impl ProxyBackend for NativeProxyAdapter {
             key_log,
             observations_lost: 0,
             application_classification_summary: None,
+            stop_authority: None,
         }))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStopAuthority {
+    clean: bool,
+    listener_released: bool,
+    incomplete_tasks: u64,
+    residue: bool,
+}
+
+impl NativeStopAuthority {
+    fn from_report(report: &ShutdownReport) -> Self {
+        Self {
+            clean: report.is_clean(),
+            listener_released: report.listener_released,
+            incomplete_tasks: report.incomplete_tasks,
+            residue: report.residue,
+        }
+    }
+}
+
+fn observation_drain_is_complete(
+    stop: Option<NativeStopAuthority>,
+    state: fragcap_proxy::LifecycleState,
+    live_connections: usize,
+    connection_tasks_current: u64,
+) -> bool {
+    stop.is_some_and(|status| status.clean)
+        && state == fragcap_proxy::LifecycleState::Stopped
+        && live_connections == 0
+        && connection_tasks_current == 0
 }
 
 struct NativeProxyLease {
@@ -527,6 +559,7 @@ struct NativeProxyLease {
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
     observations_lost: u64,
     application_classification_summary: Option<ClassificationSummary>,
+    stop_authority: Option<NativeStopAuthority>,
 }
 
 impl NativeProxyLease {
@@ -538,12 +571,27 @@ impl NativeProxyLease {
             .lease
             .observation(budget.remaining())
             .map_err(|error| StageFailure::new(Stage::Observe, error.code, error.detail))?;
-        let complete = observation.state == fragcap_proxy::LifecycleState::Stopped
-            && observation.live_connections == 0
-            && observation.resources.connection_tasks_current == 0;
+        let stop = self.stop_authority;
+        let complete = observation_drain_is_complete(
+            stop,
+            observation.state,
+            observation.live_connections,
+            observation.resources.connection_tasks_current,
+        );
         let incomplete_detail = (!complete).then(|| {
+            let (stop_observed, stop_clean, listener_released, incomplete_tasks, residue) = stop
+                .map(|status| {
+                    (
+                        true,
+                        status.clean,
+                        status.listener_released,
+                        status.incomplete_tasks,
+                        status.residue,
+                    )
+                })
+                .unwrap_or((false, false, false, 0, false));
             format!(
-                "native proxy observation drain incomplete: state={:?}, live_connections={}, connection_tasks_current={}",
+                "native proxy observation drain incomplete: stop_observed={stop_observed}, stop_clean={stop_clean}, listener_released={listener_released}, incomplete_tasks={incomplete_tasks}, residue={residue}, state={:?}, live_connections={}, connection_tasks_current={}",
                 observation.state,
                 observation.live_connections,
                 observation.resources.connection_tasks_current,
@@ -680,6 +728,7 @@ impl ProxyLease for NativeProxyLease {
 
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
+        self.stop_authority = Some(NativeStopAuthority::from_report(&report));
         self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
         if report.is_clean() {
@@ -1195,6 +1244,63 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_drain_requires_clean_stop_and_every_terminal_predicate() {
+        let clean_stop = NativeStopAuthority {
+            clean: true,
+            listener_released: true,
+            incomplete_tasks: 0,
+            residue: false,
+        };
+        assert!(observation_drain_is_complete(
+            Some(clean_stop),
+            fragcap_proxy::LifecycleState::Stopped,
+            0,
+            0,
+        ));
+
+        let owner_thread_failure = NativeStopAuthority {
+            clean: false,
+            listener_released: false,
+            incomplete_tasks: 0,
+            residue: true,
+        };
+        for (stop, state, live_connections, connection_tasks_current) in [
+            (None, fragcap_proxy::LifecycleState::Stopped, 0, 0),
+            (
+                Some(owner_thread_failure),
+                fragcap_proxy::LifecycleState::Stopped,
+                0,
+                0,
+            ),
+            (
+                Some(clean_stop),
+                fragcap_proxy::LifecycleState::Stopping,
+                0,
+                0,
+            ),
+            (
+                Some(clean_stop),
+                fragcap_proxy::LifecycleState::Stopped,
+                1,
+                0,
+            ),
+            (
+                Some(clean_stop),
+                fragcap_proxy::LifecycleState::Stopped,
+                0,
+                1,
+            ),
+        ] {
+            assert!(!observation_drain_is_complete(
+                stop,
+                state,
+                live_connections,
+                connection_tasks_current,
+            ));
+        }
+    }
 
     #[test]
     fn listener_reservation_owns_the_selected_socket_until_consumed() {

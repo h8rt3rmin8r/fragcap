@@ -15,7 +15,7 @@ The stable proxy adapter keeps its existing observation method and gains a defau
 - `complete`: all terminal observations represented by the bounded proxy stop result were collected.
 - `incomplete`: terminal collection is not complete, with a stable code and bounded detail.
 
-The native adapter may return `complete` from a cached clean stop observation even when the remaining shutdown budget is zero because that path performs no waiting. Live collection with no remaining budget fails.
+The native adapter may return `complete` from a cached clean stop observation even when the remaining shutdown budget is zero because that path performs no waiting. A clean stop report, released listener, zero incomplete tasks, no residue, stopped observation state, zero live connections and zero current connection tasks are all required. Live collection with no remaining budget, owner-thread failure or any failed predicate is incomplete.
 
 The session retains all returned observations. It records an observation-stage failure for `incomplete` or adapter error. It MUST NOT compare a complete drain with the capture observation clock.
 
