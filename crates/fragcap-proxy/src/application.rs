@@ -350,6 +350,7 @@ pub enum EventDisposition {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ApplicationSinkAccounting {
+    pub attempted_events: u64,
     pub accepted_events: u64,
     pub dropped_events: u64,
     pub queue_capacity: u64,
@@ -415,6 +416,9 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
             .iter()
             .fold(ApplicationSinkAccounting::default(), |mut total, sink| {
                 let value = sink.accounting();
+                total.attempted_events = total
+                    .attempted_events
+                    .saturating_add(value.attempted_events);
                 total.accepted_events = total.accepted_events.saturating_add(value.accepted_events);
                 total.dropped_events = total.dropped_events.saturating_add(value.dropped_events);
                 total.queue_capacity = total.queue_capacity.saturating_add(value.queue_capacity);

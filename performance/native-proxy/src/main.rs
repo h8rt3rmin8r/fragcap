@@ -16,6 +16,7 @@ mod workloads;
 
 const REGISTRY: &str = "../native-proxy-budgets-v1.json";
 const WORKER_TIMEOUT: Duration = Duration::from_secs(15);
+const REPORT_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Clone, Copy)]
 struct Driver {
@@ -96,7 +97,7 @@ fn run() -> io::Result<bool> {
         .collect();
     write_line(
         &mut writer,
-        &json!({"schema_version":1,"kind":"campaign.header","sequence":0,"profile":profile,"registry_digest":registry_digest,"product_version":product_version(root),"source_revision":command_text(root,"git", &["rev-parse","HEAD"]),"source_dirty":!command_success(root,"git", &["diff","--quiet"]),"operating_system":std::env::consts::OS,"architecture":std::env::consts::ARCH,"logical_cpu_count":std::thread::available_parallelism().map_or(0,usize::from),"build_profile":if cfg!(debug_assertions){"debug"}else{"release"},"timer":"std::time::Instant monotonic microseconds","comparability_class":format!("{}:{}:{}:{}",std::env::consts::OS,std::env::consts::ARCH,if cfg!(debug_assertions){"debug"}else{"release"},registry_digest),"expected_cases":expected_cases,"started_unix_ms":unix_ms()}),
+        &json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"campaign.header","sequence":0,"profile":profile,"registry_digest":registry_digest,"product_version":product_version(root),"source_revision":command_text(root,"git", &["rev-parse","HEAD"]),"source_dirty":!command_success(root,"git", &["diff","--quiet"]),"operating_system":std::env::consts::OS,"architecture":std::env::consts::ARCH,"logical_cpu_count":std::thread::available_parallelism().map_or(0,usize::from),"build_profile":if cfg!(debug_assertions){"debug"}else{"release"},"timer":"std::time::Instant monotonic microseconds","comparability_class":format!("{}:{}:{}:{}",std::env::consts::OS,std::env::consts::ARCH,if cfg!(debug_assertions){"debug"}else{"release"},registry_digest),"expected_cases":expected_cases,"started_unix_ms":unix_ms()}),
     )?;
     let started = Instant::now();
     let mut sequence = 0_u64;
@@ -141,13 +142,13 @@ fn run() -> io::Result<bool> {
                     sequence += 1;
                     write_line(
                         &mut writer,
-                        &json!({"schema_version":1,"kind":"case.sample","sequence":sequence,"case_id":id,"driver":selected.name,"attempt":attempt,"window":window + 1,"direct_microseconds":result.direct_microseconds,"proxy_microseconds":result.proxy_microseconds,"added_microseconds":result.proxy_microseconds.saturating_sub(result.direct_microseconds),"useful_bytes":result.useful_bytes,"throughput_bytes_per_second":rate(result.useful_bytes,result.proxy_microseconds),"metrics_available":result.process.available,"cpu_microseconds":result.process.cpu_microseconds,"peak_working_set_bytes":result.process.working_set_bytes,"private_bytes":result.process.private_bytes,"artifact_bytes":result.artifact_bytes,"payload_bytes_observed":result.payload_bytes_observed,"payload_bytes_retained":result.payload_bytes_retained,"payload_bytes_omitted":result.payload_bytes_omitted,"payload_bytes_queue_dropped":result.payload_bytes_queue_dropped,"payload_bytes_storage_dropped":result.payload_bytes_storage_dropped,"shutdown_microseconds":result.shutdown_microseconds,"clean_shutdown":result.clean_shutdown,"task_peak":result.task_peak,"task_current":result.task_current,"task_spawned":result.task_spawned,"task_completed":result.task_completed,"task_aborted":result.task_aborted,"cache_peak_entries":result.cache_peak_entries,"cache_peak_bytes":result.cache_peak_bytes,"queue_peak":result.queue_peak,"queue_current":result.queue_current,"failure_details_dropped":result.failure_details_dropped,"application_events_dropped":result.application_events_dropped,"success":result.success}),
+                        &json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"case.sample","sequence":sequence,"case_id":id,"driver":selected.name,"attempt":attempt,"window":window + 1,"direct_microseconds":result.direct_microseconds,"proxy_microseconds":result.proxy_microseconds,"added_microseconds":result.proxy_microseconds.saturating_sub(result.direct_microseconds),"useful_bytes":result.useful_bytes,"throughput_bytes_per_second":rate(result.useful_bytes,result.proxy_microseconds),"metrics_available":result.process.available,"cpu_microseconds":result.process.cpu_microseconds,"peak_working_set_bytes":result.process.working_set_bytes,"private_bytes":result.process.private_bytes,"artifact_bytes":result.artifact_bytes,"payload_bytes_observed":result.payload_bytes_observed,"payload_bytes_retained":result.payload_bytes_retained,"payload_bytes_omitted":result.payload_bytes_omitted,"payload_bytes_queue_dropped":result.payload_bytes_queue_dropped,"payload_bytes_storage_dropped":result.payload_bytes_storage_dropped,"shutdown_microseconds":result.shutdown_microseconds,"clean_shutdown":result.clean_shutdown,"task_peak":result.task_peak,"task_current":result.task_current,"task_spawned":result.task_spawned,"task_completed":result.task_completed,"task_aborted":result.task_aborted,"cache_peak_entries":result.cache_peak_entries,"cache_peak_bytes":result.cache_peak_bytes,"queue_peak":result.queue_peak,"queue_current":result.queue_current,"failure_details_dropped":result.failure_details_dropped,"application_events_attempted":result.application_events_attempted,"application_events_dropped":result.application_events_dropped,"application_queue_capacity":result.application_queue_capacity,"success":result.success}),
                     )?;
                     if profile == "soak" && last_campaign_sample.elapsed() >= progress_interval {
                         sequence += 1;
                         write_line(
                             &mut writer,
-                            &json!({"schema_version":1,"kind":"campaign.sample","sequence":sequence,"elapsed_seconds":started.elapsed().as_secs()}),
+                            &json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"campaign.sample","sequence":sequence,"elapsed_seconds":started.elapsed().as_secs()}),
                         )?;
                         last_campaign_sample = Instant::now();
                     }
@@ -164,7 +165,7 @@ fn run() -> io::Result<bool> {
                 sequence += 1;
                 write_line(
                     &mut writer,
-                    &json!({"schema_version":1,"kind":"case.terminal","sequence":sequence,"case_id":id,"protocol":protocol,"retention":retention,"attempts":attempt,"windows":samples.len(),"median_throughput_bytes_per_second":evaluation.median_throughput,"median_throughput_ratio_basis_points":evaluation.median_ratio_basis_points,"added_p95_microseconds":evaluation.added_p95_microseconds,"timing_breaching_windows":evaluation.timing_breaching_windows,"hard_invariant_failures":evaluation.hard_invariant_failures,"guard_band_terminal":evaluation.guard_band,"passed":attempt_passed,"measurement":"paired useful-payload direct and production-proxy exchange with application artifact writer","conservation_equation":"payload_bytes_observed = payload_bytes_retained + payload_bytes_omitted + payload_bytes_queue_dropped + payload_bytes_storage_dropped"}),
+                    &json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"case.terminal","sequence":sequence,"case_id":id,"protocol":protocol,"retention":retention,"attempts":attempt,"windows":samples.len(),"median_throughput_bytes_per_second":evaluation.median_throughput,"median_throughput_ratio_basis_points":evaluation.median_ratio_basis_points,"added_p95_microseconds":evaluation.added_p95_microseconds,"timing_breaching_windows":evaluation.timing_breaching_windows,"hard_invariant_failures":evaluation.hard_invariant_failures,"guard_band_terminal":evaluation.guard_band,"passed":attempt_passed,"measurement":"paired useful-payload direct and production-proxy exchange with application artifact writer","conservation_equation":"payload_bytes_observed = payload_bytes_retained + payload_bytes_omitted + payload_bytes_queue_dropped + payload_bytes_storage_dropped"}),
                 )?;
                 break attempt_passed;
             };
@@ -187,7 +188,7 @@ fn run() -> io::Result<bool> {
     sequence += 1;
     write_line(
         &mut writer,
-        &json!({"schema_version":1,"kind":"campaign.terminal","sequence":sequence,"profile":profile,"registry_digest":registry_digest,"duration_seconds":started.elapsed().as_secs(),"expected_cases":expected_cases,"observed_cases":observed,"private_memory_span_bytes":private_memory_span_bytes,"complete":observed.len()==14 && (profile=="short" || started.elapsed()>=minimum_duration),"passed":passed,"ended_unix_ms":unix_ms()}),
+        &json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"campaign.terminal","sequence":sequence,"profile":profile,"registry_digest":registry_digest,"duration_seconds":started.elapsed().as_secs(),"expected_cases":expected_cases,"observed_cases":observed,"private_memory_span_bytes":private_memory_span_bytes,"complete":observed.len()==14 && (profile=="short" || started.elapsed()>=minimum_duration),"passed":passed,"ended_unix_ms":unix_ms()}),
     )?;
     writer.flush()?;
     Ok(passed)
@@ -203,7 +204,7 @@ fn worker(args: &[String]) -> io::Result<bool> {
     let result = workloads::measure(protocol, retention)?;
     println!(
         "{}",
-        json!({"schema_version":1,"kind":"worker.terminal","direct_microseconds":result.direct_microseconds,"proxy_microseconds":result.proxy_microseconds,"useful_bytes":result.useful_bytes,"artifact_bytes":result.resources.artifact_bytes,"payload_bytes_observed":result.resources.payload_bytes_observed,"payload_bytes_retained":result.resources.payload_bytes_retained,"payload_bytes_omitted":result.resources.payload_bytes_omitted,"payload_bytes_queue_dropped":result.resources.payload_bytes_queue_dropped,"payload_bytes_storage_dropped":result.resources.payload_bytes_storage_dropped,"shutdown_microseconds":result.shutdown_microseconds,"clean_shutdown":result.clean_shutdown,"task_peak":result.resources.task_peak,"task_current":result.resources.task_current,"task_spawned":result.resources.task_spawned,"task_completed":result.resources.task_completed,"task_aborted":result.resources.task_aborted,"cache_peak_entries":result.resources.cache_peak_entries,"cache_peak_bytes":result.resources.cache_peak_bytes,"queue_peak":result.resources.queue_peak,"queue_current":result.resources.queue_current,"failure_details_dropped":result.resources.failure_details_dropped,"application_events_dropped":result.resources.application_events_dropped})
+        json!({"schema_version":REPORT_SCHEMA_VERSION,"kind":"worker.terminal","direct_microseconds":result.direct_microseconds,"proxy_microseconds":result.proxy_microseconds,"useful_bytes":result.useful_bytes,"artifact_bytes":result.resources.artifact_bytes,"payload_bytes_observed":result.resources.payload_bytes_observed,"payload_bytes_retained":result.resources.payload_bytes_retained,"payload_bytes_omitted":result.resources.payload_bytes_omitted,"payload_bytes_queue_dropped":result.resources.payload_bytes_queue_dropped,"payload_bytes_storage_dropped":result.resources.payload_bytes_storage_dropped,"shutdown_microseconds":result.shutdown_microseconds,"clean_shutdown":result.clean_shutdown,"task_peak":result.resources.task_peak,"task_current":result.resources.task_current,"task_spawned":result.resources.task_spawned,"task_completed":result.resources.task_completed,"task_aborted":result.resources.task_aborted,"cache_peak_entries":result.resources.cache_peak_entries,"cache_peak_bytes":result.resources.cache_peak_bytes,"queue_peak":result.resources.queue_peak,"queue_current":result.resources.queue_current,"failure_details_dropped":result.resources.failure_details_dropped,"application_events_attempted":result.resources.application_events_attempted,"application_events_dropped":result.resources.application_events_dropped,"application_queue_capacity":result.resources.application_queue_capacity})
     );
     Ok(result.clean_shutdown)
 }
@@ -226,7 +227,9 @@ struct WorkerResult {
     queue_peak: u64,
     queue_current: u64,
     failure_details_dropped: u64,
+    application_events_attempted: u64,
     application_events_dropped: u64,
+    application_queue_capacity: u64,
     artifact_bytes: u64,
     payload_bytes_observed: u64,
     payload_bytes_retained: u64,
@@ -343,6 +346,8 @@ fn evaluate_case(case: &Value, limits: &Value, samples: &[WorkerResult]) -> Case
                 || sample.queue_peak > queue_ceiling
                 || sample.queue_current != 0
                 || sample.failure_details_dropped != 0
+                || sample.application_queue_capacity != queue_ceiling
+                || sample.application_events_attempted > sample.application_queue_capacity
                 || sample.application_events_dropped != 0
                 || sample.payload_bytes_observed < sample.useful_bytes
                 || sample.payload_bytes_queue_dropped != 0
@@ -433,6 +438,13 @@ fn run_measurement(
             diagnostic.trim()
         ))
     })?;
+    if value["schema_version"].as_u64() != Some(REPORT_SCHEMA_VERSION)
+        || value["kind"].as_str() != Some("worker.terminal")
+    {
+        return Err(io::Error::other(format!(
+            "{protocol}-{retention} worker returned an unsupported report contract"
+        )));
+    }
     Ok(worker_result(status.success(), &value, process))
 }
 
@@ -455,7 +467,9 @@ fn worker_result(success: bool, value: &Value, process: metrics::ProcessSample) 
         queue_peak: number("queue_peak"),
         queue_current: number("queue_current"),
         failure_details_dropped: number("failure_details_dropped"),
+        application_events_attempted: number("application_events_attempted"),
         application_events_dropped: number("application_events_dropped"),
+        application_queue_capacity: number("application_queue_capacity"),
         artifact_bytes: number("artifact_bytes"),
         payload_bytes_observed: number("payload_bytes_observed"),
         payload_bytes_retained: number("payload_bytes_retained"),
@@ -579,6 +593,30 @@ fn stable_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn valid_retention_off_sample(case: &Value, limits: &Value) -> WorkerResult {
+        let useful = case["useful_bytes_per_window"].as_u64().unwrap();
+        WorkerResult {
+            success: true,
+            direct_microseconds: 90_000,
+            proxy_microseconds: 100_000,
+            useful_bytes: useful,
+            clean_shutdown: true,
+            task_peak: 1,
+            task_spawned: 1,
+            task_completed: 1,
+            artifact_bytes: 1,
+            payload_bytes_observed: useful,
+            payload_bytes_omitted: useful,
+            application_events_attempted: 100,
+            application_queue_capacity: limits["maximum_application_queue"].as_u64().unwrap(),
+            process: metrics::ProcessSample {
+                available: true,
+                ..metrics::ProcessSample::default()
+            },
+            ..WorkerResult::default()
+        }
+    }
+
     #[test]
     fn every_registry_protocol_has_a_real_driver() {
         for protocol in ["http1", "http2", "websocket", "grpc", "tcp", "udp", "quic"] {
@@ -640,5 +678,44 @@ mod tests {
             guard_band: true,
         };
         assert!(!should_retry(&evaluation, 1, 1));
+    }
+
+    #[test]
+    fn payload_conservation_rejects_every_independent_disposition_mutation() {
+        let registry: Value =
+            serde_json::from_str(include_str!("../../native-proxy-budgets-v1.json")).unwrap();
+        let case = &registry["cases"][0];
+        let limits = &registry["evaluation"];
+        let sample = valid_retention_off_sample(case, limits);
+        assert!(evaluate_case(case, limits, &[sample; 7]).passed);
+
+        for mutate in [
+            |value: &mut WorkerResult| value.payload_bytes_observed += 1,
+            |value: &mut WorkerResult| value.payload_bytes_retained += 1,
+            |value: &mut WorkerResult| value.payload_bytes_omitted += 1,
+            |value: &mut WorkerResult| value.payload_bytes_queue_dropped += 1,
+            |value: &mut WorkerResult| value.payload_bytes_storage_dropped += 1,
+        ] {
+            let mut changed = sample;
+            mutate(&mut changed);
+            let evaluation = evaluate_case(case, limits, &[changed; 7]);
+            assert!(!evaluation.passed);
+            assert_eq!(evaluation.hard_invariant_failures, 7);
+        }
+    }
+
+    #[test]
+    fn canonical_burst_must_fit_the_exact_declared_capacity() {
+        let registry: Value =
+            serde_json::from_str(include_str!("../../native-proxy-budgets-v1.json")).unwrap();
+        let case = &registry["cases"][0];
+        let limits = &registry["evaluation"];
+        let mut sample = valid_retention_off_sample(case, limits);
+        sample.application_events_attempted = sample.application_queue_capacity + 1;
+        assert!(!evaluate_case(case, limits, &[sample; 7]).passed);
+
+        let mut wrong_capacity = valid_retention_off_sample(case, limits);
+        wrong_capacity.application_queue_capacity -= 1;
+        assert!(!evaluate_case(case, limits, &[wrong_capacity; 7]).passed);
     }
 }

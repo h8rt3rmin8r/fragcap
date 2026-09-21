@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-09-04",
+  "reviewed_on": "2026-09-21",
   "issue": 326,
   "workload_seed": 128,
+  "compatible_evidence_registry_digests": ["fnv1a64:559c42bc9ce8f33e"],
   "matrix": {
     "protocols": ["http1", "http2", "websocket", "grpc", "tcp", "udp", "quic"],
     "retention": ["off", "on"]
@@ -31,7 +32,7 @@
     "maximum_artifact_bytes": 33554432,
     "maximum_cpu_microseconds_per_mib": 1000000,
     "maximum_worker_tasks": 8,
-    "maximum_application_queue": 4096,
+    "maximum_application_queue": 16384,
     "maximum_leaf_cache_entries": 256,
     "maximum_leaf_cache_bytes": 8388608,
     "maximum_unaccounted_units": 0

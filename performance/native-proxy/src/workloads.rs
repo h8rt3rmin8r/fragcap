@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::{Buf, Bytes};
-use fragcap::deep_capture::{ApplicationArtifactLease, read_application_prefix};
+use fragcap::deep_capture::{
+    ApplicationArtifactLease, DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY, read_application_prefix,
+};
 use fragcap_proxy::{
     DestinationAuthority, DestinationPolicy, LeafCache, NativeProxyBackend, NativeProxyConfig,
     ProtocolLimits, SessionCertificateAuthority, ShutdownReport, build_quic_client_config,
@@ -43,7 +45,9 @@ pub struct ResourceMeasurement {
     pub queue_peak: u64,
     pub queue_current: u64,
     pub failure_details_dropped: u64,
+    pub application_events_attempted: u64,
     pub application_events_dropped: u64,
+    pub application_queue_capacity: u64,
     pub artifact_bytes: u64,
     pub payload_bytes_observed: u64,
     pub payload_bytes_retained: u64,
@@ -100,7 +104,11 @@ fn proxy(origin: SocketAddr, capture: bool) -> io::Result<ProxyOwner> {
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin);
     let path = performance_artifact_path();
-    let artifact = ApplicationArtifactLease::open(&path, "s128-performance", 4096)?;
+    let artifact = ApplicationArtifactLease::open(
+        &path,
+        "s128-performance",
+        DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+    )?;
     let native = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
         .with_application_event_sink(artifact.sink())
@@ -134,7 +142,9 @@ fn finish(mut owner: ProxyOwner, started: Instant) -> MeasurementTail {
     let sink_accounting = sink.accounting();
     resources.queue_peak = sink_accounting.queue_peak;
     resources.queue_current = sink_accounting.queue_current;
+    resources.application_events_attempted = sink_accounting.attempted_events;
     resources.application_events_dropped = sink_accounting.dropped_events;
+    resources.application_queue_capacity = sink_accounting.queue_capacity;
     resources.artifact_bytes = artifact_bytes;
     MeasurementTail {
         shutdown_microseconds: micros(started.elapsed()),
@@ -163,8 +173,12 @@ fn payload_totals(path: &std::path::Path) -> io::Result<PayloadTotals> {
         .last()
         .filter(|value| value["type"].as_str() == Some("application.trailer"))
         .ok_or_else(|| io::Error::other("application artifact trailer missing"))?;
+    Ok(payload_totals_from_trailer(trailer))
+}
+
+fn payload_totals_from_trailer(trailer: &serde_json::Value) -> PayloadTotals {
     let field = |name: &str| trailer[name].as_u64().unwrap_or(0);
-    let observed = [
+    let writer_observed = [
         "body_bytes_observed",
         "streaming_bytes_observed",
         "generic_stream_bytes_observed",
@@ -201,16 +215,15 @@ fn payload_totals(path: &std::path::Path) -> io::Result<PayloadTotals> {
     ]
     .iter()
     .fold(0_u64, |total, name| total.saturating_add(field(name)));
-    Ok(PayloadTotals {
-        observed,
+    PayloadTotals {
+        observed: writer_observed.saturating_add(queue_dropped),
         retained,
-        omitted: observed
+        omitted: writer_observed
             .saturating_sub(retained)
-            .saturating_sub(queue_dropped)
             .saturating_sub(storage_dropped),
         queue_dropped,
         storage_dropped,
-    })
+    }
 }
 
 fn performance_artifact_path() -> std::path::PathBuf {
@@ -240,7 +253,9 @@ fn resources(report: &ShutdownReport) -> ResourceMeasurement {
         queue_peak: report.observation.resources.application_queue_peak,
         queue_current: report.observation.resources.application_queue_current,
         failure_details_dropped: report.observation.resources.failure_details_dropped_oldest,
+        application_events_attempted: 0,
         application_events_dropped: protocol.application_events_dropped,
+        application_queue_capacity: 0,
         artifact_bytes: 0,
         payload_bytes_observed: protocol
             .body_bytes_observed
@@ -588,8 +603,11 @@ fn quic(capture: bool) -> io::Result<Measurement> {
             policy.grant_for_test(*origin);
         }
         let artifact_path = performance_artifact_path();
-        let artifact =
-            ApplicationArtifactLease::open(&artifact_path, "s128-quic-performance", 4096)?;
+        let artifact = ApplicationArtifactLease::open(
+            &artifact_path,
+            "s128-quic-performance",
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+        )?;
         let native = NativeProxyBackend::new(config)
             .with_destination_policy(policy)
             .with_tls_client_config(
@@ -602,14 +620,9 @@ fn quic(capture: bool) -> io::Result<Measurement> {
         let mut proxied = None;
         for (index, (origin, server_name, task)) in origins.into_iter().enumerate() {
             let payload_bytes = if index == 0 { 1024 * 1024 } else { 1 };
-            let elapsed = proxied_quic_exchange(
-                &native,
-                origin,
-                &server_name,
-                payload_bytes,
-            )
-            .await
-            .map_err(|error| io::Error::other(format!("proxied QUIC exchange: {error}")))?;
+            let elapsed = proxied_quic_exchange(&native, origin, &server_name, payload_bytes)
+                .await
+                .map_err(|error| io::Error::other(format!("proxied QUIC exchange: {error}")))?;
             task.await
                 .map_err(|error| io::Error::other(format!("proxied QUIC task join: {error}")))?
                 .map_err(|error| io::Error::other(format!("proxied QUIC origin: {error}")))?;
@@ -706,8 +719,8 @@ async fn quic_origin(
     SessionCertificateAuthority,
     tokio::task::JoinHandle<io::Result<()>>,
 )> {
-    let authority = DestinationAuthority::parse(&format!("{server_name}:443"))
-        .map_err(io::Error::other)?;
+    let authority =
+        DestinationAuthority::parse(&format!("{server_name}:443")).map_err(io::Error::other)?;
     let ca = SessionCertificateAuthority::generate(
         lineage,
         SystemTime::now(),
@@ -1168,6 +1181,7 @@ fn udp_echo(socket: UdpSocket, count: usize) -> std::thread::JoinHandle<io::Resu
         Ok(())
     })
 }
+
 fn combine(direct: u64, proxied: u64, tail: MeasurementTail, useful_bytes: u64) -> Measurement {
     Measurement {
         direct_microseconds: direct,
@@ -1180,4 +1194,37 @@ fn combine(direct: u64, proxied: u64, tail: MeasurementTail, useful_bytes: u64) 
 }
 fn micros(value: Duration) -> u64 {
     value.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn payload_totals_count_accepted_and_lost_bytes_once() {
+        let totals = payload_totals_from_trailer(&json!({
+            "body_bytes_observed": 100,
+            "body_bytes_retained": 70,
+            "generic_udp_bytes_observed": 50,
+            "generic_udp_bytes_retained": 20,
+            "body_bytes_queue_dropped": 10,
+            "generic_udp_bytes_queue_dropped": 5,
+            "generic_udp_bytes_storage_dropped": 7
+        }));
+
+        assert_eq!(totals.retained, 90);
+        assert_eq!(totals.omitted, 53);
+        assert_eq!(totals.queue_dropped, 15);
+        assert_eq!(totals.storage_dropped, 7);
+        assert_eq!(totals.observed, 165);
+        assert_eq!(
+            totals.observed,
+            totals
+                .retained
+                .saturating_add(totals.omitted)
+                .saturating_add(totals.queue_dropped)
+                .saturating_add(totals.storage_dropped)
+        );
+    }
 }

@@ -25,6 +25,9 @@ use super::{
 };
 
 const SCHEMA_VERSION: u64 = 2;
+/// Default finite capacity for application observations produced independently
+/// from traffic forwarding.
+pub const DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY: usize = 16_384;
 // Amortize metadata-heavy UDP/QUIC writes without expanding the event queue
 // or the writer's existing 64-event pending-storage bound.
 const APPLICATION_WRITE_BUFFER_BYTES: usize = 64 * 1024;
@@ -66,6 +69,7 @@ pub struct ApplicationPrefix {
 
 #[derive(Default)]
 struct WriterAccount {
+    attempted: AtomicU64,
     accepted: AtomicU64,
     dropped: AtomicU64,
     written: AtomicU64,
@@ -278,6 +282,7 @@ struct ChannelSink {
 
 impl ApplicationEventSink for ChannelSink {
     fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.account.attempted.fetch_add(1, Ordering::Relaxed);
         // Connection lifetime is correlation control data, not a lossy body or
         // protocol observation. Retain it independently before attempting the
         // bounded event queue so pressure cannot erase the only descriptor for
@@ -360,6 +365,7 @@ impl ApplicationEventSink for ChannelSink {
 
     fn accounting(&self) -> ApplicationSinkAccounting {
         ApplicationSinkAccounting {
+            attempted_events: self.account.attempted.load(Ordering::Acquire),
             accepted_events: self.account.accepted.load(Ordering::Acquire),
             dropped_events: self.account.dropped.load(Ordering::Acquire),
             queue_capacity: self.account.queue_capacity.load(Ordering::Acquire),
@@ -473,10 +479,17 @@ impl ApplicationArtifactLease {
             dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
         >,
     ) -> io::Result<Self> {
-        Self::open_correlated_with_writer_start(path, session_id, capacity, correlation, || {})
+        Self::open_correlated_with_writer_hooks(
+            path,
+            session_id,
+            capacity,
+            correlation,
+            || {},
+            || {},
+        )
     }
 
-    fn open_correlated_with_writer_start(
+    fn open_correlated_with_writer_hooks(
         path: impl Into<PathBuf>,
         session_id: impl Into<String>,
         capacity: usize,
@@ -484,6 +497,7 @@ impl ApplicationArtifactLease {
             dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
         >,
         writer_start: impl FnOnce() + Send + 'static,
+        writer_ready: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -529,6 +543,7 @@ impl ApplicationArtifactLease {
                     correlation,
                     worker_classification_summary,
                     ready_send,
+                    writer_ready,
                 )
             })?;
         if ready_receive.recv().is_err() {
@@ -609,6 +624,7 @@ fn writer_loop(
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
     reconciled_classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
     ready: mpsc::SyncSender<()>,
+    writer_ready: impl FnOnce(),
 ) -> io::Result<()> {
     let mut writer = application_writer(file);
     let mut sequence = 0_u64;
@@ -642,6 +658,7 @@ fn writer_loop(
     ready
         .send(())
         .map_err(|_| io::Error::other("application writer readiness receiver disconnected"))?;
+    writer_ready();
     loop {
         let event = match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(event) => event,
@@ -2636,7 +2653,7 @@ mod tests {
         let (entered_send, entered_receive) = mpsc::sync_channel(1);
         let (release_send, release_receive) = mpsc::sync_channel(1);
         let opener = std::thread::spawn(move || {
-            ApplicationArtifactLease::open_correlated_with_writer_start(
+            ApplicationArtifactLease::open_correlated_with_writer_hooks(
                 path,
                 "ready-session",
                 4_096,
@@ -2645,6 +2662,7 @@ mod tests {
                     entered_send.send(()).unwrap();
                     release_receive.recv().unwrap();
                 },
+                || {},
             )
         });
 
@@ -2672,14 +2690,112 @@ mod tests {
     }
 
     #[test]
+    fn ready_consumer_admits_the_complete_default_burst_before_counted_refusal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ready-stalled.jsonl");
+        let (stalled_send, stalled_receive) = mpsc::sync_channel(1);
+        let (release_send, release_receive) = mpsc::sync_channel(1);
+        let mut lease = ApplicationArtifactLease::open_correlated_with_writer_hooks(
+            &path,
+            "ready-stalled-session",
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+            Arc::new(|_| ApplicationCorrelation::default()),
+            || {},
+            move || {
+                stalled_send.send(()).unwrap();
+                release_receive.recv().unwrap();
+            },
+        )
+        .unwrap();
+        stalled_receive.recv().unwrap();
+        let sink = lease.sink();
+
+        for connection_id in 0..DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64 {
+            assert_eq!(
+                sink.try_emit(ApplicationEvent::now(
+                    "ready-stalled-session",
+                    connection_id,
+                    None,
+                    Some(ProtocolVersion::Http2),
+                    ApplicationEventKind::HttpStreamOpen,
+                )),
+                EventDisposition::Accepted
+            );
+        }
+        let full = sink.accounting();
+        assert_eq!(
+            full.accepted_events,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_capacity,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_current,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_peak,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(full.dropped_events, 0);
+
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "ready-stalled-session",
+                DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                    direction: fragcap_proxy::GenericUdpDirection::UpstreamToClient,
+                    sequence: 0,
+                    client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                    remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                },),
+            )),
+            EventDisposition::QueueFull
+        );
+        let refused = sink.accounting();
+        assert_eq!(refused.dropped_events, 1);
+        assert_eq!(
+            refused.attempted_events,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64 + 1
+        );
+        assert_eq!(refused.generic_udp_datagrams_queue_dropped, 1);
+        assert_eq!(refused.generic_udp_bytes_queue_dropped, 4);
+
+        release_send.send(()).unwrap();
+        lease.finish().unwrap();
+        let drained = sink.accounting();
+        assert_eq!(drained.queue_current, 0);
+        assert_eq!(drained.queue_peak, full.queue_peak);
+        let prefix = read_application_prefix(&path).unwrap();
+        let observed_ids = prefix
+            .records
+            .iter()
+            .filter(|record| record["type"] == "http.stream.open")
+            .map(|record| record["proxy_connection_id"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed_ids,
+            (0..DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn writer_start_failure_settles_worker_before_refusal() {
         let directory = tempfile::tempdir().unwrap();
-        let error = ApplicationArtifactLease::open_correlated_with_writer_start(
+        let error = ApplicationArtifactLease::open_correlated_with_writer_hooks(
             directory.path().join("failed.jsonl"),
             "failed-session",
             4_096,
             Arc::new(|_| ApplicationCorrelation::default()),
             || panic!("controlled writer startup failure"),
+            || {},
         )
         .err()
         .expect("startup failure must refuse the lease");
@@ -2913,6 +3029,7 @@ mod tests {
             Arc::new(|_| ApplicationCorrelation::default()),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .is_err());
         assert!(retired.load(Ordering::Acquire));
@@ -3374,6 +3491,7 @@ mod tests {
             }),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
@@ -3449,6 +3567,7 @@ mod tests {
             }),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
