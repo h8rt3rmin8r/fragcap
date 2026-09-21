@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.77-draft \
-**Applies-To:** 0.10.1 \
+**Version:** 0.1.78-draft \
+**Applies-To:** 0.10.2 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-09-15 \
+**Date:** 2026-09-20 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -165,6 +165,7 @@ enforcement.
 | 0.1.75-draft | 2026-09-16 | W. Thompson | Reconciles the omitted S154 documentation and deterministic stalled-consumer evidence lineage, then adds S155 independent-review intake under #423. Extends sections 22.7, 25.2, 27.3, and 28.1. An immutable registry binds the v0.10.1 source, lockfile, release run and six public files. A strict completed-record validator checks candidate identity, twelve-area coverage, installed cases and finding dispositions without certifying reviewer independence. Disposable hosted Windows replay records separate portable and installed controlled smoke through the existing package authority. The immutable CLI cannot perform the source-only QUIC harness, so #333/#413 and final #331/#334/#278 remain open. |
 | 0.1.76-draft | 2026-09-17 | W. Thompson | Corrects nondeterministic package loopback certification under #425. Updates sections 25.2, 27.3, and 28.1. Package report schema 4 uses exact ordered structured proxy-start and same-session reached-client evidence as positive authority while preserving firewall containment, descendant ownership, sampled non-loopback rejection and cleanup. Portable and installed rows require distinct session identities. Rust owns bounded event parsing and predicate codes so the PowerShell harness remains orchestration. Socket-table presence remains diagnostic and negative evidence rather than a positive success prerequisite; schema 2 and schema 3 remain read-only. |
 | 0.1.77-draft | 2026-09-19 | W. Thompson | Corrects the post-S157 Windows application-writer and calibration lifecycle races under #413 and #429. Updates sections 13.7, 17.2.1, 25.5, 27.3, and 28.1. Application evidence is not published to producers until its dedicated bounded writer reports receive readiness. Capture duration owns Capture only; terminal proxy collection uses the remaining shutdown authority and explicit complete or incomplete drain evidence, so a later scheduler return cannot invalidate observations already completed. Calibration tests recover mutex poisoning while restoring every controlled environment value on unwind. Queue, loss, conservation, cleanup, payload and four-deadline plan contracts remain unchanged. |
+| 0.1.78-draft | 2026-09-20 | W. Thompson | Prepares v0.10.2 under S159 (#431) from merged S154 through S158 reliability, certification, review-intake and documentation work. Candidate versions, generated outputs, conformance metadata, changelog and highlights move together while verified publication remains v0.10.1. Human merge, exact tag publication, protected registry approval, public file and registry verification, and later records reconciliation remain distinct ordered states. Independent #333 review, #372 field validation and final #331/#334/#278 acceptance remain open. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4866,7 +4867,7 @@ restated here. The scope of each release is:
 
 v0.10.0 publication succeeded with all release jobs green, certified Windows ZIP/MSI/catalog bytes and all ten crates at 0.10.0. S153 verifies subsequent v0.10.1 publication with S151 diagnostics, retained owner administrator bypass and verified registry approval protection. Publication does not satisfy independent #333 review, #413 installed retest or final #334 acceptance.
 
-S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability without changing v0.10.1. S155 binds the immutable v0.10.1 review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. These slices do not supply independent reviewer identity or final whole-product acceptance, so #333 and #334 remain open.
+S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability without changing v0.10.1. S155 binds the immutable v0.10.1 review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. S159 prepares these changes as v0.10.2 while actual publication remains v0.10.1 until exact tag, release jobs, public files and registry versions are verified. These slices do not supply independent reviewer identity or final whole-product acceptance, so #333 and #334 remain open.
 
 ### 27.4 Critical Path
 
