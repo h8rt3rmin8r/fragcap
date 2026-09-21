@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.79-draft \
+**Version:** 0.1.80-draft \
 **Applies-To:** 0.10.2 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -52,7 +52,7 @@ without further design negotiation.
 
 Published baseline: [v0.10.2](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2).
 
-Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.2, published 2026-09-21 from `13c9230d1e91b1fddd34de1f279963fa0e711ef4`. The reviewed `docs/published-release.json` and fourteen current baseline markers bind actual publication independently from candidate version. S159 verifies v0.10.2 publication of S154 through S158 documentation, review-intake, deterministic certification and Windows observation corrections. Independent review #333, Doctor field validation #372, documentation reconciliation #331 and final #334/#278 acceptance remain open. Per-release scope is in section 27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.2, published 2026-09-21 from `13c9230d1e91b1fddd34de1f279963fa0e711ef4`. The reviewed `docs/published-release.json` and fourteen current baseline markers bind actual publication independently from candidate version. S159 verifies v0.10.2 publication of S154 through S158 documentation, review-intake, deterministic certification and Windows observation corrections. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; failures observed in an active release become concrete defects against that release. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -167,6 +167,7 @@ enforcement.
 | 0.1.77-draft | 2026-09-19 | W. Thompson | Corrects the post-S157 Windows application-writer and calibration lifecycle races under #413 and #429. Updates sections 13.7, 17.2.1, 25.5, 27.3, and 28.1. Application evidence is not published to producers until its dedicated bounded writer reports receive readiness. Capture duration owns Capture only; terminal proxy collection uses the remaining shutdown authority and explicit complete or incomplete drain evidence, so a later scheduler return cannot invalidate observations already completed. Calibration tests recover mutex poisoning while restoring every controlled environment value on unwind. Queue, loss, conservation, cleanup, payload and four-deadline plan contracts remain unchanged. |
 | 0.1.78-draft | 2026-09-20 | W. Thompson | Prepares v0.10.2 under S159 (#431) from merged S154 through S158 reliability, certification, review-intake and documentation work. Candidate versions, generated outputs, conformance metadata, changelog and highlights move together while verified publication remains v0.10.1. Human merge, exact tag publication, protected registry approval, public file and registry verification, and later records reconciliation remain distinct ordered states. Independent #333 review, #372 field validation and final #331/#334/#278 acceptance remain open. |
 | 0.1.79-draft | 2026-09-21 | W. Thompson | Reconciles verified v0.10.2 publication under S159 (#431). Annotated tag, exact merged source, four green release jobs, normal owner deployment approval, six certified public files, schema-4 package report and all ten non-yanked registry versions are independently checked before current markers move. S154 through S158 are now in the published baseline, #413 is closed, and independent #333 review, #372 field validation and final #331/#334/#278 acceptance remain open. No installed sensitive product or real game is agent-run locally. |
+| 0.1.80-draft | 2026-09-21 | W. Thompson | Aligns completion governance with the active-release defect workflow. Implementation issues close after scoped delivery and repository-controlled gates pass; future field observation, independent review, or release monitoring does not remain as a standing verification issue. Native Deep Capture implementation and documentation are complete for the shipped boundary. Independent security review and universal compatibility remain explicit non-claims, and any observed active-release failure becomes its own defect. Updates sections 1, 27.3, and 28.1. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4867,9 +4868,9 @@ restated here. The scope of each release is:
 | v0.10.1 | 2026-09-15 | Discoverable nested Doctor timings and pending slow-probe progress, plus freshly verified owner-controlled registry protection; certified public packages and all ten crate versions verified, independent acceptance remains open | S151 through S152; S153 verifies publication |
 | v0.10.2 | 2026-09-21 | Complete native documentation contract, independent-review intake and hosted replay, deterministic package-certification evidence, and Windows observation-queue corrections; certified public packages and all ten crate versions verified | S154 through S158; S159 verifies publication |
 
-v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Publication does not satisfy independent #333 review, #372 field validation or final #331/#334/#278 acceptance.
+v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
-S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability. S155 binds a published review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. S159 publishes these changes as v0.10.2 and reconciles their exact public evidence. These slices do not supply independent reviewer identity or final whole-product acceptance, so #333 and #334 remain open.
+S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability. S155 binds a published review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. S159 publishes these changes as v0.10.2 and reconciles their exact public evidence. These slices do not supply independent reviewer identity, and no such work is claimed as performed.
 
 ### 27.4 Critical Path
 
@@ -4908,11 +4909,11 @@ during implementation is recorded in the slice and promoted to section
 Recorded so that scope pressure has a destination. The following work has not
 shipped as of the release this document applies to.
 
-### 28.1 Native Deep Capture completion contract
+### 28.1 Native Deep Capture delivered contract
 
-Issue #278 is the sole completion authority for native Rust Deep Capture. S104
+Native Rust Deep Capture is delivered for the shipped support boundary. S104
 closes #290 and removes the production Python and external proxy prerequisite.
-S155 adds exact published-build replay and bounded independent-review findings intake without changing this completion authority. S156 corrects that replay's nondeterministic loopback assertion through versioned structured session evidence, without weakening containment or changing the independent acceptance boundary. S158 makes the source-only QUIC performance and calibration lifecycle gates deterministic under hosted Windows scheduling without weakening loss or deadline truth. Green hosted execution and pull-request review do not replace #333's independent whole-product judgment or #334's final acceptance.
+S155 adds exact published-build replay and bounded independent-review findings intake. S156 corrects that replay's nondeterministic loopback assertion through versioned structured session evidence without weakening containment. S158 makes the source-only QUIC performance and calibration lifecycle gates deterministic under hosted Windows scheduling without weakening loss or deadline truth. Green hosted execution and pull-request review are engineering evidence, not an independent whole-product security judgment or a universal live-title compatibility claim. Future observed failures enter the active-release defect workflow.
 S102 establishes a library-owned, loopback-only,
 finite-capacity runtime foundation. S103 completes authenticated admission,
 bounded upstream policy, session certificate and trust ownership, raw event
@@ -5192,7 +5193,7 @@ Every existing or planned output has one owner:
 | Sensitivity, retention, and deletion | S107, #322 |
 | Consent, progress, and recovery UX | #332 |
 | Stable Rust API | #330 |
-| Final documentation and completion language | #331 and #334 |
+| Final documentation and completion language | S157 and the active-release defect policy |
 
 The protocol and launch matrix is normative:
 
@@ -5221,12 +5222,12 @@ Protocol classification and omission reasons are exhaustive under S120 and
 and #318. A protocol not named as implemented is omitted explicitly rather
 than inferred as supported.
 
-The four milestone exit gates are:
+The four native delivery milestones are closed:
 
 1. **Native Deep Capture 1, foundation**: #279 through #291 are closed; the
    loopback runtime, authentication/isolation, DNS/upstream policy, CA/trust,
    event accounting, deterministic lab, native integration, and truthful
-   roadmap pass their tests. Deep Capture remains incomplete after this gate.
+   roadmap pass their tests.
 2. **Native Deep Capture 2, HTTP and TLS fidelity**: #292 through #305 plus
    #335 and #336 are closed; the native path has complete versioned HTTP/TLS,
    streaming, key-log, artifact, correlation, and conformance contracts. It
@@ -5234,11 +5235,10 @@ The four milestone exit gates are:
 3. **Native Deep Capture 3, launch and transport coverage**: #306 through #318
    are closed; required launch, SOCKS, TCP, UDP, QUIC/HTTP3, IPv6, omission,
    calibration, and bypass cases are implemented or constitutionally refused.
-4. **Native Deep Capture 4, completion gate**: #319 through #334 are closed;
+4. **Native Deep Capture 4, product completion**: #319 through #334 are closed;
    recovery, doctor, artifact security, threat review, fuzz/failure/performance
    and Windows matrices, supply chain, packaging, API, documentation, and UX
-   pass. Only #334 may authorize the words native, self-contained, and
-   feature-complete for Deep Capture.
+   pass their repository-controlled gates. Future operator, field, or independent-review observations create concrete defects when they identify an actual failure.
 
 S100's candidate measurements remain valid historical evidence. Its conclusion
 that the external backend was the final alpha path is superseded because the

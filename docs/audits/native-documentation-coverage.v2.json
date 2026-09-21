@@ -292,7 +292,7 @@
         "Published release and current source",
         "Contract map",
         "Executable example authority",
-        "Engineering completeness and external acceptance",
+        "Engineering completeness and explicit non-claims",
         "Reconciliation point"
       ],
       "tests": [
@@ -391,11 +391,5 @@
       ]
     }
   ],
-  "completion_boundary": [
-    333,
-    372,
-    331,
-    334,
-    278
-  ]
+  "completion_boundary": []
 }

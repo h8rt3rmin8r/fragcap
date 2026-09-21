@@ -42,6 +42,8 @@
 
 [Gates determined based on constitution file]
 
+Constitution gates cover implementation and automated or controlled evidence available within the slice. Do not make future operator testing, field measurement, independent review, or active-release observation a condition for closing an implementation issue. A failure observed in an active release becomes a separate defect against that release.
+
 ## Project Structure
 
 ### Documentation (this feature)

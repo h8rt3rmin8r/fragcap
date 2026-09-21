@@ -36,7 +36,7 @@ Published baseline: [v0.10.2](https://github.com/h8rt3rmin8r/fragcap/releases/ta
 
 v0.10.2 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit native Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
 
-Deep Capture is native, functional and incomplete. Protocols, scoped routing, managed launch, artifacts, recovery, conformance, package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied [independent-review readiness](docs/security/native-product-review-handoff.md), not security acceptance. v0.10.2 now includes S154 through S158 documentation, review-intake, deterministic certification and Windows observation corrections. The [native product contract](https://fragcap.com/docs/reference/native-documentation) keeps independent review #333, Doctor field validation #372, documentation reconciliation #331, final gate #334 and epic #278 open. Operator validation uses published bytes; agents do not run installed sensitive software or real games to satisfy acceptance.
+Deep Capture is native and shipped for known-compatible stored targets. Protocols, scoped routing, managed launch, artifacts, recovery, conformance, package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. v0.10.2 adds the complete documentation contract, reproducible independent-review intake, deterministic certification and Windows observation corrections. The [native product contract](https://fragcap.com/docs/reference/native-documentation) states the supported boundary. Independent security review and optional field testing are not claimed as performed. A failure observed in an active release is filed as a concrete defect against that release.
 
 Npcap remains a separately installed prerequisite for live packet capture. fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer. The default workspace build and offline tests require neither Npcap nor administrative privilege.
 
@@ -96,13 +96,13 @@ Three tiers:
 | --- | --- | --- |
 | Unit | Individual components in isolation | yes |
 | Pipeline integration | End to end over fixtures, no driver, no game | yes |
-| Live compatibility | Optional operator-owned verification of an already published release against a real title | no, manual |
+| Live compatibility | Optional operator-owned observation of an already published release against a real title | no, manual |
 
 Test fixtures under `fixtures/` are the one place capture files are committed.
 They are reviewed before they land and MUST NOT contain account identifiers,
 session tokens, or addresses attributable to a real operator.
 
-Implementation acceptance never requires an agent to launch a real game, mutate the real trust store, or run sensitive live capture. Guided calibration uses a checked controlled-evidence registry in ordinary CI. A real-game run is optional compatibility evidence owned by the operator, is permitted only against already published product bytes, and does not block implementation work. Retain its raw evidence privately and publish only a scrubbed summary.
+Implementation acceptance never requires an agent to launch a real game, mutate the real trust store, or run sensitive live capture. Guided calibration uses a checked controlled-evidence registry in ordinary CI. A real-game run is optional compatibility evidence owned by the operator, is permitted only against already published product bytes, and does not block or reopen completed implementation work. If it reveals a failure, file a concrete defect against the affected release. Retain raw evidence privately and publish only a scrubbed summary.
 
 ## Documentation and the glossary
 

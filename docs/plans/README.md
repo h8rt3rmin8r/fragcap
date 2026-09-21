@@ -405,3 +405,12 @@ S157 (`specs/157-native-documentation-contract`) follows human-merged S156 under
 S158 (`specs/158-windows-gate-determinism`) follows human-merged S157 and corrects the two post-S157 first-attempt Windows failures under #413 and #429. The bounded application sink is not published until its dedicated writer proves receive readiness, closing the startup scheduling race without changing the 4,096-event queue, record identity, forwarding independence or exact loss accounting. Capture duration owns Capture only; terminal proxy collection uses explicit complete or incomplete drain evidence under the remaining shutdown authority, so completed evidence cannot be invalidated by the earlier capture clock. Controlled calibration tests recover poisoned environment ownership and restore exact prior values on unwind. S158 adds no dependency, package, storage or artifact schema, public deadline field, release version, policy or sensitive host execution. Independent #333, documentation closure #331 and final #334/#278 remain open.
 
 S159 (`specs/159-v0-10-2-release`) follows human-merged S158 under #431 and publishes all merged S154 through S158 work as the v0.10.2 patch. Candidate package, output, conformance, specification, changelog and highlight identities move together before the human-reviewed candidate merges. Annotated v0.10.2 selects exact merged source 13c9230d1e91b1fddd34de1f279963fa0e711ef4; all four release jobs pass, normal owner environment approval is recorded, six certified public files reconcile independently and all ten registry versions are non-yanked. A separate records-only human-review pull request moves current publication and review-candidate markers without changing product code, workflow, dependency, version or published bytes. Independent #333 review, #372 field validation and final #331/#334/#278 completion remain open. No installed sensitive product or real game runs locally.
+
+As of the 2026-09-21 Constitution 1.5.0 governance amendment, the final sentence
+above records the planning state at the close of S159 rather than continuing
+completion gates. The delivered implementation and documentation issues are
+closed after their scoped repository-controlled gates passed. Future operator,
+field, review, or release observations do not remain as standing verification
+work; an actual failure against an active release is filed as a concrete defect.
+Universal target compatibility and an independent security audit remain explicit
+non-claims, not open completion requirements.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Closed native documentation traceability, not independent review acceptance.
+//! Closed native documentation traceability and active-release defect policy.
 
 use serde_json::Value;
 use std::{collections::BTreeSet, fs, io, path::Path};
@@ -29,7 +29,7 @@ const EXAMPLE_AUTHORITIES: [&str; 5] = [
     "stable-api-contract",
 ];
 const CURRENT_SOURCE_BOUNDARY: [&str; 4] = ["S154", "S155", "S156", "S157"];
-const COMPLETION_BOUNDARY: [u64; 5] = [333, 372, 331, 334, 278];
+const COMPLETION_BOUNDARY: [u64; 0] = [];
 const OBSOLETE_CURRENT_TEXT: [&str; 3] = [
     "S154's coverage inventory and regression improvements are candidate",
     "mitmdump",
@@ -455,7 +455,7 @@ fn validate(root: &Path, inventory: &Value) -> Vec<String> {
         .filter_map(Value::as_u64)
         .collect();
     if completion != COMPLETION_BOUNDARY {
-        problems.push("completion boundary must be exactly #333, #372, #331, #334 and #278".into());
+        problems.push("completion boundary must contain no standing verification issues".into());
     }
 
     match current_documentation_pages(root) {

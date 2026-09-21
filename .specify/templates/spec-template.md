@@ -108,6 +108,7 @@
 <!--
   ACTION REQUIRED: Define measurable success criteria.
   These must be technology-agnostic and measurable.
+  Criteria must be satisfiable by implementation and automated or controlled evidence in this slice. Do not require future operator testing, field measurement, independent review, or active-release observation for issue closure; observed release failures become separate defects.
 -->
 
 ### Measurable Outcomes

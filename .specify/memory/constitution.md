@@ -1,4 +1,13 @@
 <!--
+Sync Impact Report (1.5.0, 2026-09-21)
+- Version change: 1.4.0 -> 1.5.0 (MINOR: Development Workflow And Quality Gates materially expands the issue-completion policy)
+- Amended section: Development Workflow And Quality Gates
+- Added rule: active-release defects replace standing verification gates
+- Reason: implementation issues had remained open after their scoped work and automated gates were complete solely to await future operator testing, field measurement, independent review, or release observation. That practice made unspecified future evidence a permanent completion condition and conflicted with the repository's release-first defect workflow. An implementation issue now closes when its scoped work and repository-controlled gates are complete. A failure observed in an active release is filed as a concrete defect against that release.
+- Templates: `.specify/templates/plan-template.md`, `.specify/templates/spec-template.md`, and `.specify/templates/tasks-template.md` updated to prevent future field or review observations from becoming issue-completion gates.
+- Runtime guidance: `AGENTS.md` and `CONTRIBUTING.md` updated to apply the same rule to GitHub planning and contributor workflow.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.4.0, 2026-08-24)
 - Version change: 1.3.0 -> 1.4.0 (MINOR: P-1 materially expanded to define
   Capture and Deep Capture as first-class modes while preserving the technique
@@ -410,6 +419,10 @@ a defect fixed without having run the command and read the output. Reporting an
 unverified success is worse than reporting a known failure, because it removes
 the operator's ability to trust any other report.
 
+**Active-release defects replace standing verification gates.** An implementation issue is complete when its scoped behavior and documentation are delivered and the repository's automated or controlled gates pass. An issue MUST NOT remain open, and a new issue MUST NOT be created, solely to require future operator testing, field measurement, independent review, release observation, or other unspecified confirmation. Once a release is active, an observed failure becomes a new, concrete defect against that release, carrying the affected version, reproduction or evidence, expected and actual behavior, and regression coverage as applicable.
+
+This rule does not weaken automated testing, release certification, security response, or truthfulness. Required repository gates remain mandatory. Concrete security findings remain actionable defects. Work that has not been performed MUST NOT be claimed as performed, and the absence of a filed defect is not affirmative proof of universal compatibility, field performance, or independent security acceptance.
+
 **Pinned artifacts change only with a dated decision recorded in
 `CHANGELOG.md`:** `.github/workflows/**`, `rust-toolchain.toml`, `release.toml`,
 `scripts/**`, and the release documentation.
@@ -447,4 +460,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 1.4.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-24
+**Version**: 1.5.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-09-21

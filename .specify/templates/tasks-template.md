@@ -9,7 +9,7 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: The examples below include test tasks. Tests are OPTIONAL only when the feature specification does not require them. All repository-mandated automated and controlled gates remain required. Do not create open-ended tasks for future operator testing, field measurement, independent review, or active-release observation; an observed release failure becomes a separate defect.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
