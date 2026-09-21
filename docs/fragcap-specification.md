@@ -4904,10 +4904,12 @@ specification sections it implements, and any deviation discovered
 during implementation is recorded in the slice and promoted to section
 29 of this document at the next version.
 
-## 28. Roadmap Beyond the Current Release
+## 28. Native Deep Capture Delivery Record
 
-Recorded so that scope pressure has a destination. The following work has not
-shipped as of the release this document applies to.
+This section records the ordered delivery path and the current shipped
+boundary. Gap and exclusion statements inside each numbered slice paragraph
+describe that slice's historical boundary; section 28.1 states the current
+result.
 
 ### 28.1 Native Deep Capture delivered contract
 
