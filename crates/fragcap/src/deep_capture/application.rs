@@ -25,6 +25,13 @@ use super::{
 };
 
 const SCHEMA_VERSION: u64 = 2;
+/// Default finite capacity for application observations produced independently
+/// from traffic forwarding.
+pub const DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY: usize = 16_384;
+/// Maximum retained payload that the application-observation queue may own.
+/// This leaves explicit headroom beneath the 256 MiB worker ceiling for the
+/// proxy runtime, event metadata, writer buffering, and serialization.
+pub const DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY: u64 = 32 * 1024 * 1024;
 // Amortize metadata-heavy UDP/QUIC writes without expanding the event queue
 // or the writer's existing 64-event pending-storage bound.
 const APPLICATION_WRITE_BUFFER_BYTES: usize = 64 * 1024;
@@ -66,6 +73,7 @@ pub struct ApplicationPrefix {
 
 #[derive(Default)]
 struct WriterAccount {
+    attempted: AtomicU64,
     accepted: AtomicU64,
     dropped: AtomicU64,
     written: AtomicU64,
@@ -74,6 +82,9 @@ struct WriterAccount {
     queue_capacity: AtomicU64,
     queue_current: AtomicU64,
     queue_peak: AtomicU64,
+    queue_retained_bytes_capacity: AtomicU64,
+    queue_retained_bytes_current: AtomicU64,
+    queue_retained_bytes_peak: AtomicU64,
     body_bytes_queue_dropped: AtomicU64,
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
@@ -128,24 +139,61 @@ struct DatagramDropTotals {
     observed_bytes: u64,
 }
 
+fn event_retained_payload_bytes(event: &ApplicationEvent) -> u64 {
+    match &event.kind {
+        ApplicationEventKind::Body(value) => value.bytes.len() as u64,
+        ApplicationEventKind::Streaming(value) => {
+            streaming_measure(value).map_or(0, |(_, _, retained)| retained)
+        }
+        ApplicationEventKind::GenericStreamChunk(value) => value.bytes.len() as u64,
+        ApplicationEventKind::GenericUdpDatagram(value) => value.bytes.len() as u64,
+        ApplicationEventKind::QuicStream(value) => value.bytes.len() as u64,
+        ApplicationEventKind::QuicDatagram(value) => value.bytes.len() as u64,
+        _ => 0,
+    }
+}
+
 impl WriterAccount {
-    fn reserve_queue_slot(&self) -> bool {
+    fn reserve_queue_slot(&self, event: &ApplicationEvent) -> bool {
         let capacity = self.queue_capacity.load(Ordering::Acquire);
         let reserved =
             self.queue_current
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     (current < capacity).then_some(current + 1)
                 });
-        if let Ok(previous) = reserved {
-            self.queue_peak.fetch_max(previous + 1, Ordering::AcqRel);
-            true
+        let Ok(previous) = reserved else {
+            return false;
+        };
+        let retained = event_retained_payload_bytes(event);
+        let retained_capacity = self.queue_retained_bytes_capacity.load(Ordering::Acquire);
+        let retained_capacity = if retained_capacity == 0 {
+            u64::MAX
         } else {
-            false
-        }
+            retained_capacity
+        };
+        let retained_reservation = self.queue_retained_bytes_current.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| {
+                current
+                    .checked_add(retained)
+                    .filter(|next| *next <= retained_capacity)
+            },
+        );
+        let Ok(previous_retained) = retained_reservation else {
+            self.queue_current.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        };
+        self.queue_peak.fetch_max(previous + 1, Ordering::AcqRel);
+        self.queue_retained_bytes_peak
+            .fetch_max(previous_retained + retained, Ordering::AcqRel);
+        true
     }
 
-    fn release_queue_slot(&self) {
+    fn release_queue_slot(&self, event: &ApplicationEvent) {
         self.queue_current.fetch_sub(1, Ordering::AcqRel);
+        self.queue_retained_bytes_current
+            .fetch_sub(event_retained_payload_bytes(event), Ordering::AcqRel);
     }
 
     fn record_storage_drop(&self, event: &ApplicationEvent) {
@@ -153,18 +201,18 @@ impl WriterAccount {
             self.generic_udp_datagrams_storage_dropped
                 .fetch_add(1, Ordering::Relaxed);
             self.generic_udp_bytes_storage_dropped
-                .fetch_add(value.observed_len, Ordering::Relaxed);
+                .fetch_add(value.bytes.len() as u64, Ordering::Relaxed);
         }
         match &event.kind {
             ApplicationEventKind::QuicStream(value) => {
                 self.quic_stream_bytes_storage_dropped
-                    .fetch_add(value.observed_len, Ordering::Relaxed);
+                    .fetch_add(value.bytes.len() as u64, Ordering::Relaxed);
             }
             ApplicationEventKind::QuicDatagram(value) => {
                 self.quic_datagrams_storage_dropped
                     .fetch_add(1, Ordering::Relaxed);
                 self.quic_datagram_bytes_storage_dropped
-                    .fetch_add(value.observed_len, Ordering::Relaxed);
+                    .fetch_add(value.bytes.len() as u64, Ordering::Relaxed);
             }
             _ => {}
         }
@@ -218,16 +266,9 @@ impl WriterAccount {
             return;
         }
         if let ApplicationEventKind::Streaming(value) = &event.kind {
-            let bytes = match value {
-                fragcap_proxy::StreamingEvent::WebSocketFrame(value) => value.wire_payload.len(),
-                fragcap_proxy::StreamingEvent::WebSocketMessage(value) => value.payload.len(),
-                fragcap_proxy::StreamingEvent::SseField(value) => value.value.len(),
-                fragcap_proxy::StreamingEvent::SseEvent(value) => value.data.len(),
-                fragcap_proxy::StreamingEvent::GrpcMessage(value) => value.payload.len(),
-                _ => 0,
-            };
+            let bytes = streaming_measure(value).map_or(0, |(_, observed, _)| observed);
             self.streaming_bytes_queue_dropped
-                .fetch_add(bytes as u64, Ordering::Relaxed);
+                .fetch_add(bytes, Ordering::Relaxed);
             return;
         }
         let ApplicationEventKind::Body(segment) = &event.kind else {
@@ -278,6 +319,7 @@ struct ChannelSink {
 
 impl ApplicationEventSink for ChannelSink {
     fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.account.attempted.fetch_add(1, Ordering::Relaxed);
         // Connection lifetime is correlation control data, not a lossy body or
         // protocol observation. Retain it independently before attempting the
         // bounded event queue so pressure cannot erase the only descriptor for
@@ -332,7 +374,7 @@ impl ApplicationEventSink for ChannelSink {
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
         };
-        if !self.account.reserve_queue_slot() {
+        if !self.account.reserve_queue_slot(&event) {
             self.account.record_queue_drop(&event);
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::QueueFull;
@@ -343,13 +385,13 @@ impl ApplicationEventSink for ChannelSink {
                 EventDisposition::Accepted
             }
             Err(mpsc::TrySendError::Full(event)) => {
-                self.account.release_queue_slot();
+                self.account.release_queue_slot(&event);
                 self.account.record_queue_drop(&event);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::QueueFull
             }
             Err(mpsc::TrySendError::Disconnected(event)) => {
-                self.account.release_queue_slot();
+                self.account.release_queue_slot(&event);
                 self.account.record_storage_drop(&event);
                 self.retired.store(true, Ordering::Release);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
@@ -360,11 +402,24 @@ impl ApplicationEventSink for ChannelSink {
 
     fn accounting(&self) -> ApplicationSinkAccounting {
         ApplicationSinkAccounting {
+            attempted_events: self.account.attempted.load(Ordering::Acquire),
             accepted_events: self.account.accepted.load(Ordering::Acquire),
             dropped_events: self.account.dropped.load(Ordering::Acquire),
             queue_capacity: self.account.queue_capacity.load(Ordering::Acquire),
             queue_current: self.account.queue_current.load(Ordering::Acquire),
             queue_peak: self.account.queue_peak.load(Ordering::Acquire),
+            queue_retained_bytes_capacity: self
+                .account
+                .queue_retained_bytes_capacity
+                .load(Ordering::Acquire),
+            queue_retained_bytes_current: self
+                .account
+                .queue_retained_bytes_current
+                .load(Ordering::Acquire),
+            queue_retained_bytes_peak: self
+                .account
+                .queue_retained_bytes_peak
+                .load(Ordering::Acquire),
             body_bytes_queue_dropped: self
                 .account
                 .body_bytes_queue_dropped
@@ -473,17 +528,27 @@ impl ApplicationArtifactLease {
             dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
         >,
     ) -> io::Result<Self> {
-        Self::open_correlated_with_writer_start(path, session_id, capacity, correlation, || {})
+        Self::open_correlated_with_writer_hooks(
+            path,
+            session_id,
+            capacity,
+            DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY,
+            correlation,
+            || {},
+            || {},
+        )
     }
 
-    fn open_correlated_with_writer_start(
+    fn open_correlated_with_writer_hooks(
         path: impl Into<PathBuf>,
         session_id: impl Into<String>,
         capacity: usize,
+        retained_bytes_capacity: u64,
         correlation: Arc<
             dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
         >,
         writer_start: impl FnOnce() + Send + 'static,
+        writer_ready: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -503,6 +568,9 @@ impl ApplicationArtifactLease {
         account
             .queue_capacity
             .store(capacity.max(1) as u64, Ordering::Release);
+        account
+            .queue_retained_bytes_capacity
+            .store(retained_bytes_capacity.max(1), Ordering::Release);
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let classification_summary = Arc::new(Mutex::new(None));
         let sink = Arc::new(ChannelSink {
@@ -529,6 +597,7 @@ impl ApplicationArtifactLease {
                     correlation,
                     worker_classification_summary,
                     ready_send,
+                    writer_ready,
                 )
             })?;
         if ready_receive.recv().is_err() {
@@ -609,6 +678,7 @@ fn writer_loop(
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
     reconciled_classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
     ready: mpsc::SyncSender<()>,
+    writer_ready: impl FnOnce(),
 ) -> io::Result<()> {
     let mut writer = application_writer(file);
     let mut sequence = 0_u64;
@@ -642,6 +712,7 @@ fn writer_loop(
     ready
         .send(())
         .map_err(|_| io::Error::other("application writer readiness receiver disconnected"))?;
+    writer_ready();
     loop {
         let event = match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(event) => event,
@@ -682,7 +753,7 @@ fn writer_loop(
                 break;
             }
         };
-        account.release_queue_slot();
+        account.release_queue_slot(&event);
         let classification = application_event_classification(&event);
         classification_summary.record(&classification);
         let record_type = event_type(&event.kind).to_string();
@@ -1036,6 +1107,24 @@ fn writer_loop(
         .as_object_mut()
         .expect("application trailer is an object");
     for (name, value) in [
+        (
+            "queue_retained_bytes_capacity",
+            account
+                .queue_retained_bytes_capacity
+                .load(Ordering::Acquire),
+        ),
+        (
+            "queue_retained_bytes_current",
+            account.queue_retained_bytes_current.load(Ordering::Acquire),
+        ),
+        (
+            "queue_retained_bytes_peak",
+            account.queue_retained_bytes_peak.load(Ordering::Acquire),
+        ),
+    ] {
+        object.insert(name.to_string(), json!(value));
+    }
+    for (name, value) in [
         ("quic_stream_bytes_observed", quic_stream_observed_bytes),
         ("quic_stream_bytes_retained", quic_stream_retained_bytes),
         (
@@ -1276,7 +1365,7 @@ fn fail_application_writer(
     }
     drop(sender.lock().expect("application sender lock").take());
     while let Ok(event) = receiver.recv() {
-        account.release_queue_slot();
+        account.release_queue_slot(&event);
         account.record_storage_drop(&event);
         account.dropped.fetch_add(1, Ordering::Relaxed);
     }
@@ -2636,15 +2725,17 @@ mod tests {
         let (entered_send, entered_receive) = mpsc::sync_channel(1);
         let (release_send, release_receive) = mpsc::sync_channel(1);
         let opener = std::thread::spawn(move || {
-            ApplicationArtifactLease::open_correlated_with_writer_start(
+            ApplicationArtifactLease::open_correlated_with_writer_hooks(
                 path,
                 "ready-session",
                 4_096,
+                DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY,
                 Arc::new(|_| ApplicationCorrelation::default()),
                 move || {
                     entered_send.send(()).unwrap();
                     release_receive.recv().unwrap();
                 },
+                || {},
             )
         });
 
@@ -2672,14 +2763,170 @@ mod tests {
     }
 
     #[test]
+    fn ready_consumer_admits_the_complete_default_burst_before_counted_refusal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ready-stalled.jsonl");
+        let (stalled_send, stalled_receive) = mpsc::sync_channel(1);
+        let (release_send, release_receive) = mpsc::sync_channel(1);
+        let mut lease = ApplicationArtifactLease::open_correlated_with_writer_hooks(
+            &path,
+            "ready-stalled-session",
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+            DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY,
+            Arc::new(|_| ApplicationCorrelation::default()),
+            || {},
+            move || {
+                stalled_send.send(()).unwrap();
+                release_receive.recv().unwrap();
+            },
+        )
+        .unwrap();
+        stalled_receive.recv().unwrap();
+        let sink = lease.sink();
+
+        for connection_id in 0..DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64 {
+            assert_eq!(
+                sink.try_emit(ApplicationEvent::now(
+                    "ready-stalled-session",
+                    connection_id,
+                    None,
+                    Some(ProtocolVersion::Http2),
+                    ApplicationEventKind::HttpStreamOpen,
+                )),
+                EventDisposition::Accepted
+            );
+        }
+        let full = sink.accounting();
+        assert_eq!(
+            full.accepted_events,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_capacity,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_current,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            full.queue_peak,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(full.dropped_events, 0);
+
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "ready-stalled-session",
+                DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                    direction: fragcap_proxy::GenericUdpDirection::UpstreamToClient,
+                    sequence: 0,
+                    client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                    remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                },),
+            )),
+            EventDisposition::QueueFull
+        );
+        let refused = sink.accounting();
+        assert_eq!(refused.dropped_events, 1);
+        assert_eq!(
+            refused.attempted_events,
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64 + 1
+        );
+        assert_eq!(refused.generic_udp_datagrams_queue_dropped, 1);
+        assert_eq!(refused.generic_udp_bytes_queue_dropped, 4);
+
+        release_send.send(()).unwrap();
+        lease.finish().unwrap();
+        let drained = sink.accounting();
+        assert_eq!(drained.queue_current, 0);
+        assert_eq!(drained.queue_peak, full.queue_peak);
+        let prefix = read_application_prefix(&path).unwrap();
+        let observed_ids = prefix
+            .records
+            .iter()
+            .filter(|record| record["type"] == "http.stream.open")
+            .map(|record| record["proxy_connection_id"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed_ids,
+            (0..DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY as u64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn stalled_consumer_refuses_retained_payload_beyond_the_byte_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ready-stalled-bytes.jsonl");
+        let (stalled_send, stalled_receive) = mpsc::sync_channel(1);
+        let (release_send, release_receive) = mpsc::sync_channel(1);
+        let mut lease = ApplicationArtifactLease::open_correlated_with_writer_hooks(
+            &path,
+            "ready-stalled-bytes",
+            DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+            8,
+            Arc::new(|_| ApplicationCorrelation::default()),
+            || {},
+            move || {
+                stalled_send.send(()).unwrap();
+                release_receive.recv().unwrap();
+            },
+        )
+        .unwrap();
+        stalled_receive.recv().unwrap();
+        let sink = lease.sink();
+        let datagram = |sequence| {
+            ApplicationEvent::now(
+                "ready-stalled-bytes",
+                1,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                    direction: fragcap_proxy::GenericUdpDirection::UpstreamToClient,
+                    sequence,
+                    client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                    remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                }),
+            )
+        };
+        assert_eq!(sink.try_emit(datagram(0)), EventDisposition::Accepted);
+        assert_eq!(sink.try_emit(datagram(1)), EventDisposition::Accepted);
+        assert_eq!(sink.try_emit(datagram(2)), EventDisposition::QueueFull);
+        let saturated = sink.accounting();
+        assert_eq!(saturated.queue_current, 2);
+        assert_eq!(saturated.queue_retained_bytes_capacity, 8);
+        assert_eq!(saturated.queue_retained_bytes_current, 8);
+        assert_eq!(saturated.queue_retained_bytes_peak, 8);
+        assert_eq!(saturated.generic_udp_bytes_queue_dropped, 4);
+
+        release_send.send(()).unwrap();
+        lease.finish().unwrap();
+        let drained = sink.accounting();
+        assert_eq!(drained.queue_current, 0);
+        assert_eq!(drained.queue_retained_bytes_current, 0);
+        assert_eq!(drained.queue_retained_bytes_peak, 8);
+    }
+
+    #[test]
     fn writer_start_failure_settles_worker_before_refusal() {
         let directory = tempfile::tempdir().unwrap();
-        let error = ApplicationArtifactLease::open_correlated_with_writer_start(
+        let error = ApplicationArtifactLease::open_correlated_with_writer_hooks(
             directory.path().join("failed.jsonl"),
             "failed-session",
             4_096,
+            DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY,
             Arc::new(|_| ApplicationCorrelation::default()),
             || panic!("controlled writer startup failure"),
+            || {},
         )
         .err()
         .expect("startup failure must refuse the lease");
@@ -2800,9 +3047,9 @@ mod tests {
                 sequence: 0,
                 client_endpoint: "127.0.0.1:41000".parse().unwrap(),
                 remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
-                observed_len: 4,
+                observed_len: 9,
                 bytes: bytes::Bytes::from_static(b"data"),
-                outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                outcome: fragcap_proxy::GenericUdpOutcome::RetentionLimit,
             }),
         ));
         assert_eq!(disposition, EventDisposition::Retired);
@@ -2874,9 +3121,9 @@ mod tests {
                     stream_kind: "http3-request",
                     sequence: 0,
                     offset: 0,
-                    observed_len: 4,
+                    observed_len: 9,
                     bytes: bytes::Bytes::from_static(b"data"),
-                    outcome: fragcap_proxy::GenericStreamOutcome::Complete,
+                    outcome: fragcap_proxy::GenericStreamOutcome::RetentionLimit,
                     terminal: "forwarded",
                 }),
             )),
@@ -2892,9 +3139,9 @@ mod tests {
                     pair_id: 9,
                     direction: fragcap_proxy::QuicDirection::ClientToUpstream,
                     sequence: 0,
-                    observed_len: 4,
+                    observed_len: 9,
                     bytes: bytes::Bytes::from_static(b"data"),
-                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                    outcome: fragcap_proxy::GenericUdpOutcome::RetentionLimit,
                     terminal: "forwarded",
                 }),
             )),
@@ -2913,6 +3160,7 @@ mod tests {
             Arc::new(|_| ApplicationCorrelation::default()),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .is_err());
         assert!(retired.load(Ordering::Acquire));
@@ -3086,15 +3334,15 @@ mod tests {
         }
         let (tx, receiver) = mpsc::sync_channel(1);
         account.queue_capacity.store(1, Ordering::Release);
-        assert!(account.reserve_queue_slot());
-        tx.try_send(ApplicationEvent::now(
+        let queued_event = ApplicationEvent::now(
             "session",
             7,
             None,
             None,
             ApplicationEventKind::HttpStreamOpen,
-        ))
-        .unwrap();
+        );
+        assert!(account.reserve_queue_slot(&queued_event));
+        tx.try_send(queued_event).unwrap();
         account.accepted.store(4, Ordering::Release);
         let sender = Arc::new(Mutex::new(Some(tx)));
         let retired = AtomicBool::new(false);
@@ -3374,6 +3622,7 @@ mod tests {
             }),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
@@ -3449,6 +3698,7 @@ mod tests {
             }),
             Arc::new(Mutex::new(None)),
             ready,
+            || {},
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();

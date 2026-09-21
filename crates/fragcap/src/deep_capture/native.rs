@@ -343,7 +343,7 @@ impl ProxyBackend for NativeProxyAdapter {
                 super::ApplicationArtifactLease::open_correlated(
                     path,
                     &plan.session_id,
-                    4_096,
+                    super::DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
                     Arc::new(move |descriptor| {
                         let (
                             flow_id,

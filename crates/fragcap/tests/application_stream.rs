@@ -525,11 +525,11 @@ fn streaming_queue_loss_is_counted_without_blocking_the_producer() {
                 direction: BodyDirection::Response,
                 sequence,
                 compressed: false,
-                declared_len: 8,
+                declared_len: 13,
                 payload: b"retained".to_vec(),
                 encoding: None,
                 payload_omitted: false,
-                outcome: StreamingOutcome::Complete,
+                outcome: StreamingOutcome::Limit,
             })),
         ));
         queue_full += u64::from(disposition == fragcap_proxy::EventDisposition::QueueFull);
@@ -537,7 +537,7 @@ fn streaming_queue_loss_is_counted_without_blocking_the_producer() {
     assert!(queue_full > 0);
     assert_eq!(
         sink.accounting().streaming_bytes_queue_dropped,
-        queue_full * 8
+        queue_full * 13
     );
     drop(sink);
     lease.finish().unwrap();
@@ -548,10 +548,10 @@ fn streaming_queue_loss_is_counted_without_blocking_the_producer() {
         .iter()
         .find(|value| value["type"] == "application.gap")
         .unwrap();
-    assert_eq!(gap["streaming_bytes_queue_dropped"], queue_full * 8);
+    assert_eq!(gap["streaming_bytes_queue_dropped"], queue_full * 13);
     assert_eq!(
         stream.records.last().unwrap()["streaming_bytes_queue_dropped"],
-        queue_full * 8
+        queue_full * 13
     );
 }
 

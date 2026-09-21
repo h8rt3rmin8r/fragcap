@@ -50,6 +50,12 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
     required_string(value, "reviewed_on", "registry", &mut problems);
     exact_strings(&value["matrix"], "protocols", PROTOCOLS, &mut problems);
     exact_strings(&value["matrix"], "retention", RETENTION, &mut problems);
+    exact_strings(
+        value,
+        "compatible_evidence_registry_digests",
+        &["fnv1a64:559c42bc9ce8f33e"],
+        &mut problems,
+    );
 
     let profiles = &value["profiles"];
     positive(
@@ -169,7 +175,7 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
             }
         }
     }
-    validate_reference(root, &expected, &mut problems)?;
+    validate_reference(root, value, &expected, &mut problems)?;
     validate_soak_summary(root, value, &mut problems)?;
     validate_runtime_inventory(root, &mut problems)?;
     Ok(problems)
@@ -191,7 +197,7 @@ fn validate_soak_summary(
     {
         problems.push("soak summary metadata is incomplete".into());
     }
-    if summary["registry_digest"].as_str() != Some(registry_digest.as_str()) {
+    if !evidence_digest_is_compatible(registry, &registry_digest, &summary) {
         problems.push("soak summary registry digest is stale".into());
     }
     let operator_approved = summary["operator_approved"].as_bool() == Some(true);
@@ -252,6 +258,7 @@ fn validate_soak_summary(
 
 fn validate_reference(
     root: &Path,
+    registry: &Value,
     expected: &BTreeSet<String>,
     problems: &mut Vec<String>,
 ) -> io::Result<()> {
@@ -265,7 +272,7 @@ fn validate_reference(
     {
         problems.push("short reference metadata is incomplete".into());
     }
-    if reference["registry_digest"].as_str() != Some(registry_digest.as_str()) {
+    if !evidence_digest_is_compatible(registry, &registry_digest, &reference) {
         problems.push("short reference registry digest is stale".into());
     }
     let Some(campaigns) = reference["campaigns"].as_array() else {
@@ -326,6 +333,14 @@ fn validate_reference(
     Ok(())
 }
 
+fn evidence_digest_is_compatible(registry: &Value, current: &str, evidence: &Value) -> bool {
+    let digest = evidence["registry_digest"].as_str();
+    digest == Some(current)
+        || registry["compatible_evidence_registry_digests"]
+            .as_array()
+            .is_some_and(|digests| digests.iter().any(|value| value.as_str() == digest))
+}
+
 fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let mut expected_sequence = 0_u64;
@@ -336,6 +351,7 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
     let mut consumed_case_samples = BTreeMap::<String, usize>::new();
     let mut profile = None;
     let mut last_progress_seconds = 0_u64;
+    let mut report_schema = None;
     for (index, line) in text.lines().enumerate() {
         let value: Value = match serde_json::from_str(line) {
             Ok(value) => value,
@@ -347,8 +363,13 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
                 continue;
             }
         };
-        if value["schema_version"].as_u64() != Some(1) {
+        let schema = value["schema_version"].as_u64();
+        if !matches!(schema, Some(1 | 2)) {
             problems.push(format!("report line {} has an unknown schema", index + 1));
+        } else if report_schema.is_some_and(|expected| Some(expected) != schema) {
+            problems.push(format!("report line {} changes schema version", index + 1));
+        } else {
+            report_schema = schema;
         }
         if value["sequence"].as_u64() != Some(expected_sequence) {
             problems.push(format!("report line {} breaks sequence", index + 1));
@@ -425,6 +446,14 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
                 ] {
                     if value[field].as_u64().is_none() {
                         problems.push(format!("report sample requires numeric {field}"));
+                    }
+                }
+                if schema == Some(2) {
+                    for field in ["application_events_attempted", "application_queue_capacity"] {
+                        if value[field].as_u64().is_none() {
+                            problems
+                                .push(format!("report version 2 sample requires numeric {field}"));
+                        }
                     }
                 }
             }
@@ -736,6 +765,11 @@ fn evaluate_report_case(samples: &[Value], case: &Value, limits: &Value) -> Repo
                 || number(sample, "queue_peak") > number(limits, "maximum_application_queue")
                 || number(sample, "queue_current") != 0
                 || number(sample, "failure_details_dropped") != 0
+                || (sample["schema_version"].as_u64() == Some(2)
+                    && (number(sample, "application_queue_capacity")
+                        != number(limits, "maximum_application_queue")
+                        || number(sample, "application_events_attempted")
+                            > number(sample, "application_queue_capacity")))
                 || number(sample, "application_events_dropped") != 0
         })
         .count() as u64;
@@ -861,7 +895,7 @@ mod tests {
         .unwrap();
         let mut sequence = 0_u64;
         let mut records = vec![serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "campaign.header",
             "sequence": sequence,
             "profile": "short",
@@ -888,7 +922,7 @@ mod tests {
                 for window in 0..7 {
                     sequence += 1;
                     records.push(serde_json::json!({
-                        "schema_version":1,"kind":"case.sample","sequence":sequence,
+                        "schema_version":2,"kind":"case.sample","sequence":sequence,
                         "case_id":id,"attempt":1,"window":window + 1,
                         "metrics_available":true,"useful_bytes":useful,
                         "direct_microseconds":90_000,"proxy_microseconds":100_000,
@@ -902,13 +936,15 @@ mod tests {
                         "task_spawned":1,"task_completed":1,"task_aborted":0,
                         "cache_peak_entries":if *protocol == "quic" { 4 } else { 0 },
                         "cache_peak_bytes":0,
-                        "failure_details_dropped":0,"application_events_dropped":0,
+                        "failure_details_dropped":0,"application_events_attempted":100,
+                        "application_events_dropped":0,
+                        "application_queue_capacity":16384,
                         "shutdown_microseconds":1,"success":true,"clean_shutdown":true
                     }));
                 }
                 sequence += 1;
                 records.push(serde_json::json!({
-                    "schema_version":1,"kind":"case.terminal","sequence":sequence,
+                    "schema_version":2,"kind":"case.terminal","sequence":sequence,
                     "case_id":id,"passed":true,"attempts":1,"windows":7,
                     "median_throughput_bytes_per_second":useful * 10,
                     "median_throughput_ratio_basis_points":9000,
@@ -920,7 +956,7 @@ mod tests {
         }
         sequence += 1;
         records.push(serde_json::json!({
-            "schema_version":1,"kind":"campaign.terminal","sequence":sequence,
+            "schema_version":2,"kind":"campaign.terminal","sequence":sequence,
             "complete":true,"passed":true,"registry_digest":"digest",
             "private_memory_span_bytes":0
         }));
@@ -931,6 +967,67 @@ mod tests {
             .join("\n");
         let problems = validate_report(&text, "digest", &registry);
         assert!(problems.is_empty(), "{problems:?}");
+
+        let legacy = records
+            .iter()
+            .cloned()
+            .map(|mut record| {
+                record["schema_version"] = Value::from(1);
+                if let Some(object) = record.as_object_mut() {
+                    object.remove("application_events_attempted");
+                    object.remove("application_queue_capacity");
+                }
+                record
+            })
+            .map(|record| record.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let legacy_problems = validate_report(&legacy, "digest", &registry);
+        assert!(legacy_problems.is_empty(), "{legacy_problems:?}");
+
+        for field in [
+            "payload_bytes_observed",
+            "payload_bytes_retained",
+            "payload_bytes_omitted",
+            "payload_bytes_queue_dropped",
+            "payload_bytes_storage_dropped",
+        ] {
+            let mut mutated = records.clone();
+            mutated[1][field] = Value::from(mutated[1][field].as_u64().unwrap() + 1);
+            let text = mutated
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                validate_report(&text, "digest", &registry)
+                    .iter()
+                    .any(|problem| problem.contains("canonical budget")),
+                "mutation of {field} was accepted"
+            );
+        }
+
+        let mut oversized_burst = records.clone();
+        oversized_burst[1]["application_events_attempted"] = Value::from(16_385);
+        let oversized = oversized_burst
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(validate_report(&oversized, "digest", &registry)
+            .iter()
+            .any(|problem| problem.contains("canonical budget")));
+
+        let mut unknown_schema = records.clone();
+        unknown_schema[0]["schema_version"] = Value::from(3);
+        let unknown = unknown_schema
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(validate_report(&unknown, "digest", &registry)
+            .iter()
+            .any(|problem| problem.contains("unknown schema")));
 
         records[1]["throughput_bytes_per_second"] = Value::from(1);
         let fabricated = records
