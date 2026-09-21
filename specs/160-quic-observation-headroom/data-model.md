@@ -30,6 +30,8 @@ writer before storage succeeds or fails. `RetainedBytes`, `OmittedBytes`, and
 
 `QueueDroppedBytes` and `StorageDroppedBytes` are mutually exclusive losses that
 never entered the writer or did not survive artifact storage, respectively.
+Every queue-loss byte authority uses the event's observed length, not its
+possibly omitted or truncated retained vector length.
 `TotalObservedBytes` is:
 
 ```text

@@ -78,6 +78,13 @@ the writer total. Adding only queue loss to total observed and subtracting
 storage loss from omission partitions every byte exactly once without altering
 artifact data or historical files.
 
+Every queue-loss source must carry observed length. The pre-S160 streaming
+counter instead used retained vector length, so an omitted or truncated
+WebSocket, SSE, or gRPC event could balance while understating total production.
+S160 corrects the existing `streaming_bytes_queue_dropped` field to its declared
+observed-byte meaning and protects it with a retained-versus-observed queue-loss
+regression.
+
 **Alternatives considered**: Remove loss from the equation (rejected because
 the report would stop describing total produced observations); count dropped
 bytes as omission (rejected because the disposition would be false); change the

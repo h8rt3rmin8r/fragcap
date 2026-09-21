@@ -222,16 +222,9 @@ impl WriterAccount {
             return;
         }
         if let ApplicationEventKind::Streaming(value) = &event.kind {
-            let bytes = match value {
-                fragcap_proxy::StreamingEvent::WebSocketFrame(value) => value.wire_payload.len(),
-                fragcap_proxy::StreamingEvent::WebSocketMessage(value) => value.payload.len(),
-                fragcap_proxy::StreamingEvent::SseField(value) => value.value.len(),
-                fragcap_proxy::StreamingEvent::SseEvent(value) => value.data.len(),
-                fragcap_proxy::StreamingEvent::GrpcMessage(value) => value.payload.len(),
-                _ => 0,
-            };
+            let bytes = streaming_measure(value).map_or(0, |(_, observed, _)| observed);
             self.streaming_bytes_queue_dropped
-                .fetch_add(bytes as u64, Ordering::Relaxed);
+                .fetch_add(bytes, Ordering::Relaxed);
             return;
         }
         let ApplicationEventKind::Body(segment) = &event.kind else {

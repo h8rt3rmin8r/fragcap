@@ -46,6 +46,9 @@ bytes seen by the application writer. Writer-observed bytes include storage
 loss but exclude queue loss. The harness separately sums both named loss
 counters from the trailer.
 
+`streaming_bytes_queue_dropped` MUST sum the observed length carried by refused
+WebSocket, SSE, and gRPC events. It MUST NOT use retained payload-vector length.
+
 The harness MUST publish:
 
 ```text

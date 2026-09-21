@@ -149,7 +149,9 @@ exact loss beyond it, and complete terminal cleanup.
 - **FR-013**: The correction MUST add no dependency, protocol, trust behavior,
   external traffic, target instrumentation, or product application-artifact
   content change. Performance report version 2 MAY add capacity-proof fields
-  and correct the meaning of total observed payload bytes.
+  and correct the meaning of total observed payload bytes. Existing queue-loss
+  fields MAY correct retained-length accounting to their declared observed-byte
+  meaning without changing the artifact shape.
 - **FR-014**: Local verification MUST use source tests and controlled fixtures
   only. The installed product, real games, real trust mutation, and sensitive
   live capture MUST NOT run on the operator workstation.
