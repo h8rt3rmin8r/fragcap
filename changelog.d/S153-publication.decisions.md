@@ -1,3 +1,0 @@
-<!-- spec-impact: 1, 26.3, 27.3 -->
-
-2026-09-15: Under separate explicit owner release authorization, S153 tags exact human-merged S152 source a7d24962999d38d7ff130722859d473543864862 and verifies actual v0.10.1 publication before reconciling current identity and release documentation. All four release jobs pass, the owner supplies normal crates-io approval, six certified public assets reconcile and all ten registry versions are non-yanked. The bounded records PR preserves historical release evidence, unsigned policy, enabled administrator bypass and independent acceptance gates; it changes no product, version, workflow or dependency and performs no installed sensitive-product execution.

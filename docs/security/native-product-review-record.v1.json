@@ -2,7 +2,7 @@
   "schema_version": 1,
   "state": "not-started",
   "candidate": {
-    "product_version": "0.10.1",
+    "product_version": "0.10.2",
     "source_revision": null,
     "lockfile_sha256": null,
     "packages": []

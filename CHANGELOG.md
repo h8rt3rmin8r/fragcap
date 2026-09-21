@@ -10,6 +10,56 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-09-20
+
+### Changed
+
+Add an eleven-topic native documentation traceability inventory checked against current authored pages and exact Cargo-discoverable tests. Reuse current command/example and artifact checks, document engineering versus independent acceptance, correct published Doctor wording and distinguish opaque SOCKS TLS from inspected no-ALPN CONNECT.
+
+Publish one stable Native product contract that maps architecture, setup, Capture modes, CLI, protocols and routing, refusals, artifacts and correlation, diagnostics and recovery, security and privacy, finite bounds, packaging and migration, the stable API, and completion status to current guidance and executable evidence.
+
+Distinguish published v0.10.1 from later current-source documentation, review-intake, package-certification and contract work. Independent review #333, installed retest #413, documentation reconciliation #331, final gate #334 and epic #278 remain open.
+
+### Fixed
+
+Reconcile the verified v0.10.1 published baseline and current Doctor instructions with the certified downloads and ten registry versions, preserving historical v0.10.0 evidence and outstanding independent acceptance.
+
+Make stalled-consumer isolation deterministic with explicitly armed, acknowledged in-process backpressure and twenty fresh controlled scenarios. Preserve full ordered independent file output and strengthen exact offered/written/dropped reconciliation, while retaining real TCP coverage for a healthy reading consumer.
+
+Windows package certification no longer fails nondeterministically when bounded socket polling misses a short-lived loopback connection. Report schema 4 records deterministic, surface-distinct session evidence separately from socket diagnostics and transports bounded public-safe Rust predicate identifiers through the hosted harness.
+
+Prevent Windows scheduling from exposing the bounded application queue before its writer is ready, and preserve completed terminal proxy observations without reapplying the earlier Capture deadline. A clean native stop report is now required alongside stopped observation predicates, so owner-thread failure and residue cannot authorize a complete drain. Genuine queue loss, incomplete drain, timeout, cancellation and cleanup failures remain exact and visible.
+
+### Security
+
+Bind independent-review intake to the immutable v0.10.1 public asset identities, reject incomplete scope and unresolved finding dispositions, and replay separate portable and installed controlled native smoke on disposable hosted Windows. Mechanical validation never certifies reviewer independence, and #333/#413 remain open without external evidence.
+
+### Decisions
+
+2026-09-15: Under separate explicit owner release authorization, S153 tags exact human-merged S152 source a7d24962999d38d7ff130722859d473543864862 and verifies actual v0.10.1 publication before reconciling current identity and release documentation. All four release jobs pass, the owner supplies normal crates-io approval, six certified public assets reconcile and all ten registry versions are non-yanked. The bounded records PR preserves historical release evidence, unsigned policy, enabled administrator bypass and independent acceptance gates; it changes no product, version, workflow or dependency and performs no installed sensitive-product execution.
+
+2026-09-16: S154 resolves #420's platform-dependent positive-drop precondition without changing product accounting. Controlled writer arming after registration replaces magic header budgets, blocked-write acknowledgement proves the finite queue cannot drain, and twenty fresh runs preserve exact loss and independent file truth. Real TCP tests retain healthy transport coverage. Under bounded documentation child #421, reuse existing source validation and Cargo harness discovery through a narrow wrapper instead of cloning a generic evidence engine. Current native guidance receives a closed topic inventory, discoverable readiness reference and bounded publication/protocol corrections. Documentation task child launchers gain CREATE_NO_WINDOW and non-interactive stdin for the Windows host rule. Fumadocs renders the page H1 from MDX title metadata, so the authored MDX omits a duplicate body H1. Published v0.10.1 identity, owner administrator bypass, unsigned policy, independent #333/#413 acceptance and final #331/#334/#278 gates remain unchanged.
+
+2026-09-16: First-round Codex review finds hidden dev-server cancellation cannot rely on console-event propagation. Preserve the mandatory no-window launch policy and reuse the existing suspended-child and kill-on-close Windows Job Object helpers instead of making an attached-console exception or duplicating ownership machinery. Assignment precedes execution, normal shim exit closes the job, and abrupt parent exit releases its non-inherited job handle through Windows. Controlled subprocess tests cover normal and abrupt cleanup without running the actual site or product. No dependency, release or product-runtime change is introduced.
+
+2026-09-16: S155 preserves the exact not-started handoff as readiness evidence and introduces a separate reviewer-owned completed-record validator. JSON can carry an independence declaration but cannot prove its authorship or relationship, so a blocker-free result is explicitly not an approval. The published replay workflow consumes the six immutable v0.10.1 files on disposable hosted Windows and reuses the existing package lifecycle authority. Package report schema 3 requires unique portable and installed smoke rows with exact executable digests, loopback-only observations and reconciled cleanup. The shipped controlled target does not expose the source-only QUIC performance harness, so implementation automation cannot satisfy #413 and must not close #333. No dependency, product runtime, released byte, owner registry bypass or installed execution on the owner's workstation changes.
+
+**2026-09-17** Package certification now treats exact ordered structured native proxy-start and same-session reached-client records as positive controlled-route authority. Rust owns event parsing so the pinned PowerShell wrapper remains an orchestrator. The exact-program firewall and observed non-loopback or unexpected-owner failures remain mandatory, while a polling snapshot that misses a transient socket cannot by itself fail certification.
+
+**2026-09-17** Review tightened the current schema-4 boundary: portable and installed evidence must carry distinct session identity digests, and the wrapper must preserve Rust's bounded predicate codes instead of collapsing them into a generic failure.
+
+Replace the S154 eleven-topic readiness inventory with version-two documentation authority. The closed registry requires thirteen canonically ordered topics, exact authored headings, supported non-ignored Cargo test owners, five example-authority classes and the exact external completion boundary.
+
+Command examples remain parser-only and never dispatch. Committed manifest specimens use the versioned product reader, packet examples remain generated goldens, and lifecycle-rich bundle and API examples use controlled executable contracts rather than shortened approximate specimens. The existing nested manifest unit test is intentionally not registered because shared Cargo discovery does not infer nested library modules; a facade integration test exercises the same public reader without weakening evidence ownership.
+
+Make the hidden static-site launcher set noninteractive pnpm behavior and record esbuild as the sole allowed dependency build script. Pin pnpm 10.26.0 in both the site manifest and hosted workflow because that is the first selected toolchain with `allowBuilds` enforcement; the prior pnpm 9 workflow silently ignored the policy. The site toolchain already depends on esbuild and needs its platform binary for export; no other dependency script receives authority.
+
+Scan obsolete native-backend language across every nonhistorical site page, including pages that are not a primary owner of one of the thirteen topics. Topic ownership narrows traceability, but it must not narrow the current-language safety boundary.
+
+**2026-09-19** Keep the existing application queue, performance registry and four-field authorization deadline plan. Establish writer readiness before sink publication, and make structured bounded drain completion the authority for terminal observations instead of enlarging buffers or adding timing grace. Preserve the stable observation method and add a defaulted structured drain method so existing adapter implementations and callers remain source-compatible.
+
+**2026-09-20** Prepares v0.10.2 as a patch containing merged S154 through S158 reliability, certification, review-intake and documentation work while preserving v0.10.1 as the published baseline until exact public verification. Human merge, tag publication, protected registry approval and later records reconciliation remain separate ordered actions.
+
 ## [0.10.1] - 2026-09-15
 
 ### Fixed
@@ -2211,6 +2261,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.2]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2
 [0.10.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1
 [0.10.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0
 [0.9.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.9.0

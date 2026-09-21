@@ -25,6 +25,8 @@ The explicit publication request authorizes branch push and later tag push. It d
 
 No release tooling change is planned. A verified blocking defect would require separate analysis and a dated decision rather than an opportunistic release-cut rewrite.
 
+Candidate assembly found two existing documentation fragments classified under an unsupported `docs` section. Reclassifying their unchanged content under the supported `changed` section is a bounded release-data correction, not a new changelog schema or release-tool change.
+
 No installed product, real game, production Doctor, real trust mutation or sensitive live capture runs locally. Hosted disposable Windows certification remains the packaged execution boundary.
 
 ## Next Action

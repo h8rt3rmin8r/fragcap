@@ -11,9 +11,10 @@ cargo test --all --locked
 cargo xtask ci
 cargo xtask msrv
 cargo xtask neutral
-cargo xtask changelog --check
 cargo xtask notes 0.10.2
 ```
+
+`cargo xtask changelog --check` is a pre-assembly preview. After release assembly consumes every fragment, the empty Unreleased section is expected and the command intentionally reports that there is nothing to assemble.
 
 ## Publication checks
 

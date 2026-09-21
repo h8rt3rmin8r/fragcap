@@ -6,23 +6,23 @@
 - [x] T002 [US1] Resolve release-version, authority and two-pull-request clarifications in the specification.
 - [x] T003 [US1] Complete requirements and release-safety checklists.
 - [x] T004 [US1] Create research, data model, publication contract, quickstart and implementation plan.
-- [ ] T005 [US1] Run blocking cross-artifact analysis and record `analyze.md` before candidate implementation.
+- [x] T005 [US1] Run blocking cross-artifact analysis and record `analyze.md` before candidate implementation.
 
 ## Phase 2: Candidate preparation
 
-- [ ] T006 [US1] Commit the S159 specification gate before modifying candidate version or release outputs.
-- [ ] T007 [US1] Move all ten workspace packages and lockfile identities from 0.10.1 to 0.10.2 using the established version-only release command.
-- [ ] T008 [US1] Update embedded output, conformance, staged Windows and specification Applies-To identities to 0.10.2.
-- [ ] T009 [US1] Regenerate every version-bearing golden through its owning test generator.
-- [ ] T010 [US1] Assemble S153 through S158 fragments into the dated v0.10.2 changelog and verify chronological order.
-- [ ] T011 [US1] Add bounded `release-notes/v0.10.2.md` highlights and validate their rendered output.
-- [ ] T012 [US1] Update candidate-only release handoff and planning records while preserving all actual v0.10.1 publication markers.
+- [x] T006 [US1] Commit the S159 specification gate before modifying candidate version or release outputs.
+- [x] T007 [US1] Move all ten workspace packages and lockfile identities from 0.10.1 to 0.10.2 using the established version-only release command.
+- [x] T008 [US1] Update embedded output, conformance, staged Windows and specification Applies-To identities to 0.10.2.
+- [x] T009 [US1] Regenerate every version-bearing golden through its owning test generator.
+- [x] T010 [US1] Assemble S153 through S158 fragments into the dated v0.10.2 changelog and verify chronological order.
+- [x] T011 [US1] Add bounded `release-notes/v0.10.2.md` highlights and validate their rendered output.
+- [x] T012 [US1] Update candidate-only release handoff and planning records while preserving all actual v0.10.1 publication markers.
 
 ## Phase 3: Candidate verification and review
 
-- [ ] T013 [US1] Run focused version, changelog, note and generated-output checks.
-- [ ] T014 [US1] Run formatting, all-target all-feature clippy, locked workspace tests, aggregate CI, MSRV and neutral gates.
-- [ ] T015 [US1] Check strict UTF-8 without BOM, forbidden dash characters and mojibake across changed text.
+- [x] T013 [US1] Run focused version, changelog, note and generated-output checks.
+- [x] T014 [US1] Run formatting, all-target all-feature clippy, locked workspace tests, aggregate CI, MSRV and neutral gates.
+- [x] T015 [US1] Check strict UTF-8 without BOM, forbidden dash characters and mojibake across changed text.
 - [ ] T016 [US1] Commit the complete candidate, push `release/0.10.2`, open the official closing pull request for #431 and attach it to this task.
 - [ ] T017 [US1] Observe every first-round review and hosted check, address all findings, reply and resolve every thread.
 - [ ] T018 [US1] Request at most one second Codex review if needed, address all resulting findings and require every final-head check green.
