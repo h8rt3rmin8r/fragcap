@@ -142,7 +142,8 @@ exact loss beyond it, and complete terminal cleanup.
 - **FR-010**: The short campaign MUST continue to reject any queue or storage
   loss. Capacity headroom MUST NOT convert observed loss into success.
 - **FR-011**: Deterministic tests MUST cover a stalled ready consumer at the
-  supported burst bound and exact refusal immediately beyond the bound.
+  supported event bound, exact refusal immediately beyond that bound, and exact
+  refusal when retained payload reaches its independent finite byte bound.
 - **FR-012**: The correction MUST record why S158's readiness-only diagnosis was
   insufficient and why the prior rejection of added headroom is superseded by
   new evidence.
@@ -161,11 +162,16 @@ exact loss beyond it, and complete terminal cleanup.
   events and the queue capacity used, and the campaign MUST fail if the complete
   canonical burst exceeds that capacity even when concurrent draining prevented
   observed loss.
+- **FR-017**: The default queue MUST bound retained payload independently from
+  event count so the 16,384-event headroom cannot consume the entire 256 MiB
+  worker ceiling. Storage-loss byte counters MUST represent retained bytes that
+  failed persistence, and successfully retained bytes MUST exclude them.
 
 ### Key Entities
 
-- **Application observation queue authority**: The single finite capacity used
-  by an ordinary product session and its canonical performance measurement.
+- **Application observation queue authority**: The finite event-count and
+  retained-payload capacities used by an ordinary product session and its
+  canonical performance measurement.
 - **Canonical finite QUIC burst**: The fixed short-profile exchange that
   produces raw transport and derived application observations under the reviewed
   retention limits.
@@ -190,8 +196,9 @@ exact loss beyond it, and complete terminal cleanup.
   and every single-field mutation is rejected.
 - **SC-004**: All fourteen short-profile cases pass on the first fresh Windows
   workflow attempt with zero hard invariant failures and clean shutdown.
-- **SC-005**: Peak worker memory remains at or below 256 MiB, each artifact
-  remains at or below 32 MiB, and final queue ownership is zero.
+- **SC-005**: Peak worker memory remains at or below 256 MiB, queue-owned
+  retained payload remains at or below 32 MiB, each artifact remains at or
+  below 32 MiB, and final event plus retained-byte ownership is zero.
 - **SC-006**: All repository-controlled format, lint, test, specification,
   performance-authority, and documentation gates pass without running the
   installed product locally.

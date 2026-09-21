@@ -7,8 +7,9 @@
 ## Summary
 
 Correct the third observed Windows QUIC queue-saturation recurrence by replacing
-the disproven readiness-only assumption with one shared 16,384-event product and
-harness queue authority, deterministic post-readiness stall coverage, and a
+the disproven readiness-only assumption with one shared 16,384-event and 32 MiB
+retained-payload product and harness queue authority, deterministic
+post-readiness stall coverage, and a
 truthful payload projection that adds pre-writer queue loss while partitioning
 post-queue storage loss exactly once. Preserve nonblocking forwarding, finite
 ownership, exact overload loss, the 256 MiB worker ceiling, artifact content, cleanup, protocol
@@ -28,11 +29,11 @@ behavior, and first-attempt hosted acceptance.
 
 **Project Type**: Rust workspace, facade library, native proxy library, CLI, and isolated performance harness
 
-**Performance Goals**: Fourteen short-profile cases with zero queue or storage loss; 16,384-event finite queue; at most 256 MiB worker memory; at most 32 MiB artifact; shutdown within 5 seconds
+**Performance Goals**: Fourteen short-profile cases with zero queue or storage loss; 16,384-event and 32 MiB retained-payload finite queue; at most 256 MiB worker memory; at most 32 MiB artifact; shutdown within 5 seconds
 
 **Constraints**: Nonblocking producers, forwarding independent from evidence storage, exact loss beyond capacity, no event suppression, no protocol or artifact-content change, no installed local product, no real game, no real trust mutation, no sensitive live capture
 
-**Scale/Scope**: One shared capacity constant, three product or harness consumers, one private test seam, one payload projection, one performance report schema bump with two required fields, one registry field, focused documentation and regression coverage
+**Scale/Scope**: Shared event-count and retained-payload capacity constants, three product or harness consumers, one private test seam, one payload projection, one performance report schema bump with two required fields, one registry field, focused documentation and regression coverage
 
 ## Constitution Check
 

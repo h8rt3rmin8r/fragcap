@@ -18,8 +18,9 @@ platform-specific, not a scheduling guarantee, and does not bound ownership).
 
 ## R-2: Fourfold finite headroom replaces the disproven fixed capacity
 
-**Decision**: Establish 16,384 events as one shared default application queue
-capacity for product sessions and the performance harness.
+**Decision**: Establish 16,384 events plus 32 MiB of retained payload as one
+shared dual default application queue capacity for product sessions and the
+performance harness.
 
 **Rationale**: The canonical workload's complete artifact remains near 12 MiB,
 well below the existing 32 MiB artifact and 256 MiB worker ceilings, while the
@@ -43,7 +44,12 @@ because it would hide a product-path capacity defect); permit a small loss
 percentage (rejected because the canonical case is the loss-free baseline and
 the hard gate should remain strict); block producers or retry admission
 (rejected because artifact pressure must not affect forwarding); use an
-unbounded channel (rejected by finite ownership and memory requirements).
+unbounded channel (rejected by finite ownership and memory requirements). An
+event-count-only 16,384 queue was also rejected during final review because the
+permitted 16 KiB chunks could consume 256 MiB of payload before accounting for
+runtime state, metadata, and writer storage. The independent 32 MiB payload
+reservation preserves the metadata-heavy headroom while leaving explicit worker
+memory headroom.
 
 ## R-3: A post-readiness stall is the deterministic regression
 
@@ -66,17 +72,19 @@ seam is test-only).
 
 **Decision**: Treat artifact trailer observed-byte fields as writer-observed
 bytes, including records that reached the writer but did not survive storage.
-Compute intentional omission as writer observed minus retained minus
-storage-dropped bytes, then compute total observed as writer observed plus
-queue-dropped bytes.
+Storage-loss byte counters carry retained bytes that failed persistence.
+Compute successfully retained bytes as pre-storage retained minus storage loss,
+intentional omission as writer observed minus pre-storage retained, then compute
+total observed as writer observed plus queue-dropped bytes.
 
 **Rationale**: The current helper reads observed bytes after queue admission,
 before storage succeeds. Storage-dropped bytes are therefore already present in
 that writer-observed value, while queue-dropped bytes are absent. The prior
 helper subtracted queue loss from omission even though queue loss never entered
-the writer total. Adding only queue loss to total observed and subtracting
-storage loss from omission partitions every byte exactly once without altering
-artifact data or historical files.
+the writer total. Adding only queue loss to total observed, subtracting retained
+storage loss from successful retention, and deriving omission before storage
+partitions every byte exactly once. This also prevents a fully retained event
+whose write fails from being counted once as retained and again as storage loss.
 
 Every queue-loss source must carry observed length. The pre-S160 streaming
 counter instead used retained vector length, so an omitted or truncated

@@ -7,6 +7,12 @@
 the same authority. Explicit test callers may still request smaller capacities
 to exercise overload.
 
+`DefaultApplicationQueueRetainedBytesCapacity` is the simultaneous retained
+payload bound of 32 MiB. An event is admitted only when both the event slot and
+retained-payload reservation succeed. Both reservations are released together
+when the writer receives the event. Event current/peak and retained-byte
+current/peak remain separate authorities.
+
 The queue states remain `open`, `retired`, and `drained`. Readiness is a separate
 consumer fact and does not imply future scheduling.
 
@@ -25,8 +31,10 @@ receive-loop -> draining -> joined`. A controlled stall exists only between
 ## Payload accounting
 
 `WriterObservedBytes` is the sum of observed lengths dequeued by the artifact
-writer before storage succeeds or fails. `RetainedBytes`, `OmittedBytes`, and
-`StorageDroppedBytes` partition that value.
+writer before storage succeeds or fails. `WriterRetainedBytes` is the retained
+payload presented to storage. `StorageDroppedBytes` is the retained subset that
+failed persistence, `RetainedBytes` is the retained subset that survived, and
+`OmittedBytes` is `WriterObservedBytes - WriterRetainedBytes`.
 
 `QueueDroppedBytes` and `StorageDroppedBytes` are mutually exclusive losses that
 never entered the writer or did not survive artifact storage, respectively.
@@ -83,11 +91,14 @@ progress.
 ## Invariants
 
 - Product and canonical harness default application queue capacities are equal.
+- Event count and retained payload are independently finite at 16,384 events
+  and 32 MiB.
 - Canonical attempted application events do not exceed that shared capacity.
 - Capacity is finite and queue admission never waits for the consumer.
 - Exactly capacity events can be pending without loss when the consumer is held.
 - The next event is refused and advances its event and applicable byte counters.
-- Accepted observed bytes equal retained plus omitted bytes.
+- Writer-observed bytes equal pre-storage retained plus omitted bytes.
+- Pre-storage retained bytes equal persisted retained plus storage-dropped bytes.
 - Total observed bytes equal all four mutually exclusive dispositions.
 - Queue current is zero after terminal drain.
 - Artifact contents, order, classification, forwarding, trust, and cleanup do

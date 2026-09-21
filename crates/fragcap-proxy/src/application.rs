@@ -356,6 +356,9 @@ pub struct ApplicationSinkAccounting {
     pub queue_capacity: u64,
     pub queue_current: u64,
     pub queue_peak: u64,
+    pub queue_retained_bytes_capacity: u64,
+    pub queue_retained_bytes_current: u64,
+    pub queue_retained_bytes_peak: u64,
     pub body_bytes_queue_dropped: u64,
     pub streaming_bytes_queue_dropped: u64,
     pub generic_stream_bytes_queue_dropped: u64,
@@ -424,6 +427,15 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
                 total.queue_capacity = total.queue_capacity.saturating_add(value.queue_capacity);
                 total.queue_current = total.queue_current.saturating_add(value.queue_current);
                 total.queue_peak = total.queue_peak.saturating_add(value.queue_peak);
+                total.queue_retained_bytes_capacity = total
+                    .queue_retained_bytes_capacity
+                    .saturating_add(value.queue_retained_bytes_capacity);
+                total.queue_retained_bytes_current = total
+                    .queue_retained_bytes_current
+                    .saturating_add(value.queue_retained_bytes_current);
+                total.queue_retained_bytes_peak = total
+                    .queue_retained_bytes_peak
+                    .saturating_add(value.queue_retained_bytes_peak);
                 total.body_bytes_queue_dropped = total
                     .body_bytes_queue_dropped
                     .saturating_add(value.body_bytes_queue_dropped);

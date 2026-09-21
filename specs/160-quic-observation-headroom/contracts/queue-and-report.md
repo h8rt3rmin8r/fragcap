@@ -15,8 +15,11 @@ fresh reports MUST carry the current registry digest.
 ## Default queue
 
 The Deep Capture facade publishes one default application-observation queue
-capacity of 16,384 events. Every ordinary native product session and every
-canonical performance worker MUST use it.
+with two simultaneous bounds: 16,384 events and 32 MiB of retained payload.
+Every ordinary native product session and every canonical performance worker
+MUST use both bounds. The retained-payload bound leaves explicit space beneath
+the 256 MiB worker ceiling for runtime state, event metadata, writer buffering,
+and serialization.
 
 Admission remains immediate. At capacity, a producer receives `queue-full`; it
 does not wait, retry, or affect traffic forwarding. The rejected event advances
@@ -34,16 +37,20 @@ Writer readiness authorizes lease publication but makes no claim about future
 thread scheduling. The private test boundary may hold the consumer after it has
 signaled readiness and before it receives the first event.
 
-While held, exactly 16,384 pending events MUST be accepted with queue peak
-16,384 and zero loss. The next event MUST return `queue-full` and advance exact
-loss counters. Releasing the consumer MUST drain accepted events in order and
-leave queue current zero.
+While held, exactly 16,384 zero-payload pending events MUST be accepted with
+queue peak 16,384 and zero loss. The next event MUST return `queue-full` and
+advance exact loss counters. A separate retained-payload test MUST prove the
+byte bound refuses the first event that would exceed 32 MiB even when event
+slots remain. Releasing the consumer MUST drain accepted events in order and
+leave both event and retained-byte ownership at zero.
 
 ## Performance payload projection
 
-For every protocol byte class, the harness first sums observed and retained
-bytes seen by the application writer. Writer-observed bytes include storage
-loss but exclude queue loss. The harness separately sums both named loss
+For every protocol byte class, the harness first sums observed and pre-storage
+retained bytes seen by the application writer. Writer-observed bytes include
+events whose retained payload later fails storage but exclude queue loss.
+Storage-loss counters carry retained bytes that failed persistence, not the
+event's larger observed length. The harness separately sums both named loss
 counters from the trailer.
 
 `streaming_bytes_queue_dropped` MUST sum the observed length carried by refused
@@ -52,9 +59,10 @@ WebSocket, SSE, and gRPC events. It MUST NOT use retained payload-vector length.
 The harness MUST publish:
 
 ```text
+payload_bytes_retained = writer_retained
+                       - payload_bytes_storage_dropped
 payload_bytes_omitted = writer_observed
-                      - payload_bytes_retained
-                      - payload_bytes_storage_dropped
+                      - writer_retained
 payload_bytes_observed = writer_observed
                        + payload_bytes_queue_dropped
 ```

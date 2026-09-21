@@ -26,7 +26,7 @@ first-attempt hosted acceptance.
 **Independent Test**: Hold the consumer after readiness, admit exactly the shared default capacity, prove the first excess event is counted without blocking, release the consumer, and finish with ordered zero-current ownership.
 
 - [x] T006 [US1] Add the ready-consumer exact-capacity and one-past-capacity regression in crates/fragcap/src/deep_capture/application.rs, with the retained main failure proving the prior 4,096-event authority was insufficient
-- [x] T007 [US1] Define and document the shared 16,384-event default capacity in crates/fragcap/src/deep_capture/application.rs
+- [x] T007 [US1] Define and document the shared 16,384-event default plus independent 32 MiB retained-payload capacity in crates/fragcap/src/deep_capture/application.rs
 - [x] T008 [US1] Replace the ordinary native application artifact literal with the shared capacity in crates/fragcap/src/deep_capture/native.rs while leaving lifecycle capacity unchanged
 - [x] T009 [US1] Replace both canonical performance artifact literals with the shared capacity in performance/native-proxy/src/workloads.rs
 - [x] T010 [US1] Update the reviewed queue ceiling and its validator expectations in performance/native-proxy-budgets-v1.json and xtask/src/performance.rs as required
@@ -40,7 +40,7 @@ first-attempt hosted acceptance.
 **Independent Test**: Project controlled retained, omitted, queue-dropped, and storage-dropped values, then mutate each value independently and prove every mismatch is rejected.
 
 - [x] T013 [US2] Add a regression for retained payload plus queue loss and storage loss in performance/native-proxy/src/workloads.rs that fails against the prior saturating-subtraction projection
-- [x] T014 [US2] Partition writer-observed bytes into retained, omitted, and storage-dropped dispositions, then add only pre-writer queue loss into total observed bytes in performance/native-proxy/src/workloads.rs
+- [x] T014 [US2] Partition writer-observed bytes into successfully retained, omitted, and retained-storage-dropped dispositions, then add only pre-writer queue loss into total observed bytes in performance/native-proxy/src/workloads.rs
 - [x] T015 [US2] Preserve historical version 1 report validation, refuse unknown versions, and add version 2 evaluator mutation cases for all four payload dispositions in performance/native-proxy/src/main.rs and xtask/src/performance.rs
 - [x] T016 [US2] Run the isolated performance harness tests and static report validator without executing the full local campaign
 

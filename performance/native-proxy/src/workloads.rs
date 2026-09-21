@@ -217,10 +217,8 @@ fn payload_totals_from_trailer(trailer: &serde_json::Value) -> PayloadTotals {
     .fold(0_u64, |total, name| total.saturating_add(field(name)));
     PayloadTotals {
         observed: writer_observed.saturating_add(queue_dropped),
-        retained,
-        omitted: writer_observed
-            .saturating_sub(retained)
-            .saturating_sub(storage_dropped),
+        retained: retained.saturating_sub(storage_dropped),
+        omitted: writer_observed.saturating_sub(retained),
         queue_dropped,
         storage_dropped,
     }
@@ -1213,8 +1211,8 @@ mod tests {
             "generic_udp_bytes_storage_dropped": 7
         }));
 
-        assert_eq!(totals.retained, 90);
-        assert_eq!(totals.omitted, 53);
+        assert_eq!(totals.retained, 83);
+        assert_eq!(totals.omitted, 60);
         assert_eq!(totals.queue_dropped, 15);
         assert_eq!(totals.storage_dropped, 7);
         assert_eq!(totals.observed, 165);

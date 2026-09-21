@@ -8,12 +8,14 @@ trust mutation.
 
 ```powershell
 cargo test -p fragcap --features deep-capture application::tests::ready_consumer
+cargo test -p fragcap --features deep-capture application::tests::stalled_consumer
 cargo test --manifest-path performance/native-proxy/Cargo.toml payload_totals
 cargo xtask performance
 ```
 
-The application regression must prove exact default-capacity admission, the
-first counted refusal, ordered drain, and zero final ownership. The performance
+The application regressions must prove exact default event and retained-payload
+admission, the first counted refusal beyond either bound, ordered drain, and
+zero final ownership. The performance
 regression must mutate retained, omitted, queue-dropped, and storage-dropped
 inputs independently and reject every inconsistent result.
 
