@@ -294,7 +294,7 @@ workflow. Also specifies the documentation linter: entry completeness,
 internal anchor resolution, external link liveness on a schedule, and
 regeneration of the alphabetical index.
 
-S157 replaces the S154 readiness inventory with one version-two Native product contract. Thirteen current topics bind exact authored headings, command and artifact example authorities, and supported non-ignored executable tests while keeping published v0.10.1 distinct from later current-source engineering. Independent review #333, installed retest #413, documentation reconciliation #331, final gate #334 and epic #278 remain separate open outcomes.
+S157 replaces the S154 readiness inventory with one version-two Native product contract. Thirteen current topics bind exact authored headings, command and artifact example authorities, and supported non-ignored executable tests. v0.10.2 now publishes that engineering together with S158's Windows observation correction. Independent review #333, Doctor field validation #372, documentation reconciliation #331, final gate #334 and epic #278 remain separate open outcomes.
 
 ## 23. Website and Brand
 

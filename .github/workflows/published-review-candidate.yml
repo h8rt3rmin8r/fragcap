@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   replay:
-    name: replay exact v0.10.1 packages
+    name: replay exact v0.10.2 packages
     runs-on: windows-2025
     timeout-minutes: 45
     steps:

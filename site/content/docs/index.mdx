@@ -3,10 +3,10 @@ title: Documentation
 description: Process-attributed Capture and explicit, target-scoped Deep Capture for Windows game traffic.
 ---
 
-Published baseline: [v0.10.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1).
+Published baseline: [v0.10.2](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2).
 
 <Callout title="Deep Capture status">
-Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied independent-review readiness, not an audit. v0.10.1 adds S151 slow-probe Doctor diagnostics and S152 owner-controlled registry protection. Current source after that release adds documentation, review-intake and deterministic package-certification engineering. Independent review #333, installed retest #413, documentation reconciliation #331, final gate #334 and epic #278 remain open.
+Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied independent-review readiness, not an audit. v0.10.2 includes S154 through S158 documentation, review-intake, deterministic package-certification and Windows observation corrections. Independent review #333, Doctor field validation #372, documentation reconciliation #331, final gate #334 and epic #278 remain open.
 </Callout>
 
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
