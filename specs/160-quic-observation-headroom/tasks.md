@@ -60,7 +60,7 @@ first-attempt hosted acceptance.
 - [x] T021 Run cargo fmt --all -- --check, cargo clippy --all-targets --all-features -- -D warnings, cargo test --all --locked, cargo xtask ci, cargo xtask msrv, and cargo xtask neutral in the foreground
 - [x] T022 Run UTF-8 without BOM, LF, trailing-whitespace, mojibake, and git diff hygiene checks over every changed text file
 - [x] T023 Re-run spec-kit analysis and convergence, reconcile every S160 task, and confirm issue #435 plus the repository project reflect delivery state
-- [ ] T024 Commit S160, push codex/s160-quic-observation-headroom, open and attach the official pull request
+- [x] T024 Commit S160, push codex/s160-quic-observation-headroom, open and attach the official pull request
 - [ ] T025 Preserve and inspect every first-attempt hosted conclusion, especially Windows native performance, without using a rerun as acceptance
 - [ ] T026 Address every review comment and hosted defect within at most two review rounds, replying and resolving each thread
 - [ ] T027 Confirm every required check is green on the final head, update issue #435 with exact evidence, and request the operator's final review and merge ritual
