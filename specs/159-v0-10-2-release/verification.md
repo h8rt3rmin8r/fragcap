@@ -35,4 +35,4 @@ No installed product, real game, production Doctor, real trust mutation or sensi
 
 ## Pending evidence
 
-Hosted pull-request checks, review dispositions, exact human-merged candidate source, tag identity, release workflow, public files, registry versions and post-publication records do not exist yet. They will be appended only after observation.
+Official candidate pull request [#432](https://github.com/h8rt3rmin8r/fragcap/pull/432) is published from `release/0.10.2` and closes #431 on merge. Hosted pull-request conclusions and review dispositions remain pending. Exact human-merged candidate source, tag identity, release workflow, public files, registry versions and post-publication records do not exist yet. They will be appended only after observation.

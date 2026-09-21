@@ -23,7 +23,7 @@
 - [x] T013 [US1] Run focused version, changelog, note and generated-output checks.
 - [x] T014 [US1] Run formatting, all-target all-feature clippy, locked workspace tests, aggregate CI, MSRV and neutral gates.
 - [x] T015 [US1] Check strict UTF-8 without BOM, forbidden dash characters and mojibake across changed text.
-- [ ] T016 [US1] Commit the complete candidate, push `release/0.10.2`, open the official closing pull request for #431 and attach it to this task.
+- [x] T016 [US1] Commit the complete candidate, push `release/0.10.2`, open the official closing pull request for #431 and attach it to this task.
 - [ ] T017 [US1] Observe every first-round review and hosted check, address all findings, reply and resolve every thread.
 - [ ] T018 [US1] Request at most one second Codex review if needed, address all resulting findings and require every final-head check green.
 - [ ] T019 [US1] Ask the owner for the mandatory human merge only after candidate review and CI are complete.
