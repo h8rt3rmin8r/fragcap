@@ -289,10 +289,10 @@ test.describe('production accessibility contract', () => {
     await page.goto('/docs/reference/native-documentation');
     await expect(page.getByRole('heading', { level: 1, name: 'Native product contract' })).toHaveCount(1);
     const main = page.getByRole('main');
-    await expect(main).toContainText('v0.10.1');
+    await expect(main).toContainText('v0.10.2');
     await expect(main).toContainText('S154');
-    await expect(main).toContainText('S157');
-    for (const issue of ['#333', '#413', '#331', '#334', '#278']) {
+    await expect(main).toContainText('S158');
+    for (const issue of ['#333', '#372', '#331', '#334', '#278']) {
       await expect(main).toContainText(issue);
     }
   });
