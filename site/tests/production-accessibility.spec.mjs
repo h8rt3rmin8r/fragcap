@@ -285,16 +285,16 @@ test.describe('production accessibility contract', () => {
     }
   });
 
-  test('native product contract separates release, source and external acceptance', async ({ page }) => {
+  test('native product contract separates release, source and explicit non-claims', async ({ page }) => {
     await page.goto('/docs/reference/native-documentation');
     await expect(page.getByRole('heading', { level: 1, name: 'Native product contract' })).toHaveCount(1);
     const main = page.getByRole('main');
     await expect(main).toContainText('v0.10.2');
     await expect(main).toContainText('S154');
     await expect(main).toContainText('S158');
-    for (const issue of ['#333', '#372', '#331', '#334', '#278']) {
-      await expect(main).toContainText(issue);
-    }
+    await expect(main).toContainText('independent security audit has been performed');
+    await expect(main).toContainText('Each observed failure becomes a concrete defect');
+    await expect(main).toContainText('active release');
   });
 
   test('current native guidance internal links resolve to exported pages and anchors', async ({ page }) => {
