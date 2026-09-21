@@ -1,0 +1,3 @@
+<!-- spec-impact: 1, 22.7, 25.2, 27.3 -->
+
+2026-09-21: Under explicit owner release authorization, S159 tags exact human-merged source 13c9230d1e91b1fddd34de1f279963fa0e711ef4 and verifies actual v0.10.2 publication before reconciling current identity and review-candidate records. All four release jobs pass, the owner supplies normal crates.io approval, six certified public files reconcile and all ten registry versions are non-yanked. The records pull request preserves historical releases, unsigned policy, enabled administrator bypass and independent acceptance gates; it changes no product version, release workflow, dependency or published byte and performs no installed sensitive-product execution.
