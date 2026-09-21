@@ -108,14 +108,15 @@
 <!--
   ACTION REQUIRED: Define measurable success criteria.
   These must be technology-agnostic and measurable.
+  Criteria must be satisfiable by implementation and automated or controlled evidence in this slice. Do not require future operator testing, field measurement, independent review, or active-release observation for issue closure; observed release failures become separate defects.
 -->
 
 ### Measurable Outcomes
 
-- **SC-001**: [Measurable metric, e.g., "Users can complete account creation in under 2 minutes"]
-- **SC-002**: [Measurable metric, e.g., "System handles 1000 concurrent users without degradation"]
-- **SC-003**: [User satisfaction metric, e.g., "90% of users successfully complete primary task on first attempt"]
-- **SC-004**: [Business metric, e.g., "Reduce support tickets related to [X] by 50%"]
+- **SC-001**: [Controlled outcome, e.g., "Every required scenario completes the primary workflow with the expected result"]
+- **SC-002**: [Bounded capacity, e.g., "A controlled load of 1000 concurrent operations completes with zero unaccounted loss"]
+- **SC-003**: [Closed conformance, e.g., "Every accepted corpus input produces its expected output and every refused input reports its named reason"]
+- **SC-004**: [Regression outcome, e.g., "Each scoped defect reproduces before the correction and passes its exact regression assertion afterward"]
 
 ## Assumptions
 
