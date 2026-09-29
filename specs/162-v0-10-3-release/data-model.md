@@ -2,7 +2,7 @@
 
 ## Release candidate
 
-Fields: source commit, ten package versions, lockfile identity, specification applicability, generated output identities, conformance identities, assembled changelog, and highlights. State: prepared, checked, reviewed, operator-merged.
+Fields: source commit, ten product crate versions, xtask version, lockfile identity, specification applicability, generated output identities, conformance identities, assembled changelog, and highlights. State: prepared, checked, reviewed, operator-merged.
 
 ## Published release
 

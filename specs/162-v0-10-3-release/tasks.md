@@ -11,14 +11,14 @@
 
 ## Phase 2: Reviewed candidate
 
-- [ ] T007 [US1] Dry-run the patch wrapper, then execute its version-only cargo-release command on the existing `release/0.10.3` branch, moving ten workspace and lockfile package versions.
-- [ ] T008 [US1] Inspect versioned embedded output, conformance, Windows staged identity, specification applicability, and regenerated golden files.
-- [ ] T009 [US1] Assemble every unreleased fragment into chronological v0.10.3 changelog entries.
-- [ ] T010 [US1] Add bounded `release-notes/v0.10.3.md` highlights and validate rendered notes.
-- [ ] T011 [US1] Add candidate handoff and plan records while retaining public v0.10.2 markers.
-- [ ] T012 [US1] Run focused version, changelog, notes, output, documentation, and specification checks.
-- [ ] T013 [US1] Run full source CI, MSRV, neutral, and related release gates in the foreground.
-- [ ] T014 [US1] Check UTF-8 without BOM, LF, final newline, whitespace, forbidden dash, and mojibake hygiene.
+- [x] T007 [US1] Dry-run the patch wrapper, then execute its version-only cargo-release command on the existing `release/0.10.3` branch, moving ten product crates and xtask in the workspace and lockfile.
+- [x] T008 [US1] Inspect versioned embedded output, conformance, Windows staged identity, specification applicability, and regenerated golden files.
+- [x] T009 [US1] Assemble every unreleased fragment into chronological v0.10.3 changelog entries.
+- [x] T010 [US1] Add bounded `release-notes/v0.10.3.md` highlights and validate rendered notes.
+- [x] T011 [US1] Add candidate handoff and plan records while retaining public v0.10.2 markers.
+- [x] T012 [US1] Run focused version, changelog, notes, output, documentation, and specification checks.
+- [x] T013 [US1] Run full source CI, MSRV, neutral, and related release gates in the foreground.
+- [x] T014 [US1] Check UTF-8 without BOM, LF, final newline, whitespace, forbidden dash, and mojibake hygiene.
 - [ ] T015 [US1] Commit and push the complete candidate, open the official PR referencing #439, and attach it to this task.
 - [ ] T016 [US1] Address every first-round review comment and hosted failure; allow at most one second Codex review round.
 - [ ] T017 [US1] Require green final-head PR checks and ask the operator to merge the reviewed candidate.
