@@ -12,7 +12,7 @@
 ## Phase 2: Reviewed candidate
 
 - [x] T007 [US1] Dry-run the patch wrapper, then execute its version-only cargo-release command on the existing `release/0.10.3` branch, moving ten product crates and xtask in the workspace and lockfile.
-- [x] T008 [US1] Inspect versioned embedded output, conformance, Windows staged identity, specification applicability, and regenerated golden files.
+- [x] T008 [US1] Inspect versioned embedded output, conformance, Windows staged identity, specification applicability, isolated fuzz/performance locks, and regenerated golden files.
 - [x] T009 [US1] Assemble every unreleased fragment into chronological v0.10.3 changelog entries.
 - [x] T010 [US1] Add bounded `release-notes/v0.10.3.md` highlights and validate rendered notes.
 - [x] T011 [US1] Add candidate handoff and plan records while retaining public v0.10.2 markers.

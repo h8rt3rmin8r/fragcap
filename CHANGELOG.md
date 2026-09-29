@@ -34,7 +34,7 @@ Interactive Doctor, target registration, and warm-restart questions now accept k
 
 **2026-09-29** Rebind the three reviewed dependency graphs and the unsafe-review digest to the v0.10.3 first-party workspace versions. Cargo.lock changes only eleven first-party version fields; third-party packages, features, providers, unsafe implementation, package counts, edge counts, the review expiry and all exceptions remain unchanged. This metadata reconciliation does not establish independent whole-product approval.
 
-**2026-09-29** Bind the standalone native performance harness lockfile to the same v0.10.3 path crates as the workspace after the hosted short campaigns identified stale local versions. Only nine first-party version fields change in that lockfile; third-party dependencies and the harness profile remain unchanged.
+**2026-09-29** Bind the standalone native performance and fuzz harness lockfiles to the same v0.10.3 path crates as the workspace after hosted short campaigns and first-round review identified stale local versions. Only nine first-party version fields change in each lockfile; third-party dependencies and harness profiles remain unchanged.
 
 ## [0.10.2] - 2026-09-20
 

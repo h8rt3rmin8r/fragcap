@@ -57,7 +57,7 @@ The operator wants current published-state documentation to move to v0.10.3 only
 ### Functional Requirements
 
 - **FR-001**: S162 MUST start from exact clean main after S161 and prepare patch version 0.10.3 with all unreleased S159 through S161 fragments assembled in chronological order.
-- **FR-002**: All ten product crate versions and the xtask version, lockfile identities, embedded output, generated goldens, native conformance data, specification applicability, and release highlights MUST agree on 0.10.3.
+- **FR-002**: All ten product crate versions and the xtask version, workspace and isolated fuzz/performance lockfile identities, embedded output, generated goldens, native conformance data, specification applicability, and release highlights MUST agree on 0.10.3.
 - **FR-003**: Candidate preparation MUST preserve `docs/published-release.json` and other actual-publication markers at v0.10.2 until public verification.
 - **FR-004**: Highlights MUST describe S160 and S161 accurately and MUST NOT claim a Print Screen fix, installed-host test, independent product security acceptance, or universal game compatibility.
 - **FR-005**: The final candidate MUST pass full local source gates and required hosted PR checks without locally installing or executing the product, a game, production Doctor, real trust mutation, or sensitive live capture.
