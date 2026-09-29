@@ -12,7 +12,7 @@ Prepare a reviewed 0.10.3 candidate containing all merged changes since v0.10.2,
 
 **Language/Version**: Rust workspace on the pinned repository toolchain; PowerShell 7 release wrapper on Windows.
 
-**Primary Dependencies**: Existing cargo-release, `scripts/New-Release.ps1`, `cargo xtask`, GitHub Actions release workflow, crates.io protected environment. No new dependency.
+**Primary Dependencies**: Existing cargo-release, the `scripts/New-Release.ps1` dry-run preview and documented preparation steps, `cargo xtask`, GitHub Actions release workflow, crates.io protected environment. No new dependency.
 
 **Storage**: Source and generated release records, Git tag, GitHub release assets, crates.io package versions.
 
@@ -84,12 +84,12 @@ CONTRIBUTING.md
 specs/162-v0-10-3-release/verification.md
 ```
 
-**Structure Decision**: Reuse S159's two-PR release model and the existing release wrapper. Do not alter release tooling, workflow, dependency policy, or protection unless a verified blocker demands a separate reviewed correction.
+**Structure Decision**: Reuse S159's two-PR release model and the existing version-only release command plus owning golden and changelog generators. The Windows wrapper's execution path requires clean `main` and creates a new release branch, so it cannot run after the required S162 specification-gate commit on `release/0.10.3`. Use its dry-run preview, then execute the same documented commands directly on the existing release branch. Do not alter release tooling, workflow, dependency policy, or protection.
 
 ## Implementation Sequence
 
 1. Commit the analyzed S162 specification gate before candidate version changes.
-2. Preview and run the existing Windows patch release wrapper on `release/0.10.3`; inspect all generated version and changelog changes.
+2. Preview with the existing Windows release wrapper, then run its version-only cargo-release command, owning golden generators, changelog assembler, and checks directly on `release/0.10.3`; inspect all generated changes.
 3. Author bounded highlights and candidate-only records; keep public markers at v0.10.2.
 4. Run local gates, push the candidate PR, resolve at most two review rounds, and wait for final-head hosted checks.
 5. Request the required operator PR merge, then verify the exact merged source and conflicting-tag absence.

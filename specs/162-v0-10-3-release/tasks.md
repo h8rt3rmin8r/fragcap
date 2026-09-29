@@ -11,7 +11,7 @@
 
 ## Phase 2: Reviewed candidate
 
-- [ ] T007 [US1] Dry-run and execute the established patch wrapper on `release/0.10.3`, moving ten workspace and lockfile package versions.
+- [ ] T007 [US1] Dry-run the patch wrapper, then execute its version-only cargo-release command on the existing `release/0.10.3` branch, moving ten workspace and lockfile package versions.
 - [ ] T008 [US1] Inspect versioned embedded output, conformance, Windows staged identity, specification applicability, and regenerated golden files.
 - [ ] T009 [US1] Assemble every unreleased fragment into chronological v0.10.3 changelog entries.
 - [ ] T010 [US1] Add bounded `release-notes/v0.10.3.md` highlights and validate rendered notes.

@@ -6,7 +6,7 @@
 
 ## Findings
 
-No CRITICAL, HIGH, or MEDIUM inconsistency remains. The requirements and tasks preserve three distinct authorities: candidate source (FR-001 through FR-006, T007 through T017), tagged public release (FR-007 through FR-010, T018 through T025), and later current-baseline records (FR-011, T026 through T031). Operator merge and protected-environment approval are explicit boundaries rather than implied agent actions.
+One MEDIUM planning inconsistency surfaced when the actual Windows wrapper was inspected after the initial analysis: its non-dry-run preflight requires clean `main` and creates `release/0.10.3`, conflicting with the committed specification gate on that branch. The plan, research, quickstart, and T007 now use its dry-run preview and documented direct command sequence; no wrapper change is needed. No CRITICAL, HIGH, or MEDIUM inconsistency remains. The requirements and tasks preserve three distinct authorities: candidate source (FR-001 through FR-006, T007 through T017), tagged public release (FR-007 through FR-010, T018 through T025), and later current-baseline records (FR-011, T026 through T031). Operator merge and protected-environment approval are explicit boundaries rather than implied agent actions.
 
 All measurable success criteria map to a verification task. The release contract rejects a changed source or conflicting tag, and the quickstart preserves the local sensitive-execution limit. No unresolved placeholder or `NEEDS CLARIFICATION` remains in the authored artifacts. The constitutional P-8, P-9, P-11, and integration gates are reflected in both plan and tasks.
 

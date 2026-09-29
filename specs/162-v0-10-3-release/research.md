@@ -2,11 +2,11 @@
 
 ## R1: Release machinery
 
-**Decision**: Reuse the established `scripts/New-Release.ps1 patch` preview and execution on `release/0.10.3`, then the tag-triggered GitHub workflow.
+**Decision**: Reuse the established `scripts/New-Release.ps1 patch -DryRun` preview, then execute its documented version-only cargo-release, golden-generation, changelog, and verification commands directly on `release/0.10.3`, followed later by the tag-triggered GitHub workflow.
 
-**Evidence**: `release.toml` limits cargo-release to version and commit work on `release/*`; the wrapper assembles changelog fragments, regenerates versioned goldens, and runs checks without pushing, tagging, or publishing. S159 used the same two-stage candidate and tag process.
+**Evidence**: `release.toml` limits cargo-release to version and commit work on `release/*`; the wrapper assembles changelog fragments, regenerates versioned goldens, and runs checks without pushing, tagging, or publishing. Its execution preflight requires clean `main` and creates a release branch, so it cannot run after S162's required specification-gate commit on an existing release branch. S159 used the same two-stage candidate and tag process with the established version-only command.
 
-**Alternatives**: Manual version edits multiply identity drift. Changing the wrapper or workflow during an ordinary patch would widen scope without a demonstrated need.
+**Alternatives**: Manual version edits multiply identity drift. Changing the pinned wrapper or workflow during an ordinary patch would widen scope without a demonstrated need. The direct command sequence is already explicit in the wrapper and avoids a new mechanism.
 
 ## R2: Version and content
 

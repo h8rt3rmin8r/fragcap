@@ -4,7 +4,7 @@ Do not install or execute released fragcap bytes, a real game, production Doctor
 
 ## Candidate
 
-Preview `scripts/New-Release.ps1 patch` with its documented dry-run flag, then execute the same wrapper on `release/0.10.3`. Inspect the version, golden, changelog, and notes diff before running the repository gates.
+Preview `scripts/New-Release.ps1 patch -DryRun`, then execute the wrapper's documented version-only cargo-release command and owning golden and changelog steps directly on the existing `release/0.10.3` branch. The wrapper's non-dry-run preflight accepts only clean `main` and attempts to create this branch, so it cannot run after the S162 spec gate. Inspect the version, golden, changelog, and notes diff before running repository gates.
 
 ```powershell
 cargo xtask ci
