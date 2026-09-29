@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.82-draft \
-**Applies-To:** 0.10.2 \
+**Version:** 0.1.83-draft \
+**Applies-To:** 0.10.3 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-09-29 \
@@ -170,6 +170,7 @@ enforcement.
 | 0.1.80-draft | 2026-09-21 | W. Thompson | Aligns completion governance with the active-release defect workflow. Implementation issues close after scoped delivery and repository-controlled gates pass; future field observation, independent review, or release monitoring does not remain as a standing verification issue. Native Deep Capture implementation and documentation are complete for the shipped boundary. Independent security review and universal compatibility remain explicit non-claims, and any observed active-release failure becomes its own defect. Updates sections 1, 27.3, and 28.1. |
 | 0.1.81-draft | 2026-09-21 | W. Thompson | Corrects the scheduler-dependent QUIC observation loss found after S159 records merged. Updates sections 25.5 and 28.1. Product and performance paths share a finite 16,384-event application queue with an independent 32 MiB retained-payload bound. Ready-but-stalled consumer regressions prove exact admission, nonblocking counted refusal beyond either bound, ordered drain and zero terminal ownership. Performance report schema 2 adds exact producer attempts and capacity, and corrects observed payload totals to include accepted and lost dispositions once without double-counting failed storage. Historical schema 1 remains readable and unknown versions remain refused. |
 | 0.1.82-draft | 2026-09-29 | Codex | Corrects the shipped v0.10.2 interactive stdin deadlock under S161 and issue #437. Updates sections 17.2, 17.7, and 26.3: authorization holds the shared stdin lock only while consuming one bounded plan response; Doctor, target registration, and warm restart read their independent questions; prompt failures stop without falsely reporting an operator decline or performing an unconfirmed action. Print Screen behavior remains a separate unproven observation. The document header also catches up with the pre-existing 0.1.81 revision row. |
+| 0.1.83-draft | 2026-09-29 | Codex | Prepares v0.10.3 under S162 (#439) from merged S160 and S161 corrections. Workspace, generated outputs, native conformance identities, changelog and highlights move together while verified publication remains v0.10.2. Human merge, exact tag, protected registry approval, public-file and ten-crate verification, and later records reconciliation remain separate ordered states. Updates sections 1 and 27.3 without claiming a Print Screen correction. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4883,6 +4884,8 @@ restated here. The scope of each release is:
 | v0.10.0 | 2026-09-15 | Supply chain, final package certification, stable API, discovery integrity, exact authorization, guided registration/setup and resumable calibration, help/session UX, current documentation and bounded native writer correction; independent audit and final completion remain open | S130 through S150 |
 | v0.10.1 | 2026-09-15 | Discoverable nested Doctor timings and pending slow-probe progress, plus freshly verified owner-controlled registry protection; certified public packages and all ten crate versions verified, independent acceptance remains open | S151 through S152; S153 verifies publication |
 | v0.10.2 | 2026-09-21 | Complete native documentation contract, independent-review intake and hosted replay, deterministic package-certification evidence, and Windows observation-queue corrections; certified public packages and all ten crate versions verified | S154 through S158; S159 verifies publication |
+
+S162 prepares v0.10.3 from merged S160 and S161, including bounded QUIC observation headroom and interactive CLI input ownership. This is a candidate until the operator merges it, its exact source is tagged, the protected registry job is approved when required, and public files and all ten crate versions are verified. Published baseline records remain v0.10.2 during preparation. Print Screen behavior is not claimed as corrected.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 

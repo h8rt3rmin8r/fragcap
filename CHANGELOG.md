@@ -10,6 +10,32 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-09-29
+
+### Fixed
+
+Reconcile the verified v0.10.2 published baseline, native documentation contract and frozen independent-review candidate with the certified downloads and ten registry versions while preserving historical release evidence and outstanding independent acceptance.
+
+Prevent scheduler-dependent QUIC observation loss by giving product sessions and the canonical performance harness one finite 16,384-event queue with an independent 32 MiB retained-payload bound, exact burst-size evidence, deterministic post-readiness stall coverage, and non-overlapping storage-loss accounting.
+
+Interactive Doctor, target registration, and warm-restart questions now accept keyboard responses instead of stalling behind an internal input lock. Doctor reports prompt failures as errors rather than skipped actions, while existing Deep Capture authorization remains exact and bounded.
+
+### Decisions
+
+2026-09-21: Under explicit owner release authorization, S159 tags exact human-merged source 13c9230d1e91b1fddd34de1f279963fa0e711ef4 and verifies actual v0.10.2 publication before reconciling current identity and review-candidate records. All four release jobs pass, the owner supplies normal crates.io approval, six certified public files reconcile and all ten registry versions are non-yanked. The records pull request preserves historical releases, unsigned policy, enabled administrator bypass and independent acceptance gates; it changes no product version, release workflow, dependency or published byte and performs no installed sensitive-product execution.
+
+**2026-09-21** Implementation issues now close when their scoped work and repository-controlled gates are complete. Future operator, field, independent-review, or release observations do not remain as standing verification issues; concrete failures become defects against the affected active release.
+
+**2026-09-21** Supersede the earlier 4,096-event performance ceiling after merged-main evidence disproved the assumption that batching and writer readiness alone prevent saturation. The 16,384-event replacement is independently capped at 32 MiB of retained payload so added scheduler headroom cannot consume the worker memory ceiling. Performance reports advance to schema version 2 for exact attempt, capacity and corrected payload-conservation semantics; queue loss uses original observed length, storage loss uses retained bytes that failed persistence, historical version 1 remains readable, and retained S128 reference evidence keeps its original registry digest under an explicit ceiling-only compatibility declaration.
+
+**2026-09-29** Keep one shared buffered stdin source but hold its mutex only during each bounded authorization read. Passing a command-wide locked reader through every CLI path would broaden unrelated signatures, while a second raw console handle could split buffered input from exact plan authorization. Prompt I/O errors stop before later actions and are reported separately from a completed negative answer. The Print Screen report remains an independent observation without a demonstrated fragcap-specific cause.
+
+**2026-09-29** Prepare the v0.10.3 candidate handoff and bounded release highlights under S162 while preserving verified v0.10.2 publication markers. The reviewed candidate, exact tagged source, protected crates.io deployment, public asset verification, and later records reconciliation remain distinct; no release workflow or unsigned-package policy changes.
+
+**2026-09-29** Rebind the three reviewed dependency graphs and the unsafe-review digest to the v0.10.3 first-party workspace versions. Cargo.lock changes only eleven first-party version fields; third-party packages, features, providers, unsafe implementation, package counts, edge counts, the review expiry and all exceptions remain unchanged. This metadata reconciliation does not establish independent whole-product approval.
+
+**2026-09-29** Bind the standalone native performance and fuzz harness lockfiles to the same v0.10.3 path crates as the workspace after hosted short campaigns and first-round review identified stale local versions. Only nine first-party version fields change in each lockfile; third-party dependencies and harness profiles remain unchanged.
+
 ## [0.10.2] - 2026-09-20
 
 ### Changed
@@ -2261,6 +2287,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.3]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.3
 [0.10.2]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2
 [0.10.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1
 [0.10.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.0
