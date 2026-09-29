@@ -482,9 +482,19 @@ fn confirm_warm_restart(emitter: &mut Emitter, prompt: &str) -> Result<bool, Cli
     emitter
         .flush()
         .map_err(|error| CliError::usage(format!("could not flush warm restart plan: {error}")))?;
+    let stdin = std::io::stdin();
+    read_warm_restart_answer(&mut stdin.lock())
+}
+
+fn read_warm_restart_answer(input: &mut dyn std::io::BufRead) -> Result<bool, CliError> {
     let mut answer = String::new();
-    match std::io::stdin().read_line(&mut answer) {
-        Ok(0) | Err(_) => Ok(false),
+    match input.read_line(&mut answer) {
+        Ok(0) => Err(CliError::failure(
+            "warm restart confirmation input closed before an answer",
+        )),
+        Err(error) => Err(CliError::failure(format!(
+            "could not read warm restart confirmation: {error}"
+        ))),
         Ok(_) => Ok(calibration_answer_is_affirmative(&answer)),
     }
 }
@@ -4620,6 +4630,34 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct BrokenWarmRead;
+
+    impl std::io::Read for BrokenWarmRead {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("broken input"))
+        }
+    }
+
+    impl std::io::BufRead for BrokenWarmRead {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            Err(std::io::Error::other("broken input"))
+        }
+
+        fn consume(&mut self, _amount: usize) {}
+    }
+
+    #[test]
+    fn warm_restart_read_distinguishes_answers_from_input_failure() {
+        for (answer, expected) in [("y\n", true), ("YES\r\n", true), ("n\n", false)] {
+            assert_eq!(
+                read_warm_restart_answer(&mut std::io::Cursor::new(answer)).unwrap(),
+                expected
+            );
+        }
+        assert!(read_warm_restart_answer(&mut std::io::Cursor::new("")).is_err());
+        assert!(read_warm_restart_answer(&mut BrokenWarmRead).is_err());
+    }
 
     #[test]
     fn prior_recovery_gate_reports_an_interrupted_session_before_new_work() {

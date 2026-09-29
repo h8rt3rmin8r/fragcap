@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.80-draft \
+**Version:** 0.1.82-draft \
 **Applies-To:** 0.10.2 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-09-21 \
+**Date:** 2026-09-29 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -169,6 +169,7 @@ enforcement.
 | 0.1.79-draft | 2026-09-21 | W. Thompson | Reconciles verified v0.10.2 publication under S159 (#431). Annotated tag, exact merged source, four green release jobs, normal owner deployment approval, six certified public files, schema-4 package report and all ten non-yanked registry versions are independently checked before current markers move. S154 through S158 are now in the published baseline, #413 is closed, and independent #333 review, #372 field validation and final #331/#334/#278 acceptance remain open. No installed sensitive product or real game is agent-run locally. |
 | 0.1.80-draft | 2026-09-21 | W. Thompson | Aligns completion governance with the active-release defect workflow. Implementation issues close after scoped delivery and repository-controlled gates pass; future field observation, independent review, or release monitoring does not remain as a standing verification issue. Native Deep Capture implementation and documentation are complete for the shipped boundary. Independent security review and universal compatibility remain explicit non-claims, and any observed active-release failure becomes its own defect. Updates sections 1, 27.3, and 28.1. |
 | 0.1.81-draft | 2026-09-21 | W. Thompson | Corrects the scheduler-dependent QUIC observation loss found after S159 records merged. Updates sections 25.5 and 28.1. Product and performance paths share a finite 16,384-event application queue with an independent 32 MiB retained-payload bound. Ready-but-stalled consumer regressions prove exact admission, nonblocking counted refusal beyond either bound, ordered drain and zero terminal ownership. Performance report schema 2 adds exact producer attempts and capacity, and corrects observed payload totals to include accepted and lost dispositions once without double-counting failed storage. Historical schema 1 remains readable and unknown versions remain refused. |
+| 0.1.82-draft | 2026-09-29 | Codex | Corrects the shipped v0.10.2 interactive stdin deadlock under S161 and issue #437. Updates sections 17.2, 17.7, and 26.3: authorization holds the shared stdin lock only while consuming one bounded plan response; Doctor, target registration, and warm restart read their independent questions; prompt failures stop without falsely reporting an operator decline or performing an unconfirmed action. Print Screen behavior remains a separate unproven observation. The document header also catches up with the pre-existing 0.1.81 revision row. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3209,6 +3210,10 @@ declared image set. The effective wait is the shorter of `--wait` and two
 minutes, defaulting to two minutes. Partial closure, inventory failure, and
 deadline expiry are distinct no-effect outcomes.
 
+The warm-restart question reads one complete response after its prompt is
+flushed. A closed or failed input stream is an error before any restart action,
+not an operator decline.
+
 One complete snapshot with every declared image absent permits fresh target
 resolution and cold launch preparation. The selector must resolve to the same
 stored target and the observed result must be the corresponding supported cold
@@ -3442,7 +3447,9 @@ target need no store path unless one is named explicitly.
   tool did not observe; `no` records the executable as a launcher with the holder
   unresolved; `yes` records it as the resolved client. When standard input is not
   a terminal the same decision is supplied by `--socket-holder yes|no|unsure`
-  (which requires `--exe`). `--steam <app_id>` scaffolds an installed title
+  (which requires `--exe`). The interactive question is flushed before input;
+  an input error stops registration, while EOF retains `unsure` without asserting
+  a socket holder. `--steam <app_id>` scaffolds an installed title
   (formerly `steam profile`). A target registered `no` or `unsure` reads `needs a
   target` until a capture against it observes the real socket holder and promotes
   it to a resolved client at verified fidelity (launch-and-observe, section 17.2),
@@ -4646,6 +4653,12 @@ offered action for unattended interactive use but still requires a terminal
 stdout. After the action phase the classifier is re-run and the updated
 verdict is printed, and every action reports its honest outcome (performed,
 skipped, degraded, or failed); a failed action is never reported as success.
+Each confirmation reads one complete line. `y` or `yes`, ignoring surrounding
+whitespace and case, confirms the named action; any other complete line skips
+it. A prompt write or flush failure, EOF before a response, or input error
+stops the action phase with an error rather than reporting `skipped` or
+performing another action. Authorization input holds the shared stdin lock only
+while reading a plan response, so independent CLI questions remain readable.
 
 The actions map to the findings the report already names: obtain npcap (in a
 network-capable build, fetch and launch the vendor's own signed installer;

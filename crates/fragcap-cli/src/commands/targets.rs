@@ -11,7 +11,7 @@
 //! store, the same listing a bare `fragcap` invocation prints.
 
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use fragcap::profile::FidelityTier;
@@ -1376,18 +1376,29 @@ fn resolve_socket_holder(
 /// parses. An empty line re-prompts rather than assuming a default, since the honest
 /// default is unknown (P-9). Used only when standard input is a terminal.
 fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliError> {
-    use std::io::BufRead;
     let stdin = std::io::stdin();
+    prompt_socket_holder_with(&mut stdin.lock(), out)
+}
+
+fn prompt_socket_holder_with(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<SocketHolderAnswer, CliError> {
     loop {
-        let _ = write!(
+        write!(
             out,
             "Is the executable above the process that holds the sockets? [Y/n/unsure] "
-        );
+        )
+        .map_err(|error| {
+            CliError::failure(format!("could not write socket-holder prompt: {error}"))
+        })?;
+        out.flush().map_err(|error| {
+            CliError::failure(format!("could not flush socket-holder prompt: {error}"))
+        })?;
         let mut line = String::new();
-        let read = stdin
-            .lock()
+        let read = input
             .read_line(&mut line)
-            .map_err(|e| CliError::failure(e.to_string()))?;
+            .map_err(|e| CliError::failure(format!("could not read socket-holder answer: {e}")))?;
         if read == 0 {
             // End of input with no answer: do not guess a holder (P-9).
             return Ok(SocketHolderAnswer::Unsure);
@@ -1673,12 +1684,51 @@ mod tests {
     use super::{
         display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
         hero_listing_with_machine_probe, order_targets_for_listing, print_compatibility,
-        print_discovery, print_discovery_summary, reconcile, render_machine_section, render_table,
-        steam_add_metadata, CandidateIdentity, ClassificationSource, CompatibilityMatrix,
-        DetectionScan, Discovery, ExeScan, FidelityTier, SteamNonGameExclusions, Store,
-        TargetClassification, TargetEntry, TargetsReconcileArgs,
+        print_discovery, print_discovery_summary, prompt_socket_holder_with, reconcile,
+        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
+        ClassificationSource, CompatibilityMatrix, DetectionScan, Discovery, ExeScan, FidelityTier,
+        SteamNonGameExclusions, Store, TargetClassification, TargetEntry, TargetsReconcileArgs,
     };
     use crate::emit::{Emitter, Format, Verbosity};
+    use std::io::{self, Cursor, Write};
+
+    struct FlushFailure;
+
+    impl Write for FlushFailure {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("flush failed"))
+        }
+    }
+
+    #[test]
+    fn socket_holder_prompt_flushes_and_reads_complete_answers() {
+        let mut output = Vec::new();
+        let answer = prompt_socket_holder_with(&mut Cursor::new("invalid\nyes\n"), &mut output)
+            .expect("valid answer after retry");
+        assert_eq!(answer, super::SocketHolderAnswer::Yes);
+        assert_eq!(
+            String::from_utf8(output)
+                .unwrap()
+                .matches("[Y/n/unsure]")
+                .count(),
+            2
+        );
+
+        let mut output = Vec::new();
+        let answer = prompt_socket_holder_with(&mut Cursor::new(""), &mut output)
+            .expect("EOF stays unresolved");
+        assert_eq!(answer, super::SocketHolderAnswer::Unsure);
+
+        let mut input = Cursor::new("yes\n");
+        let error = prompt_socket_holder_with(&mut input, &mut FlushFailure)
+            .expect_err("question must flush before input");
+        assert!(error.message().contains("flush"));
+        assert_eq!(input.position(), 0);
+    }
 
     fn listing_target(stable_id: i64, handle: &str, anchor: Option<&str>) -> TargetEntry {
         TargetEntry {
