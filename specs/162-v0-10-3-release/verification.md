@@ -10,6 +10,8 @@ The seven fragments were assembled into the chronological v0.10.3 changelog. A f
 
 The supply-chain snapshot changed because first-party package versions are included in graph digests. Inspection of the Cargo.lock diff found only eleven first-party version-field changes. All three graph package and edge counts are unchanged; no third-party package, feature, provider, unsafe implementation, or review exception changed. The reviewed digests and unsafe-review binding were advanced with the same review expiry.
 
+The first hosted short-performance jobs on the candidate PR failed before compilation because the standalone `performance/native-proxy/Cargo.lock` retained nine v0.10.2 path-crate entries. Those nine first-party versions were aligned to 0.10.3 without changing third-party dependencies. `cargo metadata --locked --offline --manifest-path performance/native-proxy/Cargo.toml --format-version 1 --no-deps` then resolved successfully; final-head hosted short campaigns remain the authority for their execution.
+
 ## Local source evidence
 
 The following passed on the candidate without installing or running released fragcap bytes:
