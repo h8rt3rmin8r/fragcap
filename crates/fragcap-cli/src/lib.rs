@@ -77,22 +77,32 @@ pub trait DeepCaptureAuthorizationInput {
     fn read_response(&mut self, plan_id: &str, exact: bool) -> io::Result<Vec<u8>>;
 }
 
-struct StdinAuthorizationInput<'a> {
-    input: io::StdinLock<'a>,
+struct StdinAuthorizationInput {
+    input: io::Stdin,
     terminal: bool,
 }
 
-impl DeepCaptureAuthorizationInput for StdinAuthorizationInput<'_> {
+impl StdinAuthorizationInput {
+    fn new(input: io::Stdin) -> Self {
+        let terminal = input.is_terminal();
+        Self { input, terminal }
+    }
+}
+
+impl DeepCaptureAuthorizationInput for StdinAuthorizationInput {
     fn is_terminal(&self) -> bool {
         self.terminal
     }
 
     fn read_response(&mut self, plan_id: &str, _exact: bool) -> io::Result<Vec<u8>> {
+        // Other CLI commands ask their own interactive questions. Keep the
+        // shared stdin mutex only for this one authorization response.
+        let mut input = self.input.lock();
         let limit = plan_id.len().saturating_add(2);
         let mut response = Vec::with_capacity(limit);
         loop {
             let (chunk, consumed, complete, extra) = {
-                let available = self.input.fill_buf()?;
+                let available = input.fill_buf()?;
                 if available.is_empty() {
                     break;
                 }
@@ -108,7 +118,7 @@ impl DeepCaptureAuthorizationInput for StdinAuthorizationInput<'_> {
                 )
             };
             response.extend_from_slice(&chunk);
-            self.input.consume(consumed);
+            input.consume(consumed);
             if complete {
                 if extra {
                     response.push(0);
@@ -148,14 +158,9 @@ pub fn run<I>(args: I) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
-    let stdin = io::stdin();
     let stdout = io::stdout();
     let stderr = io::stderr();
-    let terminal = stdin.is_terminal();
-    let mut authorization = StdinAuthorizationInput {
-        input: stdin.lock(),
-        terminal,
-    };
+    let mut authorization = StdinAuthorizationInput::new(io::stdin());
     let mut out = stdout.lock();
     let mut err = stderr.lock();
     run_with_authorization(args, &mut authorization, &mut out, &mut err)
@@ -171,12 +176,7 @@ pub fn run_with<I>(args: I, out: &mut dyn Write, err: &mut dyn Write) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
-    let stdin = io::stdin();
-    let terminal = stdin.is_terminal();
-    let mut authorization = StdinAuthorizationInput {
-        input: stdin.lock(),
-        terminal,
-    };
+    let mut authorization = StdinAuthorizationInput::new(io::stdin());
     run_with_authorization(args, &mut authorization, out, err)
 }
 
@@ -306,5 +306,32 @@ fn dispatch(
         Command::Targets(args) => commands::targets::run(&args, out, emitter),
         Command::Catalog(args) => commands::catalog::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
+    }
+}
+
+#[cfg(test)]
+mod stdin_ownership_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn authorization_owner_does_not_hold_stdin_lock_between_reads() {
+        let (sender, receiver) = mpsc::channel();
+        let (acquired, reader) = {
+            let owner = StdinAuthorizationInput::new(io::stdin());
+            let reader = std::thread::spawn(move || {
+                let _guard = io::stdin().lock();
+                let _ = sender.send(());
+            });
+            let acquired = receiver.recv_timeout(Duration::from_secs(3)).is_ok();
+            std::hint::black_box(&owner);
+            (acquired, reader)
+        };
+        reader.join().expect("reader thread");
+        assert!(
+            acquired,
+            "dispatch must not retain the process-global stdin lock"
+        );
     }
 }

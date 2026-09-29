@@ -17,7 +17,7 @@
 //! effects live in [`RealPerformer`] and are demonstrated at Tier 2, stated not
 //! hidden.
 
-use std::io::Write;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -40,9 +40,10 @@ const RECOVERY_LOCK: &str = "recovery.lock";
 
 /// A human confirmation for one action. Injected so the loop is driven by a
 /// scripted answer in tests. `true` performs the action; `false` skips it.
+/// Input failure stops the action phase without claiming a decline.
 pub trait ActionConfirm {
     /// Ask whether to perform `action`.
-    fn confirm(&mut self, action: &Action, out: &mut dyn Write) -> bool;
+    fn confirm(&mut self, action: &Action, out: &mut dyn Write) -> Result<bool, CliError>;
 }
 
 /// Performs an action and reports the honest outcome. Injected so the loop is
@@ -62,18 +63,33 @@ pub trait ActionPerformer {
 /// default for a tool that may run elevated.
 pub struct ConsoleConfirm;
 
-impl ActionConfirm for ConsoleConfirm {
-    fn confirm(&mut self, _action: &Action, out: &mut dyn Write) -> bool {
-        let _ = write!(out, "  perform this action? [y/N] ");
-        let _ = out.flush();
+impl ConsoleConfirm {
+    fn confirm_with(input: &mut dyn BufRead, out: &mut dyn Write) -> Result<bool, CliError> {
+        write!(out, "  perform this action? [y/N] ").map_err(|error| {
+            CliError::failure(format!("could not write Doctor prompt: {error}"))
+        })?;
+        out.flush().map_err(|error| {
+            CliError::failure(format!("could not flush Doctor prompt: {error}"))
+        })?;
         let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) | Err(_) => false,
+        match input.read_line(&mut line) {
+            Ok(0) => Err(CliError::failure(
+                "Doctor confirmation input closed before an answer",
+            )),
+            Err(error) => Err(CliError::failure(format!(
+                "could not read Doctor confirmation: {error}"
+            ))),
             Ok(_) => {
                 let answer = line.trim().to_ascii_lowercase();
-                answer == "y" || answer == "yes"
+                Ok(answer == "y" || answer == "yes")
             }
         }
+    }
+}
+
+impl ActionConfirm for ConsoleConfirm {
+    fn confirm(&mut self, _action: &Action, out: &mut dyn Write) -> Result<bool, CliError> {
+        Self::confirm_with(&mut io::stdin().lock(), out)
     }
 }
 
@@ -81,8 +97,8 @@ impl ActionConfirm for ConsoleConfirm {
 pub struct YesConfirm;
 
 impl ActionConfirm for YesConfirm {
-    fn confirm(&mut self, _action: &Action, _out: &mut dyn Write) -> bool {
-        true
+    fn confirm(&mut self, _action: &Action, _out: &mut dyn Write) -> Result<bool, CliError> {
+        Ok(true)
     }
 }
 
@@ -102,8 +118,8 @@ impl ScriptedConfirm {
 }
 
 impl ActionConfirm for ScriptedConfirm {
-    fn confirm(&mut self, _action: &Action, _out: &mut dyn Write) -> bool {
-        self.answers.pop_front().unwrap_or(false)
+    fn confirm(&mut self, _action: &Action, _out: &mut dyn Write) -> Result<bool, CliError> {
+        Ok(self.answers.pop_front().unwrap_or(false))
     }
 }
 
@@ -123,10 +139,12 @@ pub fn drive_actions(
     performer: &mut dyn ActionPerformer,
     out: &mut dyn Write,
     emitter: &mut Emitter,
-) -> Vec<(ActionKind, ActionOutcome)> {
+) -> Result<Vec<(ActionKind, ActionOutcome)>, CliError> {
     let mut outcomes = Vec::new();
     for action in offered_actions(report, caps) {
-        let _ = writeln!(out, "- {}", action.label);
+        writeln!(out, "- {}", action.label).map_err(|error| {
+            CliError::failure(format!("could not write Doctor action: {error}"))
+        })?;
         if action.guidance_only() {
             // No performable form in this build: surface the guidance, record the
             // degraded fallback as what happened, and never prompt for a step it
@@ -136,7 +154,7 @@ pub fn drive_actions(
             outcomes.push((action.kind, ActionOutcome::Degraded));
             continue;
         }
-        if !confirm.confirm(&action, out) {
+        if !confirm.confirm(&action, out)? {
             let _ = writeln!(out, "  skipped");
             outcomes.push((action.kind, ActionOutcome::Skipped));
             continue;
@@ -154,7 +172,7 @@ pub fn drive_actions(
             break;
         }
     }
-    outcomes
+    Ok(outcomes)
 }
 
 /// Print the honest outcome line for an action (P-9).
@@ -209,14 +227,20 @@ pub fn run_fix(
         Box::new(ConsoleConfirm)
     };
     let mut performer = RealPerformer { yes };
-    let outcomes = drive_actions(
+    let outcomes = match drive_actions(
         &report,
         caps,
         confirm.as_mut(),
         &mut performer,
         out,
         emitter,
-    );
+    ) {
+        Ok(outcomes) => outcomes,
+        Err(error) => {
+            emitter.error(error.message());
+            return error.exit();
+        }
+    };
 
     // A confirmed, performed elevation hands off to the elevated child, which
     // re-checks in its own context; the non-elevated parent stops without a
@@ -913,6 +937,7 @@ mod tests {
     use super::*;
     use crate::doctor::action::{Action, ActionKind, ExtcapScope};
     use crate::doctor::{Check, Report};
+    use std::io::{self, Cursor, Read};
     use std::sync::{Mutex, OnceLock};
 
     const S: &str = "Section";
@@ -963,6 +988,107 @@ mod tests {
         }
     }
 
+    struct BrokenInput;
+
+    impl Read for BrokenInput {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("broken input"))
+        }
+    }
+
+    impl io::BufRead for BrokenInput {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::other("broken input"))
+        }
+
+        fn consume(&mut self, _amount: usize) {}
+    }
+
+    struct BrokenOutput {
+        fail_flush: bool,
+    }
+
+    impl Write for BrokenOutput {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.fail_flush {
+                Ok(buf.len())
+            } else {
+                Err(io::Error::other("broken output"))
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("broken flush"))
+        }
+    }
+
+    #[test]
+    fn console_confirmation_distinguishes_complete_answers_from_input_failure() {
+        for (line, expected) in [
+            ("y\n", true),
+            ("YES\r\n", true),
+            ("n\n", false),
+            ("\n", false),
+        ] {
+            let mut input = Cursor::new(line);
+            let mut output = Vec::new();
+            assert_eq!(
+                ConsoleConfirm::confirm_with(&mut input, &mut output).unwrap(),
+                expected
+            );
+            assert!(String::from_utf8(output).unwrap().contains("[y/N]"));
+        }
+
+        let mut output = Vec::new();
+        assert!(ConsoleConfirm::confirm_with(&mut Cursor::new(""), &mut output).is_err());
+        assert!(ConsoleConfirm::confirm_with(&mut BrokenInput, &mut output).is_err());
+        assert!(ConsoleConfirm::confirm_with(
+            &mut Cursor::new("y\n"),
+            &mut BrokenOutput { fail_flush: false },
+        )
+        .is_err());
+        assert!(ConsoleConfirm::confirm_with(
+            &mut Cursor::new("y\n"),
+            &mut BrokenOutput { fail_flush: true },
+        )
+        .is_err());
+    }
+
+    struct FailingConfirm;
+
+    impl ActionConfirm for FailingConfirm {
+        fn confirm(&mut self, _action: &Action, _out: &mut dyn Write) -> Result<bool, CliError> {
+            Err(CliError::failure("input unavailable"))
+        }
+    }
+
+    #[test]
+    fn a_confirmation_error_stops_before_any_action_or_later_prompt() {
+        let rpt = report(vec![
+            Action::new(ActionKind::InstallExtcap(ExtcapScope::User)),
+            Action::new(ActionKind::RunDiscovery),
+        ]);
+        let mut performer = ScriptedPerformer {
+            outcome: |_| ActionOutcome::Performed,
+            performed: Vec::new(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = test_emitter(&mut err);
+        let failure = drive_actions(
+            &rpt,
+            caps(),
+            &mut FailingConfirm,
+            &mut performer,
+            &mut out,
+            &mut emitter,
+        )
+        .unwrap_err();
+        assert!(failure.message().contains("input unavailable"));
+        assert!(performer.performed.is_empty());
+        assert!(!String::from_utf8_lossy(&out).contains("skipped"));
+    }
+
     #[test]
     fn a_confirmed_action_is_performed_and_a_declined_one_is_skipped() {
         let rpt = report(vec![
@@ -984,7 +1110,8 @@ mod tests {
             &mut performer,
             &mut out,
             &mut emitter,
-        );
+        )
+        .expect("scripted confirmation");
         assert_eq!(
             outcomes,
             vec![
@@ -1020,7 +1147,8 @@ mod tests {
             &mut performer,
             &mut out,
             &mut emitter,
-        );
+        )
+        .expect("scripted confirmation");
         assert_eq!(
             outcomes,
             vec![(
@@ -1055,7 +1183,8 @@ mod tests {
             &mut performer,
             &mut out,
             &mut emitter,
-        );
+        )
+        .expect("scripted confirmation");
         assert_eq!(
             outcomes.first().map(|(k, _)| *k),
             Some(ActionKind::RelaunchElevated)
@@ -1090,7 +1219,8 @@ mod tests {
             &mut performer,
             &mut out,
             &mut emitter,
-        );
+        )
+        .expect("scripted confirmation");
         assert_eq!(
             outcomes,
             vec![(ActionKind::InitializeCatalog, ActionOutcome::Performed)]
