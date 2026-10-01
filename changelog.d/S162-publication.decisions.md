@@ -1,0 +1,3 @@
+<!-- spec-impact: 1, 22.7, 25.2, 27.3 -->
+
+2026-09-30: Under explicit owner release authorization, S162 tags exact human-merged source 9decf214dd58f2467c4f2fdd7228893ffafd17f9 and verifies actual v0.10.3 publication before reconciling current identity and review-candidate records. All four release jobs pass after normal owner crates.io approval, six certified public files reconcile and all ten registry versions are non-yanked with checksums. The records pull request preserves historical v0.10.2 evidence, unsigned policy, release protection and independent acceptance limits; it changes no product version, release workflow, dependency or published byte and performs no installed sensitive-product execution.

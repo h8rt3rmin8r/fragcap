@@ -19,27 +19,27 @@
 - [x] T012 [US1] Run focused version, changelog, notes, output, documentation, and specification checks.
 - [x] T013 [US1] Run full source CI, MSRV, neutral, and related release gates in the foreground.
 - [x] T014 [US1] Check UTF-8 without BOM, LF, final newline, whitespace, forbidden dash, and mojibake hygiene.
-- [ ] T015 [US1] Commit and push the complete candidate, open the official PR referencing #439, and attach it to this task.
-- [ ] T016 [US1] Address every first-round review comment and hosted failure; allow at most one second Codex review round.
-- [ ] T017 [US1] Require green final-head PR checks and ask the operator to merge the reviewed candidate.
+- [x] T015 [US1] Commit and push the complete candidate, open the official PR referencing #439, and attach it to this task.
+- [x] T016 [US1] Address every first-round review comment and hosted failure; allow at most one second Codex review round.
+- [x] T017 [US1] Require green final-head PR checks and ask the operator to merge the reviewed candidate.
 
 ## Phase 3: Public release
 
-- [ ] T018 [US2] After owner merge, sync clean main and verify exact merged candidate identity.
-- [ ] T019 [US2] Reject a conflicting v0.10.3 tag, then create and push an annotated tag at the exact merged source.
-- [ ] T020 [US2] Monitor identity, package certification, GitHub release, and crates.io jobs without blind reruns or policy changes.
-- [ ] T021 [US2] If GitHub pauses `crates-io`, give the operator its exact approval link and continue after the owner acts.
-- [ ] T022 [US2] Require four green release jobs and record run, job, and approval evidence.
-- [ ] T023 [US2] Verify public release visibility and all six files, names, sizes, and SHA-256 identities.
-- [ ] T024 [US2] Validate three checksum sidecars and downloaded certification evidence against exact tag source.
-- [ ] T025 [US2] Verify all ten 0.10.3 crates are available, non-yanked, and checksum-bearing.
+- [x] T018 [US2] After owner merge, sync clean main and verify exact merged candidate identity.
+- [x] T019 [US2] Reject a conflicting v0.10.3 tag, then create and push an annotated tag at the exact merged source.
+- [x] T020 [US2] Monitor identity, package certification, GitHub release, and crates.io jobs without blind reruns or policy changes.
+- [x] T021 [US2] If GitHub pauses `crates-io`, give the operator its exact approval link and continue after the owner acts.
+- [x] T022 [US2] Require four green release jobs and record run, job, and approval evidence.
+- [x] T023 [US2] Verify public release visibility and all six files, names, sizes, and SHA-256 identities.
+- [x] T024 [US2] Validate three checksum sidecars and downloaded certification evidence against exact tag source.
+- [x] T025 [US2] Verify all ten 0.10.3 crates are available, non-yanked, and checksum-bearing.
 
 ## Phase 4: Published-state records
 
-- [ ] T026 [US3] Create a separate records-only branch from post-release main.
-- [ ] T027 [US3] Update `docs/published-release.json`, current baseline markers, handoff, and S162 verification from observed public evidence.
-- [ ] T028 [US3] Preserve historical v0.10.2 evidence and keep external field observations accurately scoped.
-- [ ] T029 [US3] Run records-focused and full repository gates and text hygiene checks.
+- [x] T026 [US3] Create a separate records-only branch from post-release main.
+- [x] T027 [US3] Update `docs/published-release.json`, current baseline markers, handoff, and S162 verification from observed public evidence.
+- [x] T028 [US3] Preserve historical v0.10.2 evidence and keep external field observations accurately scoped.
+- [x] T029 [US3] Run records-focused and full repository gates and text hygiene checks.
 - [ ] T030 [US3] Push the records PR, address at most two review rounds, and require final-head green CI.
 - [ ] T031 [US3] Ask the operator to merge records, then close #439 and update its project item if applicable.
 
