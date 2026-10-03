@@ -309,16 +309,7 @@ impl SteamClientPlan {
                 )))
             }
         };
-        let Some(target_root) = target.install_root.as_deref() else {
-            return Err(CliError::usage(
-                "Steam client setup is unavailable: the stored target has no exact install root; refresh or re-register the target",
-            ));
-        };
-        if candidate.install_root.as_deref() != Some(target_root) {
-            return Err(CliError::usage(
-                "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
-            ));
-        }
+        validate_steam_client_root(&target, candidate)?;
         let executable = selection.executable.as_str();
         if !fragcap::targets::is_client_executable(executable) {
             return Err(CliError::usage(
@@ -391,6 +382,23 @@ impl SteamClientPlan {
                 ))
             })
     }
+}
+
+fn validate_steam_client_root(
+    target: &TargetEntry,
+    candidate: &CandidateTarget,
+) -> Result<(), CliError> {
+    let Some(target_root) = target.install_root.as_deref() else {
+        return Err(CliError::usage(
+            "Steam client setup is unavailable: the stored target has no exact install root; refresh or re-register the target",
+        ));
+    };
+    if candidate.install_root.as_deref() != Some(target_root) {
+        return Err(CliError::usage(
+            "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
+        ));
+    }
+    Ok(())
 }
 
 impl RegistrationPlan {
@@ -1455,6 +1463,7 @@ fn prepare_steam_client(
             emitter,
         )?,
     };
+    validate_steam_client_root(&target, &selected_candidate)?;
     let selected_discovery = discovery_with_candidate(&discovery, selected_candidate);
     let selection = if let Some(executable) = &args.client_executable {
         ClientSelection {

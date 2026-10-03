@@ -2,7 +2,11 @@
 
 //! Read-only Steam client identification from an owned launch and socket table.
 
+#[cfg(any(test, all(feature = "etw", feature = "socket-table", windows)))]
+use std::collections::VecDeque;
 use std::collections::{BTreeMap, HashSet};
+#[cfg(any(test, all(feature = "etw", feature = "socket-table", windows)))]
+use std::path::Path;
 use std::time::Duration;
 
 use fragcap::targets::TargetEntry;
@@ -56,10 +60,82 @@ fn observation_profile(app_id: u32) -> Result<fragcap::Profile, CliError> {
     })
 }
 
+/// A basename-only process event can propose a client only when that executable
+/// exists in the selected title's install tree. Full paths must match an exact
+/// inventoried file. This prevents ordinary Steam infrastructure descendants
+/// from becoming client suggestions on their socket activity alone.
+struct GameExecutables {
+    names: HashSet<String>,
+    paths: HashSet<String>,
+}
+
+impl GameExecutables {
+    #[cfg(any(test, all(feature = "etw", feature = "socket-table", windows)))]
+    fn inventory(root: &Path) -> Result<Self, CliError> {
+        let root = std::fs::canonicalize(root).map_err(|error| {
+            CliError::usage(format!(
+                "client observation cannot read the selected install root: {error}; use --client-executable EXE for an explicit declaration"
+            ))
+        })?;
+        let mut dirs = VecDeque::from([(root, 0usize)]);
+        let mut names = HashSet::new();
+        let mut paths = HashSet::new();
+        let mut visited = 0usize;
+        while let Some((dir, depth)) = dirs.pop_front() {
+            let entries = std::fs::read_dir(&dir).map_err(|error| {
+                CliError::usage(format!(
+                    "client observation cannot enumerate the selected install root: {error}; use --client-executable EXE for an explicit declaration"
+                ))
+            })?;
+            for entry in entries {
+                visited += 1;
+                if visited > 65_536 {
+                    return Err(CliError::usage("client observation install inventory exceeded 65536 entries; use --client-executable EXE for an explicit declaration"));
+                }
+                let entry = entry.map_err(|error| {
+                    CliError::usage(format!("client observation install inventory is incomplete: {error}; use --client-executable EXE for an explicit declaration"))
+                })?;
+                let kind = entry.file_type().map_err(|error| {
+                    CliError::usage(format!("client observation install inventory is incomplete: {error}; use --client-executable EXE for an explicit declaration"))
+                })?;
+                if kind.is_dir() {
+                    if depth >= 16 {
+                        return Err(CliError::usage("client observation install inventory exceeded 16 directory levels; use --client-executable EXE for an explicit declaration"));
+                    }
+                    dirs.push_back((entry.path(), depth + 1));
+                } else if kind.is_file()
+                    && entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("exe"))
+                {
+                    let path = std::fs::canonicalize(entry.path()).map_err(|error| {
+                        CliError::usage(format!("client observation install inventory is incomplete: {error}; use --client-executable EXE for an explicit declaration"))
+                    })?;
+                    names.insert(entry.file_name().to_string_lossy().to_lowercase());
+                    paths.insert(path.to_string_lossy().to_lowercase());
+                }
+            }
+        }
+        Ok(Self { names, paths })
+    }
+
+    fn permits(&self, image: &str) -> bool {
+        if image.contains(['\\', '/']) {
+            std::fs::canonicalize(image)
+                .ok()
+                .is_some_and(|path| self.paths.contains(&path.to_string_lossy().to_lowercase()))
+        } else {
+            self.names.contains(&image.to_lowercase())
+        }
+    }
+}
+
 fn record_owned_socket_rows(
     session: &fragcap::CaptureSession,
     rows: &[fragcap::SocketTableEntry],
     observed_at: fragcap::Timestamp,
+    game_executables: Option<&GameExecutables>,
     seen: &mut HashSet<(String, fragcap::SocketTableEntry)>,
     counts: &mut BTreeMap<String, u64>,
 ) {
@@ -91,6 +167,9 @@ fn record_owned_socket_rows(
         }
         let image = node.image_name().to_string();
         if image.eq_ignore_ascii_case("steam.exe") {
+            continue;
+        }
+        if game_executables.is_some_and(|inventory| !inventory.permits(node.image())) {
             continue;
         }
         if seen.insert((image.clone(), *row)) {
@@ -128,7 +207,7 @@ pub(super) fn observe_controlled(target: &TargetEntry) -> Result<ClientObservati
     ];
     let mut seen = HashSet::new();
     let mut counts = BTreeMap::new();
-    record_owned_socket_rows(&session, &rows, at(7), &mut seen, &mut counts);
+    record_owned_socket_rows(&session, &rows, at(7), None, &mut seen, &mut counts);
     Ok(decide(counts, true))
 }
 
@@ -159,6 +238,11 @@ pub(super) fn observe(
     let app_id = super::steam_app_id(target)
         .ok_or_else(|| CliError::usage("client observation requires one exact Steam target"))?;
     let profile = observation_profile(app_id)?;
+    let inventory = GameExecutables::inventory(Path::new(
+        target.install_root.as_deref().ok_or_else(|| {
+            CliError::usage("client observation requires the selected title's exact install root")
+        })?,
+    ))?;
     let platform = SteamPlatformAdapter::discover()
         .and_then(|adapter| adapter.prepare(&profile))
         .map_err(|error| {
@@ -249,6 +333,7 @@ pub(super) fn observe(
             &session,
             snapshot.entries(),
             observed_at,
+            Some(&inventory),
             &mut observed_rows,
             &mut counts,
         );
@@ -309,8 +394,8 @@ mod tests {
         ];
         let mut seen = HashSet::new();
         let mut counts = BTreeMap::new();
-        record_owned_socket_rows(&session, &rows, at(7), &mut seen, &mut counts);
-        record_owned_socket_rows(&session, &rows, at(8), &mut seen, &mut counts);
+        record_owned_socket_rows(&session, &rows, at(7), None, &mut seen, &mut counts);
+        record_owned_socket_rows(&session, &rows, at(8), None, &mut seen, &mut counts);
         assert_eq!(
             decide(counts, true),
             ClientObservation::Unique {
@@ -345,5 +430,49 @@ mod tests {
             ("client.exe".to_string(), 3),
         ]);
         assert!(matches!(decide(two, true), ClientObservation::Ambiguous(_)));
+    }
+
+    #[test]
+    fn steam_helper_socket_does_not_become_a_game_client_candidate() {
+        let install = tempfile::tempdir().unwrap();
+        std::fs::write(install.path().join("sample_client.exe"), []).unwrap();
+        let inventory = GameExecutables::inventory(install.path()).unwrap();
+        assert!(inventory.permits("sample_client.exe"));
+        assert!(!inventory.permits("steamwebhelper.exe"));
+        let outside = tempfile::tempdir().unwrap();
+        let foreign_same_name = outside.path().join("sample_client.exe");
+        std::fs::write(&foreign_same_name, []).unwrap();
+        assert!(!inventory.permits(&foreign_same_name.to_string_lossy()));
+
+        let mut session =
+            CaptureSession::new(observation_profile(42).unwrap(), SessionConfig::default());
+        session.require_owned_platform_root("C:\\Steam\\steam.exe");
+        session.observe_until_explicit_stop();
+        session.attach(at(0));
+        session.arm_owned_platform_root(10, 1, at(1), at(3));
+        for (pid, parent, image, when) in [
+            (10, 1, "steam.exe", 2),
+            (11, 10, "steamwebhelper.exe", 4),
+            (12, 10, "sample_client.exe", 5),
+        ] {
+            session.on_process_event(ProcessEvent::started(pid, parent, image, "", at(when)));
+        }
+        let local = "127.0.0.1:30100".parse().unwrap();
+        let peer = "192.0.2.5:443".parse().unwrap();
+        let rows = [
+            SocketTableEntry::tcp(local, peer, 11).created_at(at(4)),
+            SocketTableEntry::tcp(local, peer, 12).created_at(at(5)),
+        ];
+        let mut seen = HashSet::new();
+        let mut counts = BTreeMap::new();
+        record_owned_socket_rows(
+            &session,
+            &rows,
+            at(7),
+            Some(&inventory),
+            &mut seen,
+            &mut counts,
+        );
+        assert_eq!(counts, BTreeMap::from([("sample_client.exe".into(), 1)]));
     }
 }
