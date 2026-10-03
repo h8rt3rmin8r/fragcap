@@ -115,17 +115,16 @@ impl ProcessNode {
         self.ancestry
     }
 
-    /// The full image path, as observed.
+    /// The image text as observed, which may be only a file name.
     pub fn image(&self) -> &str {
         &self.image
     }
 
-    /// The image file name, derived from the path.
+    /// The image file name, derived from the observed text.
     ///
     /// Specification section 10.3 matches the file name with its `exe`
-    /// predicate and the full path with `path_contains` and `path_regex`, so
-    /// one recorded value has to serve both. Deriving rather than storing means
-    /// the two can never disagree.
+    /// predicate and path predicates against the reported image text. When
+    /// only a name was reported, those predicates cannot establish a path.
     pub fn image_name(&self) -> &str {
         self.image.rsplit(['\\', '/']).next().unwrap_or(&self.image)
     }

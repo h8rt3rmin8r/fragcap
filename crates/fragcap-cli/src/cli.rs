@@ -641,6 +641,12 @@ pub struct CalibrateArgs {
     #[arg(long, value_name = "CANDIDATE_ID", conflicts_with = "resume")]
     pub candidate: Option<String>,
 
+    /// Explicitly declare the final game client executable when guided observation is unavailable.
+    ///
+    /// This is an operator declaration, not a measured socket or proxy fact.
+    #[arg(long, value_name = "EXE", conflicts_with = "resume")]
+    pub client_executable: Option<String>,
+
     /// Assert the exact cold launch case inferred for this workflow.
     #[arg(long, value_enum, conflicts_with = "resume")]
     pub launch_case: Option<DeepCaptureLaunchCaseArg>,

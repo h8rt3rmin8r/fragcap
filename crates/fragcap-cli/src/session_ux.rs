@@ -47,7 +47,7 @@ pub(crate) fn lifecycle_progress(event: &DeepCaptureEvent, width: usize) -> Opti
         DeepCaptureEvent::TrustAcquired { .. } => "Trust readiness step completed. Target CA acceptance remains unobserved until eligible traffic proves it.",
         DeepCaptureEvent::LaunchStarted { .. } => "Managed target launch started with child-scoped routing. Final-client ownership and proxy reachability remain to be observed.",
         DeepCaptureEvent::Started { .. } => "Observing the authorized session. Ctrl+C requests bounded shutdown and cleanup; retained evidence is not automatically deleted.",
-        DeepCaptureEvent::Cleanup { .. } => "Owned resource cleanup result received; terminal reporting will name each exact outcome and any unresolved obligation.",
+        DeepCaptureEvent::Cleanup { .. } => return None,
         _ => return None,
     };
     Some(wrapped(text, width))
@@ -209,12 +209,157 @@ pub(crate) fn terminal_summary(
     text
 }
 
+/// A causal calibration projection from the session's retained authorities.
+/// Unknown counters remain unavailable; artifact creation is never reachability.
+pub(crate) fn calibration_diagnosis(
+    snapshot: &fragcap::deep_capture::api::TerminalSnapshot,
+    process: Option<&fragcap::deep_capture::CaptureProcessEvidence>,
+    retained_target_packets: Option<u64>,
+    width: usize,
+) -> String {
+    use fragcap::deep_capture::api::{FactWriteStatus, RouteVerificationState};
+
+    let route_reached = snapshot
+        .route_verification
+        .as_ref()
+        .is_some_and(|route| route.state == RouteVerificationState::ReachedSocketOwner);
+    let stage = calibration_stage(snapshot.target.launch_case, process, route_reached);
+    let proxy_accepted = snapshot
+        .cleanup
+        .iter()
+        .find(|result| result.resource == "native-proxy-listener")
+        .and_then(|result| result.reason.strip_prefix("accepted="))
+        .and_then(|tail| tail.split(',').next())
+        .and_then(|value| value.parse::<u64>().ok());
+    let fact_writes = if snapshot.fact_writes.is_empty() {
+        "none reported".to_string()
+    } else {
+        snapshot
+            .fact_writes
+            .iter()
+            .map(|write| {
+                let status = match &write.status {
+                    FactWriteStatus::Appended => "appended",
+                    FactWriteStatus::Skipped { .. } => "skipped",
+                    FactWriteStatus::Failed { .. } => "failed",
+                    _ => "unavailable",
+                };
+                format!("{}={} ({status})", write.fact.kind, write.fact.value)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    wrapped(&format!(
+        "Calibration diagnosis: earliest known stage: {stage}. Target packets retained: {}. Proxy connections accepted: {}. Compatibility facts: {fact_writes}. Route verification: {}. These values do not infer later stages from written artifacts.",
+        retained_target_packets.map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
+        proxy_accepted.map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
+        snapshot.route_verification.as_ref().map_or("unavailable", |route| route.state.as_str()),
+    ), width)
+}
+
+fn calibration_stage(
+    launch_case: fragcap::deep_capture::api::LaunchCase,
+    process: Option<&fragcap::deep_capture::CaptureProcessEvidence>,
+    route_reached: bool,
+) -> &'static str {
+    let platform = process.is_some_and(|evidence| {
+        evidence.stage_transitions.iter().any(|transition| {
+            transition.kind == fragcap::deep_capture::StageTransitionKind::Matched
+                && transition.role == "platform"
+        })
+    });
+    let client = process.is_some_and(|evidence| {
+        evidence.stage_transitions.iter().any(|transition| {
+            transition.kind == fragcap::deep_capture::StageTransitionKind::Matched
+                && transition.role == "client"
+        })
+    });
+    let stop = process.and_then(|evidence| evidence.stop_reason.as_deref());
+    let steam = matches!(
+        launch_case,
+        fragcap::deep_capture::api::LaunchCase::SteamProtocolCold
+            | fragcap::deep_capture::api::LaunchCase::SteamProtocolWarm
+    );
+    if process.is_none() {
+        "unavailable"
+    } else if process.is_some_and(|evidence| evidence.launch_pid.is_none()) {
+        if steam {
+            "managed platform launch"
+        } else {
+            "managed client launch"
+        }
+    } else if steam && !platform {
+        "owned platform binding"
+    } else if steam && stop == Some("platformdispatchfailed") {
+        "title dispatch"
+    } else if !client {
+        "final client acquisition"
+    } else if route_reached {
+        "later protocol observation"
+    } else {
+        "proxy reachability"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::display::display_width;
     use fragcap::deep_capture::api::{ArtifactStatus, CleanupStatus, Sensitivity};
     use serde_json::json;
+
+    #[test]
+    fn calibration_stage_uses_only_proven_launch_and_client_edges() {
+        use fragcap::deep_capture::api::LaunchCase;
+        use fragcap::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
+        use fragcap::Timestamp;
+
+        let mut evidence = CaptureProcessEvidence::default();
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), false),
+            "managed platform launch"
+        );
+        evidence.launch_pid = Some(41);
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), false),
+            "owned platform binding"
+        );
+        assert_eq!(
+            super::calibration_stage(LaunchCase::DirectExeCold, Some(&evidence), false),
+            "final client acquisition"
+        );
+        let matched = |role: &str| StageTransition {
+            kind: StageTransitionKind::Matched,
+            pid: 41,
+            role: role.into(),
+            stage: None,
+            at: Timestamp::from_nanos(1),
+        };
+        evidence.stage_transitions.push(matched("platform"));
+        evidence.stop_reason = Some("platformdispatchfailed".into());
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), false),
+            "title dispatch"
+        );
+        evidence.stop_reason = None;
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), false),
+            "final client acquisition"
+        );
+        evidence.stage_transitions.push(matched("client"));
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), false),
+            "proxy reachability"
+        );
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, Some(&evidence), true),
+            "later protocol observation"
+        );
+        assert_eq!(
+            super::calibration_stage(LaunchCase::SteamProtocolCold, None, false),
+            "unavailable"
+        );
+    }
 
     fn plan(trust: bool, sensitive: bool) -> Value {
         json!({
@@ -383,7 +528,21 @@ mod tests {
                 sequence: 4,
                 session_id: "controlled".into(),
             },
-            DeepCaptureEvent::Cleanup {
+        ];
+        let labels = [
+            "Native proxy ready",
+            "Trust readiness",
+            "Managed target launch",
+            "Observing",
+        ];
+        for (event, label) in events.iter().zip(labels) {
+            let text = lifecycle_progress(event, 40).unwrap();
+            assert!(text.contains(label));
+            assert!(!text.contains("target inspected") && !text.contains("decryption succeeded"));
+            assert!(text.lines().all(|line| display_width(line) <= 40));
+        }
+        assert!(lifecycle_progress(
+            &DeepCaptureEvent::Cleanup {
                 sequence: 5,
                 session_id: "controlled".into(),
                 result: CleanupResult {
@@ -392,20 +551,9 @@ mod tests {
                     reason: "stopped".into(),
                 },
             },
-        ];
-        let labels = [
-            "Native proxy ready",
-            "Trust readiness",
-            "Managed target launch",
-            "Observing",
-            "cleanup result",
-        ];
-        for (event, label) in events.iter().zip(labels) {
-            let text = lifecycle_progress(event, 40).unwrap();
-            assert!(text.contains(label));
-            assert!(!text.contains("target inspected") && !text.contains("decryption succeeded"));
-            assert!(text.lines().all(|line| display_width(line) <= 40));
-        }
+            40
+        )
+        .is_none());
     }
 
     #[test]

@@ -94,6 +94,10 @@ fragcap calibrate sample-target
 
 Registration, executable setup or candidate selection, and every later effectful attempt have separate complete plans and confirmations. Requested protocols are measurement intent, not proof. The workflow measures reachability first when needed, then proposes useful concrete cases from fresh observations. Failure, decline, limitation, interruption, or partial result stops later effects and checkpoints coverage.
 
+If the stored Steam target has no client, `calibrate` first labels the appinfo executable as a **Steam launch hint**. It can ask permission to start the selected title from a cold Steam launch and observe which descendant owns network connections. Start the game normally when prompted. One observed socket owner becomes a proposed client under a separate exact setup plan; it is not yet captured traffic or proxy reachability. No owner, several owners, or incomplete observation leaves the target unchanged. If you already know the final client executable, use `fragcap calibrate sample-target --client-executable sample.exe` to declare it explicitly without a socket question. This declaration is labeled as your choice, not a measurement. After saving a client, close the title and Steam normally, then rerun `fragcap calibrate sample-target` for a fresh cold reachability session.
+
+During reachability, approving the complete Deep Capture plan starts the scoped proxy, passive Capture, and managed launch. A written bundle is evidence of the attempt, not evidence that the game client was acquired or reached the proxy. Read the calibration diagnosis for the earliest known failed stage, retained target packets, accepted proxy connections, exact fact writes, and cleanup outcomes. An observed zero is different from unavailable evidence. A failed workflow pauses; its `--resume` command preserves coverage and does not retry the same failed exact case. Correct the reported cause, then start a new calibration workflow with the target selector.
+
 Use the workflow identity and local-store-bound resume command printed by your run, not the specimen identity below:
 
 ```powershell

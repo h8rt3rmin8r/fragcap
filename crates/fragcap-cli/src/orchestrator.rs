@@ -91,6 +91,8 @@ pub struct CaptureOutcome {
     pub stop_reason: Option<StopReason>,
     /// Bounded process authority observed by this run.
     pub process_evidence: CaptureProcessEvidence,
+    /// Packets retained by the target window, separate from packets merely read.
+    pub retained_packets: u64,
 }
 
 impl CaptureOutcome {
@@ -102,6 +104,7 @@ impl CaptureOutcome {
             observed_holder: None,
             stop_reason: None,
             process_evidence: CaptureProcessEvidence::default(),
+            retained_packets: 0,
         }
     }
 }
@@ -125,6 +128,9 @@ pub fn capture(
     sink_failure_is_clean: bool,
 ) -> Result<CaptureOutcome, CliError> {
     let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
+    if let Some(fragcap::managed_launch::ManagedLaunch::Platform(platform)) = &config.launch {
+        session.require_owned_platform_root(&platform.root().executable().to_string_lossy());
+    }
     session.attach(ARMED_AT);
     let mut process_evidence = CaptureProcessEvidence {
         startup_snapshot: components.startup_snapshot.clone(),
@@ -431,6 +437,7 @@ fn capture_prerecorded(
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
         process_evidence: process_evidence.clone(),
+        retained_packets: summary.retained,
     })
 }
 
@@ -733,12 +740,19 @@ fn capture_live(
             ),
         };
         emitter.progress(&format!("launching {description}"));
+        let launch_earliest = wall_timestamp();
         match request.execute() {
             Ok(receipt) => {
                 process_evidence.launch_pid = receipt.process_id();
-                process_evidence.launch_at = wall_timestamp();
+                let launch_latest = wall_timestamp();
+                process_evidence.launch_at = launch_latest;
                 if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
                     platform_dispatch.arm(receipt.process_id());
+                    if let (Some(pid), Some(earliest), Some(latest)) =
+                        (receipt.process_id(), launch_earliest, launch_latest)
+                    {
+                        session.arm_owned_platform_root(pid, std::process::id(), earliest, latest);
+                    }
                 }
             }
             Err(e) => {
@@ -1018,6 +1032,7 @@ fn capture_live(
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
         process_evidence: process_evidence.clone(),
+        retained_packets: summary.retained,
     })
 }
 
@@ -1694,6 +1709,52 @@ mod tests {
         assert!(!gate.observe(&wrong_role));
         assert!(gate.observe(&exact));
         assert!(!gate.observe(&exact), "the retained dispatch is one-shot");
+    }
+
+    #[test]
+    fn receipt_bound_basename_event_is_the_only_dispatch_trigger() {
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"sample_client.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_contains":"steam.exe"}}]}"#).unwrap();
+        let mut session = fragcap::CaptureSession::new(
+            profile,
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                ..fragcap::SessionConfig::default()
+            },
+        );
+        let at = fragcap::Timestamp::from_nanos;
+        session.require_owned_platform_root("C:\\Steam\\steam.exe");
+        session.attach(at(0));
+        session.arm_owned_platform_root(42, 7, at(5), at(8));
+        let mut gate = PlatformDispatchGate::default();
+        gate.arm(Some(42));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            41,
+            7,
+            "steam.exe",
+            "",
+            at(6),
+        ));
+        assert!(!gate.observe(&session.role_bindings()));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            42,
+            7,
+            "steam.exe",
+            "",
+            at(6),
+        ));
+        assert!(gate.observe(&session.role_bindings()));
+        assert!(!gate.observe(&session.role_bindings()));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            43,
+            42,
+            "sample_client.exe",
+            "",
+            at(9),
+        ));
+        assert!(session
+            .role_bindings()
+            .iter()
+            .any(|(pid, role, _)| { *pid == 43 && role.as_deref() == Some("client") }));
     }
 
     // A run that ended with no sink failure is a success on any surface.

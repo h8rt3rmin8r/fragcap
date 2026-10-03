@@ -113,10 +113,10 @@ pub enum ProcessEvent {
     /// time, which is what makes launcher chain reconstruction possible even
     /// after the parent exits.
     ///
-    /// `image` is the full image path, not the file name. Specification
-    /// section 10.3 matches the file name with one predicate and the path with
-    /// two others, so the path is what gets recorded and
-    /// [`ProcessNode::image_name`] derives the rest.
+    /// `image` is the image text supplied by the event source. Windows ETW can
+    /// supply only the file name; other sources may supply a full path. The
+    /// tree retains that exact text, and [`ProcessNode::image_name`] derives
+    /// the name for the `exe` predicate without inventing a path.
     Started {
         pid: u32,
         parent: u32,

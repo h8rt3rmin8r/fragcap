@@ -39,6 +39,50 @@ fn platform_profile() -> Profile {
     Profile::parse(text).unwrap_or_else(|d| panic!("platform profile did not validate: {d:?}"))
 }
 
+fn exact_platform_profile() -> Profile {
+    let text = r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"t","name":"T","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_regex":"(?i)^C:\\\\Steam\\\\steam\\.exe$"}}]}"#;
+    Profile::parse(text).unwrap_or_else(|d| panic!("exact platform profile invalid: {d:?}"))
+}
+
+#[test]
+fn owned_platform_basename_requires_receipt_creation_identity() {
+    let fresh = || {
+        CaptureSession::new(
+            exact_platform_profile(),
+            SessionConfig {
+                exact_stage_ownership: true,
+                ..SessionConfig::default()
+            },
+        )
+    };
+    let mut session = fresh();
+    session.require_owned_platform_root("C:\\Steam\\steam.exe");
+    session.attach(at(0));
+    session.apply_snapshot(&[ProcessRecord::new(40, 7, "C:\\Steam\\steam.exe")], at(1));
+    session.on_process_event(start(41, 7, "steam.exe", 4));
+    assert!(session.role_bindings().is_empty());
+
+    session.arm_owned_platform_root(42, 7, at(5), at(8));
+    session.on_process_event(start(42, 7, "steam.exe", 6));
+    assert_eq!(session.role_bindings().len(), 1);
+    assert_eq!(session.role_bindings()[0].0, 42);
+    session.on_process_event(start(43, 42, "C:\\Game\\game.exe", 9));
+    assert_eq!(session.state(), SessionState::Capturing);
+
+    for (parent, image, when) in [
+        (8, "steam.exe", 6),
+        (7, "C:\\Other\\steam.exe", 7),
+        (7, "steam.exe", 4),
+    ] {
+        let mut rejected = fresh();
+        rejected.require_owned_platform_root("C:\\Steam\\steam.exe");
+        rejected.attach(at(0));
+        rejected.arm_owned_platform_root(42, 7, at(5), at(8));
+        rejected.on_process_event(start(42, parent, image, when));
+        assert!(rejected.role_bindings().is_empty());
+    }
+}
+
 /// Launcher (transient) then client (session, terminal, descended from launcher).
 fn terminal_chain() -> Profile {
     profile(
