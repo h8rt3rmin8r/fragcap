@@ -204,7 +204,6 @@ pub(super) fn observe(
     let mut counts = BTreeMap::<String, u64>::new();
     let mut observed_rows = HashSet::new();
     let mut dispatched = false;
-    let mut observed_since: Option<Instant> = None;
     let started = Instant::now();
     let mut complete = true;
     while started.elapsed() < limit {
@@ -253,12 +252,6 @@ pub(super) fn observe(
             &mut observed_rows,
             &mut counts,
         );
-        if !counts.is_empty() {
-            let since = observed_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_secs(5) {
-                break;
-            }
-        }
     }
     if !dispatched {
         return Ok(ClientObservation::Incomplete(

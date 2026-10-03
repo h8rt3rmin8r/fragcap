@@ -1526,3 +1526,41 @@ fn failed_calibration_human_report_names_evidence_once_before_artifacts() {
     assert!(!err.contains("Owned resource cleanup result received"));
     assert!(err.find("Calibration diagnosis:").unwrap() < err.find("Artifact pcapng:").unwrap());
 }
+
+#[test]
+fn complete_but_unreached_calibration_reports_inconclusive_human_outcome() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let bundle = dir.path().join("unreached");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS", "1");
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--calibration-protocol",
+        "routing",
+        "--launch-case",
+        "direct-exe-warm",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+    assert_eq!(code, 0, "diagnostics:\n{err}");
+    assert!(err.contains("Calibration outcome: inconclusive."), "{err}");
+    assert!(err.contains("Calibration diagnosis:"), "{err}");
+    assert!(err.contains("Proxy connections accepted: 0."), "{err}");
+    assert!(err.contains("Deep Capture outcome: complete"), "{err}");
+}

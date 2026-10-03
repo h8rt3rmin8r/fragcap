@@ -2618,8 +2618,21 @@ pub(crate) fn run_with_outcome(
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
-    if calibration.is_some() && !report.is_complete() {
+    if let Some(phase) = calibration {
         let runtime = runtime.borrow();
+        let outcome = terminal_calibration_outcome(
+            phase,
+            args.calibration_protocol
+                .map(calibration_protocol)
+                .expect("calibration protocol validated"),
+            &report.snapshot.observations,
+            runtime.interrupted,
+            !report.snapshot.failures.is_empty(),
+        );
+        emitter.borrow_mut().terminal_human(&format!(
+            "Calibration outcome: {outcome}. Reason: {}.\n",
+            calibration_outcome_reason(phase, outcome)
+        ));
         emitter
             .borrow_mut()
             .terminal_human(&session_ux::calibration_diagnosis(
@@ -3548,6 +3561,9 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
         &std::env::var("FRAGCAP_CONTROLLED_CA_DER")
             .map_err(|_| CliError::failure("controlled target did not inherit the session CA"))?,
     )?;
+    if std::env::var_os("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS").is_some() {
+        return Ok(Exit::SUCCESS);
+    }
     deep_capture_api::run_controlled_native_requests(
         address,
         &authorization,
