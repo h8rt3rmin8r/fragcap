@@ -7,18 +7,18 @@
 - [x] T003 [US1] Complete requirements and release checklists under `checklists/`.
 - [x] T004 [US1] Create `plan.md`, `research.md`, `data-model.md`, `contracts/release-handoff.md`, and `quickstart.md`.
 - [x] T005 [US1] Run the blocking read-only Spec-Kit analysis and record the result in `analyze.md`.
-- [ ] T006 [US1] Commit the analyzed specification gate before candidate changes.
+- [x] T006 [US1] Commit the analyzed specification gate before candidate changes.
 
 ## Phase 2: Candidate preparation
 
-- [ ] T007 [US1] Preview the patch wrapper and run its documented version-only cargo-release command on `release/0.10.4`.
-- [ ] T008 [US1] Align embedded output, generated goldens, native conformance, all three lockfiles, and supply-chain identity to 0.10.4.
-- [ ] T009 [US1] Assemble all unreleased fragments chronologically into `CHANGELOG.md`.
-- [ ] T010 [US1] Author public-safe v0.10.4 highlights and validate notes.
-- [ ] T011 [US1] Advance specification Applies-To, the release slice plan record, and the candidate handoff while retaining public v0.10.3 markers.
-- [ ] T012 [US1] Run focused version, changelog, notes, output, specification, supply-chain, and isolated locked-manifest checks.
-- [ ] T013 [US1] Run full source CI, MSRV, neutral, documentation, and relevant release gates in the foreground.
-- [ ] T014 [US1] Verify UTF-8 without BOM, LF, final newline, no mojibake, and `git diff --check`.
+- [x] T007 [US1] Preview the patch wrapper and run its documented version-only cargo-release command on `release/0.10.4`.
+- [x] T008 [US1] Align embedded output, generated goldens, native conformance, all three lockfiles, and supply-chain identity to 0.10.4.
+- [x] T009 [US1] Assemble all unreleased fragments chronologically into `CHANGELOG.md`.
+- [x] T010 [US1] Author public-safe v0.10.4 highlights and validate notes.
+- [x] T011 [US1] Advance specification Applies-To, the release slice plan record, and the candidate handoff while retaining public v0.10.3 markers.
+- [x] T012 [US1] Run focused version, changelog, notes, output, specification, supply-chain, and isolated locked-manifest checks.
+- [x] T013 [US1] Run full source CI, MSRV, neutral, documentation, and relevant release gates in the foreground.
+- [x] T014 [US1] Verify UTF-8 without BOM, LF, final newline, no mojibake, and `git diff --check`.
 - [ ] T015 [US1] Commit and push the complete candidate, open its official PR, and attach it to this task.
 - [ ] T016 [US1] Address every first-round external comment and CI failure; request and address at most one second Codex round.
 - [ ] T017 [US1] Require green required checks and no unresolved actionable threads on the final PR head; ask the operator for final review and merge.

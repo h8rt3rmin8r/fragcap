@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.85-draft \
-**Applies-To:** 0.10.3 \
+**Version:** 0.1.86-draft \
+**Applies-To:** 0.10.4 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-10-03 \
@@ -173,6 +173,7 @@ enforcement.
 | 0.1.83-draft | 2026-09-29 | Codex | Prepares v0.10.3 under S162 (#439) from merged S160 and S161 corrections. Workspace, generated outputs, native conformance identities, changelog and highlights move together while verified publication remains v0.10.2. Human merge, exact tag, protected registry approval, public-file and ten-crate verification, and later records reconciliation remain separate ordered states. Updates sections 1 and 27.3 without claiming a Print Screen correction. |
 | 0.1.84-draft | 2026-09-30 | Codex | Reconciles verified v0.10.3 publication under S162 (#439). Annotated tag selects exact operator-merged source; all four release jobs pass after normal owner crates.io approval, six certified files and all ten non-yanked crate versions are independently checked before current markers move. S160 and S161 are now published; the focus-dependent Print Screen observation remains unproven. Independent review and universal real-title compatibility are not claimed. |
 | 0.1.85-draft | 2026-10-03 | Codex | S163 corrects the owned cold Steam root's basename-only ETW binding, replaces the first-run socket-holder assertion with a separately confirmed owned-launch observation or explicit declaration, distinguishes stored client roles from appinfo hints, and reports causal failed calibration evidence. Updates sections 10.3, 15.8, and 17.2.1 without claiming universal title compatibility or a new release. |
+| 0.1.86-draft | 2026-10-03 | Codex | Prepares the v0.10.4 candidate under S164 from merged S163 and all unreleased fragments. First-party versions, generated output, conformance identity, changelog and public-safe highlights move together while verified publication remains v0.10.3. The Windows release wrapper's printed handoff now names an annotated tag and ten product crates. Operator merge, exact tag, protected registry approval, public-file verification, and later records reconciliation remain separate states. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4897,8 +4898,11 @@ restated here. The scope of each release is:
 | v0.10.1 | 2026-09-15 | Discoverable nested Doctor timings and pending slow-probe progress, plus freshly verified owner-controlled registry protection; certified public packages and all ten crate versions verified, independent acceptance remains open | S151 through S152; S153 verifies publication |
 | v0.10.2 | 2026-09-21 | Complete native documentation contract, independent-review intake and hosted replay, deterministic package-certification evidence, and Windows observation-queue corrections; certified public packages and all ten crate versions verified | S154 through S158; S159 verifies publication |
 | v0.10.3 | 2026-09-29 | Bounded QUIC observation headroom, corrected performance loss accounting, and interactive CLI input ownership; certified public packages and all ten crate versions verified | S160 and S161; S162 verifies publication |
+| v0.10.4 candidate | 2026-10-03 | First-run guided client setup, exact cold Steam root binding, and causal failed-calibration reporting; publication pending operator merge and later verification | S163; S164 prepares candidate |
 
 S162 publishes v0.10.3 from merged S160 and S161, including bounded QUIC observation headroom and interactive CLI input ownership. Candidate PR #440 was operator-merged, its exact source tagged, the protected registry job approved by the owner, and public files and all ten crate versions verified before current published-baseline records moved. Print Screen behavior is not claimed as corrected.
+
+S164 prepares v0.10.4 from merged S163, with all unreleased fragments assembled. Candidate identity and generated evidence move with the patch version while verified public v0.10.3 records remain unchanged. The Windows release wrapper prints the correct annotated-tag command and ten-crate count without performing publication. The operator merge, exact-source tag, protected registry approval, six-file and ten-crate verification, and later records-only update remain ordered future states. Controlled S163 tests do not establish universal title compatibility or an owner field trial.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
