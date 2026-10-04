@@ -6,7 +6,7 @@
 
 **Rationale**: `scripts/New-Release.ps1` and `release.toml` separate branch preparation from tagging and publication. Its non-dry-run path requires clean main and creates the release branch, so it cannot run after a committed Spec-Kit gate on that branch. S162 used the direct documented sequence successfully.
 
-**Alternatives considered**: Hand-edit every Cargo version and generated file risks drift. Altering pinned release machinery for an ordinary patch expands the slice without need.
+**Alternatives considered**: Hand-edit every Cargo version and generated file risks drift. Broad release-machinery changes would expand the slice without need; the first-round review found a narrow printed-handoff correction that must be consistent in both wrappers and `release.toml`.
 
 ## R2: Patch content
 

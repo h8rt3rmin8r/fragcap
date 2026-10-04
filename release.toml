@@ -18,7 +18,8 @@
 #        with --dry-run first to preview. It wraps, and does not replace:
 #          cargo release minor --execute   # bump and commit, nothing else
 #   2. open a pull request, operator reviews and merges
-#   3. git tag vX.Y.Z && git push origin vX.Y.Z   # X.Y.Z = the version just bumped
+#   3. git tag -a vX.Y.Z -m "fragcap vX.Y.Z" && git push origin vX.Y.Z
+#        X.Y.Z = the version just bumped
 #        (cut-release.sh / New-Release.ps1 print this line with the real version)
 #   4. the release workflow builds artifacts, then waits on the `crates-io`
 #      environment gate before running `cargo xtask publish --execute`
@@ -35,7 +36,7 @@
 # cargo-release defaults to a dry run. `--execute` is required to change
 # anything, which is the same contract `cargo xtask publish` uses.
 
-# All eight crates carry one version, from workspace.package.version.
+# Ten product crates and xtask carry one version from workspace.package.version.
 shared-version = true
 
 # One commit for the whole workspace rather than one per crate.

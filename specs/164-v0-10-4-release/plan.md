@@ -57,7 +57,10 @@ docs/plans/README.md
 docs/maintainers/v0.10.4-release-handoff.md
 conformance/native-http-tls/
 crates/fragcap-sink/
-fixtures/golden/
+fixtures/goldens/
+scripts/New-Release.ps1
+scripts/cut-release.sh
+release.toml
 ```
 
 ## Decisions
@@ -67,6 +70,7 @@ fixtures/golden/
 3. Keep S164's candidate and later public release as ordered states. The current user authorization covers branch push and PR, and explicitly stops for owner merge. A release tag is a distinct external effect after merge.
 4. Keep title-specific field testing outside release acceptance. S163's controlled tests and repository checks establish its implemented correction; any observed failure against published bytes becomes a concrete new issue.
 5. Preserve public v0.10.3 markers until independent v0.10.4 verification, followed by a separate records-only PR.
+6. Align both release wrappers and `release.toml` on the annotated-tag and ten-crate printed handoff. A first-round Codex review identified the Unix and configuration comments that the initial Windows-only correction missed; the dated changelog decision covers all three pinned artifacts.
 
 ## Implementation Sequence
 

@@ -19,7 +19,7 @@
 - [x] T012 [US1] Run focused version, changelog, notes, output, specification, supply-chain, and isolated locked-manifest checks.
 - [x] T013 [US1] Run full source CI, MSRV, neutral, documentation, and relevant release gates in the foreground.
 - [x] T014 [US1] Verify UTF-8 without BOM, LF, final newline, no mojibake, and `git diff --check`.
-- [ ] T015 [US1] Commit and push the complete candidate, open its official PR, and attach it to this task.
+- [x] T015 [US1] Commit and push the complete candidate, open its official PR, and attach it to this task.
 - [ ] T016 [US1] Address every first-round external comment and CI failure; request and address at most one second Codex round.
 - [ ] T017 [US1] Require green required checks and no unresolved actionable threads on the final PR head; ask the operator for final review and merge.
 
