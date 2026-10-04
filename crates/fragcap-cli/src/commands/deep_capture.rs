@@ -959,6 +959,7 @@ impl deep_capture_api::SessionClock for LibraryClockAdapter {
 #[derive(Default)]
 struct LibraryRuntime {
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
+    retained_target_packets: Option<u64>,
     flow_summaries: Vec<fragcap::FlowSummary>,
     globally_unretained_flow_observations: u64,
     interrupted: bool,
@@ -1142,7 +1143,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 )
             })?;
         let registry = self.observation_context.flow_registry();
-        let (result, process_evidence, interrupted) = run_real_capture(
+        let (result, process_evidence, interrupted, retained_target_packets) = run_real_capture(
             &capture_args,
             prepared,
             Arc::clone(&registry),
@@ -1151,6 +1152,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         {
             let mut runtime = self.runtime.borrow_mut();
             runtime.process_evidence = Some(process_evidence);
+            runtime.retained_target_packets = retained_target_packets;
             runtime.flow_summaries = registry.summaries();
             runtime.globally_unretained_flow_observations = registry.globally_unretained();
             runtime.interrupted = interrupted;
@@ -2616,6 +2618,30 @@ pub(crate) fn run_with_outcome(
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
+    if let Some(phase) = calibration {
+        let runtime = runtime.borrow();
+        let outcome = terminal_calibration_outcome(
+            phase,
+            args.calibration_protocol
+                .map(calibration_protocol)
+                .expect("calibration protocol validated"),
+            &report.snapshot.observations,
+            runtime.interrupted,
+            !report.snapshot.failures.is_empty(),
+        );
+        emitter.borrow_mut().terminal_human(&format!(
+            "Calibration outcome: {outcome}. Reason: {}.\n",
+            calibration_outcome_reason(phase, outcome)
+        ));
+        emitter
+            .borrow_mut()
+            .terminal_human(&session_ux::calibration_diagnosis(
+                &report.snapshot,
+                runtime.process_evidence.as_ref(),
+                runtime.retained_target_packets,
+                crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+            ));
+    }
     emitter
         .borrow_mut()
         .terminal_human(&session_ux::terminal_summary(
@@ -3330,6 +3356,7 @@ fn run_real_capture(
     Result<(), CliError>,
     fragcap::deep_capture::CaptureProcessEvidence,
     bool,
+    Option<u64>,
 ) {
     let result = capture::run_prepared_with_flow_registry(
         capture_args,
@@ -3344,6 +3371,7 @@ fn run_real_capture(
         .as_ref()
         .map(|outcome| outcome.process_evidence.clone())
         .unwrap_or_default();
+    let retained_target_packets = result.as_ref().ok().map(|outcome| outcome.retained_packets);
     let result = result.and_then(|outcome| {
         if outcome.exit == Exit::SUCCESS {
             Ok(())
@@ -3354,7 +3382,12 @@ fn run_real_capture(
             )))
         }
     });
-    (result, process_evidence, interrupted)
+    (
+        result,
+        process_evidence,
+        interrupted,
+        retained_target_packets,
+    )
 }
 
 fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::CaptureProcessEvidence {
@@ -3528,6 +3561,9 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
         &std::env::var("FRAGCAP_CONTROLLED_CA_DER")
             .map_err(|_| CliError::failure("controlled target did not inherit the session CA"))?,
     )?;
+    if std::env::var_os("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS").is_some() {
+        return Ok(Exit::SUCCESS);
+    }
     deep_capture_api::run_controlled_native_requests(
         address,
         &authorization,

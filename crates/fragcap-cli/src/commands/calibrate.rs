@@ -2,6 +2,8 @@
 
 //! Guided registration and bounded calibration sequencing for one exact target.
 
+mod steam_client_observation;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -186,9 +188,17 @@ struct SteamClientPlan {
     target: TargetEntry,
     app_id: u32,
     executable: String,
+    selection: ClientSelection,
     candidate: CandidateTarget,
     discovery_account: DiscoveryAccount,
     discovery_warning_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ClientSelection {
+    executable: String,
+    source: &'static str,
+    observed_socket_rows: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -264,6 +274,7 @@ impl SteamClientPlan {
         target: TargetEntry,
         discovery: &Discovery,
         local_store: &Path,
+        selection: &ClientSelection,
     ) -> Result<Option<Self>, CliError> {
         if target.launch_entries.is_some() {
             return Ok(None);
@@ -298,24 +309,11 @@ impl SteamClientPlan {
                 )))
             }
         };
-        let Some(target_root) = target.install_root.as_deref() else {
-            return Err(CliError::usage(
-                "Steam client setup is unavailable: the stored target has no exact install root; refresh or re-register the target",
-            ));
-        };
-        if candidate.install_root.as_deref() != Some(target_root) {
-            return Err(CliError::usage(
-                "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
-            ));
-        }
-        let Some(executable) = candidate.executable_hint.as_deref() else {
-            return Err(CliError::usage(
-                "Steam client setup is unavailable: Steam metadata did not provide an executable path; configure the launch declaration explicitly",
-            ));
-        };
+        validate_steam_client_root(&target, candidate)?;
+        let executable = selection.executable.as_str();
         if !fragcap::targets::is_client_executable(executable) {
             return Err(CliError::usage(
-                "Steam client setup is unavailable: the Steam executable hint is not one unambiguous executable path; configure the launch declaration explicitly",
+                "the selected client is not one unambiguous Windows executable path",
             ));
         }
 
@@ -326,6 +324,7 @@ impl SteamClientPlan {
             local_store,
             app_id,
             executable,
+            selection,
         );
         let canonical_json = serde_json::to_string(&canonical)
             .expect("the Steam client plan contains only serializable values");
@@ -337,6 +336,7 @@ impl SteamClientPlan {
             target,
             app_id,
             executable: executable.to_string(),
+            selection: selection.clone(),
             candidate: candidate.clone(),
             discovery_account: discovery.account.clone(),
             discovery_warning_count: discovery.warnings.len(),
@@ -382,6 +382,23 @@ impl SteamClientPlan {
                 ))
             })
     }
+}
+
+fn validate_steam_client_root(
+    target: &TargetEntry,
+    candidate: &CandidateTarget,
+) -> Result<(), CliError> {
+    let Some(target_root) = target.install_root.as_deref() else {
+        return Err(CliError::usage(
+            "Steam client setup is unavailable: the stored target has no exact install root; refresh or re-register the target",
+        ));
+    };
+    if candidate.install_root.as_deref() != Some(target_root) {
+        return Err(CliError::usage(
+            "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
+        ));
+    }
+    Ok(())
 }
 
 impl RegistrationPlan {
@@ -1129,6 +1146,7 @@ fn steam_client_plan_value(
     local_store: &Path,
     app_id: u32,
     executable: &str,
+    selection: &ClientSelection,
 ) -> Value {
     let local_store = crate::commands::target_resolve::resolve_store_identity(local_store);
     let mut evidence: Vec<_> = candidate
@@ -1183,6 +1201,10 @@ fn steam_client_plan_value(
         ],
         "operation": STEAM_CLIENT_OPERATION,
         "proposed_executable": executable,
+        "selection": {
+            "source": selection.source,
+            "observed_socket_rows": selection.observed_socket_rows,
+        },
         "resulting_launch_entries": fragcap::targets::resolved_client_launch(executable),
         "schema": STEAM_CLIENT_PLAN_SCHEMA,
         "steam_app_id": app_id,
@@ -1400,6 +1422,11 @@ fn prepare_steam_client(
     candidate_selection: &mut CandidateSelection,
 ) -> Result<TargetFrontDoor, CliError> {
     if target.launch_entries.is_some() || steam_app_id(&target).is_none() {
+        if args.client_executable.is_some() {
+            return Err(CliError::usage(
+                "--client-executable applies only to a Steam target without an authored client; inspect the current launch entries with targets show",
+            ));
+        }
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     }
 
@@ -1436,8 +1463,114 @@ fn prepare_steam_client(
             emitter,
         )?,
     };
+    validate_steam_client_root(&target, &selected_candidate)?;
     let selected_discovery = discovery_with_candidate(&discovery, selected_candidate);
-    let Some(plan) = SteamClientPlan::new(target.clone(), &selected_discovery, local_store_path)?
+    let selection = if let Some(executable) = &args.client_executable {
+        ClientSelection {
+            executable: executable.clone(),
+            source: "operator-declaration",
+            observed_socket_rows: None,
+        }
+    } else {
+        if emitter.is_json() || args.authorize_stdin || !authorization.is_terminal() {
+            return Err(CliError::usage(format!(
+                "Steam client observation needs an interactive terminal; alternatively rerun with --client-executable EXE to make an explicit client declaration for {}",
+                target.handle
+            )));
+        }
+        let observation_action = if args.controlled_target {
+            "Fragcap can run its reserved synthetic client-observation fixture. No Steam title or machine socket is used. Run the controlled observation? [y/N] "
+        } else {
+            "Fragcap can start this selected title from a cold Steam launch and observe which descendant owns network connections. This setup observation does not configure Deep Capture or prove proxy reachability. Start the title for client observation? [y/N] "
+        };
+        emitter
+            .required_human_checked(&format!(
+                "Steam launch hint: {} (metadata only; it may be a launcher).\n{}",
+                selected_discovery.candidates[0]
+                    .executable_hint
+                    .as_deref()
+                    .unwrap_or("unavailable"),
+                observation_action,
+            ))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write client observation prompt: {error}"
+                ))
+            })?;
+        emitter.flush().map_err(|error| {
+            CliError::usage(format!(
+                "could not flush client observation prompt: {error}"
+            ))
+        })?;
+        let response = authorization
+            .read_response("steam-client-observation", false)
+            .map_err(|error| {
+                CliError::usage(format!("could not read client observation answer: {error}"))
+            })?;
+        let confirmed = response
+            .strip_suffix(b"\n")
+            .and_then(|line| std::str::from_utf8(line).ok())
+            .is_some_and(|answer| {
+                answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes")
+            });
+        if !confirmed || crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+            emitter.progress("Client observation declined or interrupted; the target was not changed. Rerun calibration to try again, or use --client-executable EXE for an explicit declaration.");
+            return Ok(TargetFrontDoor::Declined);
+        }
+        let observed = if args.controlled_target {
+            emitter.progress("Using the reserved synthetic client-observation fixture; no Steam title is started and no machine socket evidence is claimed.");
+            steam_client_observation::observe_controlled(&target)?
+        } else {
+            steam_client_observation::observe(
+                &target,
+                args.wait.unwrap_or(std::time::Duration::from_secs(60)),
+                emitter,
+            )?
+        };
+        match observed {
+            steam_client_observation::ClientObservation::Unique {
+                executable,
+                sockets,
+            } => {
+                emitter.progress(&format!(
+                    "{} one descendant with network connections: {executable} ({sockets} socket-table rows). This identifies a proposed client; captured traffic and proxy reachability remain unobserved.",
+                    if args.controlled_target { "Synthetic fixture selected" } else { "Observed" }
+                ));
+                ClientSelection {
+                    executable,
+                    source: if args.controlled_target {
+                        "controlled-fixture"
+                    } else {
+                        "observed-socket-owner"
+                    },
+                    observed_socket_rows: Some(sockets),
+                }
+            }
+            steam_client_observation::ClientObservation::None => {
+                emitter.progress("No game descendant with network connections was observed. The target was not changed. After closing the title and Steam normally, retry with --wait 2m, or use --client-executable EXE for an explicit declaration.");
+                return Ok(TargetFrontDoor::Declined);
+            }
+            steam_client_observation::ClientObservation::Ambiguous(candidates) => {
+                emitter.progress(&format!(
+                    "Several descendants owned network connections: {}. The target was not changed. Close the title and Steam normally, then select the game client with --client-executable EXE.",
+                    candidates.iter().map(|(name, count)| format!("{name} ({count})")).collect::<Vec<_>>().join(", ")
+                ));
+                return Ok(TargetFrontDoor::Declined);
+            }
+            steam_client_observation::ClientObservation::Incomplete(reason) => {
+                emitter.progress(&format!(
+                    "Client observation was incomplete ({reason}); the target was not changed. Close the title and Steam normally, then retry or use --client-executable EXE for an explicit declaration."
+                ));
+                return Ok(TargetFrontDoor::Declined);
+            }
+        }
+    };
+    let Some(plan) = SteamClientPlan::new(
+        target.clone(),
+        &selected_discovery,
+        local_store_path,
+        &selection,
+    )?
     else {
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     };
@@ -1473,7 +1606,7 @@ fn prepare_steam_client(
                 emitter,
                 &plan,
                 "declined",
-                "operator-declined-socket-holder-assertion",
+                "operator-declined-client-declaration",
                 false,
             )?;
             return Ok(TargetFrontDoor::Declined);
@@ -1565,6 +1698,7 @@ fn prepare_steam_client(
         current_target,
         &current_selected_discovery,
         local_store_path,
+        &plan.selection,
     ) {
         Ok(plan) => plan,
         Err(error) => {
@@ -1659,8 +1793,15 @@ fn prepare_steam_client(
             "the authored Steam target did not match the confirmed result",
         ));
     }
-    steam_client_outcome(emitter, &plan, "applied", "authored-client-persisted", true)?;
-    Ok(TargetFrontDoor::Ready(Box::new(updated)))
+    steam_client_outcome(
+        emitter,
+        &plan,
+        "applied",
+        "authored-client-persisted",
+        false,
+    )?;
+    emitter.progress("Client setup is saved. Close the title and Steam normally, then rerun fragcap calibrate for a fresh cold reachability session. No Deep Capture session started during client setup.");
+    Ok(TargetFrontDoor::Declined)
 }
 
 fn stored_client_candidates(target: &TargetEntry) -> Vec<CandidateTarget> {
@@ -2092,8 +2233,9 @@ fn confirm_steam_client(
     if !args.authorize_stdin {
         emitter
             .required_human_checked(&format!(
-                "Does {} hold the target's network sockets? [y/N] ",
-                plan.executable
+                "Save {} as this game's client for future Capture and Deep Capture sessions? Source: {}. This changes the stored target only; a separate calibration plan is still required. [y/N] ",
+                plan.executable,
+                plan.selection.source,
             ))
             .map_err(|error| {
                 CliError::usage(format!("could not write the Steam client prompt: {error}"))
@@ -3346,6 +3488,13 @@ pub fn run(
             },
             progress,
         );
+        if outcome.disposition == deep_capture::RunDisposition::Failed {
+            emitter.progress(&format!(
+                "Calibration workflow {} is paused after a failed session. Resume preserves this workflow and does not rerun its failed exact case. Review the diagnosis above; after correcting the cause, start a fresh workflow with {}.",
+                workflow.id,
+                target_command("calibrate", completed_target.stable_id, &local_store_argument, ""),
+            ));
+        }
         if let Some(error) = outcome.terminal_error {
             return Err(error);
         }
@@ -4395,19 +4544,40 @@ mod tests {
         let target = steam_target(None);
         let candidate = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
         let observed = discovery(vec![candidate]);
-        let plan = SteamClientPlan::new(target.clone(), &observed, dir.path())
+        let selected = ClientSelection {
+            executable: "client.exe".into(),
+            source: "operator-declaration",
+            observed_socket_rows: None,
+        };
+        let plan = SteamClientPlan::new(target.clone(), &observed, dir.path(), &selected)
             .unwrap()
             .unwrap();
         assert!(plan.id.starts_with(STEAM_CLIENT_PLAN_PREFIX));
         assert_eq!(plan.canonical["target"]["stable_id"], target.stable_id);
         assert_eq!(plan.canonical["steam_app_id"], 620);
         assert_eq!(plan.canonical["proposed_executable"], "client.exe");
+        assert_eq!(
+            plan.canonical["selection"]["source"],
+            "operator-declaration"
+        );
         assert_eq!(plan.canonical["no_effects"].as_array().unwrap().len(), 5);
+        let observed_selection = ClientSelection {
+            executable: "client.exe".into(),
+            source: "observed-socket-owner",
+            observed_socket_rows: Some(2),
+        };
+        assert_ne!(
+            plan.id,
+            SteamClientPlan::new(target.clone(), &observed, dir.path(), &observed_selection)
+                .unwrap()
+                .unwrap()
+                .id
+        );
         let mut changed_target = target;
         changed_target.name = "Portal Two".to_string();
         assert_ne!(
             plan.id,
-            SteamClientPlan::new(changed_target, &observed, dir.path())
+            SteamClientPlan::new(changed_target, &observed, dir.path(), &selected)
                 .unwrap()
                 .unwrap()
                 .id
@@ -4417,11 +4587,17 @@ mod tests {
     #[test]
     fn steam_client_plan_requires_absence_exact_identity_root_and_safe_image() {
         let dir = tempfile::tempdir().unwrap();
+        let selected = ClientSelection {
+            executable: "client.exe".into(),
+            source: "operator-declaration",
+            observed_socket_rows: None,
+        };
         let valid = candidate(CandidateIdentity::SteamAppId(620), "Portal 2");
         assert!(SteamClientPlan::new(
             steam_target(Some(resolved_client_launch("portal2.exe"))),
             &discovery(vec![valid.clone()]),
             dir.path(),
+            &selected,
         )
         .unwrap()
         .is_none());
@@ -4432,14 +4608,19 @@ mod tests {
                 candidate(CandidateIdentity::SteamAppId(620), "Portal 2"),
             ]),
             dir.path(),
+            &selected,
         )
         .unwrap_err();
         assert!(ambiguity.message().contains("2 exact steam:620 candidates"));
         let mut wrong_root = valid.clone();
         wrong_root.install_root = Some(r"D:\Games\Portal 2".to_string());
-        let wrong_root =
-            SteamClientPlan::new(steam_target(None), &discovery(vec![wrong_root]), dir.path())
-                .unwrap_err();
+        let wrong_root = SteamClientPlan::new(
+            steam_target(None),
+            &discovery(vec![wrong_root]),
+            dir.path(),
+            &selected,
+        )
+        .unwrap_err();
         assert!(wrong_root.message().contains("install root does not match"));
         for invalid in [
             "",
@@ -4469,7 +4650,12 @@ mod tests {
             CandidateIdentity::SteamAppId(620),
             "Portal 2",
         )]);
-        let plan = SteamClientPlan::new(target, &observed, dir.path())
+        let selected = ClientSelection {
+            executable: "client.exe".into(),
+            source: "operator-declaration",
+            observed_socket_rows: None,
+        };
+        let plan = SteamClientPlan::new(target, &observed, dir.path(), &selected)
             .unwrap()
             .unwrap();
         let mut output = Vec::new();
@@ -4499,7 +4685,12 @@ mod tests {
             CandidateIdentity::SteamAppId(620),
             "Portal 2",
         )]);
-        let plan = SteamClientPlan::new(steam_target(None), &observed, dir.path())
+        let selected = ClientSelection {
+            executable: "client.exe".into(),
+            source: "operator-declaration",
+            observed_socket_rows: None,
+        };
+        let plan = SteamClientPlan::new(steam_target(None), &observed, dir.path(), &selected)
             .unwrap()
             .unwrap();
         for (result, reason) in [

@@ -55,6 +55,10 @@ struct BoundedEchoAuthorization {
     accepted: usize,
 }
 
+struct ApproveObservedSetup {
+    calls: usize,
+}
+
 struct DriftAuthorization;
 
 struct AmbiguityAuthorization;
@@ -181,6 +185,18 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for BoundedEchoAuthorization {
         } else {
             Ok(b"not-the-current-plan\n".to_vec())
         }
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for ApproveObservedSetup {
+    fn is_terminal(&self) -> bool {
+        true
+    }
+
+    fn read_response(&mut self, _plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(!exact);
+        self.calls += 1;
+        Ok(b"yes\n".to_vec())
     }
 }
 
@@ -1423,6 +1439,8 @@ fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
             "calibrate",
             "75000",
             "--authorize-stdin",
+            "--client-executable",
+            "client.exe",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -1435,23 +1453,22 @@ fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
         ],
         &mut authorization,
     );
-    assert_eq!(code, 2, "events:\n{events}");
+    assert_eq!(code, 0, "events:\n{events}");
     assert!(out.is_empty());
     assert_eq!(
-        authorization.calls, 3,
-        "registration and client setup are authorized independently from the refused session"
+        authorization.calls, 2,
+        "registration and client setup are separately authorized; session setup requires a fresh cold run"
     );
     assert_eq!(events.matches("calibration.registration_plan").count(), 1);
     assert_eq!(events.matches("calibration.steam_client_plan").count(), 1);
-    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 0);
     assert!(events.contains("\"discovery_considered\":1"));
     assert!(events.contains("\"discovery_produced\":1"));
     assert!(events.contains("\"discovery_access_error\":0"));
     assert!(events.contains("\"discovery_warning_count\":0"));
     assert!(events.contains("\"status\":\"registered\""));
     assert!(events.contains("\"status\":\"applied\""));
-    assert!(events.contains("\"continued\":true"));
-    assert!(events.contains("steam-protocol-cold"));
+    assert!(events.contains("\"continued\":false"));
     assert!(!bundle.exists());
 
     let store = Store::open(&local).unwrap();
@@ -1492,6 +1509,118 @@ fn confirmed_discovered_target_registers_then_authors_the_steam_client_once() {
 }
 
 #[test]
+fn guided_synthetic_steam_client_can_enter_a_fresh_controlled_reachability_plan() {
+    let _environment = controlled_environment().lock();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("reachability");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let mut setup_authorization = ApproveObservedSetup { calls: 0 };
+    let (setup_code, _, setup_events) = run_with_authorization(
+        &[
+            "calibrate",
+            "--id",
+            &id,
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut setup_authorization,
+    );
+    assert_eq!(setup_code, 0, "setup events:\n{setup_events}");
+    assert_eq!(
+        setup_authorization.calls, 2,
+        "observation launch and client authoring require separate answers"
+    );
+    assert!(setup_events.contains("controlled-fixture"));
+    assert!(setup_events.contains("Steam client setup: applied"));
+    assert!(
+        !bundle.exists(),
+        "client authoring starts no capture session"
+    );
+    let target = Store::open(&local)
+        .unwrap()
+        .target_by_stable_id(stable_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        target.launch_entries,
+        Some(resolved_client_launch("client.exe"))
+    );
+
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    let (code, _, events) = run(&[
+        "--json",
+        "deep-capture",
+        "--id",
+        &id,
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--calibration-protocol",
+        "routing",
+        "--launch-case",
+        "direct-exe-warm",
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+    assert_eq!(code, 0, "reachability events:\n{events}");
+    assert!(events.contains("deep_capture.authorization_plan"));
+    assert!(events.contains("\"status\":\"reached-client\""));
+    let store = Store::open(&local).unwrap();
+    let facts = store
+        .compatibility_facts_for_target(target.id.unwrap())
+        .unwrap();
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::ProxyRouting && fact.value == "reached-client"
+    }));
+}
+
+#[test]
+fn guided_observation_does_not_write_when_client_plan_is_declined() {
+    let _environment = controlled_environment().lock();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let mut authorization = AcceptThenDeclineAuthorization { calls: 0 };
+    let (code, _, events) = run_with_authorization(
+        &[
+            "calibrate",
+            "--id",
+            &id,
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 0, "events:\n{events}");
+    assert_eq!(authorization.calls, 2);
+    assert!(events.contains("Steam client setup: declined"));
+    assert!(!events.contains("Deep Capture authorization plan"));
+    let target = Store::open(&local)
+        .unwrap()
+        .target_by_stable_id(stable_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.launch_entries, None);
+}
+
+#[test]
 fn steam_client_decline_and_invalid_structured_input_preserve_the_target() {
     let _environment = controlled_environment().lock();
     for (json, response, expected_status, expected_code) in [
@@ -1511,6 +1640,8 @@ fn steam_client_decline_and_invalid_structured_input_preserve_the_target() {
             "calibrate",
             "--id",
             &id,
+            "--client-executable",
+            "client.exe",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -1590,6 +1721,8 @@ fn steam_client_setup_refuses_discovery_drift_before_mutation() {
             "--id",
             &id,
             "--authorize-stdin",
+            "--client-executable",
+            "client.exe",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -1626,6 +1759,8 @@ fn steam_client_setup_refuses_ambiguous_candidate_reproduction() {
             "--id",
             &id,
             "--authorize-stdin",
+            "--client-executable",
+            "client.exe",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -1786,6 +1921,8 @@ fn explicit_candidate_selects_one_ambiguous_steam_client() {
             "--candidate",
             &selected,
             "--authorize-stdin",
+            "--client-executable",
+            "client.exe",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -1793,7 +1930,7 @@ fn explicit_candidate_selects_one_ambiguous_steam_client() {
         &mut authorization,
     );
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS");
-    assert_eq!(code, 2, "events:\n{selected_events}");
+    assert_eq!(code, 0, "events:\n{selected_events}");
     assert!(selected_events.contains("\"status\":\"applied\""));
     let target = Store::open(&local)
         .unwrap()
@@ -2131,6 +2268,8 @@ fn steam_client_setup_refuses_changed_or_missing_target_authority() {
                 "--id",
                 &id,
                 "--authorize-stdin",
+                "--client-executable",
+                "client.exe",
                 "--controlled-target",
                 "--local-db",
                 local.to_str().unwrap(),

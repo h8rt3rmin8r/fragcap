@@ -1643,12 +1643,24 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     if let Some(anchor) = &t.anchor {
         let _ = writeln!(out, "anchor:         {anchor}");
     }
-    // The observed launch executable (issue #173): shown whenever recorded, not
-    // only when it happens to also be the reason a selector found this row, so a
-    // user can see every name the target is findable by, not just the one that
-    // diverges.
+    let launches = fragcap::targets::entry_windows_launch_entries(t);
+    if launches.is_empty() {
+        let _ = writeln!(out, "active client:  none authored");
+    } else {
+        for (index, launch) in launches.iter().enumerate() {
+            let role = launch.role().unwrap_or("unspecified");
+            let _ = writeln!(
+                out,
+                "launch entry {}: {} (role: {role})",
+                index + 1,
+                launch.executable()
+            );
+        }
+    }
+    // Steam appinfo records a launch hint, which may be an intermediate
+    // launcher. It is not the authored traffic-owning client declaration.
     if let Some(executable_hint) = &t.executable_hint {
-        let _ = writeln!(out, "executable:     {executable_hint}");
+        let _ = writeln!(out, "Steam launch hint: {executable_hint}");
     }
     let _ = writeln!(
         out,
@@ -1684,8 +1696,8 @@ mod tests {
     use super::{
         display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
         hero_listing_with_machine_probe, order_targets_for_listing, print_compatibility,
-        print_discovery, print_discovery_summary, prompt_socket_holder_with, reconcile,
-        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
+        print_discovery, print_discovery_summary, print_target, prompt_socket_holder_with,
+        reconcile, render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
         ClassificationSource, CompatibilityMatrix, DetectionScan, Discovery, ExeScan, FidelityTier,
         SteamNonGameExclusions, Store, TargetClassification, TargetEntry, TargetsReconcileArgs,
     };
@@ -1748,6 +1760,29 @@ mod tests {
             folder_name: None,
             executable_hint: None,
         }
+    }
+
+    #[test]
+    fn target_detail_separates_authored_client_from_steam_hint() {
+        let mut target = listing_target(42, "sample_game", Some("steam:42"));
+        target.executable_hint = Some("sample_launcher.exe".into());
+        let mut out = Vec::new();
+        print_target(&target, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("active client:  none authored"));
+        assert!(text.contains("Steam launch hint: sample_launcher.exe"));
+
+        let mut client = fragcap::targets::LaunchEntry::new("sample_client.exe").unwrap();
+        client.role = Some("client".into());
+        target.launch_entries = Some(serde_json::json!([fragcap::targets::launch_entry_value(
+            &client
+        )]));
+        let mut out = Vec::new();
+        print_target(&target, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("launch entry 1: sample_client.exe (role: client)"));
+        assert!(text.contains("Steam launch hint: sample_launcher.exe"));
+        assert!(!text.contains("none authored"));
     }
 
     #[test]
