@@ -239,11 +239,11 @@ Next steps (each is a deliberate, authorized act this script does not perform):
 
   2. After the operator merges it, tag the release from main:
        git switch main; git pull
-       git tag v$Version; git push origin v$Version
+       git tag -a v$Version -m "fragcap v$Version"; git push origin v$Version
 
   3. The release workflow builds artifacts and creates the GitHub release, then
      the publish job waits on the crates-io environment. Approve it in GitHub to
-     publish the eight crates.
+     publish the ten product crates.
 "@
         [Console]::Error.WriteLine($steps)
     }

@@ -10,6 +10,28 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-03
+
+### Changed
+
+First-run Steam setup now labels appinfo executables as launch hints, guides a bounded client observation or an explicit manual declaration, and asks for a separate exact plan before storing the client. Target detail shows authored launch roles separately from metadata hints, and the first-run guide explains cold launch, calibration, and recovery.
+
+### Fixed
+
+Reconcile the verified v0.10.3 published baseline, native documentation contract and frozen independent-review candidate with certified downloads and ten registry versions while preserving historical release evidence and outstanding independent acceptance.
+
+Cold Steam calibration now binds the exact launched platform process when Windows reports only its executable name, then waits separately for the selected client and proxy traffic. Failed runs identify the earliest observed failure stage and exact retained evidence without repeating generic cleanup messages.
+
+### Decisions
+
+2026-09-30: Under explicit owner release authorization, S162 tags exact human-merged source 9decf214dd58f2467c4f2fdd7228893ffafd17f9 and verifies actual v0.10.3 publication before reconciling current identity and review-candidate records. All four release jobs pass after normal owner crates.io approval, six certified public files reconcile and all ten registry versions are non-yanked with checksums. The records pull request preserves historical v0.10.2 evidence, unsigned policy, release protection and independent acceptance limits; it changes no product version, release workflow, dependency or published byte and performs no installed sensitive-product execution.
+
+2026-10-03: S163 binds basename-only Steam creation events only under an exact managed launch receipt, rather than relaxing every generated profile path predicate. Client socket ownership is setup evidence, not captured traffic or proxy reachability; a separate reviewed target update and a fresh cold calibration preserve those boundaries. The slice adds no dependency, store migration, process handle, release version, or universal title-compatibility claim.
+
+2026-10-03: S164 aligns both pinned release wrappers and release.toml with the annotated-tag handoff and ten product crates. The wrappers still do not create or push a tag, publish packages, or bypass operator merge and protected registry approval. Candidate version and generated evidence move under the established release process; verified public v0.10.3 markers remain unchanged until separate v0.10.4 publication evidence exists.
+
+2026-10-03: Rebind the three reviewed dependency graphs and unsafe-review digest to v0.10.4 first-party package identities. Package and edge counts, all third-party packages and features, unsafe implementation, review expiry, and existing exceptions remain unchanged. This source metadata reconciliation does not claim independent whole-product approval.
+
 ## [0.10.3] - 2026-09-29
 
 ### Fixed
@@ -2287,6 +2309,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.4]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4
 [0.10.3]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.3
 [0.10.2]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2
 [0.10.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.1
