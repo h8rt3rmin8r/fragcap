@@ -512,6 +512,12 @@ fn controlled_calibration_runs_reachability_then_tls() {
         reachability_bundle.to_str().unwrap(),
     ]);
     assert_eq!(code, 0, "reachability events:\n{reachability_events}");
+    assert!(
+        reachability_events.lines().count() <= 40 && reachability_events.len() <= 256 * 1024,
+        "controlled smoke emitted {} lines and {} bytes",
+        reachability_events.lines().count(),
+        reachability_events.len()
+    );
     assert!(out.is_empty());
     assert!(reachability_events.contains("deep_capture.authorization_plan"));
     let routing_plan: serde_json::Value = reachability_events
