@@ -1,6 +1,6 @@
 # Specification Quality Checklist: S166 v0.10.5 patch release
 
-**Created**: 2026-10-05  
+**Created**: 2026-10-05
 **Feature**: [spec.md](../spec.md)
 
 - [x] The candidate and publication states are separate and observable.

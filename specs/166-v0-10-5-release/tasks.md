@@ -10,10 +10,10 @@
 
 ## Candidate preparation
 
-- [ ] T006 Preview and perform the version-only bump.
-- [ ] T007 Align generated output, goldens, conformance, lockfiles, and supply-chain identity.
-- [ ] T008 Assemble all unreleased fragments chronologically, author and validate highlights.
-- [ ] T009 Advance specification applicability and candidate handoff while preserving v0.10.4 public markers.
+- [x] T006 Preview and perform the version-only bump.
+- [x] T007 Align generated output, goldens, conformance, lockfiles, and supply-chain identity.
+- [x] T008 Assemble all unreleased fragments chronologically, author and validate highlights.
+- [x] T009 Advance specification applicability and candidate handoff while preserving v0.10.4 public markers.
 - [ ] T010 Run focused, full, and hosted gates; verify UTF-8, LF, and no mojibake.
 - [ ] T011 Push the branch, open the PR, and resolve actionable review and CI findings.
 

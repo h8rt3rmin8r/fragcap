@@ -8,11 +8,11 @@ Prepare v0.10.5 from merged S165 and the remaining changes since v0.10.4. Reuse 
 
 ## Technical Context
 
-**Language/Version**: Existing Rust workspace and pinned toolchain.  
-**Dependencies**: No new third-party packages.  
-**Storage**: Versioned source, generated evidence, GitHub PR and release records.  
-**Testing**: `cargo xtask ci`, `cargo xtask msrv`, `cargo xtask neutral`, docs, notes, specification, supply chain, and hosted PR gates.  
-**Target**: Existing Windows official package and source checks.  
+**Language/Version**: Existing Rust workspace and pinned toolchain.
+**Dependencies**: No new third-party packages.
+**Storage**: Versioned source, generated evidence, GitHub PR and release records.
+**Testing**: `cargo xtask ci`, `cargo xtask msrv`, `cargo xtask neutral`, docs, notes, specification, supply chain, and hosted PR gates.
+**Target**: Existing Windows official package and source checks.
 **Scope**: Ten product crates, xtask, isolated lockfiles, generated evidence, changelog, notes, and release handoff.
 
 ## Constitution Check

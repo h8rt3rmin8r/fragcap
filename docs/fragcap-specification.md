@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.88-draft \
-**Applies-To:** 0.10.4 \
+**Version:** 0.1.89-draft \
+**Applies-To:** 0.10.5 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-10-05 \
@@ -176,6 +176,7 @@ enforcement.
 | 0.1.86-draft | 2026-10-03 | Codex | Prepares the v0.10.4 candidate under S164 from merged S163 and all unreleased fragments. First-party versions, generated output, conformance identity, changelog and public-safe highlights move together while verified publication remains v0.10.3. Both release wrappers and release.toml now name an annotated tag and ten product crates. Operator merge, exact tag, protected registry approval, public-file verification, and later records reconciliation remain separate states. Updates sections 1 and 27.3. |
 | 0.1.87-draft | 2026-10-04 | Codex | Reconciles verified v0.10.4 publication under S164. Annotated tag selects exact operator-merged source; all four release jobs pass after a normal GitHub protected-deployment review submitted under explicit owner authorization. Six certified public files and all ten non-yanked crate versions are independently checked before current markers move. S163 is now published; independent review and universal title compatibility remain unclaimed. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.88-draft | 2026-10-05 | Codex | S165 corrects the inherited managed-route lifetime defect reported against the active v0.10.4 release in #452. A separate finite route-owner release interval precedes proxy shutdown for Steam, direct, and declared publisher launches; complete query-only process absence permits a release claim, while a remaining or unknown owner creates explicit partial-cleanup and normal-exit recovery guidance. Updates sections 17.2.1 and 28.1 without claiming successful real-title Deep Capture or a new publication. |
+| 0.1.89-draft | 2026-10-05 | Codex | Prepares the v0.10.5 candidate under S166 from merged S165 and all remaining unreleased changes. Workspace, generated outputs, conformance identity, changelog and highlights move together while verified publication remains v0.10.4. Human review, merge, exact tag, protected registry approval, public-file verification and later records reconciliation remain separate states. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4903,10 +4904,13 @@ restated here. The scope of each release is:
 | v0.10.2 | 2026-09-21 | Complete native documentation contract, independent-review intake and hosted replay, deterministic package-certification evidence, and Windows observation-queue corrections; certified public packages and all ten crate versions verified | S154 through S158; S159 verifies publication |
 | v0.10.3 | 2026-09-29 | Bounded QUIC observation headroom, corrected performance loss accounting, and interactive CLI input ownership; certified public packages and all ten crate versions verified | S160 and S161; S162 verifies publication |
 | v0.10.4 | 2026-10-04 | First-run guided client setup, exact cold Steam root binding, and causal failed-calibration reporting; certified public packages and all ten crate versions verified | S163; S164 verifies publication |
+| v0.10.5 candidate | 2026-10-05 | Managed route lifetime correction and merged publication and workflow-token records; public publication remains pending | S165; S166 prepares candidate |
 
 S162 publishes v0.10.3 from merged S160 and S161, including bounded QUIC observation headroom and interactive CLI input ownership. Candidate PR #440 was operator-merged, its exact source tagged, the protected registry job approved by the owner, and public files and all ten crate versions verified before current published-baseline records moved. Print Screen behavior is not claimed as corrected.
 
 S164 publishes v0.10.4 from merged S163, with all unreleased fragments assembled. Candidate PR #449 passed final-head CI and two Codex review rounds before operator merge. Annotated tag v0.10.4 selects exact merged source f8bf4914e310a54ae83b41d8afbbe66d149168b8; all four release jobs pass after a normal protected-deployment review under explicit owner authorization, and six certified public files and ten non-yanked crate records reconcile independently. Both release wrappers and release.toml document the annotated-tag command and ten-crate count. Controlled S163 tests do not establish universal title compatibility or an owner field trial.
+
+S166 prepares v0.10.5 from merged S165 and all unreleased changes since v0.10.4. S165's controlled lifecycle evidence supports the managed route-owner correction but does not prove any real title can complete Deep Capture. The candidate does not move current published-state records; human approval, merge, tag push, protected deployment and independently verified public artifacts remain required before v0.10.5 can be called published.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
