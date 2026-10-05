@@ -24,4 +24,6 @@ No installed real game, production Doctor, real trust mutation, sensitive live c
 
 ## Publication boundary
 
-The candidate PR and hosted final-head checks remain to be recorded. Human approval, merge, and tag push are required by `CONTRIBUTING.md`. The public v0.10.5 release, protected deployment, six public files, certification, ten registry versions, and separate records-only PR are not yet complete.
+Candidate [PR #454](https://github.com/h8rt3rmin8r/fragcap/pull/454) opened from head `0312baf6d47f6159589cb334e765c05c71bca630`. Its automatic Codex review completed with no findings. Some first-attempt hosted jobs failed before acquiring a runner; GitHub annotated them "The job was not acquired by Runner of type hosted even after multiple attempts" during its [October 5 Actions incident](https://www.githubstatus.com/incidents/3q1yb5m7ltvb). That is an external scheduling failure, not a passing check or a demonstrated product failure. Hosted final-head checks remain required.
+
+Human approval, merge, and tag push are required by `CONTRIBUTING.md`. The public v0.10.5 release, protected deployment, six public files, certification, ten registry versions, and separate records-only PR are not yet complete.
