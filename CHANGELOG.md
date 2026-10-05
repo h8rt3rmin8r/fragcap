@@ -10,6 +10,28 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-10-05
+
+### Fixed
+
+Deep Capture now keeps its session proxy active during a bounded normal-exit window after managed Steam, direct, or publisher launches. If a launched application remains open, the session reports incomplete route cleanup and tells the operator to close and relaunch it before using its networked features.
+
+Reconcile the verified v0.10.4 published baseline, native documentation contract and frozen independent-review candidate with certified downloads and ten registry versions while preserving historical release evidence and outstanding independent acceptance.
+
+### Decisions
+
+2026-10-04: Under the owner's explicit release authorization, S164 tags exact human-merged source f8bf4914e310a54ae83b41d8afbbe66d149168b8 and verifies actual v0.10.4 publication before reconciling current identity and review-candidate records. All four release jobs pass after the protected crates.io deployment is approved through GitHub's normal review endpoint using the owner's authenticated account under that authorization. Six certified public files reconcile and all ten registry versions are non-yanked with checksums. The records pull request preserves historical v0.10.3 evidence, unsigned policy, release protection and independent acceptance limits; it changes no product version, release workflow, dependency or published byte and performs no installed sensitive-product execution.
+
+**2026-10-05** Restricted the Windows platform workflow's `GITHUB_TOKEN` to `contents: read`; its jobs only check out repository source and do not need write access.
+
+**2026-10-05** A separate two-minute route-owner release budget now precedes proxy shutdown because persistent managed applications can pass inherited session proxy settings to later children. Query-only process absence supports a release claim; a remaining or unknown owner is a partial-cleanup recovery state, and fragcap does not control the target process.
+
+**2026-10-05** PR review found that ASCII-only executable comparison could mistake a still-running non-ASCII image for an absent route owner. S165 uses the target store's Unicode lowercase fold for route-owner deduplication, release checks, and the existing warm-process inventory check.
+
+**2026-10-05** Hosted package certification exposed a closed structured-event bound of 32 records. The controlled smoke now emits 33 because S165 records one additional route-owner cleanup result. The certification parser permits at most 40 records while retaining its 256 KiB byte limit, and the controlled CLI test asserts both limits.
+
+**2026-10-05** Prepare the v0.10.5 release handoff from merged S165 and every remaining unreleased fragment. The handoff records candidate checks and the human review, merge, tag, protected deployment, and independent public-verification gates without moving the current v0.10.4 published baseline early.
+
 ## [0.10.4] - 2026-10-03
 
 ### Changed
@@ -2309,6 +2331,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.5]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.5
 [0.10.4]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4
 [0.10.3]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.3
 [0.10.2]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.2
