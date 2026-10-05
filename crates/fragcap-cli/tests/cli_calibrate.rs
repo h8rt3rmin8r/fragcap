@@ -2541,12 +2541,16 @@ fn missing_routing_runs_reachability_then_observed_protocol() {
     assert_eq!(plan["plan"]["proxy"]["system_proxy_change"], false);
     assert_eq!(plan["plan"]["deadlines_milliseconds"]["launch"], 7_000);
     assert_eq!(plan["plan"]["deadlines_milliseconds"]["observation"], 5_000);
+    assert_eq!(
+        plan["plan"]["deadlines_milliseconds"]["route_owner_release"],
+        120_000
+    );
     assert_eq!(plan["plan"]["trust"]["action"], "none");
     assert_eq!(
         plan["plan"]["capture"]["scope"],
         "selected target process tree"
     );
-    assert_eq!(plan["plan"]["cleanup"].as_array().unwrap().len(), 4);
+    assert_eq!(plan["plan"]["cleanup"].as_array().unwrap().len(), 5);
     assert_eq!(
         plan["plan"]["artifacts"]["bundle"],
         bundle.display().to_string()

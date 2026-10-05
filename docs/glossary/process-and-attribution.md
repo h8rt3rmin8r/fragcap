@@ -164,6 +164,25 @@ reconstructed from current state.
 **See also:** [ETW](windows-internals.md#etw), [PID recycling](process-and-attribution.md#pid-recycling),
 [Launcher chain](process-and-attribution.md#launcher-chain), [Stage](process-and-attribution.md#stage)
 
+## Route owner
+
+A launched process that may still hold or pass on the proxy settings assigned
+to a Deep Capture session.
+
+Child environment settings remain in a process after the process that launched
+it stops. A surviving launcher can pass those settings to a later child, so
+ending packet capture does not establish that the session route is gone.
+
+{: .matters }
+> Fragcap waits for a complete query-only process inventory to show every
+> declared route-owning image absent before it stops the session proxy. If the
+> finite wait ends first, cleanup reports the owner as unresolved and gives
+> normal-exit and fresh-launch recovery instructions.
+
+**See also:** [Process tree](process-and-attribution.md#process-tree),
+[Launcher chain](process-and-attribution.md#launcher-chain),
+[Deep Capture](capture-and-networking.md#deep-capture)
+
 ## PID recycling
 
 The reuse of a process identifier by a new, unrelated process after the

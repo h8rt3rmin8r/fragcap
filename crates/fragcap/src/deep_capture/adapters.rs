@@ -197,6 +197,9 @@ pub trait CaptureRunner {
         budget: Budget,
     ) -> Result<super::CaptureRunResult, StageFailure>;
 
+    /// Observe normal exit of a launched process that may retain the session route.
+    fn release_route_owners(&mut self, budget: Budget) -> CleanupResult;
+
     fn stop(&mut self, budget: Budget) -> CleanupResult;
 }
 

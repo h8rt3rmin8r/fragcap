@@ -64,6 +64,7 @@ const PACKAGE_CONTROLLED_TARGET_HANDLE: &str = "package_certification";
 const PACKAGE_CONTROLLED_TARGET_STABLE_ID: i64 = 7_056_203_534_889_944_332;
 const CALIBRATION_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const CALIBRATION_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(60);
+const ROUTE_OWNER_RELEASE_TIMEOUT: Duration = Duration::from_secs(120);
 const CALIBRATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const CALIBRATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
 const WARM_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -433,6 +434,7 @@ fn complete_authorization_line(response: &[u8]) -> Option<&str> {
 struct CalibrationDeadlines {
     launch: Duration,
     observation: Duration,
+    route_owner_release: Duration,
     shutdown: Duration,
     cleanup: Duration,
 }
@@ -442,6 +444,7 @@ impl CalibrationDeadlines {
         Self {
             launch: bounded_timeout(args.wait, CALIBRATION_LAUNCH_TIMEOUT),
             observation: bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT),
+            route_owner_release: ROUTE_OWNER_RELEASE_TIMEOUT,
             shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
             cleanup: CALIBRATION_CLEANUP_TIMEOUT,
         }
@@ -958,6 +961,7 @@ impl deep_capture_api::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
+    managed_launch_attempted: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
     retained_target_packets: Option<u64>,
     flow_summaries: Vec<fragcap::FlowSummary>,
@@ -1059,8 +1063,122 @@ impl deep_capture_api::LaunchLease for LibraryLaunchLease {
         deep_capture_api::CleanupResult {
             resource: "managed-launch".to_string(),
             status: deep_capture_api::CleanupStatus::NotNeeded,
-            reason: "ordinary Capture owns the managed launch lifetime".to_string(),
+            reason: "fragcap does not control the launched process; route-owner release is reported separately".to_string(),
         }
+    }
+}
+
+fn route_owner_images(
+    target: &TargetEntry,
+    launch_case: deep_capture_api::LaunchCase,
+) -> Vec<String> {
+    route_owner_images_from_entries(
+        launch_case,
+        entry_windows_launch_entries(target)
+            .iter()
+            .map(|entry| entry.executable().to_string()),
+    )
+}
+
+fn route_owner_images_from_entries(
+    launch_case: deep_capture_api::LaunchCase,
+    entries: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut images = Vec::new();
+    if launch_case == deep_capture_api::LaunchCase::SteamProtocolCold {
+        images.push("steam.exe".to_string());
+    }
+    for entry in entries {
+        let name = entry.rsplit(['\\', '/']).next().unwrap_or(&entry);
+        if !name.is_empty()
+            && !images
+                .iter()
+                .any(|existing| process_image_name_eq(existing, name))
+        {
+            images.push(name.to_string());
+        }
+    }
+    images
+}
+
+fn process_image_name_eq(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
+fn present_route_owners(images: &[String], observed: &[String]) -> Vec<String> {
+    images
+        .iter()
+        .filter(|image| {
+            observed
+                .iter()
+                .any(|item| process_image_name_eq(item, image))
+        })
+        .cloned()
+        .collect()
+}
+
+fn wait_for_route_owners(
+    images: &[String],
+    budget: deep_capture_api::Budget,
+    emitter: &mut Emitter<'_>,
+) -> deep_capture_api::CleanupResult {
+    wait_for_route_owners_with(images, budget, emitter, process_image_snapshot)
+}
+
+fn wait_for_route_owners_with(
+    images: &[String],
+    budget: deep_capture_api::Budget,
+    emitter: &mut Emitter<'_>,
+    mut inventory: impl FnMut() -> Result<Vec<String>, CliError>,
+) -> deep_capture_api::CleanupResult {
+    let started = Instant::now();
+    let mut notice_sent = false;
+    loop {
+        let unresolved = match inventory() {
+            Ok(observed) => {
+                let remaining = present_route_owners(images, &observed);
+                if remaining.is_empty() {
+                    return deep_capture_api::CleanupResult {
+                        resource: "route-owner".to_string(),
+                        status: deep_capture_api::CleanupStatus::Released,
+                        reason: "complete process inventory found no declared route owner"
+                            .to_string(),
+                    };
+                }
+                if !notice_sent {
+                    emitter.action_required(&format!(
+                        "Capture has ended. Close {} normally within {} seconds so its inherited proxy route can be released before the session proxy stops.",
+                        remaining.join(", "),
+                        budget.remaining().as_secs()
+                    ));
+                    notice_sent = true;
+                }
+                format!("routed application still running: {}", remaining.join(", "))
+            }
+            Err(error) => {
+                if !notice_sent {
+                    emitter.action_required(
+                        "Capture has ended, but the process inventory is unavailable. Close the launched application normally while fragcap retries route-owner cleanup.",
+                    );
+                    notice_sent = true;
+                }
+                format!("process inventory unavailable: {error}")
+            }
+        };
+        let remaining_budget = budget.remaining().saturating_sub(started.elapsed());
+        if remaining_budget.is_zero() {
+            emitter.error(&format!(
+                "Route-owner cleanup is unresolved ({unresolved}). Close the launched application normally and relaunch it outside this session before using its networked features."
+            ));
+            return deep_capture_api::CleanupResult {
+                resource: "route-owner".to_string(),
+                status: deep_capture_api::CleanupStatus::Failed,
+                reason: format!(
+                    "{unresolved}; close the launched application normally and relaunch it outside this session before using its networked features"
+                ),
+            };
+        }
+        std::thread::sleep(remaining_budget.min(Duration::from_millis(250)));
     }
 }
 
@@ -1068,6 +1186,8 @@ struct LibraryCaptureAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     prepared: Rc<RefCell<Option<(CaptureArgs, capture::PreparedCapture)>>>,
+    selected: Rc<RefCell<Option<TargetEntry>>>,
+    selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     observation_context: deep_capture_api::NativeObservationContext,
     mode: deep_capture_api::SessionMode,
@@ -1143,6 +1263,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 )
             })?;
         let registry = self.observation_context.flow_registry();
+        self.runtime.borrow_mut().managed_launch_attempted = true;
         let (result, process_evidence, interrupted, retained_target_packets) = run_real_capture(
             &capture_args,
             prepared,
@@ -1164,6 +1285,36 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             observations: Vec::new(),
             interrupted,
         })
+    }
+
+    fn release_route_owners(
+        &mut self,
+        budget: deep_capture_api::Budget,
+    ) -> deep_capture_api::CleanupResult {
+        if !self.runtime.borrow().managed_launch_attempted {
+            return deep_capture_api::CleanupResult {
+                resource: "route-owner".to_string(),
+                status: deep_capture_api::CleanupStatus::NotNeeded,
+                reason: "no routed managed launch was attempted".to_string(),
+            };
+        }
+        let selected = self.selected.borrow();
+        let launch_case = self.selected_launch_case.borrow();
+        let images = selected
+            .as_ref()
+            .zip(*launch_case)
+            .map(|(target, case)| route_owner_images(target, library_launch_case(case)));
+        let Some(images) = images.filter(|images| !images.is_empty()) else {
+            self.emitter.borrow_mut().error(
+                "Route-owner cleanup is unresolved because the declared process images are unavailable. Close the launched application normally and relaunch it outside this session before using its networked features.",
+            );
+            return deep_capture_api::CleanupResult {
+                resource: "route-owner".to_string(),
+                status: deep_capture_api::CleanupStatus::Failed,
+                reason: "declared route-owner images unavailable; close the launched application normally and relaunch it outside this session".to_string(),
+            };
+        };
+        wait_for_route_owners(&images, budget, &mut self.emitter.borrow_mut())
     }
 
     fn stop(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
@@ -2023,6 +2174,7 @@ fn build_authorization_plan(
             "scope": "selected target process tree",
         },
         "cleanup": [
+            "wait up to the route-owner release deadline for normal exit of managed applications while the session proxy remains active and may retain application observations",
             "stop proxy and capture within their deadlines",
             "remove current-user trust only when added by this session",
             "zero process-local private authority material when ownership ends",
@@ -2032,6 +2184,7 @@ fn build_authorization_plan(
             "cleanup": CalibrationDeadlines::milliseconds(deadlines.cleanup),
             "launch": CalibrationDeadlines::milliseconds(deadlines.launch),
             "observation": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "route_owner_release": CalibrationDeadlines::milliseconds(deadlines.route_owner_release),
             "shutdown": CalibrationDeadlines::milliseconds(deadlines.shutdown),
         },
         "facts": {
@@ -2432,6 +2585,7 @@ pub(crate) fn run_with_outcome(
         deadlines: deep_capture_api::Deadlines {
             launch: deadlines.launch,
             observation: deadlines.observation,
+            route_owner_release: deadlines.route_owner_release,
             shutdown: deadlines.shutdown,
             cleanup: deadlines.cleanup,
         },
@@ -2492,6 +2646,8 @@ pub(crate) fn run_with_outcome(
             args,
             emitter: Rc::clone(&emitter),
             prepared: Rc::clone(&prepared_capture),
+            selected: Rc::clone(&selected),
+            selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             observation_context,
             mode,
@@ -3183,7 +3339,7 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
         .map(|image| {
             observed
                 .iter()
-                .any(|observed| observed.eq_ignore_ascii_case(image))
+                .any(|observed| process_image_name_eq(observed, image))
         })
         .collect())
 }
@@ -4062,6 +4218,7 @@ fn compatibility_json(
             "deadlines_seconds": {
                 "launch": CalibrationDeadlines::seconds(ctx.deadlines.launch),
                 "observation": CalibrationDeadlines::seconds(ctx.deadlines.observation),
+                "route_owner_release": CalibrationDeadlines::seconds(ctx.deadlines.route_owner_release),
                 "shutdown": CalibrationDeadlines::seconds(ctx.deadlines.shutdown),
                 "cleanup": CalibrationDeadlines::seconds(ctx.deadlines.cleanup),
             },
@@ -4666,6 +4823,151 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::emit::{Format, Verbosity};
+
+    #[test]
+    fn release_wait_keeps_a_remaining_platform_child_unresolved() {
+        let owners = ["steam.exe".to_string(), "launcher.exe".to_string()];
+        let mut inventories = std::collections::VecDeque::from([
+            vec!["STEAM.EXE".to_string(), "launcher.exe".to_string()],
+            vec!["launcher.exe".to_string()],
+            Vec::new(),
+        ]);
+        let mut diagnostics = Vec::new();
+        let result = {
+            let mut emitter = Emitter::new(&mut diagnostics, Format::Human, Verbosity::Normal);
+            wait_for_route_owners_with(
+                &owners,
+                deep_capture_api::Budget::new(Duration::from_secs(1)),
+                &mut emitter,
+                || Ok(inventories.pop_front().expect("three inventories")),
+            )
+        };
+        assert_eq!(result.status, deep_capture_api::CleanupStatus::Released);
+        assert!(
+            inventories.is_empty(),
+            "the remaining child delayed release"
+        );
+        assert!(String::from_utf8(diagnostics)
+            .expect("diagnostic UTF-8")
+            .contains("Close steam.exe, launcher.exe normally"));
+    }
+
+    #[test]
+    fn expired_release_reports_recovery_even_under_silent_output() {
+        let mut diagnostics = Vec::new();
+        let result = {
+            let mut emitter = Emitter::new(&mut diagnostics, Format::Human, Verbosity::Silent);
+            wait_for_route_owners_with(
+                &["steam.exe".to_string()],
+                deep_capture_api::Budget::new(Duration::ZERO),
+                &mut emitter,
+                || Ok(vec!["STEAM.EXE".to_string()]),
+            )
+        };
+        assert_eq!(result.status, deep_capture_api::CleanupStatus::Failed);
+        let message = String::from_utf8(diagnostics).expect("diagnostic UTF-8");
+        assert!(message.contains("action-required: Capture has ended"));
+        assert!(message.contains("error: Route-owner cleanup is unresolved"));
+        assert!(message.contains("relaunch it outside this session"));
+    }
+
+    #[test]
+    fn unavailable_inventory_is_not_release_and_can_recover() {
+        let mut inventories = std::collections::VecDeque::from([
+            Err(CliError::failure("controlled inventory failure")),
+            Ok(Vec::new()),
+        ]);
+        let mut diagnostics = Vec::new();
+        let recovered = {
+            let mut emitter = Emitter::new(&mut diagnostics, Format::Human, Verbosity::Normal);
+            wait_for_route_owners_with(
+                &["steam.exe".to_string()],
+                deep_capture_api::Budget::new(Duration::from_secs(1)),
+                &mut emitter,
+                || inventories.pop_front().expect("two inventories"),
+            )
+        };
+        assert_eq!(recovered.status, deep_capture_api::CleanupStatus::Released);
+        assert!(inventories.is_empty());
+        assert!(String::from_utf8(diagnostics)
+            .expect("diagnostic UTF-8")
+            .contains("process inventory is unavailable"));
+
+        let mut diagnostics = Vec::new();
+        let unresolved = {
+            let mut emitter = Emitter::new(&mut diagnostics, Format::Human, Verbosity::Silent);
+            wait_for_route_owners_with(
+                &["steam.exe".to_string()],
+                deep_capture_api::Budget::new(Duration::ZERO),
+                &mut emitter,
+                || Err(CliError::failure("controlled inventory failure")),
+            )
+        };
+        assert_eq!(unresolved.status, deep_capture_api::CleanupStatus::Failed);
+        assert!(unresolved.reason.contains("process inventory unavailable"));
+        assert!(String::from_utf8(diagnostics)
+            .expect("diagnostic UTF-8")
+            .contains("relaunch it outside this session"));
+    }
+
+    #[test]
+    fn route_owner_images_cover_platform_direct_and_declared_publisher_roles() {
+        use deep_capture_api::LaunchCase;
+
+        let steam = route_owner_images_from_entries(
+            LaunchCase::SteamProtocolCold,
+            [
+                "C:\\Games\\client.exe".to_string(),
+                "client.exe".to_string(),
+            ],
+        );
+        assert_eq!(steam, ["steam.exe", "client.exe"]);
+        let direct = route_owner_images_from_entries(
+            LaunchCase::DirectExeCold,
+            ["C:\\Games\\client.exe".to_string()],
+        );
+        assert_eq!(direct, ["client.exe"]);
+        let publisher = route_owner_images_from_entries(
+            LaunchCase::PublisherLauncherCold,
+            [
+                "C:\\Publisher\\launcher.exe".to_string(),
+                "C:\\Publisher\\middle.exe".to_string(),
+                "C:\\Games\\client.exe".to_string(),
+            ],
+        );
+        assert_eq!(publisher, ["launcher.exe", "middle.exe", "client.exe"]);
+    }
+
+    #[test]
+    fn surviving_route_owner_is_not_mistaken_for_release() {
+        let owners = ["steam.exe".to_string(), "client.exe".to_string()];
+        assert_eq!(
+            present_route_owners(&owners, &["STEAM.EXE".to_string()]),
+            ["steam.exe"]
+        );
+        assert_eq!(
+            present_route_owners(&owners, &["CLIENT.EXE".to_string()]),
+            ["client.exe"]
+        );
+        assert!(present_route_owners(&owners, &["other.exe".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn route_owner_matching_uses_unicode_lowercase_for_declared_images() {
+        use deep_capture_api::LaunchCase;
+
+        let owners = route_owner_images_from_entries(
+            LaunchCase::DirectExeCold,
+            ["C:\\Games\\Élan.exe".to_string(), "élan.EXE".to_string()],
+        );
+        assert_eq!(owners, ["Élan.exe"]);
+        assert_eq!(
+            present_route_owners(&owners, &["élan.EXE".to_string()]),
+            owners
+        );
+        assert!(process_image_name_eq("Élan.exe", "élan.EXE"));
+    }
 
     struct BrokenWarmRead;
 
