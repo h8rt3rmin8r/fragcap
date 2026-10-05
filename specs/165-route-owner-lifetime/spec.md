@@ -56,6 +56,7 @@ The session's structured cleanup stream and terminal report identify the route-o
 - Capture preparation fails before any managed launch attempt.
 - The managed launch attempt fails, succeeds without an observable client, or returns a capture error after the root starts.
 - Process enumeration fails transiently or reports only a same-named foreign process; the release decision remains conservative.
+- A declared executable and its ToolHelp image differ only by Unicode letter case.
 - The root exits while a declared intermediate or final client remains.
 - An operator interrupts capture while the routed application remains open.
 - Fragcap itself is forcibly terminated before cleanup can run.
@@ -66,7 +67,7 @@ The session's structured cleanup stream and terminal report identify the route-o
 
 - **FR-001**: After capture, a Deep Capture session MUST keep its proxy and trust active for a finite route-owner release interval. It MUST claim route release only after a complete process inventory shows every declared route owner absent.
 - **FR-002**: The operator MUST receive a plain-language instruction to close remaining managed applications normally after capture ends, including failed or interrupted capture and silent output mode.
-- **FR-003**: Route-owner release MUST require a complete query-only process inventory and MUST include the Steam platform root, direct client, and every declared publisher stage as applicable. An unavailable inventory MUST NOT be treated as absence. A remaining or unknown owner at the finite deadline MUST become an explicit partial-cleanup recovery state.
+- **FR-003**: Route-owner release MUST require a complete query-only process inventory and MUST include the Steam platform root, direct client, and every declared publisher stage as applicable. Image-name matching MUST use the same Unicode-aware lowercase fold as target selection. An unavailable inventory MUST NOT be treated as absence. A remaining or unknown owner at the finite deadline MUST become an explicit partial-cleanup recovery state.
 - **FR-004**: The session MUST record the route-owner release result before proxy shutdown; launch cleanup MUST NOT report that ordinary Capture ended a process-owned route.
 - **FR-005**: A failure before any managed launch attempt MUST proceed to ordinary bounded cleanup without waiting for unrelated applications.
 - **FR-006**: The route-owner release wait, proxy shutdown, and cleanup budgets MUST each be finite and disclosed in the authorized plan, without force stopping or modifying any target process.

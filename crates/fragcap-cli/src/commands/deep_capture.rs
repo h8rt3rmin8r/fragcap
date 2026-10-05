@@ -1093,7 +1093,7 @@ fn route_owner_images_from_entries(
         if !name.is_empty()
             && !images
                 .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(name))
+                .any(|existing| process_image_name_eq(existing, name))
         {
             images.push(name.to_string());
         }
@@ -1101,10 +1101,18 @@ fn route_owner_images_from_entries(
     images
 }
 
+fn process_image_name_eq(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
 fn present_route_owners(images: &[String], observed: &[String]) -> Vec<String> {
     images
         .iter()
-        .filter(|image| observed.iter().any(|item| item.eq_ignore_ascii_case(image)))
+        .filter(|image| {
+            observed
+                .iter()
+                .any(|item| process_image_name_eq(item, image))
+        })
         .cloned()
         .collect()
 }
@@ -3331,7 +3339,7 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
         .map(|image| {
             observed
                 .iter()
-                .any(|observed| observed.eq_ignore_ascii_case(image))
+                .any(|observed| process_image_name_eq(observed, image))
         })
         .collect())
 }
@@ -4943,6 +4951,22 @@ mod tests {
             ["client.exe"]
         );
         assert!(present_route_owners(&owners, &["other.exe".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn route_owner_matching_uses_unicode_lowercase_for_declared_images() {
+        use deep_capture_api::LaunchCase;
+
+        let owners = route_owner_images_from_entries(
+            LaunchCase::DirectExeCold,
+            ["C:\\Games\\Élan.exe".to_string(), "élan.EXE".to_string()],
+        );
+        assert_eq!(owners, ["Élan.exe"]);
+        assert_eq!(
+            present_route_owners(&owners, &["élan.EXE".to_string()]),
+            owners
+        );
+        assert!(process_image_name_eq("Élan.exe", "élan.EXE"));
     }
 
     struct BrokenWarmRead;
