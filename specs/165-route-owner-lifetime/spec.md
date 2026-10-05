@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/s165-steam-route-lifetime`
 **Created**: 2026-10-05
-**Status**: Draft
+**Status**: Implemented in PR #453; hosted CI and owner merge pending
 **Input**: Active-release defect #452 and the owner's request to resolve the inherited proxy route in one work slice.
 
 ## Clarifications

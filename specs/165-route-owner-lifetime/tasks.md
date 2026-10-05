@@ -15,5 +15,7 @@
 ## Phase 3: Contracts and verification
 
 - [x] T007 Update the master specification, plan ordering, operator guide, and unreleased changelog.
-- [ ] T008 Run local headless CI component checks and require green hosted PR checks.
-- [ ] T009 Review the diff, commit the slice, push the branch, and open an owner-merge PR linked to #452.
+- [x] T008 Run local headless CI component checks and submit the final PR head to hosted CI.
+- [x] T009 Review the diff, commit the slice, push the branch, and open an owner-merge PR linked to #452.
+
+Hosted CI must be green before owner review and merge; its result is tracked on PR #453.
