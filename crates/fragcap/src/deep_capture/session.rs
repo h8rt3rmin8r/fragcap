@@ -7,6 +7,7 @@ use crate::targets::CompatibilityProtocol;
 
 const MAX_LAUNCH: Duration = Duration::from_secs(120);
 const MAX_OBSERVATION: Duration = Duration::from_secs(300);
+const MAX_ROUTE_OWNER_RELEASE: Duration = Duration::from_secs(300);
 const MAX_SHUTDOWN: Duration = Duration::from_secs(30);
 const MAX_CLEANUP: Duration = Duration::from_secs(60);
 
@@ -755,7 +756,7 @@ impl DeepCaptureSession<'_> {
         Ok(())
     }
 
-    /// Stop Capture and the proxy with finite budgets.
+    /// Allow routed processes to exit normally, then stop Capture and the proxy.
     pub fn stop(&mut self) -> Result<(), InvalidTransition> {
         self.require(
             Operation::Stop,
@@ -774,6 +775,19 @@ impl DeepCaptureSession<'_> {
         }
         if self.cancellation.is_requested() {
             self.record_cancellation();
+        }
+        if self.launch.is_some() {
+            let started = self.adapters.clock.monotonic_elapsed();
+            let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
+            let result = self.adapters.capture.release_route_owners(budget);
+            self.record_cleanup(result);
+            if self.deadline_expired(started, self.plan.deadlines.route_owner_release) {
+                self.fail(
+                    Stage::Launch,
+                    "route-owner-release-deadline-exceeded",
+                    "managed route-owner release returned after its authorized deadline",
+                );
+            }
         }
         let started = self.adapters.clock.monotonic_elapsed();
         let capture_target = self.capture.token.clone();
@@ -1624,6 +1638,7 @@ fn cap_deadlines(deadlines: Deadlines) -> Deadlines {
     Deadlines {
         launch: deadlines.launch.min(MAX_LAUNCH),
         observation: deadlines.observation.min(MAX_OBSERVATION),
+        route_owner_release: deadlines.route_owner_release.min(MAX_ROUTE_OWNER_RELEASE),
         shutdown: deadlines.shutdown.min(MAX_SHUTDOWN),
         cleanup: deadlines.cleanup.min(MAX_CLEANUP),
     }

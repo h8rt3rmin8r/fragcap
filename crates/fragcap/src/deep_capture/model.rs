@@ -329,6 +329,8 @@ pub struct Deadlines {
     pub launch: Duration,
     /// Observation deadline.
     pub observation: Duration,
+    /// Time allowed for the operator to close processes retaining the route.
+    pub route_owner_release: Duration,
     /// Proxy stop deadline.
     pub shutdown: Duration,
     /// Total cleanup deadline.
@@ -340,6 +342,7 @@ impl Default for Deadlines {
         Self {
             launch: Duration::from_secs(30),
             observation: Duration::from_secs(60),
+            route_owner_release: Duration::from_secs(120),
             shutdown: Duration::from_secs(10),
             cleanup: Duration::from_secs(15),
         }

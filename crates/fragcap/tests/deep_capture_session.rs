@@ -299,6 +299,10 @@ impl SessionClock for SharedClock {
 
 struct TimedCapture(Rc<RefCell<Duration>>);
 impl CaptureRunner for TimedCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -329,6 +333,10 @@ impl CaptureRunner for TimedCapture {
 
 struct LateObservationCapture(Rc<RefCell<Duration>>);
 impl CaptureRunner for LateObservationCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -360,6 +368,10 @@ impl CaptureRunner for LateObservationCapture {
 
 struct LateShutdownCapture(Rc<RefCell<Duration>>);
 impl CaptureRunner for LateShutdownCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -455,6 +467,13 @@ impl LaunchLease for LaunchRun {
 
 struct Capture(Ledger);
 impl CaptureRunner for Capture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        self.0
+            .borrow_mut()
+            .push("capture.release_route_owners".into());
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -487,6 +506,13 @@ impl CaptureRunner for Capture {
 
 struct CancellingCapture(Ledger, CancellationToken);
 impl CaptureRunner for CancellingCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        self.0
+            .borrow_mut()
+            .push("capture.release_route_owners".into());
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -749,8 +775,26 @@ impl RoutingAdapter for FailingRouting {
     }
 }
 
-struct FailingCapture(Ledger);
+struct FailingCapture(Ledger, bool);
 impl CaptureRunner for FailingCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        if self.1 {
+            self.0
+                .borrow_mut()
+                .push("capture.release_route_owners.failed".into());
+            CleanupResult {
+                resource: "route-owner".into(),
+                status: CleanupStatus::Failed,
+                reason: "controlled routed process remains running; close it normally".into(),
+            }
+        } else {
+            self.0
+                .borrow_mut()
+                .push("capture.release_route_owners".into());
+            released("route-owner")
+        }
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -782,6 +826,13 @@ impl CaptureRunner for FailingCapture {
 
 struct InterruptedCapture(Ledger);
 impl CaptureRunner for InterruptedCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        self.0
+            .borrow_mut()
+            .push("capture.release_route_owners".into());
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -812,6 +863,13 @@ impl CaptureRunner for InterruptedCapture {
 #[allow(dead_code)]
 struct TimedOutStopCapture(Ledger);
 impl CaptureRunner for TimedOutStopCapture {
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        self.0
+            .borrow_mut()
+            .push("capture.release_route_owners".into());
+        released("route-owner")
+    }
+
     fn prepare(
         &mut self,
         _: &SessionConfig,
@@ -1104,10 +1162,16 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         5
     );
     assert_eq!(report.snapshot.fact_writes.len(), 5);
-    assert_eq!(report.snapshot.cleanup.len(), 6);
+    assert_eq!(report.snapshot.cleanup.len(), 7);
     assert_eq!(report.snapshot.artifacts, prepared_artifact_requests());
     assert_eq!(report.artifacts.last().expect("manifest").role, "manifest");
     let calls = ledger.borrow();
+    assert!(
+        calls
+            .iter()
+            .position(|call| call == "capture.release_route_owners")
+            < calls.iter().position(|call| call == "proxy.stop")
+    );
     assert!(
         calls.iter().position(|call| call == "fact.append")
             < calls.iter().position(|call| call == "launch.cleanup")
@@ -1126,6 +1190,30 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         calls.iter().position(|call| call == "event.trust-acquired")
             < calls.iter().position(|call| call == "launch.start")
     );
+}
+
+#[test]
+fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.capture = Box::new(FailingCapture(ledger.clone(), true));
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session(environment)
+        .run_to_completion(authorization);
+
+    assert!(!report.is_complete());
+    assert!(report.snapshot.cleanup.iter().any(|result| {
+        result.resource == "route-owner" && result.status == CleanupStatus::Failed
+    }));
+    let calls = ledger.borrow();
+    let release = calls
+        .iter()
+        .position(|call| call == "capture.release_route_owners.failed")
+        .expect("release attempt");
+    assert!(calls.iter().position(|call| call == "capture.run.failed") < Some(release));
+    assert!(Some(release) < calls.iter().position(|call| call == "proxy.stop"));
 }
 
 #[test]
@@ -1624,7 +1712,7 @@ fn route_failure_still_cleans_trust_and_proxy_without_launching() {
 fn capture_failure_still_stops_and_finalizes() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
-    environment.capture = Box::new(FailingCapture(ledger.clone()));
+    environment.capture = Box::new(FailingCapture(ledger.clone(), false));
     let report = run_with(environment);
     assert!(report
         .snapshot

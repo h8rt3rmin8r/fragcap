@@ -197,6 +197,7 @@ the owning category page.
 - [Ring mode](capture-and-networking.md#ring-mode)
 - [Ring window](capture-and-networking.md#ring-window)
 - [Rotation segment](capture-and-networking.md#rotation-segment)
+- [Route owner](process-and-attribution.md#route-owner)
 - [Routing decision](capture-and-networking.md#routing-decision)
 - [Scoped IPv6 literal](capture-and-networking.md#scoped-ipv6-literal)
 - [Scoped QUIC pair](capture-and-networking.md#scoped-quic-pair)
