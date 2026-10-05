@@ -37,7 +37,7 @@ pub enum Verbosity {
     Normal,
     /// Suppress progress; keep warnings and errors.
     Quiet,
-    /// Suppress everything except errors.
+    /// Suppress ordinary status while retaining errors and required actions.
     Silent,
 }
 
@@ -229,6 +229,11 @@ impl<'w> Emitter<'w> {
         }
     }
 
+    /// A required operator action, visible even when ordinary status is silent.
+    pub fn action_required(&mut self, line: &str) {
+        self.diagnostic("action-required", line);
+    }
+
     /// An error. Never suppressed, in any mode or verbosity. In human mode an
     /// `error:` line; in JSON mode an `error` NDJSON record.
     pub fn error(&mut self, line: &str) {
@@ -372,6 +377,19 @@ mod tests {
         assert!(emit(Format::Human, Verbosity::Quiet, |e| e.warn("w")).contains("warning: w"));
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.warn("w")).is_empty());
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.error("boom")).contains("error: boom"));
+    }
+
+    #[test]
+    fn route_cleanup_action_survives_silent_in_human_and_json_modes() {
+        let human = emit(Format::Human, Verbosity::Silent, |e| {
+            e.action_required("close Steam normally")
+        });
+        assert!(human.contains("action-required: close Steam normally"));
+        let json = emit(Format::Json, Verbosity::Silent, |e| {
+            e.action_required("close Steam normally")
+        });
+        assert!(json.contains("\"event\":\"action-required\""));
+        assert!(json.contains("\"message\":\"close Steam normally\""));
     }
 
     #[test]

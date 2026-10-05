@@ -289,7 +289,7 @@ test.describe('production accessibility contract', () => {
     await page.goto('/docs/reference/native-documentation');
     await expect(page.getByRole('heading', { level: 1, name: 'Native product contract' })).toHaveCount(1);
     const main = page.getByRole('main');
-    await expect(main).toContainText('v0.10.3');
+    await expect(main).toContainText('v0.10.4');
     await expect(main).toContainText('S154');
     await expect(main).toContainText('S158');
     await expect(main).toContainText('independent security audit has been performed');

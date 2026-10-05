@@ -16,7 +16,9 @@ const WIX_SOURCE: &str = "crates/fragcap-cli/wix/main.wxs";
 const HARNESS: &str = "scripts/Test-PackageCertification.ps1";
 const MAX_CONTRACT_BYTES: u64 = 128 * 1024;
 const MAX_SMOKE_EVENT_BYTES: usize = 256 * 1024;
-const MAX_SMOKE_EVENT_COUNT: usize = 32;
+// The controlled session now emits a route-owner cleanup result. Keep a finite
+// margin above its observed 33 records without relaxing the byte bound.
+const MAX_SMOKE_EVENT_COUNT: usize = 40;
 
 pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let bytes = fs::read(root.join(CONTRACT))?;

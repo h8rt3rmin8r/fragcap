@@ -294,7 +294,7 @@ workflow. Also specifies the documentation linter: entry completeness,
 internal anchor resolution, external link liveness on a schedule, and
 regeneration of the alphabetical index.
 
-S157 replaces the S154 readiness inventory with one version-two Native product contract. Thirteen current topics bind exact authored headings, command and artifact example authorities, and supported non-ignored executable tests. v0.10.2 published that engineering together with S158's Windows observation correction. v0.10.3 adds S160's bounded QUIC observation headroom and S161's interactive CLI input correction. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; observed active-release failures become concrete defects.
+S157 replaces the S154 readiness inventory with one version-two Native product contract. Thirteen current topics bind exact authored headings, command and artifact example authorities, and supported non-ignored executable tests. v0.10.2 published that engineering together with S158's Windows observation correction. v0.10.3 adds S160's bounded QUIC observation headroom and S161's interactive CLI input correction. v0.10.4 adds S163's first-run Steam setup, owned-root binding and failure reporting corrections. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; observed active-release failures become concrete defects.
 
 ## 23. Website and Brand
 

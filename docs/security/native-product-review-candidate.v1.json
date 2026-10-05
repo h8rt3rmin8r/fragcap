@@ -1,55 +1,55 @@
 {
   "schema_version": 1,
-  "product_version": "0.10.3",
-  "tag": "v0.10.3",
-  "source_revision": "9decf214dd58f2467c4f2fdd7228893ffafd17f9",
-  "lockfile_sha256": "0a6cc4b70ca0561d4579b86ff065566e536a94be17a25b0d58f6b3fd2f045495",
-  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.3",
-  "release_run_id": 36586311847,
+  "product_version": "0.10.4",
+  "tag": "v0.10.4",
+  "source_revision": "f8bf4914e310a54ae83b41d8afbbe66d149168b8",
+  "lockfile_sha256": "ac45b390c6bf28b5b074464c34050f07eef6a5a8ceeb3e42a997411f2eb75f15",
+  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4",
+  "release_run_id": 37240338416,
   "target": "x86_64-pc-windows-msvc",
   "features": ["etw", "live", "native-deep-capture", "socket-table"],
   "assets": [
     {
       "role": "standalone-catalog",
       "filename": "catalog.db",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/catalog.db",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/catalog.db",
       "size_bytes": 90112,
       "sha256": "d1da331be8e1c33b58f53b35e6a331755bfbc315d75be811214cc83488104fff"
     },
     {
       "role": "standalone-catalog-checksum",
       "filename": "catalog.db.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/catalog.db.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/catalog.db.sha256",
       "size_bytes": 77,
       "sha256": "bc7cf4fb3499d1fdc605d23e1bc51b904273d7eada20a959a7b140d756293901"
     },
     {
       "role": "portable-zip",
-      "filename": "fragcap-0.10.3-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/fragcap-0.10.3-x86_64-pc-windows-msvc.zip",
-      "size_bytes": 6540814,
-      "sha256": "a5f752daebf5c34e03f15c7e4c1f04fe8a18bc9d01b753f4daa7b9518197446b"
+      "filename": "fragcap-0.10.4-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/fragcap-0.10.4-x86_64-pc-windows-msvc.zip",
+      "size_bytes": 6573517,
+      "sha256": "c9b9644c8d805cb59a814f9a5b50b52d3954839354c841bbf45cde981ba0876f"
     },
     {
       "role": "portable-zip-checksum",
-      "filename": "fragcap-0.10.3-x86_64-pc-windows-msvc.zip.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/fragcap-0.10.3-x86_64-pc-windows-msvc.zip.sha256",
+      "filename": "fragcap-0.10.4-x86_64-pc-windows-msvc.zip.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/fragcap-0.10.4-x86_64-pc-windows-msvc.zip.sha256",
       "size_bytes": 108,
-      "sha256": "b30f5e502778e101c69e13eba69be3035c01514bb34752af0810d44552514745"
+      "sha256": "6e910f6063207aa093b6b03384c6348e8b1b671e6d9966203e46443a058c4b6a"
     },
     {
       "role": "windows-msi",
-      "filename": "fragcap-0.10.3-x86_64.msi",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/fragcap-0.10.3-x86_64.msi",
-      "size_bytes": 6836224,
-      "sha256": "4a8221334b044f575733e48e4303f6506bd7fc0420d2712e87d1c1eaf5368220"
+      "filename": "fragcap-0.10.4-x86_64.msi",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/fragcap-0.10.4-x86_64.msi",
+      "size_bytes": 6864896,
+      "sha256": "499959445fcd7ae12dad05b94f033e4c974ceefa64d23f9ab5aeeee712aeee75"
     },
     {
       "role": "windows-msi-checksum",
-      "filename": "fragcap-0.10.3-x86_64.msi.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.3/fragcap-0.10.3-x86_64.msi.sha256",
+      "filename": "fragcap-0.10.4-x86_64.msi.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.4/fragcap-0.10.4-x86_64.msi.sha256",
       "size_bytes": 92,
-      "sha256": "f94740f041d3a751828d5a280219363e00ad9fa7b788f6fba89b520910bd85c4"
+      "sha256": "35de74ecf348342e63502b0389067c0d676a7ff3660ab743f3c715e4bb03e653"
     }
   ],
   "predecessor": {
