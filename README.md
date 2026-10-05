@@ -57,13 +57,13 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 ## Status
 
-Published baseline: [v0.10.3](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.3).
+Published baseline: [v0.10.4](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4).
 
-**v0.10.3 is the current release.** Capture provides target-scoped, process-attributed packet capture. Deep Capture adds a guarded native Rust proxy for eligible stored targets, with managed Steam, publisher, and direct-executable launches; scoped IPv4 and IPv6 routing; HTTP/1.1, HTTP/2, HTTP/3, TLS, WebSocket, SSE, gRPC, SOCKS5 TCP and UDP, and generic TCP and UDP evidence; and manifest-indexed packet, application, process, correlation, loss, and cleanup records.
+**v0.10.4 is the current release.** Capture provides target-scoped, process-attributed packet capture. Deep Capture adds a guarded native Rust proxy for eligible stored targets, with managed Steam, publisher, and direct-executable launches; scoped IPv4 and IPv6 routing; HTTP/1.1, HTTP/2, HTTP/3, TLS, WebSocket, SSE, gRPC, SOCKS5 TCP and UDP, and generic TCP and UDP evidence; and manifest-indexed packet, application, process, correlation, loss, and cleanup records.
 
 > **Deep Capture is native and shipped for known-compatible stored targets.** The production proxy and current-user trust lifecycle are native Rust and Windows API paths, with no separately installed proxy runtime. Protocol, routing, recovery, artifact, packaging, stable library API, guided calibration, and session-presentation contracts have controlled evidence. Independent security review and universal live-title compatibility are not claimed.
 
-v0.10.2 published the S154 through S158 documentation contract, independent-review intake, deterministic package-certification evidence, and Windows observation-queue corrections. v0.10.3 adds bounded QUIC observation headroom and the interactive CLI input correction, with certified Windows packages and all ten crates at 0.10.3. Use digest-verified published bytes for optional operator testing. File any observed failure as a defect against the affected release.
+v0.10.2 published the S154 through S158 documentation contract, independent-review intake, deterministic package-certification evidence, and Windows observation-queue corrections. v0.10.3 added bounded QUIC observation headroom and the interactive CLI input correction. v0.10.4 adds first-run Steam client setup, exact cold platform-root binding, and causal calibration failure reporting, with certified Windows packages and all ten crates at 0.10.4. Use digest-verified published bytes for optional operator testing. File any observed failure as a defect against the affected release.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 
