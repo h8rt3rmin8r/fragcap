@@ -3,10 +3,10 @@ title: Architecture
 description: How passive Capture and explicit Deep Capture produce distinct, auditable evidence.
 ---
 
-Published baseline: [v0.10.4](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4).
+Published baseline: [v0.10.5](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.5).
 
 <Callout title="Native completion status">
-Deep Capture is native and shipped for known-compatible stored targets. Native protocol, managed launch, scoped routing, bounded evidence, recovery, packaging, stable API, guided calibration and S150 documentation shipped in v0.10.0 on 2026-09-15. v0.10.2 added the complete documentation contract, review-intake, deterministic certification and Windows observation corrections. v0.10.3 added bounded QUIC observation headroom and corrected interactive CLI input. v0.10.4 adds first-run Steam client setup, exact cold platform-root binding, and causal calibration failure reporting. The independent-review handoff is readiness, not a completed audit. The [Native product contract](/docs/reference/native-documentation) states the supported boundary and the defect workflow for active releases.
+Deep Capture is native and shipped for known-compatible stored targets. Native protocol, managed launch, scoped routing, bounded evidence, recovery, packaging, stable API, guided calibration and S150 documentation shipped in v0.10.0 on 2026-09-15. v0.10.2 added the complete documentation contract, review-intake, deterministic certification and Windows observation corrections. v0.10.3 added bounded QUIC observation headroom and corrected interactive CLI input. v0.10.4 added first-run Steam client setup, exact cold platform-root binding, and causal calibration failure reporting. v0.10.5 corrects the managed route-owner lifetime after a Deep Capture attempt. The independent-review handoff is readiness, not a completed audit. The [Native product contract](/docs/reference/native-documentation) states the supported boundary and the defect workflow for active releases.
 </Callout>
 
 fragcap has two shipped modes. [Capture](/docs/glossary/capture-and-networking#capture-mode) passively records packets and attributes flows to processes from evidence outside those processes. [Deep Capture](/docs/glossary/capture-and-networking#deep-capture) runs that same Capture path beside explicit, target-scoped local proxy inspection for one compatible stored target. Deep Capture is active by design, and it adds observations only for traffic that reaches its proxy.

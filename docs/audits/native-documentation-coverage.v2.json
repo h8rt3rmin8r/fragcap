@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "published_baseline": {
-    "version": "0.10.4",
-    "source_revision": "f8bf4914e310a54ae83b41d8afbbe66d149168b8"
+    "version": "0.10.5",
+    "source_revision": "4e2869a972abfee11e5c0eae3101c1b1e16f6404"
   },
   "current_source_boundary": [
     "S154",
