@@ -1,0 +1,2 @@
+<!-- spec-impact: none -->
+**2026-10-06** Mermaid still constrains KaTeX to the vulnerable 0.16 line, including in its 12.0.0 release. The site uses exact pnpm workspace overrides for KaTeX, DOMPurify, and source-map-js until its parent dependencies accept fixed versions directly; frozen install, production build, and browser diagram checks guard this compatibility choice. The four historical Rustls lockfiles use the fixed package version without changing the released product graph.
