@@ -27,6 +27,8 @@ P-1 through P-7 and P-10 remain unchanged because this slice changes release ide
 4. Treat the operator's no-input request as authorization for all routine preparation, branch push, PR, and release checks. Human review, merge, and tag push cannot be performed by the agent under repository governance.
 5. Keep game-specific field testing outside release acceptance. S165's controlled lifecycle tests establish the scoped correction; real-title compatibility is unverified.
 
+**Execution note, 2026-10-06 UTC:** The owner merged PR #454 and then explicitly instructed the agent to push the exact `v0.10.5` tag. That later direct instruction superseded decision 4 for this tag push only. The tag was verified as annotated and bound to the owner-merged source before publication continued. GitHub records no formal PR approval review object; the owner performed the merge.
+
 ## Implementation Sequence
 
 1. Commit the analyzed specification gate before candidate mutation.

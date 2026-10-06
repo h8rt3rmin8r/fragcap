@@ -14,12 +14,12 @@
 - [x] T007 Align generated output, goldens, conformance, lockfiles, and supply-chain identity.
 - [x] T008 Assemble all unreleased fragments chronologically, author and validate highlights.
 - [x] T009 Advance specification applicability and candidate handoff while preserving v0.10.4 public markers.
-- [ ] T010 Run focused, full, and hosted gates; verify UTF-8, LF, and no mojibake.
-- [ ] T011 Push the branch, open the PR, and resolve actionable review and CI findings.
+- [x] T010 Run focused, full, and hosted gates; verify UTF-8, LF, and no mojibake.
+- [x] T011 Push the branch, open the PR, and resolve actionable review and CI findings.
 
 ## Public release after human gates
 
-- [ ] T012 Verify human approval and merge, then exact source and annotated tag pushed by the operator.
-- [ ] T013 Verify all release jobs and protected deployment.
-- [ ] T014 Reconcile public assets, certification, and ten registry versions.
-- [ ] T015 Prepare a separate records-only PR for human review and merge.
+- [x] T012 Verify owner merge and exact source, then the annotated tag pushed under explicit owner instruction.
+- [x] T013 Verify all release jobs and protected deployment.
+- [x] T014 Reconcile public assets, certification, and ten registry versions.
+- [x] T015 Prepare a separate publication-records and routine supply-chain review PR for human review and merge.

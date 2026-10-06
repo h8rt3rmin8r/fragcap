@@ -2,7 +2,7 @@
 
 **Feature Branch**: `release/0.10.5`
 **Created**: 2026-10-05
-**Status**: Candidate preparation
+**Status**: Published; current-state records awaiting human review and merge
 **Input**: The operator requested complete publication without further input. Repository governance reserves PR approval, merge, and tag push for the human operator. This slice prepares and verifies everything possible before that boundary.
 
 ## User Scenarios & Testing
