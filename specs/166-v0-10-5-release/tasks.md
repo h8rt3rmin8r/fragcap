@@ -22,4 +22,4 @@
 - [x] T012 Verify owner merge and exact source, then the annotated tag pushed under explicit owner instruction.
 - [x] T013 Verify all release jobs and protected deployment.
 - [x] T014 Reconcile public assets, certification, and ten registry versions.
-- [ ] T015 Prepare a separate publication-records and routine supply-chain review PR for human review and merge.
+- [x] T015 Prepare a separate publication-records and routine supply-chain review PR for human review and merge.
