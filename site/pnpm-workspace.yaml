@@ -3,3 +3,8 @@ packages:
 
 allowBuilds:
   esbuild: true
+
+overrides:
+  dompurify: 3.4.16
+  katex: 0.18.2
+  source-map-js: 1.2.2
