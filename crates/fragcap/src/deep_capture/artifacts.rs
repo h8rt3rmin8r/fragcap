@@ -33,7 +33,29 @@ pub struct ArtifactActionResult {
 }
 
 pub fn prepare_bundle(path: &Path) -> io::Result<()> {
-    prepare_protected_directory(path)?;
+    #[cfg(windows)]
+    if super::access::preserve_private_directory(path)? {
+        return prepare_bundle_journal(path);
+    }
+    let recipient = super::access::OutputRecipient::current_account()?;
+    prepare_bundle_for_recipient(path, &recipient)
+}
+
+pub fn prepare_bundle_for_recipient(
+    path: &Path,
+    recipient: &super::access::OutputRecipient,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    super::access::protect_recipient_directory(path, recipient)?;
+    #[cfg(not(windows))]
+    {
+        let _ = recipient;
+        prepare_protected_directory(path)?;
+    }
+    prepare_bundle_journal(path)
+}
+
+fn prepare_bundle_journal(path: &Path) -> io::Result<()> {
     let journal = contained(path, Path::new(JOURNAL))?;
     match journal.symlink_metadata() {
         Ok(metadata) if metadata.file_type().is_file() => protect_path(&journal, false)?,
@@ -60,19 +82,34 @@ fn prepare_protected_directory(path: &Path) -> io::Result<()> {
 }
 
 pub fn open_sensitive_file(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    protect_path(path, false)?;
-    Ok(file)
+    #[cfg(windows)]
+    {
+        super::access::open_private_file(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        protect_path(path, false)?;
+        Ok(file)
+    }
 }
 
 pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>> {
-    let manifest = read_manifest(bundle)?;
-    prepare_bundle(bundle)?;
+    let manifest = read_cleanup_manifest(bundle)?;
     let paths = sensitive_paths(&manifest)?;
+    // Explicit deletion does not adopt a historical bundle into a new output
+    // contract. Validate every selected path before creating its action journal.
+    for relative in &paths {
+        contained(bundle, relative)?;
+    }
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    prepare_cleanup_journal(bundle)?;
     let mut results = Vec::new();
     for relative in paths {
         contained(bundle, &relative)?;
@@ -108,6 +145,64 @@ pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>>
         });
     }
     Ok(results)
+}
+
+fn prepare_cleanup_journal(bundle: &Path) -> io::Result<()> {
+    let journal = contained(bundle, Path::new(JOURNAL))?;
+    match journal.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sensitive action journal is not a regular file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(windows)]
+            let mut file = match open_sensitive_file(&journal) {
+                Ok(file) => file,
+                // A legacy OW/SYSTEM parent can still authorize its producer's
+                // explicit cleanup. New action records use a producer-private
+                // create-new file without changing that parent's ACL.
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    super::access::open_producer_private_file(&journal)?
+                }
+                Err(error) => return Err(error),
+            };
+            #[cfg(not(windows))]
+            let mut file = open_sensitive_file(&journal)?;
+            file.write_all(b"{\"version\":1,\"type\":\"header\"}\n")?;
+            file.sync_all()
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn read_cleanup_manifest(bundle: &Path) -> io::Result<Value> {
+    let final_path = contained(bundle, Path::new("manifest.json"))?;
+    match final_path.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_file() => read_manifest(bundle),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cleanup manifest is not a regular file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let prefix = contained(bundle, Path::new(super::MANIFEST_PREFIX))?;
+            if !prefix.symlink_metadata()?.file_type().is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "cleanup crash-prefix is not a regular file",
+                ));
+            }
+            let document = super::ManifestDocument::read(&prefix)?;
+            if document.value().get("state").and_then(Value::as_str) != Some("crash-prefix") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "cleanup prefix does not declare a crash-prefix state",
+                ));
+            }
+            Ok(document.value().clone())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn recover_sensitive_actions(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>> {
@@ -552,57 +647,7 @@ fn protect_path(path: &Path, directory: bool) -> io::Result<()> {
 
 #[cfg(windows)]
 fn protect_path(path: &Path, directory: bool) -> io::Result<()> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::GetLastError;
-    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
-    use windows_sys::Win32::System::Memory::LocalFree;
-    let descriptor = if directory {
-        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
-    } else {
-        "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
-    };
-    let sddl: Vec<u16> = descriptor
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut security = ptr::null_mut();
-    let mut length = 0;
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut security,
-            &mut length,
-        )
-    } == 0
-    {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    let wide: Vec<u16> = OsStr::new(path)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let applied = unsafe {
-        SetFileSecurityW(
-            wide.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            security,
-        )
-    };
-    let error = unsafe { GetLastError() };
-    unsafe { LocalFree(security as isize) };
-    if applied == 0 {
-        Err(io::Error::from_raw_os_error(error as i32))
-    } else {
-        Ok(())
-    }
+    super::access::protect_private_path(path, directory)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -613,6 +658,117 @@ fn protect_path(_: &Path, _: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_protected_cleanup_preserves_non_sensitive_data_without_access_repair() {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr;
+        use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+        use windows_sys::Win32::Security::{
+            SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+        use windows_sys::Win32::System::Memory::LocalFree;
+
+        for (prefix, missing_action_journal) in [(false, false), (true, false), (false, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("legacy");
+            prepare_bundle(&root).unwrap();
+            fs::write(root.join("tls-keylog.log"), b"synthetic retained secret").unwrap();
+            fs::write(root.join("capture.fcapng"), b"unchanged packet fixture").unwrap();
+            fs::write(
+                root.join("resource-journal.jsonl"),
+                b"open legacy resource journal\n",
+            )
+            .unwrap();
+            let manifest = serde_json::to_vec(&json!({
+                "manifest_version":1, "state":if prefix {"crash-prefix"} else {"partial"},
+                "artifacts":[
+                    {"path":"tls-keylog.log","sensitivity":"secret-adjacent"},
+                    {"path":"capture.fcapng","sensitivity":"ordinary"}
+                ]
+            }))
+            .unwrap();
+            let manifest_name = if prefix {
+                super::super::MANIFEST_PREFIX
+            } else {
+                "manifest.json"
+            };
+            fs::write(root.join(manifest_name), &manifest).unwrap();
+            if missing_action_journal {
+                fs::remove_file(root.join(JOURNAL)).unwrap();
+            }
+            for (path, directory) in std::iter::once((root.clone(), true)).chain(
+                fs::read_dir(&root)
+                    .unwrap()
+                    .map(|entry| (entry.unwrap().path(), false)),
+            ) {
+                let inheritance = if directory { "OICI" } else { "" };
+                let source: Vec<u16> =
+                    format!("D:P(A;{inheritance};FA;;;OW)(A;{inheritance};FA;;;SY)")
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                let mut descriptor = ptr::null_mut();
+                assert_ne!(
+                    unsafe {
+                        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                            source.as_ptr(),
+                            1,
+                            &mut descriptor,
+                            ptr::null_mut(),
+                        )
+                    },
+                    0
+                );
+                let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                let result = unsafe {
+                    SetFileSecurityW(
+                        path_wide.as_ptr(),
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        descriptor,
+                    )
+                };
+                unsafe { LocalFree(descriptor as isize) };
+                assert_ne!(
+                    result,
+                    0,
+                    "legacy fixture ACL: {}",
+                    io::Error::last_os_error()
+                );
+            }
+            assert!(
+                prepare_bundle(&root).is_err(),
+                "new-output preparation must not adopt legacy ACLs"
+            );
+            let pinned = super::super::access::pin_access_path(&root, false).unwrap();
+            let root_descriptor = pinned.descriptor.clone();
+            drop(pinned);
+            let results = cleanup_sensitive(&root).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].status, "removed");
+            assert!(!root.join("tls-keylog.log").exists());
+            assert_eq!(
+                fs::read(root.join("capture.fcapng")).unwrap(),
+                b"unchanged packet fixture"
+            );
+            assert_eq!(
+                fs::read(root.join("resource-journal.jsonl")).unwrap(),
+                b"open legacy resource journal\n"
+            );
+            assert_eq!(fs::read(root.join(manifest_name)).unwrap(), manifest);
+            assert_eq!(
+                super::super::access::pin_access_path(&root, false)
+                    .unwrap()
+                    .descriptor,
+                root_descriptor
+            );
+            assert_eq!(
+                cleanup_sensitive(&root).unwrap()[0].status,
+                "already-absent"
+            );
+        }
+    }
 
     #[test]
     fn cleanup_is_exact_and_idempotent_and_share_preserves_source() {
@@ -931,12 +1087,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_sensitive_file_has_a_protected_owner_system_dacl() {
+    fn windows_sensitive_file_has_a_protected_exact_user_system_dacl() {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
         use std::ptr;
         use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-        use windows_sys::Win32::Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION};
+        use windows_sys::Win32::Security::{
+            EqualSid, GetAce, GetFileSecurityW, GetSecurityDescriptorDacl, IsWellKnownSid,
+            WinLocalSystemSid, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
         use windows_sys::Win32::System::Memory::LocalFree;
 
         let root = tempfile::tempdir().unwrap();
@@ -956,7 +1116,8 @@ mod tests {
                 &mut needed,
             )
         };
-        let mut descriptor = vec![0_u8; needed as usize];
+        let mut descriptor =
+            vec![0_usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
         assert_ne!(
             unsafe {
                 GetFileSecurityW(
@@ -987,7 +1148,69 @@ mod tests {
             .unwrap();
         unsafe { LocalFree(sddl as isize) };
         assert!(text.starts_with("D:P"), "{text}");
-        assert!(text.contains(";;;OW)") && text.contains(";;;SY)"), "{text}");
+        let mut size = 0;
+        unsafe {
+            windows_sys::Win32::Security::GetTokenInformation(
+                -4,
+                windows_sys::Win32::Security::TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut size,
+            )
+        };
+        let mut user_buffer = vec![0_usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Security::GetTokenInformation(
+                    -4,
+                    windows_sys::Win32::Security::TokenUser,
+                    user_buffer.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            },
+            0
+        );
+        let user = unsafe {
+            &*user_buffer
+                .as_ptr()
+                .cast::<windows_sys::Win32::Security::TOKEN_USER>()
+        };
+        let mut acl = ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorDacl(
+                    descriptor.as_mut_ptr().cast(),
+                    &mut present,
+                    &mut acl,
+                    &mut defaulted,
+                )
+            },
+            0
+        );
+        assert_ne!(present, 0);
+        assert!(!acl.is_null());
+        assert_eq!(unsafe { (*acl).AceCount }, 2, "{text}");
+        let mut user_count = 0;
+        let mut system_count = 0;
+        for index in 0..2 {
+            let mut ace = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
+            assert_ne!(unsafe { GetAce(acl, index, ace.as_mut_ptr()) }, 0);
+            // SAFETY: successful GetAce initialized the pointer into this descriptor.
+            let ace = unsafe { ace.assume_init() };
+            assert!(!ace.is_null());
+            let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(allowed.Header.AceType, 0);
+            assert_eq!(allowed.Mask, FILE_ALL_ACCESS);
+            let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
+            user_count += u32::from(unsafe { EqualSid(sid, user.User.Sid) } != 0);
+            system_count += u32::from(unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0);
+        }
+        // Windows may render this individual SID as LA/LG rather than numerically.
+        assert_eq!((user_count, system_count), (1, 1), "{text}");
+        assert!(!text.contains(";;;OW)"), "{text}");
         assert!(
             !text.contains(";;;WD)") && !text.contains(";;;BU)"),
             "{text}"

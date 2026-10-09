@@ -365,6 +365,7 @@ name = "fragcap"
 version = "0.10.5"
 dependencies = [
  "base64",
+ "blake3",
  "fragcap-attr",
  "fragcap-capture",
  "fragcap-core",
@@ -373,6 +374,7 @@ dependencies = [
  "fragcap-sink",
  "fragcap-steam",
  "fragcap-targets",
+ "getrandom 0.4.3",
  "rcgen",
  "rustls",
  "serde_json",

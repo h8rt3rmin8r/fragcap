@@ -454,7 +454,10 @@ Param(
         }
         $expectedOrdinary = @($Policy.ordinary | Sort-Object)
         $expectedDelayed = @($Policy.delayed | Sort-Object)
-        if (Compare-Object -ReferenceObject $expectedOrdinary -DifferenceObject @($ordinary | Sort-Object)) { throw 'ordinary PE imports differ from the closed allowlist' }
+        $observedOrdinary = @($ordinary | Sort-Object)
+        if (Compare-Object -ReferenceObject $expectedOrdinary -DifferenceObject $observedOrdinary) {
+            throw "ordinary PE imports differ from the closed allowlist; expected [$($expectedOrdinary -join ', ')]; observed [$($observedOrdinary -join ', ')]"
+        }
         if (Compare-Object -ReferenceObject $expectedDelayed -DifferenceObject @($delayed | Sort-Object)) { throw 'delayed PE imports differ from the closed allowlist' }
         Assert-Unsigned -Path $ExecutablePath
         $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExecutablePath)

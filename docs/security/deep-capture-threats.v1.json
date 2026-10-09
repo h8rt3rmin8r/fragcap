@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-09-15",
-  "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch",
+  "reviewed_on": "2026-10-09",
+  "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch and S170 exact retained-output recipient/access repair",
   "protocol_families": [
     "generic-tcp",
     "generic-udp",
@@ -168,14 +168,20 @@
       "id":"artifact-path-or-export-theft","title":"Artifact paths or exports expose unintended data","severity":"high",
       "categories":["artifact-theft","malicious-target-or-origin"],
       "boundaries":["observation-to-artifact"],"assets":["decrypted-content","sensitive-artifacts","session-ca-private-key"],
-      "prevention":["Sensitive storage is protected before capture, paths are canonical and confined, and export is a separate explicit copy with a transformation manifest."],
-      "detection":["Manifest sensitivity, omission, transformation, and finalization fields are exhaustive."],
-      "containment":["Cleanup targets only the exact owned bundle; export never mutates the source."],
-      "evidence":["manifest.json artifact declarations","bundle export transformation manifest"],
+      "prevention":["Sensitive storage is protected before capture, paths are canonical and confined, and export is a separate explicit copy with a transformation manifest.","S170 retained permissions name the exact ordinary recipient, distinct producer and SYSTEM; issuer-private permissions instead name producer and SYSTEM. Exact historical repair pins recognized artifacts and necessary owned parents, rejects unproven aliases and confines parent grants without sibling propagation."],
+      "detection":["Manifest sensitivity, omission, transformation, and finalization fields are exhaustive.","Post-reconciliation recipient-context enumeration and file reads distinguish written evidence from accessible evidence; exact repair reports actual permission and verification failures outside retained contents."],
+      "containment":["Cleanup targets only the exact owned bundle; export never mutates the source.","Permission repair preserves contents, retention and recovery obligations, requires unchanged exact inspection, and grants no collection or empty-container purge authority."],
+      "evidence":["manifest.json artifact declarations","bundle export transformation manifest","S170 recipient access verification and exact historical inspection/repair results"],
       "tests":[
         {"path":"crates/fragcap-cli/tests/cli_bundle.rs","function":"cleanup_requires_confirmation_and_removes_only_sensitive_evidence","proves":"Cleanup requires confirmation and preserves non-sensitive evidence."},
         {"path":"crates/fragcap-cli/tests/cli_bundle.rs","function":"export_is_a_separate_copy_with_an_exhaustive_manifest","proves":"Export is isolated and declares every transformation."},
-        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"deep_capture_refuses_a_nonempty_bundle_before_starting_the_proxy","proves":"Existing bundle content cannot be overwritten by session startup."}
+        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"deep_capture_refuses_a_nonempty_bundle_before_starting_the_proxy","proves":"Existing bundle content cannot be overwritten by session startup."},
+        {"path":"crates/fragcap/tests/bundle_access.rs","function":"independent_writers_inherited_empty_and_atomic_files_have_actual_recipient_access","proves":"Actual ordinary-context complete reads cover protected writer threads, inherited and empty artifacts, and atomic publication."},
+        {"path":"crates/fragcap/tests/bundle_access.rs","function":"denied_user_equivalent_has_a_readable_sibling_positive_control","proves":"A labeled unrelated-access token equivalent reads the positive-control sibling and cannot read private retained files; ancestor denial cannot masquerade as bundle isolation."},
+        {"path":"crates/fragcap/tests/bundle_access.rs","function":"historical_group_only_sidecars_are_denied_then_repaired_without_content_changes","proves":"A labeled group-denied recipient cannot read old group-only sidecars, then exact repair restores complete reads with unchanged bytes and last-write times; retry is idempotent."},
+        {"path":"crates/fragcap/tests/bundle_access.rs","function":"owned_parent_repair_restores_enumeration_without_changing_a_sibling_bundle","proves":"Denied owned-parent enumeration is corrected without changing sibling bundle contents or security descriptors."},
+        {"path":"crates/fragcap/tests/bundle_access.rs","function":"stale_unknown_and_outside_hard_link_populations_change_no_descriptors_or_bytes","proves":"Stale permission previews, unknown files and external hard-link aliases refuse without changing unrelated contents or descriptors."},
+        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"issuer_private_dacl_names_exact_producer_without_owner_relative_access","proves":"Windows issuer-private storage names the actual producer and SYSTEM rather than Owner Rights; retained-recipient grants do not broaden issuer-private access."}
       ]
     },
     {

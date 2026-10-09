@@ -576,6 +576,17 @@ pub struct DeepCaptureArgs {
     #[arg(long, help_heading = "Custom storage")]
     pub bundle: Option<PathBuf>,
 
+    /// Exact Windows SID receiving retained output in its ordinary user session.
+    ///
+    /// Requires an explicit bundle destination and a validated ordinary context.
+    #[arg(
+        long,
+        value_name = "SID",
+        requires = "bundle",
+        help_heading = "Custom storage"
+    )]
+    pub output_recipient: Option<String>,
+
     /// Read the exact emitted authorization plan identifier from standard input.
     #[arg(
         long,
@@ -671,6 +682,10 @@ pub struct CalibrateArgs {
     #[arg(long)]
     pub bundle: Option<PathBuf>,
 
+    /// Exact Windows SID receiving all attempt output in its ordinary session.
+    #[arg(long, value_name = "SID", requires = "bundle")]
+    pub output_recipient: Option<String>,
+
     /// The observation duration bound for every selected attempt.
     #[arg(short = 'd', long, value_parser = parse_duration)]
     pub duration: Option<Duration>,
@@ -723,6 +738,34 @@ pub struct BundleArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BundleCommand {
+    /// Inspect exact bundle permissions and ordinary-user access without changes.
+    AccessInspect {
+        /// The retained fragcap bundle to inspect.
+        bundle: PathBuf,
+        /// Explicit recipient SID; a different account authenticates from its ordinary session.
+        #[arg(long, value_name = "SID")]
+        output_recipient: Option<String>,
+    },
+    /// Repair only the permissions in one exact current inspection.
+    AccessRepair {
+        /// The retained fragcap bundle to repair, preserving every content byte.
+        bundle: PathBuf,
+        /// Exact identifier from access-inspect, revalidated before changes.
+        #[arg(long, value_name = "INSPECTION_ID")]
+        authorize: String,
+        /// Explicit recipient SID; a different account authenticates from its ordinary session.
+        #[arg(long, value_name = "SID")]
+        output_recipient: Option<String>,
+    },
+    /// Authenticate an output request from the intended ordinary Windows session.
+    AccessAuthorize {
+        /// Exact local request emitted by the producer.
+        #[arg(long)]
+        request: String,
+        /// Exact destination named in that request.
+        #[arg(long)]
+        bundle: PathBuf,
+    },
     /// Remove only sensitive artifacts declared by a completed bundle.
     #[command(after_long_help = crate::workflow_help::BUNDLE_CLEANUP_LONG_HELP)]
     Cleanup {
@@ -1414,6 +1457,59 @@ pub struct StubArgs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_recipient_requires_an_exact_explicit_bundle() {
+        use clap::Parser;
+        for command in ["deep-capture", "calibrate"] {
+            assert!(super::Cli::try_parse_from([
+                "fragcap",
+                command,
+                "target",
+                "--output-recipient",
+                "S-1-5-21-1-2-3-1001"
+            ])
+            .is_err());
+            assert!(super::Cli::try_parse_from([
+                "fragcap",
+                command,
+                "target",
+                "--output-recipient",
+                "S-1-5-21-1-2-3-1001",
+                "--bundle",
+                "C:/output/bundle"
+            ])
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn bundle_access_repair_requires_exact_inspection_authorization() {
+        use clap::Parser;
+        assert!(super::Cli::try_parse_from([
+            "fragcap",
+            "bundle",
+            "access-inspect",
+            "C:/output/bundle"
+        ])
+        .is_ok());
+        assert!(super::Cli::try_parse_from([
+            "fragcap",
+            "bundle",
+            "access-repair",
+            "C:/output/bundle"
+        ])
+        .is_err());
+        assert!(super::Cli::try_parse_from([
+            "fragcap",
+            "bundle",
+            "access-repair",
+            "C:/output/bundle",
+            "--authorize",
+            "access-v1:exact"
+        ])
+        .is_ok());
+    }
+
     use super::*;
 
     #[test]

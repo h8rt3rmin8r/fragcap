@@ -24,7 +24,7 @@
   "checksum_sidecars": ["portable-zip", "windows-msi", "standalone-catalog"],
   "prohibited_tokens": ["mitmdump", "mitmproxy", "npcap", "openssl", "packet.dll", "python", "wpcap.dll"],
   "pe_imports": {
-    "ordinary": ["advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "api-ms-win-crt-heap-l1-1-0.dll", "api-ms-win-crt-locale-l1-1-0.dll", "api-ms-win-crt-math-l1-1-0.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "api-ms-win-crt-stdio-l1-1-0.dll", "api-ms-win-crt-string-l1-1-0.dll", "api-ms-win-crt-time-l1-1-0.dll", "api-ms-win-crt-utility-l1-1-0.dll", "bcrypt.dll", "bcryptprimitives.dll", "crypt32.dll", "iphlpapi.dll", "kernel32.dll", "ntdll.dll", "shell32.dll", "vcruntime140.dll", "version.dll", "ws2_32.dll"],
+    "ordinary": ["advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "api-ms-win-crt-heap-l1-1-0.dll", "api-ms-win-crt-locale-l1-1-0.dll", "api-ms-win-crt-math-l1-1-0.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "api-ms-win-crt-stdio-l1-1-0.dll", "api-ms-win-crt-string-l1-1-0.dll", "api-ms-win-crt-time-l1-1-0.dll", "api-ms-win-crt-utility-l1-1-0.dll", "bcrypt.dll", "bcryptprimitives.dll", "crypt32.dll", "iphlpapi.dll", "kernel32.dll", "ntdll.dll", "shell32.dll", "vcruntime140.dll", "version.dll", "ws2_32.dll", "wtsapi32.dll"],
     "delayed": ["wpcap.dll"]
   },
   "installer_effects": ["defender-exclusion-if-created", "installed-files", "product-registration", "system-path-entry"],

@@ -93,7 +93,8 @@ impl SessionCertificateAuthority {
         &self.sha256_fingerprint
     }
 
-    /// Persist the CA private key with platform-owned encryption and access control.
+    /// Create a new CA private-key file with platform-owned encryption and private
+    /// access control at creation. Existing files and aliases are never overwritten.
     #[cfg(windows)]
     pub fn persist_private_key(&self, path: &Path) -> Result<(), CertificateError> {
         let der = Zeroizing::new(self.key.serialize_der());

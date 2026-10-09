@@ -1,5 +1,57 @@
 # Windows Internals
 
+## Access control list
+
+**Also known as:** ACL, discretionary access control list, DACL
+
+A Windows object permission list identifies who may perform each operation.
+
+Each permission entry names a [security identifier](windows-internals.md#security-identifier) and grants or denies operations such as reading a file, enumerating a directory or changing permissions. The discretionary list participates in access checks against a [Windows access token](windows-internals.md#windows-access-token); an object's owner and a user allowed to read its contents are separate facts.
+
+{: .matters }
+> fragcap grants retained-bundle access to the exact intended user rather than relying on group ownership. Historical repair changes only confirmed permissions, preserving captured contents and recovery records.
+
+**See also:** [Security identifier](windows-internals.md#security-identifier), [Windows access token](windows-internals.md#windows-access-token)
+
+**References:**
+
+- [Microsoft Learn, Access Control Lists](https://learn.microsoft.com/en-us/windows/win32/secauthz/access-control-lists), the permission-list and access-check model.
+
+## Security identifier
+
+**Also known as:** SID
+
+A Windows identifier names an individual account or another security principal.
+
+Windows uses these identifiers in [access control lists](windows-internals.md#access-control-list) and [access tokens](windows-internals.md#windows-access-token). An individual user identifier differs from the identifier of a group that user belongs to; matching a group or an object's owner does not by itself prove the individual user's ordinary read access.
+
+{: .matters }
+> fragcap binds its retained-output recipient to one exact individual identifier. Elevation under different credentials requires explicit recipient authentication and an exact destination rather than guessing the desktop user.
+
+**See also:** [Access control list](windows-internals.md#access-control-list), [Windows access token](windows-internals.md#windows-access-token)
+
+**References:**
+
+- [Microsoft Learn, Security Identifiers](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-identifiers), Windows principal identity and identifier lifetime.
+
+## Windows access token
+
+**Also known as:** Access token, primary token, impersonation token, linked token
+
+A Windows access token records the account, groups and privileges used to check an operation's permissions.
+
+A process or impersonating thread uses its token for access checks against [access control lists](windows-internals.md#access-control-list). Linked tokens can represent the same account's administrative and ordinary contexts. A restricted token can disable group grants while retaining the same individual [security identifier](windows-internals.md#security-identifier); it does not become a different human account.
+
+{: .matters }
+> fragcap verifies retained files through the intended ordinary context, independently of the elevated writer. Controlled tests identify restricted equivalents explicitly and do not present them as separate-user or elevated-desktop measurements.
+
+**See also:** [Security identifier](windows-internals.md#security-identifier), [Access control list](windows-internals.md#access-control-list)
+
+**References:**
+
+- [Microsoft Learn, Access Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/access-tokens), token identity, groups and privilege ownership.
+- [Microsoft Learn, CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken), restrictions and deny-only group semantics.
+
 ## ETW
 
 **Also known as:** Event Tracing for Windows

@@ -1277,8 +1277,7 @@ fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
             );
             if mode != "silent" {
                 assert!(
-                    err.contains("application-jsonl")
-                        && err.contains("readable in producer context")
+                    err.contains("application-jsonl") && err.contains("recipient access verified")
                 );
                 assert!(
                     err.contains("native-proxy-listener:") && err.contains("released"),
@@ -1319,7 +1318,7 @@ fn interrupted_or_failed_controlled_collection_retains_truthful_quiet_terminal_e
     assert!(!err.lines().any(|line| line
         .strip_prefix("Session finalization:")
         .is_some_and(|value| value.trim() == "complete")));
-    assert!(err.contains("Session finalization:") && err.contains("readable in producer context"));
+    assert!(err.contains("Session finalization:") && err.contains("recipient access verified"));
     assert!(
         err.contains("Retained evidence may be sensitive")
             && err.contains("native-proxy-listener:")
