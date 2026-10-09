@@ -4670,6 +4670,7 @@ fn low_level_args(
         local_db: args.local_db.clone(),
         launch: true,
         bundle: args.bundle.clone(),
+        output_recipient: args.output_recipient.clone(),
         duration: args.duration,
         wait: args.wait,
         max_packets: args.max_packets,

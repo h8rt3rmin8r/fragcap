@@ -1,0 +1,20 @@
+# S170 issue acceptance
+
+Issue #464 is implemented in full at the initiating-user access boundary. Implementation evidence uses controlled Windows files and tokens, not the owner's incident artifacts or a real game.
+
+| Issue criterion | Owning implementation and evidence |
+| --- | --- |
+| Same-account ordinary access | `OutputRecipient::desktop_session` binds exact WTS session/account identity; linked limited or ordinary tokens are retained. `bundle_access.rs` performs actual complete fixture reads and directory enumeration. |
+| Exact SID and ordinary effective access | `access/windows.rs` verifies individual SID type, token elevation/integrity and identity. Exact-SID ACL regression fails against OW-only baseline and passes after correction. |
+| Parent, inherited, protected and atomic artifacts | `artifacts.rs` preserves the selected private parent contract across writers; `bundle_access.rs` covers protected journals, inherited files, nested files and atomic publication. Immediate output-parent enumeration precedes creation and follows reconciliation. |
+| Restricted unrelated access | Private DACLs name exact recipient, distinct producer and SYSTEM. A real denied-user restricted token cannot read private output while its readable positive-control fixture succeeds. Issuer-private CA grants only producer and SYSTEM. |
+| Different-account recipient/path | Explicit `--output-recipient` requires `--bundle`; a finite local authenticated pipe binds exact SID, ordinary context, request and destination. Five actual handshake/token tests cover success, wrong path, timeout, mismatched identity, invalid principal/request and elevated-token refusal. No arbitrary desktop account is guessed. |
+| Exact historical inspect/repair | `access_repair.rs` inventories and pins at most 256 recognized objects, validates terminal manifest and closed journal, binds content provenance and descriptors into the preview identifier, rejects unknown/reparse/hard-link/stale states, and never opens content for writing. |
+| Truthful publication and guidance | CLI verification follows final lifecycle/manifest reconciliation. Required access failure contributes an artifact failure. Human and JSON reports distinguish written bytes, verified recipient access and unresolved output, independently from semantic completeness. Producer readability cannot substitute for the recipient proof. |
+| Controlled Windows proof | Five Windows integration scenarios cover actual new-output reads, unrelated denial with a positive control, four historical sidecars denied before correction, complete byte/mtime conservation, owned-parent correction with unchanged sibling descriptors, and rejected stale/unknown/external-link effects. Seven repair unit tests include actual partial ACL error 5 followed by verified fresh-preview retry. |
+| Documentation | Master sections 13.7, 19.5 and 26.3, CLI/recovery documentation, glossary and chronological slice record explain the shipped source behavior and its limits. |
+| Retention coordination | Repair changes DACLs only; no file deletion, container purge, trust/proxy recovery or retention decision is introduced. #458 remains separate. |
+
+All FR-001 through FR-014 (including FR-004a) and SC-001 through SC-004 map to the tasks and evidence above. Public curated API literals/inventory remain compatible in both default and no-default-feature builds.
+
+The local producer is genuinely unelevated with a split token. Elevated-token rejection uses its actual linked full token. Historical Administrators-owned inaccessible state is reproduced with a labeled group-denied repository harness because setting an Administrators owner would require changing host privileges. Unrelated denial uses a labeled restricted equivalent, not a second authenticated human account. The real local authenticated handoff exercises the retained ordinary context; a different human account and the owner's historical bundle are not field-tested. These limits do not substitute source evidence for a claim about the historical incident cause.

@@ -48,6 +48,15 @@ Troubleshooting examples:
   fragcap deep-capture "My Game" --launch --bundle "<new empty directory>"
   fragcap doctor --fix
 
+Output access:
+  fragcap bundle access-inspect "<retained bundle>"
+  fragcap bundle access-repair "<retained bundle>" --authorize "<inspection id>"
+  fragcap deep-capture "My Game" --launch --bundle "C:\Captures\new-session" --output-recipient "<exact user SID>"
+
+Default output belongs to the exact ordinary desktop-session user. Different
+credentials require an explicit bundle and ordinary-recipient authentication.
+Final recipient access verification is separate from evidence completeness.
+
 Ordinary Deep Capture requires a stored target, a managed cold launch, and
 current observed compatibility for that exact case. Inspection is not universal
 and does not bypass certificate pinning. Key logs, HAR, and mutual-TLS identity

@@ -33,7 +33,29 @@ pub struct ArtifactActionResult {
 }
 
 pub fn prepare_bundle(path: &Path) -> io::Result<()> {
-    prepare_protected_directory(path)?;
+    #[cfg(windows)]
+    if super::access::preserve_private_directory(path)? {
+        return prepare_bundle_journal(path);
+    }
+    let recipient = super::access::OutputRecipient::current_account()?;
+    prepare_bundle_for_recipient(path, &recipient)
+}
+
+pub fn prepare_bundle_for_recipient(
+    path: &Path,
+    recipient: &super::access::OutputRecipient,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    super::access::protect_recipient_directory(path, recipient)?;
+    #[cfg(not(windows))]
+    {
+        let _ = recipient;
+        prepare_protected_directory(path)?;
+    }
+    prepare_bundle_journal(path)
+}
+
+fn prepare_bundle_journal(path: &Path) -> io::Result<()> {
     let journal = contained(path, Path::new(JOURNAL))?;
     match journal.symlink_metadata() {
         Ok(metadata) if metadata.file_type().is_file() => protect_path(&journal, false)?,
@@ -60,13 +82,20 @@ fn prepare_protected_directory(path: &Path) -> io::Result<()> {
 }
 
 pub fn open_sensitive_file(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    protect_path(path, false)?;
-    Ok(file)
+    #[cfg(windows)]
+    {
+        super::access::open_private_file(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        protect_path(path, false)?;
+        Ok(file)
+    }
 }
 
 pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>> {
@@ -552,57 +581,7 @@ fn protect_path(path: &Path, directory: bool) -> io::Result<()> {
 
 #[cfg(windows)]
 fn protect_path(path: &Path, directory: bool) -> io::Result<()> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::GetLastError;
-    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
-    use windows_sys::Win32::System::Memory::LocalFree;
-    let descriptor = if directory {
-        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
-    } else {
-        "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
-    };
-    let sddl: Vec<u16> = descriptor
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut security = ptr::null_mut();
-    let mut length = 0;
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut security,
-            &mut length,
-        )
-    } == 0
-    {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    let wide: Vec<u16> = OsStr::new(path)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let applied = unsafe {
-        SetFileSecurityW(
-            wide.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            security,
-        )
-    };
-    let error = unsafe { GetLastError() };
-    unsafe { LocalFree(security as isize) };
-    if applied == 0 {
-        Err(io::Error::from_raw_os_error(error as i32))
-    } else {
-        Ok(())
-    }
+    super::access::protect_private_path(path, directory)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -987,7 +966,56 @@ mod tests {
             .unwrap();
         unsafe { LocalFree(sddl as isize) };
         assert!(text.starts_with("D:P"), "{text}");
-        assert!(text.contains(";;;OW)") && text.contains(";;;SY)"), "{text}");
+        let mut size = 0;
+        unsafe {
+            windows_sys::Win32::Security::GetTokenInformation(
+                -4,
+                windows_sys::Win32::Security::TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut size,
+            )
+        };
+        let mut user_buffer = vec![0_usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Security::GetTokenInformation(
+                    -4,
+                    windows_sys::Win32::Security::TokenUser,
+                    user_buffer.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            },
+            0
+        );
+        let user = unsafe {
+            &*user_buffer
+                .as_ptr()
+                .cast::<windows_sys::Win32::Security::TOKEN_USER>()
+        };
+        let mut sid = ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(
+                    user.User.Sid,
+                    &mut sid,
+                )
+            },
+            0
+        );
+        let mut sid_len = 0;
+        while unsafe { *sid.add(sid_len) } != 0 {
+            sid_len += 1;
+        }
+        let sid_text =
+            String::from_utf16(unsafe { std::slice::from_raw_parts(sid, sid_len) }).unwrap();
+        unsafe { LocalFree(sid as isize) };
+        assert!(
+            text.contains(&format!(";;;{sid_text})")) && text.contains(";;;SY)"),
+            "{text}"
+        );
+        assert!(!text.contains(";;;OW)"), "{text}");
         assert!(
             !text.contains(";;;WD)") && !text.contains(";;;BU)"),
             "{text}"

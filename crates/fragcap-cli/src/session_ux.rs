@@ -254,6 +254,14 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
             label("/artifacts/sensitivity"),
         ),
         ("Bundle:".into(), label("/artifacts/bundle")),
+        (
+            "Output recipient:".into(),
+            label("/artifacts/output_recipient_sid"),
+        ),
+        (
+            "Recipient proof:".into(),
+            label("/artifacts/output_recipient_proof"),
+        ),
     ];
     let mut text = String::from("Authorization\n\n");
     text.push_str(&wrapped(
@@ -298,11 +306,37 @@ impl SessionProgress {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn terminal_summary(
     outcome: SessionOutcome,
     complete: bool,
     artifacts: &[ArtifactResult],
     cleanup: &[CleanupResult],
+    width: usize,
+) -> String {
+    terminal_summary_with_access(outcome, complete, artifacts, cleanup, None, width)
+}
+
+pub(crate) fn access_inspection_command(bundle: &std::path::Path, sid: Option<&str>) -> String {
+    let mut command = format!(
+        "fragcap bundle access-inspect {}",
+        crate::workflow_help::quote_powershell_argument(&bundle.display().to_string())
+    );
+    if let Some(sid) = sid.filter(|sid| sid.starts_with("S-")) {
+        command.push_str(&format!(
+            " --output-recipient {}",
+            crate::workflow_help::quote_powershell_argument(sid)
+        ));
+    }
+    command
+}
+
+pub(crate) fn terminal_summary_with_access(
+    outcome: SessionOutcome,
+    complete: bool,
+    artifacts: &[ArtifactResult],
+    cleanup: &[CleanupResult],
+    access: Option<&fragcap::deep_capture::BundleAccessVerification>,
     width: usize,
 ) -> String {
     let outcome = match outcome {
@@ -326,6 +360,11 @@ pub(crate) fn terminal_summary(
         ("Session finalization:".into(), outcome.into()),
         ("Evidence completeness:".into(), completeness.into()),
     ];
+    if let Some(access) = access {
+        fields.push(("Output recipient:".into(), access.recipient_sid.clone()));
+        fields.push(("Recipient proof:".into(), access.proof_kind.clone()));
+        fields.push(("Output access:".into(), access.state.clone()));
+    }
     let root = artifacts
         .iter()
         .find(|artifact| artifact.role == "manifest")
@@ -337,12 +376,25 @@ pub(crate) fn terminal_summary(
         });
     if let Some(root) = root.filter(|root| !root.as_os_str().is_empty()) {
         fields.push(("Bundle:".into(), root.display().to_string()));
+        if !access.is_some_and(|access| access.is_verified()) {
+            fields.push((
+                "Next command:".into(),
+                access_inspection_command(root, access.map(|access| access.recipient_sid.as_str())),
+            ));
+        }
     }
     let mut retained = false;
     for artifact in artifacts {
         let (status, detail) = match &artifact.status {
-            ArtifactStatus::Written => match std::fs::File::open(&artifact.path) {
-                Ok(_) => {
+            ArtifactStatus::Written => {
+                let verified = access.is_some_and(|access| {
+                    access.is_verified()
+                        && access.paths.iter().any(|path| {
+                            path.state == "verified"
+                                && root.is_some_and(|root| root.join(&path.path) == artifact.path)
+                        })
+                });
+                if verified {
                     retained = true;
                     let semantic = manifest
                         .as_ref()
@@ -353,15 +405,16 @@ pub(crate) fn terminal_summary(
                         .and_then(|entry| entry["completeness"].as_str())
                         .unwrap_or("unavailable");
                     (
-                        "written; readable in producer context",
+                        "written; recipient access verified",
                         format!("completeness={semantic}"),
                     )
+                } else {
+                    (
+                        "written; access unavailable",
+                        "ordinary-recipient access unresolved".into(),
+                    )
                 }
-                Err(_) => (
-                    "written; access unavailable",
-                    "ordinary-user access unresolved; see #464".into(),
-                ),
-            },
+            }
             ArtifactStatus::Omitted { reason } => ("omitted", reason.clone()),
             ArtifactStatus::Failed { code, detail } => ("failed", format!("{code}: {detail}")),
             _ => ("unavailable", "no artifact result".into()),
@@ -428,7 +481,7 @@ pub(crate) fn terminal_summary(
     if !retained {
         text.push_str("No retained artifact was confirmed readable.\n");
     } else {
-        text.push_str(&wrapped("Retained evidence may be sensitive. Producer-context readability does not prove ordinary-user access (#464). External resource cleanup does not delete retained evidence.", width));
+        text.push_str(&wrapped("Retained evidence may be sensitive. Recipient access is verified independently from evidence completeness. External resource cleanup does not delete retained evidence.", width));
     }
     text.push_str("\nResource cleanup\n\n");
     let mut unresolved = false;
@@ -495,24 +548,6 @@ fn read_trace_projection(path: &std::path::Path) -> Option<String> {
         return None;
     }
     String::from_utf8(bytes).ok()
-}
-
-/// Readable producer-context access and semantic completeness remain independent.
-pub(crate) fn artifact_access(artifacts: &[ArtifactResult]) -> &'static str {
-    let written: Vec<_> = artifacts
-        .iter()
-        .filter(|artifact| matches!(artifact.status, ArtifactStatus::Written))
-        .collect();
-    if written.is_empty() {
-        "unavailable"
-    } else if written
-        .iter()
-        .all(|artifact| std::fs::File::open(&artifact.path).is_ok())
-    {
-        "readable-in-producer-context;ordinary-user-unverified"
-    } else {
-        "unavailable;ordinary-user-access-unresolved-464"
-    }
 }
 
 pub(crate) fn artifact_process_completeness(artifacts: &[ArtifactResult]) -> &'static str {
@@ -768,13 +803,62 @@ fn calibration_stage(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn producer_readability_cannot_replace_required_recipient_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.fcapng");
+        std::fs::write(&path, b"synthetic").unwrap();
+        let artifacts = [ArtifactResult {
+            role: "capture".into(),
+            path,
+            sensitivity: fragcap::deep_capture::Sensitivity::Payload,
+            required: true,
+            status: ArtifactStatus::Written,
+        }];
+        let mut access = fragcap::deep_capture::BundleAccessVerification {
+            recipient_sid: "S-1-5-21-1-2-3-1001".into(),
+            proof_kind: "synthetic-proof".into(),
+            state: "unresolved".into(),
+            paths: vec![fragcap::deep_capture::AccessPathVerification {
+                path: "capture.fcapng".into(),
+                state: "unresolved".into(),
+                reason: "denied".into(),
+            }],
+            limitations: vec![],
+        };
+        let unresolved = terminal_summary_with_access(
+            SessionOutcome::Complete,
+            true,
+            &artifacts,
+            &[],
+            Some(&access),
+            80,
+        );
+        assert!(unresolved.contains("ordinary-recipient access unresolved"));
+        assert!(!unresolved.contains("recipient access verified"));
+        assert!(unresolved.contains("fragcap bundle access-inspect"));
+        assert!(unresolved.contains("--output-recipient"));
+        assert!(unresolved.contains("S-1-5-21-1-2-3-1001"));
+        access.state = "verified".into();
+        access.paths[0].state = "verified".into();
+        let verified = terminal_summary_with_access(
+            SessionOutcome::Complete,
+            true,
+            &artifacts,
+            &[],
+            Some(&access),
+            80,
+        );
+        assert!(verified.contains("recipient access verified"));
+        assert!(verified.contains("S-1-5-21-1-2-3-1001"));
+    }
     use super::*;
     use crate::display::display_width;
     use fragcap::deep_capture::api::{ArtifactStatus, CleanupStatus, Sensitivity};
     use serde_json::json;
 
     #[test]
-    fn artifact_summary_reports_partial_semantics_and_one_bundle_root() {
+    fn artifact_summary_reports_partial_semantics_and_exact_access_retry() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("manifest.json");
         std::fs::write(&manifest, r#"{"manifest_version":2,"state":"partial","artifacts":[{"role":"process-trace","completeness":"partial","loss":{"limitations":3437}}]}"#).unwrap();
@@ -809,7 +893,9 @@ mod tests {
         assert!(text.contains("Session finalization:"));
         assert!(text.contains("partial"));
         assert!(text.contains("process-trace.jsonl"));
-        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert_eq!(text.matches("Bundle:").count(), 1);
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 2);
+        assert!(text.contains("fragcap bundle access-inspect"));
         assert!(!text.contains("http.har"));
         assert!(!text.contains("Deep Capture outcome: complete"));
     }
@@ -871,7 +957,9 @@ mod tests {
         ] {
             assert!(words.contains(expected), "missing {expected}: {text}");
         }
-        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert_eq!(text.matches("Bundle:").count(), 1);
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 2);
+        assert!(text.contains("fragcap bundle access-inspect"));
         assert!(!text.contains("private implementation text"));
         assert!(words.contains("missing packet-flow correlation"));
         assert!(words.contains("fragcap doctor"));
@@ -891,7 +979,7 @@ mod tests {
         }];
         let text = terminal_summary(SessionOutcome::Complete, true, &artifacts, &[], 80);
         assert!(text.contains("access unavailable"));
-        assert!(text.contains("#464"));
+        assert!(text.contains("ordinary-recipient access unresolved"));
     }
 
     #[test]

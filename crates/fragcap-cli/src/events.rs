@@ -315,6 +315,11 @@ pub enum Event {
         detection: String,
         classification_reason: Option<String>,
     },
+    /// Exact output recipient authentication and final actual-access verification.
+    DeepCaptureOutputAccess {
+        stage: String,
+        access: serde_json::Value,
+    },
     /// Additive terminal diagnostics, with windows indexed to retained observations.
     DeepCaptureDiagnostics {
         session_id: String,
@@ -415,6 +420,7 @@ impl Event {
             Event::DeepCaptureLaunch { .. } => "deep_capture.launch",
             Event::DeepCaptureApplication { .. } => "deep_capture.application",
             Event::DeepCaptureDiagnostics { .. } => "deep_capture.diagnostics",
+            Event::DeepCaptureOutputAccess { .. } => "deep_capture.output_access",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
             Event::DeepCaptureComplete { .. } => "deep_capture.complete",
@@ -1137,6 +1143,12 @@ impl Event {
                 write_json_string(session_id, &mut line);
                 line.push_str(",\"diagnostics\":");
                 line.push_str(&diagnostics.to_string());
+            }
+            Event::DeepCaptureOutputAccess { stage, access } => {
+                line.push_str(",\"stage\":");
+                write_json_string(stage, &mut line);
+                line.push_str(",\"access\":");
+                line.push_str(&access.to_string());
             }
             Event::DeepCaptureBundle {
                 session_id,

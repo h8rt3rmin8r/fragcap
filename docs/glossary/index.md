@@ -6,6 +6,7 @@ the owning category page.
 
 - [.fcapng](file-and-wire-formats.md#fcapng)
 - [5-tuple](capture-and-networking.md#5-tuple)
+- [Access control list](windows-internals.md#access-control-list)
 - [Accumulation account](process-and-attribution.md#accumulation-account)
 - [Acquisition timeout](process-and-attribution.md#acquisition-timeout)
 - [Action layer](command-line-and-diagnostics.md#action-layer)
@@ -204,6 +205,7 @@ the owning category page.
 - [Scoped worker](command-line-and-diagnostics.md#scoped-worker)
 - [Scripted attributor](process-and-attribution.md#scripted-attributor)
 - [Section Header Block](file-and-wire-formats.md#section-header-block)
+- [Security identifier](windows-internals.md#security-identifier)
 - [Seed summary](process-and-attribution.md#seed-summary)
 - [Seeding tier](process-and-attribution.md#seeding-tier)
 - [Selection outcome](capture-and-networking.md#selection-outcome)
@@ -261,6 +263,7 @@ the owning category page.
 - [Volume eligibility table](process-and-attribution.md#volume-eligibility-table)
 - [Watch mode](process-and-attribution.md#watch-mode)
 - [Wildcard bind address](capture-and-networking.md#wildcard-bind-address)
+- [Windows access token](windows-internals.md#windows-access-token)
 - [Windows Defender exclusion](platform-and-distribution.md#windows-defender-exclusion)
 - [Windows integration matrix](capture-and-networking.md#windows-integration-matrix)
 - [Write amplification](rust-and-tooling.md#write-amplification)

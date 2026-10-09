@@ -131,6 +131,7 @@ fragcap deep-capture sample-target --launch --har --key-log
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
+| `--output-recipient` | open | none | all | Exact Windows recipient SID. Requires an explicit `--bundle`; an ordinary-account authenticated helper proves a recipient that default desktop resolution cannot establish. |
 | `--authorize-stdin` | open | `false` | all | Select prompt-free authorization. Read the emitted plan, return its exact `plan-v1` identifier plus one LF on standard input in the same process, and keep the event stream open. Required with `--json`. |
 | `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
 | `--calibration-protocol` | `routing`, `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Select the exact case to measure. Reachability requires `routing`; TLS requires one concrete protocol. |
@@ -189,6 +190,7 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 | --- | --- | --- | --- | --- |
 | `--authorize-stdin` | open | `false` | all | Read each exact emitted plan identifier from standard input. A discovered target first requires its `target-registration-v1` identifier, an eligible absent Steam client requires its separate `steam-client-setup-v1` identifier, an ambiguous stored non-Steam client requires its `stored-client-selection-v1` identifier, and any later effectful attempt requires its current Deep Capture plan identifier. Conflicts with `--restart-warm`. |
 | `--bundle` | open | none | all | Select the first attempt bundle. Later attempts use deterministic sibling paths containing attempt, phase, and protocol. |
+| `--output-recipient` | open | none | all | Exact Windows recipient SID for attempt output. Requires an explicit `--bundle` and the same validated ordinary-context access contract as Deep Capture. |
 | `--candidate` | open | none | all | Fresh workflow only. Select one exact current candidate from a prior ambiguity event. The value must be a `candidate-v1:<digest>` content-derived identity and must be consumed exactly once. |
 | `--client-executable` | open | none | all | Fresh Steam setup only. Supply one Windows `.exe` path to declare the final client explicitly when it is not already authored. This is an operator declaration, not observed socket or proxy evidence. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
@@ -497,6 +499,42 @@ Group explicit lifecycle operations for completed Deep Capture bundles.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
+
+### `bundle access-inspect`
+
+Inspect positional `BUNDLE` without changing contents or permissions. The bounded report identifies the exact recipient, recognized population, current object identity and permissions, ordinary-context access, proposed changes and an inspection identifier. The current S170 source includes independently protected lifecycle and resource sidecars. Written artifacts, readable artifacts and semantic completeness remain separate.
+
+```powershell
+fragcap bundle access-inspect 'C:\captures\fragcap-session'
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--output-recipient` | open | none | all | Exact intended Windows recipient SID; default resolution uses the same-account ordinary desktop context, otherwise an authenticated ordinary helper is required. |
+
+### `bundle access-repair`
+
+Repair permissions for positional `BUNDLE` only after reviewing its exact current inspection. Requires a recognized terminal manifest and matching closed resource journal; active or unproven matched owner leases, unknown files, unsupported authority, stale identity, reparses and outside hard links refuse. The caller must already be able to read provenance and apply the confirmed permissions. No elevation is requested automatically.
+
+```powershell
+fragcap bundle access-repair 'C:\captures\fragcap-session' --authorize '<INSPECTION_ID>'
+```
+
+Replace `<INSPECTION_ID>` with the exact identifier from inspection. Every changed object is pinned and reported, and final verification uses the intended ordinary context. Up to 256 objects and eight levels are supported. Proven owned `fragcap\sessions` parent containers receive only non-propagating traversal/enumeration grants; sibling permissions remain unchanged. Arbitrary profile/custom parents are never rewritten. Content bytes, retention state, resource obligations and empty containers remain intact. A partial result requires a fresh inspection before retry; permission repair does not authorize cleanup or garbage collection.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--authorize` | open | none | all | Required exact current inspection identifier; a changed proposal refuses before permission changes. |
+| `--output-recipient` | open | none | all | Exact intended Windows recipient SID under the same ordinary-context authentication contract as inspection. |
+
+### `bundle access-authorize`
+
+Complete one pending recipient handoff from the intended account's ordinary terminal. Copy the complete quoted command emitted by the waiting producer or inspector, including its exact request and destination, within sixty seconds. The request binds both values; missing, elevated, mismatched or expired helpers refuse. This grants no authority to delete evidence or alter proxy/trust resources. Different-account Deep Capture requires explicit `--output-recipient <SID>` and `--bundle <PATH>` before the producer emits this command.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--request` | open | none | all | Required exact pending local recipient request emitted by the producer. |
+| `--bundle` | open | none | all | Required exact destination bound into that request. |
 
 ### `bundle cleanup`
 

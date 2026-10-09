@@ -992,6 +992,7 @@ impl deep_capture_api::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
+    output_access: Option<fragcap::deep_capture::BundleAccessVerification>,
     diagnostics: Option<deep_capture_api::TerminalDiagnostics>,
     managed_launch_attempted: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
@@ -1437,6 +1438,7 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
 }
 
 struct LibraryArtifactAdapter<'e, 'w> {
+    recipient: Rc<fragcap::deep_capture::OutputRecipient>,
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
@@ -1461,7 +1463,11 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         plan: &deep_capture_api::SessionPlan,
     ) -> Result<(), deep_capture_api::StageFailure> {
         self.routing = Some(plan.routing.clone());
-        fragcap::deep_capture::prepare_bundle(&plan.bundle)
+        self.recipient
+            .revalidate()
+            .and_then(|()| {
+                fragcap::deep_capture::prepare_bundle_for_recipient(&plan.bundle, &self.recipient)
+            })
             .and_then(|()| {
                 if let Some(root) = paths::deep_capture_session_dir() {
                     self.owner_lease = Some(crate::doctor::fix::register_session_owner(
@@ -1749,7 +1755,32 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             Ok(())
         })();
         match result {
-            Ok(()) => Vec::new(),
+            Ok(()) => {
+                let verification =
+                    fragcap::deep_capture::verify_bundle_access(bundle, &self.recipient);
+                let failure = match verification {
+                    Ok(access) => {
+                        let verified = access.is_verified();
+                        self.runtime.borrow_mut().output_access = Some(access);
+                        (!verified).then(|| {
+                            "actual output recipient access remains unresolved".to_string()
+                        })
+                    }
+                    Err(error) => Some(error.to_string()),
+                };
+                failure.map_or_else(Vec::new, |detail| {
+                    vec![deep_capture_api::ArtifactResult {
+                        role: "output-access".into(),
+                        path: bundle.to_path_buf(),
+                        sensitivity: deep_capture_api::Sensitivity::Metadata,
+                        required: true,
+                        status: deep_capture_api::ArtifactStatus::Failed {
+                            code: "output-access-unresolved".into(),
+                            detail,
+                        },
+                    }]
+                })
+            }
             Err(error) => vec![deep_capture_api::ArtifactResult {
                 role: "lifecycle-reconciliation".to_string(),
                 path: bundle.to_path_buf(),
@@ -2150,6 +2181,7 @@ fn session_mode_name(mode: deep_capture_api::SessionMode) -> &'static str {
 }
 
 struct AuthorizationPlanContext<'a> {
+    recipient: &'a fragcap::deep_capture::OutputRecipient,
     args: &'a DeepCaptureArgs,
     mode: deep_capture_api::SessionMode,
     protocol: Option<CompatibilityProtocol>,
@@ -2165,6 +2197,7 @@ fn build_authorization_plan(
     authority: &deep_capture_api::PreparedNativeAuthority,
 ) -> Result<AuthorizationPlan, CliError> {
     let AuthorizationPlanContext {
+        recipient,
         args,
         mode,
         protocol,
@@ -2212,6 +2245,9 @@ fn build_authorization_plan(
     };
     let canonical = json!({
         "artifacts": {
+            "output_recipient_sid": recipient.sid(),
+            "output_recipient_proof": recipient.proof_kind(),
+            "output_access": "verify actual recipient enumeration and reads after final reconciliation",
             "application_jsonl": bundle.join("application.jsonl").display().to_string(),
             "bundle": bundle.display().to_string(),
             "capture": bundle.join("capture.fcapng").display().to_string(),
@@ -2527,6 +2563,17 @@ pub(crate) fn run_with_outcome(
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
     validate_bundle_root(&bundle)?;
+    let recipient = Rc::new(super::bundle::resolve_output_recipient(
+        args.output_recipient.as_deref(),
+        &bundle,
+        args.controlled_target,
+        |access| {
+            emitter.event_checked(&Event::DeepCaptureOutputAccess {stage:"recipient-authentication".into(),access:access.clone()})
+                .and_then(|()| emitter.required_human_checked(&format!("Authenticate the exact output recipient from a normal desktop within 60 seconds:\n{}\n", access["command"].as_str().unwrap_or("unavailable"))))
+                .and_then(|()| emitter.flush())
+                .map_err(|error| CliError::failure(error.to_string()))
+        },
+    )?);
     require_prior_recovery_settled()?;
     deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
@@ -2554,6 +2601,7 @@ pub(crate) fn run_with_outcome(
     .map_err(cli_error_from_library_refusal)?;
     let authorization_plan = build_authorization_plan(
         AuthorizationPlanContext {
+            recipient: &recipient,
             args,
             mode,
             protocol: selected_protocol,
@@ -2590,6 +2638,11 @@ pub(crate) fn run_with_outcome(
             });
         }
     }
+    recipient.revalidate().map_err(|error| {
+        CliError::failure(format!(
+            "output recipient proof changed after authorization: {error}; no effects were applied"
+        ))
+    })?;
     let current_target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
     if !stored_target_authority_matches(
@@ -2655,7 +2708,16 @@ pub(crate) fn run_with_outcome(
 
     let selected = Rc::new(RefCell::new(None));
     let selected_launch_case = Rc::new(RefCell::new(None));
-    let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
+    let runtime = Rc::new(RefCell::new(LibraryRuntime {
+        output_access: Some(fragcap::deep_capture::BundleAccessVerification {
+            recipient_sid: recipient.sid().into(),
+            proof_kind: recipient.proof_kind().into(),
+            state: "unresolved".into(),
+            paths: Vec::new(),
+            limitations: vec!["Final recipient verification has not completed.".into()],
+        }),
+        ..LibraryRuntime::default()
+    }));
     let observation_context = deep_capture_api::NativeObservationContext::default();
     let listener_reservation = deep_capture_api::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
@@ -2722,6 +2784,7 @@ pub(crate) fn run_with_outcome(
             family: args.proxy_family,
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
+            recipient: Rc::clone(&recipient),
             emitter: Rc::clone(&emitter),
             selected: Rc::clone(&selected),
             selected_launch_case: Rc::clone(&selected_launch_case),
@@ -2850,8 +2913,14 @@ pub(crate) fn run_with_outcome(
         assessment.process_completeness =
             session_ux::artifact_process_completeness(&report.artifacts);
         let mut value = assessment.json();
-        value["artifact_access"] =
-            serde_json::json!(session_ux::artifact_access(&report.artifacts));
+        value["artifact_access"] = json!(runtime
+            .output_access
+            .as_ref()
+            .map_or("unresolved", |access| access.state.as_str()));
+        value["output_access"] = runtime
+            .output_access
+            .as_ref()
+            .map_or(serde_json::Value::Null, |access| access.as_json());
         emitter.borrow_mut().event(&Event::CalibrationAttempt {
             assessment: value.clone(),
         });
@@ -2864,13 +2933,26 @@ pub(crate) fn run_with_outcome(
             ));
         assessment
     });
+    let mut access = runtime.borrow().output_access.as_ref().map(|access| access.as_json())
+        .unwrap_or_else(|| json!({"state":"unresolved","recipient_sid":recipient.sid(),"proof_kind":recipient.proof_kind()}));
+    if access["state"] != "verified" {
+        access["next_command"] = json!(session_ux::access_inspection_command(
+            &bundle,
+            Some(recipient.sid())
+        ));
+    }
+    emitter.borrow_mut().event(&Event::DeepCaptureOutputAccess {
+        stage: "final-reconciliation".into(),
+        access,
+    });
     emitter
         .borrow_mut()
-        .terminal_human(&session_ux::terminal_summary(
+        .terminal_human(&session_ux::terminal_summary_with_access(
             report.snapshot.outcome,
             report.is_complete(),
             &report.artifacts,
             &report.snapshot.cleanup,
+            runtime.borrow().output_access.as_ref(),
             crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
         ));
     let observation_windows = runtime
@@ -3266,7 +3348,9 @@ pub(crate) fn require_controlled_target(target: &TargetEntry) -> Result<(), CliE
 
 fn bundle_root(flag: Option<&Path>, session_id: &str) -> Result<PathBuf, CliError> {
     if let Some(path) = flag {
-        return Ok(path.to_path_buf());
+        return std::path::absolute(path).map_err(|error| {
+            CliError::usage(format!("cannot resolve exact bundle destination: {error}"))
+        });
     }
     let root = paths::deep_capture_session_dir().ok_or_else(|| {
         CliError::usage("no Deep Capture session directory is available; pass --bundle")
