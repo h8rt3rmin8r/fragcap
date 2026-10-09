@@ -40,6 +40,10 @@ hedging and unsolicited restructuring. State the thing.
 
 Sequence plans, sprint documents, and update logs chronologically.
 
+## Human terminal reports
+
+Every application-authored human multi-column report uses the shared measured display layout. Measure actual emitted cells, including headings, delimiters, optional labels, and indexed labels. Each later column begins exactly four spaces beyond the widest preceding cell; apply the rule to every adjacent pair, on stdout and stderr, at every terminal width. ANSI styling occupies zero cells, Unicode uses complete-string display widths, and color cannot change visible anchors. Narrow output hangs continuations beneath the same value anchor and preserves exact indivisible values, even when they overflow the terminal width. No compact layout may reduce the gap or silently truncate a value. Any development-time exception requires explicit operator permission. Machine protocols and structured schemas keep their established grammar.
+
 ## Markdown
 
 - One H1 per document, and it is the first line of content.

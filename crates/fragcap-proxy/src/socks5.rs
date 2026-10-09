@@ -1937,6 +1937,10 @@ fn observation(
         connection_opened_at_ns: 0,
         connection_closed_at_ns: 0,
         protocol: "socks5".to_string(),
+        evidence_observed_at_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| elapsed.as_nanos().try_into().ok()),
         method: Some("CONNECT".to_string()),
         url: Some(format!("tcp://{authority}")),
         status: Some(0),

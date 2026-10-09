@@ -46,7 +46,8 @@ pub use appinfo::{
 };
 pub use launch::{launch, launch_request, LaunchConfigError, LaunchRequest};
 pub use library::{
-    discover_in, install_root_in, InstallLookup, InstalledTitle, SteamInstallation, SteamLibrary,
+    discover_app_in, discover_in, install_root_in, InstallLookup, InstalledTitle,
+    SteamInstallation, SteamLibrary,
 };
 pub use scaffold::scaffold;
 pub use walker::SteamWalkerProvider;
@@ -65,6 +66,8 @@ pub enum SteamError {
         /// The app_id that was asked for.
         app_id: String,
     },
+    /// More than one library claims the exact requested app identity.
+    AmbiguousTitle { app_id: String, count: usize },
     /// A Windows-only operation was called on a non-Windows build.
     UnsupportedPlatform,
     /// A filesystem error reading Steam metadata or scanning an install
@@ -102,6 +105,10 @@ impl fmt::Display for SteamError {
             SteamError::TitleNotFound { app_id } => {
                 write!(f, "no installed Steam title with app_id {app_id}")
             }
+            SteamError::AmbiguousTitle { app_id, count } => write!(
+                f,
+                "Steam app {app_id} has {count} conflicting installed manifests"
+            ),
             SteamError::UnsupportedPlatform => {
                 write!(f, "Steam integration is only supported on Windows")
             }

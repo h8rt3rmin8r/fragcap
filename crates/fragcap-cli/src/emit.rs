@@ -64,6 +64,8 @@ pub struct Emitter<'w> {
     /// entry passes `SystemTime::now`.
     clock: fn() -> SystemTime,
     captured_events: Option<Vec<String>>,
+    calibration_guidance: Option<serde_json::Value>,
+    calibration_attempt: Option<serde_json::Value>,
     /// How many progress lines [`Emitter::progress`] has actually written
     /// (not merely been asked to). A caller (the S069 non-terminal
     /// heartbeat) reads this before and after a span of calls that may or
@@ -88,6 +90,8 @@ impl<'w> Emitter<'w> {
             verbosity,
             clock: SystemTime::now,
             captured_events: None,
+            calibration_guidance: None,
+            calibration_attempt: None,
             #[cfg(all(feature = "etw", windows))]
             progress_written: 0,
         }
@@ -125,6 +129,42 @@ impl<'w> Emitter<'w> {
     /// Finish event copying and return the captured structured records.
     pub fn take_captured_events(&mut self) -> Vec<String> {
         self.captured_events.take().unwrap_or_default()
+    }
+
+    pub(crate) fn begin_calibration(&mut self) {
+        self.calibration_guidance = None;
+        self.calibration_attempt = None;
+    }
+
+    pub(crate) fn calibration_guidance(&mut self, value: serde_json::Value) {
+        let stored = self
+            .calibration_guidance
+            .get_or_insert_with(|| serde_json::json!({}));
+        if let (Some(stored), Some(incoming)) = (stored.as_object_mut(), value.as_object()) {
+            stored.extend(incoming.clone());
+        }
+    }
+
+    pub(crate) fn calibration_attempt(&mut self, value: serde_json::Value) {
+        let stored = self
+            .calibration_attempt
+            .get_or_insert_with(|| serde_json::json!({}));
+        if let (Some(stored), Some(incoming)) = (stored.as_object_mut(), value.as_object()) {
+            stored.extend(incoming.clone());
+        }
+    }
+
+    pub(crate) fn begin_calibration_attempt(&mut self, value: serde_json::Value) {
+        self.calibration_attempt = Some(value);
+    }
+
+    pub(crate) fn finish_calibration(
+        &mut self,
+    ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        (
+            self.calibration_guidance.take(),
+            self.calibration_attempt.take(),
+        )
     }
 
     /// Whether ordinary human progress is eligible for this output mode.
@@ -290,6 +330,8 @@ mod tests {
                 verbosity,
                 clock: || std::time::UNIX_EPOCH,
                 captured_events: None,
+                calibration_guidance: None,
+                calibration_attempt: None,
                 #[cfg(all(feature = "etw", windows))]
                 progress_written: 0,
             };
@@ -353,6 +395,8 @@ mod tests {
             clock: || std::time::UNIX_EPOCH,
             captured_events: None,
             progress_written: 0,
+            calibration_guidance: None,
+            calibration_attempt: None,
         };
         assert_eq!(e.progress_written(), 0);
         e.progress("a");
@@ -367,6 +411,8 @@ mod tests {
             clock: || std::time::UNIX_EPOCH,
             captured_events: None,
             progress_written: 0,
+            calibration_guidance: None,
+            calibration_attempt: None,
         };
         suppressed.progress("never written");
         assert_eq!(suppressed.progress_written(), 0);

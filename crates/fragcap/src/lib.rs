@@ -65,9 +65,10 @@ pub mod core {
 /// `#[cfg(windows)]` in the crate, so the facade re-export builds everywhere.
 pub mod steam {
     pub use fragcap_steam::{
-        discover, discover_in, install_root_for, install_root_in, installation_root, launch,
-        launch_request, scaffold, InstallLookup, InstalledTitle, LaunchConfigError, LaunchRequest,
-        SteamError, SteamInstallation, SteamLibrary, SteamWalkerProvider,
+        discover, discover_app_in, discover_in, install_root_for, install_root_in,
+        installation_root, launch, launch_request, scaffold, InstallLookup, InstalledTitle,
+        LaunchConfigError, LaunchRequest, SteamError, SteamInstallation, SteamLibrary,
+        SteamWalkerProvider,
     };
 }
 
@@ -121,9 +122,9 @@ pub mod targets {
     pub use fragcap_targets::{
         automatic_registration_decision, automatic_registration_plan, discover_all,
         CandidateIdentity, CandidateTarget, ClassifierVerdict, Confirm, DirListing,
-        DirectoryClassifier, DirectorySource, Discovery, DiscoveryAccount, DriveType,
-        EligibilityReason, FixtureClassifier, FixtureInventory, FixtureSource, FixtureTree,
-        FsDirectoryLister, InteractiveSource, KnownRootChildIsGame, KnownRootsSource,
+        DirectoryClassifier, DirectorySource, Discovery, DiscoveryAccount, DiscoveryDiagnostic,
+        DriveType, EligibilityReason, FixtureClassifier, FixtureInventory, FixtureSource,
+        FixtureTree, FsDirectoryLister, InteractiveSource, KnownRootChildIsGame, KnownRootsSource,
         ScriptedConfirm, SignatureClassifier, TargetSource, Volume, VolumeEligibility,
         VolumeInventory, KNOWN_ROOTS,
     };

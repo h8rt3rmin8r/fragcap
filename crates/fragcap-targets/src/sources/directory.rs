@@ -92,6 +92,17 @@ impl TargetSource for DirectorySource {
         Ok(Discovery {
             candidates,
             account,
+            diagnostics: warnings
+                .iter()
+                .map(|message| crate::DiscoveryDiagnostic {
+                    source: self.name().to_string(),
+                    root: Some(self.path.clone()),
+                    target: Some(self.path.clone()),
+                    operation: "detection".to_string(),
+                    kind: "coverage".to_string(),
+                    message: message.clone(),
+                })
+                .collect(),
             warnings,
         })
     }

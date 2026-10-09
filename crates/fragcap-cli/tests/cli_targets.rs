@@ -7,8 +7,8 @@
 //! selector's exit-2 refusal to guess (P-9).
 //!
 //! Slice S065 adds the split listing: the ENGINE and SENSITIVITIES columns, the
-//! three coverage markers, and the 80 column budget, all asserted against the
-//! rendered output rather than against the code that produces it.
+//! three coverage markers and no-clipping behavior. S168 measures rendered
+//! columns with exact four-space gaps and preserves hanging continuations.
 
 mod common;
 
@@ -173,11 +173,26 @@ fn targets_warning_is_structured_in_json_mode() {
             .contains("could not read"),
         "warning message is preserved: {value}"
     );
+    let diagnostics: Vec<serde_json::Value> = err
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert_eq!(
-        err.lines().count(),
-        1,
-        "only the warning diagnostic is emitted: {err}"
+        diagnostics.len(),
+        2,
+        "legacy warning and additive provenance: {err}"
     );
+    let provenance = &diagnostics[1];
+    assert_eq!(provenance["event"], "discovery.diagnostic");
+    assert_eq!(provenance["source"], "directory");
+    assert_eq!(provenance["operation"], "detection");
+    assert_eq!(provenance["kind"], "coverage");
+    assert_eq!(provenance["message"], value["message"]);
+    assert_eq!(provenance["root"], provenance["target"]);
+    assert!(provenance["root"]
+        .as_str()
+        .unwrap()
+        .ends_with("missing-game"));
 }
 
 #[test]
@@ -196,7 +211,8 @@ fn target_show_reports_unknown_when_no_compatibility_facts_exist() {
 
     assert_eq!(code, 0, "stderr:\n{err}");
     assert!(
-        out.contains("compatibility:  unknown (no stored evidence)"),
+        out.lines().any(|line| line.starts_with("compatibility:")
+            && line.trim_end().ends_with("unknown (no stored evidence)")),
         "target detail:\n{out}"
     );
 }
@@ -262,15 +278,27 @@ fn target_show_renders_all_compatibility_evidence_without_a_verdict() {
     assert_eq!(code, 0, "stderr:\n{err}");
     assert_eq!(repeat_code, 0, "stderr:\n{repeat_err}");
     assert_eq!(first, second, "matrix ordering must be deterministic");
+    let normalized = first.split_whitespace().collect::<Vec<_>>().join(" ");
     let required = [
-        "compatibility:\n",
-        "proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current",
-        "proxy-routing = no-proxy-traffic | source=imported-catalog | freshness=stale",
-        "inspectability = metadata-only | source=stale-observation | freshness=stale",
-        "protocol-behavior = https | source=user-confirmed | freshness=current",
+        "compatibility proxy-routing: reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current",
+        "compatibility proxy-routing: no-proxy-traffic | source=imported-catalog | freshness=stale",
+        "compatibility inspectability: metadata-only | source=stale-observation | freshness=stale",
+        "compatibility protocol-behavior: https | source=user-confirmed | freshness=current",
     ];
     for needle in required {
-        assert!(first.contains(needle), "missing {needle:?}:\n{first}");
+        assert!(normalized.contains(needle), "missing {needle:?}:\n{first}");
+    }
+    let anchor = "compatibility protocol-behavior:".len() + 4;
+    for line in first
+        .lines()
+        .filter(|line| line.starts_with("compatibility "))
+    {
+        let key_end = line.find(':').unwrap() + 1;
+        assert_eq!(
+            line.len() - line[key_end..].trim_start().len(),
+            anchor,
+            "{line}"
+        );
     }
     for prohibited in [
         "compatible verdict",
@@ -549,7 +577,7 @@ fn hero_listing_shows_columns_ordered_by_handle_and_names_the_next_command() {
     assert!(out.contains("Ready to capture:\n"), "{out}");
     assert!(!out.contains("Needs setup:"), "{out}");
     assert!(
-        out.contains("\n\nNext command:  fragcap capture 1\n"),
+        out.contains("\n\nNext command:    fragcap capture 1\n"),
         "ends with a labelled next command:\n{out}"
     );
     assert_eq!(out.matches("Next command:").count(), 1, "{out}");
@@ -635,7 +663,7 @@ fn mixed_hero_listing_groups_readiness_with_global_rows_and_independent_widths()
         "the wide setup handle must not widen the ready table:\n{out}"
     );
     assert!(
-        out.contains("Next command:  fragcap capture 1"),
+        out.contains("Next command:    fragcap capture 1"),
         "the first ready row is the next action:\n{out}"
     );
 
@@ -669,7 +697,7 @@ fn all_setup_listing_omits_the_ready_group_and_preserves_export_bytes() {
     assert!(!out.contains("Ready to capture:"), "{out}");
     assert_eq!(out.matches("Needs setup:").count(), 1, "{out}");
     assert!(out.find("alpha_setup") < out.find("zulu_setup"), "{out}");
-    assert!(out.contains("Next command:  fragcap capture 1"), "{out}");
+    assert!(out.contains("Next command:    fragcap capture 1"), "{out}");
 
     let (after_code, after, after_err) = run(&["targets", "export", "--db", &store]);
     assert_eq!(after_code, 0, "stdout:\n{after}\nstderr:\n{after_err}");
@@ -1178,18 +1206,41 @@ fn discover_lists_steam_titles_through_the_cli() {
         "store paths are labelled:\n{out}"
     );
     assert!(
-        out.contains("  catalog: "),
+        out.lines()
+            .any(|line| line.starts_with("  catalog:") && line.find(&catalog) == Some(14)),
         "catalog path is labelled:\n{out}"
     );
     assert!(
-        out.contains("  local:   "),
+        out.lines()
+            .any(|line| line.starts_with("  local:") && line.find(&local) == Some(14)),
         "local path is labelled:\n{out}"
     );
     assert!(
-        out.contains("SOURCE") && out.contains("IDENTITY") && out.contains("FIDELITY"),
-        "candidate table has named headings:\n{out}"
+        out.lines().any(|line| line == "steam") && out.lines().any(|line| line == "_".repeat(80)),
+        "source chapter is flush-left with the exact divider:\n{out}"
     );
-    assert!(out.contains("Portal 2"), "a Steam title is listed: {out}");
+    assert!(
+        out.lines().any(|line| line == "    Portal 2"),
+        "target heading uses four spaces: {out}"
+    );
+    for (key, value) in [
+        ("source:", "steam"),
+        ("identity:", "steam:620"),
+        ("fidelity:", "heuristic-unverified"),
+        ("automatic registration:", "eligible"),
+    ] {
+        let line = out
+            .lines()
+            .find(|line| {
+                line.starts_with(&format!("        {key}")) && line.trim_end().ends_with(value)
+            })
+            .expect("chapter field");
+        assert_eq!(
+            line.find(value),
+            Some(8 + "automatic registration:".len() + 4),
+            "chapter-wide field anchor: {line}"
+        );
+    }
     assert!(
         out.contains("steam:620"),
         "the appid identity is shown: {out}"
@@ -1199,7 +1250,8 @@ fn discover_lists_steam_titles_through_the_cli() {
         "the account is surfaced as a labelled block: {out}"
     );
     assert!(
-        out.contains("  zero: "),
+        out.lines()
+            .any(|line| line.starts_with("  zero:") && line.contains("parse failed")),
         "zero-valued account outcomes are grouped: {out}"
     );
 }
@@ -1745,11 +1797,10 @@ fn the_retired_readiness_sentences_appear_nowhere_in_the_listing() {
     assert!(out.contains("needs a target"), "{out}");
 }
 
-/// The greatest number of columns the row consumes outside the TARGET column: the
-/// row number, the readiness label, the engine column, the sensitivities column, and
-/// the five separators. Measured, not computed from the layout, so adding a column or
-/// widening a marker moves it and the test says so.
-const NON_HANDLE_COLUMNS: usize = 55;
+/// This fixture's complete row costs 63 cells outside its handle: indent, row
+/// number, four adjacent four-space gaps, and the actual longest field values.
+/// Larger real values retain their measured anchors and can overflow.
+const NON_HANDLE_COLUMNS: usize = 2 + 1 + 4 * 4 + 14 + 14 + 16;
 
 /// The terminal width the listing is budgeted against.
 const TERMINAL_COLUMNS: usize = 80;
@@ -1797,11 +1848,9 @@ fn measure(out: &str) -> (usize, usize) {
 }
 
 #[test]
-fn the_columns_outside_the_handle_stay_within_their_measured_budget() {
-    // FR-017 and SC-006. The handle is operator data whose width the tool does not
-    // control and must not truncate, so the checkable budget is what the *other*
-    // columns cost. Measured from the rendered line rather than recomputed from the
-    // layout, so a new column or a wider marker is caught here.
+fn table_columns_measure_emitted_values_with_four_space_gaps() {
+    // S168 replaces the old fixed-width budget with actual field measurements.
+    // Assert the rendered anchors independently and retain wrapped last values.
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);
     let handle = "w".repeat(20);
@@ -1815,18 +1864,34 @@ fn the_columns_outside_the_handle_stay_within_their_measured_budget() {
         "widest value in play: {out}"
     );
 
-    let (widest_line, widest_handle) = measure(&out);
+    let (_, widest_handle) = measure(&out);
     assert!(widest_handle > 0, "handles were measured: {out}");
-    assert_eq!(
-        widest_line - widest_handle,
-        NON_HANDLE_COLUMNS,
-        "the non-handle columns cost exactly the budgeted width:\n{out}"
-    );
+    let heading = out
+        .lines()
+        .find(|line| line.contains("TARGET") && line.contains("CAPTURE"))
+        .unwrap();
+    let row = out.lines().find(|line| line.contains(&handle)).unwrap();
+    let handle_anchor = 2 + 1 + 4;
+    let capture_anchor = handle_anchor + handle.len() + 4;
+    let engine_anchor = capture_anchor + "needs a target".len() + 4;
+    let final_anchor = engine_anchor + "Unity, Unreal?".len() + 4;
+    assert_eq!(heading.find("TARGET"), Some(handle_anchor));
+    assert_eq!(heading.find("CAPTURE"), Some(capture_anchor));
+    assert_eq!(heading.find("ENGINE"), Some(engine_anchor));
+    assert_eq!(heading.find("SENSITIVITIES"), Some(final_anchor));
+    assert_eq!(row.find("needs a target"), Some(capture_anchor));
+    assert_eq!(row.find("Unity, Unreal?"), Some(engine_anchor));
+    assert_eq!(row.find("Easy"), Some(final_anchor));
+    let continuation = out
+        .lines()
+        .find(|line| line.trim() == "Anti-Cheat?")
+        .unwrap();
+    assert_eq!(continuation.find("Anti-Cheat?"), Some(final_anchor));
 }
 
 #[test]
 fn a_table_of_ordinary_handles_fits_an_eighty_column_terminal() {
-    // The consequence of the budget above: a handle of
+    // For these exact emitted fixture values, a handle of
     // `TERMINAL_COLUMNS - NON_HANDLE_COLUMNS` characters is the widest that fits, and
     // it does fit, with every bounded column at its worst case.
     let dir = TempDir::new().expect("tempdir");
@@ -1848,12 +1913,8 @@ fn a_table_of_ordinary_handles_fits_an_eighty_column_terminal() {
 
 #[test]
 fn a_handle_wider_than_the_budget_overflows_rather_than_being_truncated() {
-    // The declared behavior when the budget is exceeded (FR-017, decision D-5). The
-    // operator machine has a 47 character handle, so this is the real case, not a
-    // hypothetical: `warhammer_40_000_dawn_of_war_definitive_edition` renders a 100
-    // column row. Truncating it would be the silent loss P-4 forbids, and wrapping
-    // would break the alignment the split exists to provide, so it overflows and
-    // every value stays whole.
+    // Indivisible handles retain their full value even when measured columns
+    // exceed 80 cells. Final-column values may hang at their computed anchor.
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);
     let handle = "warhammer_40_000_dawn_of_war_definitive_edition";

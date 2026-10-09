@@ -26,6 +26,7 @@ use fragcap::profile::SignatureCategory;
 use fragcap::targets::Store;
 
 use crate::cli::TechnologiesArgs;
+use crate::display::{human_display_value, ColumnLayout};
 use crate::exit::{CliError, Exit};
 
 /// Run the `technologies` command, writing the report to `out`.
@@ -66,6 +67,18 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
     if outcome.findings.is_empty() {
         let _ = writeln!(out, "  no technologies detected");
     } else {
+        let all_rows: Vec<Vec<String>> = outcome
+            .findings
+            .iter()
+            .map(|finding| {
+                vec![
+                    human_display_value(&finding.product),
+                    finding.fidelity.as_str().into(),
+                    human_display_value(&finding.evidence),
+                ]
+            })
+            .collect();
+        let layout = ColumnLayout::new(4, &all_rows);
         for category in SignatureCategory::ORDER {
             let group: Vec<_> = outcome
                 .findings
@@ -76,14 +89,18 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                 continue;
             }
             let _ = writeln!(out, "  {}", category.as_str());
-            for finding in group {
-                let _ = writeln!(
-                    out,
-                    "    {:<20} {:<10} {}",
-                    finding.product,
-                    finding.fidelity.as_str(),
-                    finding.evidence
-                );
+            let rows: Vec<Vec<String>> = group
+                .iter()
+                .map(|finding| {
+                    vec![
+                        human_display_value(&finding.product),
+                        finding.fidelity.as_str().into(),
+                        human_display_value(&finding.evidence),
+                    ]
+                })
+                .collect();
+            for row in rows {
+                let _ = writeln!(out, "{}", layout.render_wrapped_row(&row, 80));
             }
         }
     }

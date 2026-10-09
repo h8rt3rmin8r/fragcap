@@ -98,7 +98,7 @@ enforcement.
 | 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
 | 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, fact-backed cold Steam managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. Warm Steam and direct-executable cases are side-effect-free preflight refusals. |
 | 0.1.11-draft | 2026-08-26 | W. Thompson | **Publishes Deep Capture traffic support and local compatibility evidence (issue #220).** Extends sections 15, 17.2, 19.6, 28, and 29. `targets show` renders a deterministic, non-aggregating matrix from the selected target's local facts, including launch case, evidence source, and freshness. The public reference distinguishes HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext behavior without publishing a guessed title list or claiming universal decryption. |
-| 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:  fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
+| 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:    fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
 | 0.1.13-draft | 2026-08-26 | W. Thompson | **Adds interactive doctor progress and diagnostic timings (issue #202).** Extends section 26.3 so human terminal `fragcap doctor` runs show probe progress on stderr while preserving final human and JSON report bytes. A hidden `--timings` flag exposes per-probe elapsed times for maintainers without changing report contracts. |
 | 0.1.14-draft | 2026-08-26 | W. Thompson | **Marks unverified target technology findings (issue #211).** Extends section 17.7 so `fragcap targets` renders below-verified ENGINE and SENSITIVITIES products with a `?` suffix while verified-or-stronger products remain unmarked. The target-entry export/import contract continues to preserve each finding's raw fidelity token so machine readers can derive the same distinction. |
 | 0.1.15-draft | 2026-08-26 | W. Thompson | **Names capped binary-marker scan subjects (issue #206).** Clarifies section 15.7.2 so capped binary-marker coverage warnings name the scanned root, preserve the skipped candidate count, and state that technology detection for that root may be incomplete. |
@@ -2889,7 +2889,7 @@ anchoring it to `steam:<app_id>` (replacing the retired `steam profile <app_id>`
 scaffold). The client executable is recovered at capture time by the install-layout
 cascade keyed on the anchor (section 15.7.4).
 
-`fragcap steam list` enumerates the installed titles this machine can see, so an operator can find the app id to register. Human output is one width-aware headed listing with no tab separators: complete rows align by visible display cells when they fit, while an over-width result uses labeled vertical records for the whole listing. Neither form truncates values, and positioned, registered-but-unpositioned, and unregistered targets remain distinct. Interactive width is clamped to 40 through 80 display columns, with 80 used for redirected or unavailable measurements. JSON Lines remains the stable machine interface; enumeration, diagnostics, sorting, exits, and the read-only target-store join are independent from presentation.
+`fragcap steam list` enumerates the installed titles this machine can see, so an operator can find the app id to register. Human output is one width-aware headed listing with no tab separators: complete rows align by visible display cells when they fit, while an over-width result uses labeled vertical records for the whole listing. S168 source applies the shared actual-width plus four-space rule to every adjacent table column and vertical field pair, including headings, Unicode, and styling. Neither form truncates values, and positioned, registered-but-unpositioned, and unregistered targets remain distinct. Interactive width is clamped to 40 through 80 display columns, with 80 used for redirected or unavailable measurements. JSON Lines remains the stable machine interface; enumeration, diagnostics, sorting, exits, and the read-only target-store join are independent from presentation.
 
 ### 16.4 Managed Launch
 
@@ -3358,6 +3358,10 @@ would otherwise go.
 
 ### 17.6 Output Conventions
 
+S168 source requires every application-authored human multi-column report to use one shared display layout. Actual emitted widths include headings, delimiters, optional keys, and indexed keys. Each next column starts exactly four spaces beyond the maximum preceding column width, for every adjacent pair on stdout and stderr. ANSI CSI/OSC styling has zero width; exact-pinned `unicode-width` 0.2.2 measures complete strings including combining scripts and composed emoji. Normal ambiguous characters are narrow. Narrow terminals preserve the same anchors and hang continuations; exact indivisible values may overflow rather than be clipped. No compact smaller-gap exception is authorized. Structured schemas and analyzer protocols retain their independent grammar.
+
+Capture completion fields, per-process breakdowns, technology detections, exact-root previews, and human bundle cleanup results use that same contract. Live capture status retains all counters, target identity, elapsed/bound/filter state, the top five process contributors, and an explicit overflow count. S168 replaces live character truncation with hanging values and complete ANSI sequences; terminal redraw counts occupied physical rows when a width is available. These are presentation changes, with no new attribution, discard, cleanup, or target-control authority.
+
 Progress output goes to standard error. Capture data goes to sinks.
 When a sink writes to standard output, all diagnostic output moves to
 standard error without exception, so the data stream stays clean.
@@ -3378,14 +3382,14 @@ targets as readiness-grouped numbered tables:
 
 ```text
 Ready to capture:
-  #  TARGET            CAPTURE  ENGINE         SENSITIVITIES
-  1  sample_adventure  ready    Sample Engine  not scanned
+  #    TARGET              CAPTURE    ENGINE           SENSITIVITIES
+  1    sample_adventure    ready      Sample Engine    not scanned
 
 Needs setup:
-  #  TARGET        CAPTURE         ENGINE       SENSITIVITIES
-  2  sample_arena  needs a target  not scanned  Sample Protection
+  #    TARGET          CAPTURE           ENGINE         SENSITIVITIES
+  2    sample_arena    needs a target    not scanned    Sample Protection
 
-Next command:  fragcap capture 1
+Next command:    fragcap capture 1
 ```
 
 Rows are partitioned by capture readiness, with `Ready to capture` first and
@@ -3420,16 +3424,16 @@ is recorded for the row. A scanned-clean row, an incompletely scanned row, and a
 unscanned row are three different facts and are rendered as three different
 things (P-4).
 
-No column value is truncated and no row is wrapped. Each readiness group sizes
+No column value is truncated. Continuations of the final column preserve its measured anchor; exact long tokens may overflow. Each readiness group sizes
 its own table independently, so a wide value in one group does not distort the
-other. Within a table every column but the last sizes to its content, the last
-is free-running, and the columns other than the target handle cost a bounded
-width; a handle wider than the remainder of an 80 column terminal overflows
+other. Every column sizes from its actual emitted contents and headings with
+exactly four spaces before the following column. The final column wraps at
+its measured anchor; a handle wider than an 80 column terminal overflows
 visibly rather than being clipped, because a silently truncated value is the
 same class of loss as a silently dropped packet.
 
 After any machine-findings section, a populated listing ends with one blank line
-and the exact labelled footer `Next command:  fragcap capture <row>`. The row is
+and the exact labelled footer `Next command:    fragcap capture <row>`. The row is
 the first ready target whose install root is not missing, then the first ready
 target when every ready install root is missing. Only when the ready group is
 empty may the footer select the first setup-needed target whose install root is
@@ -3497,26 +3501,35 @@ target need no store path unless one is named explicitly.
   Folder names, display names, and location alone never establish ownership.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
   `discover`, unlike the listing, registers nothing. Human `targets discover`
-  output names the catalog and local stores as labelled lines, then prints a
-  headed, aligned candidate table whose visible columns are SOURCE, IDENTITY,
-  FIDELITY, AUTO, and NAME. The AUTO column and its indented stable reason report
-  whether the hero path would persist that candidate. It does not print the
-  candidate classification as a human
-  table column, because a stock barebones catalog commonly makes that column
-  read `unknown` for every row while adding no operator value. Candidate
-  evidence prints directly under the owning row as indented category, product,
-  and fidelity lines. Discovery rows contain spaces rather than tabs, size every
-  column except the final NAME column to the widest rendered value or heading,
-  and never truncate or wrap values. The discovery account prints as a labelled
-  block: `considered` and `produced` always appear, non-zero outcome buckets
-  appear on individual lines, and zero-valued outcomes may be grouped on one
-  `zero:` line. `container descended` and `container descent truncated` remain
-  separately named. The following automatic-registration account reports eligible
-  and refused totals. Warnings stay diagnostics on the emitter path, not in the
-  command-result stream. `targets discover --summary` instead emits aggregate
-  discovery, eligibility, refusal, coverage, and warning counts only; it emits no
-  store path, candidate identity, application id, title, installation path, warning
-  text, account, hostname, or volume identity. `targets show` appends the selected target's Deep
+  output names the catalog and local stores, then prints deterministic source
+  chapters, each flush-left after an 80-character underscore rule. Target headings
+  use four spaces and child field keys use eight. One report-wide field anchor
+  uses the longest emitted key plus exactly four spaces, including registration
+  reason and every indexed technology finding. Source, exact identity, name,
+  fidelity, automatic-registration eligibility/reason, and every technology
+  product/fidelity remain available. Repeated evidence categories remain separate.
+  Heading/key color resets before values; plain, redirected and NO_COLOR output
+  retain the same hierarchy. Continuations keep the measured anchor, exact long
+  tokens may overflow, and values are never truncated. The divider remains 80
+  characters on narrower terminals. Discovery accounting, zero/no-candidate
+  output, eligibility/refusal totals and relevant coverage warnings remain exact.
+  Warnings retain their legacy messages plus additive typed source, root, target,
+  operation and limitation-category provenance. Selected calibration refreshes an
+  exact Steam application through its requested manifest filenames and selected
+  install only; it does not enumerate known roots or unrelated executable trees.
+  Fallback discovery retains relevant incomplete-resolution diagnostics, and broad
+  discovery retains its full warnings/accounting. Calibration observes process
+  images first; a stored Steam anchor or exact Steam app selector allows immediate
+  warm refusal before discovery. A display name does not establish topology:
+  cross-source name ambiguity must resolve before the Steam guard, and an exact
+  direct candidate remains available while unrelated Steam is running. A resolved
+  Steam discovery candidate receives a fresh guard before registration
+  confirmation, recursive client setup, or workflow/session effects. The
+  controlled one-second warm-refusal budget applies to exact established identity,
+  not uncertain names requiring source resolution. `targets discover --summary`
+  emits aggregate discovery, eligibility, refusal, coverage and warning counts
+  without private inventory or warning text. `targets show` aligns all emitted
+  target fields and compatibility rows in one measured block and appends the Deep
   Capture compatibility matrix from local facts. It renders every row with its
   evidence source and freshness, reports `unknown` only when a successful read
   finds no facts, and performs no launch, proxy, trust, catalog, network, or
@@ -4732,12 +4745,9 @@ records are reviewed and confirmed for cleanup through `fragcap doctor --fix`.
 Active records never receive cleanup guidance, and unknown or unsupported
 records never imply safety.
 
-The human report defaults to 80 display columns for deterministic redirected
-output. A terminal width is bounded to 40 through 80 columns. Ordinary widths
-use aligned columns; narrower widths use a compact stacked check. Wrapping and
-padding count terminal display cells rather than UTF-8 bytes, color sequences
-do not affect alignment, and exact non-secret values are never truncated. An
-indivisible token may exceed the selected width rather than being altered.
+S168 source summarizes healthy completed history in constant-count human rows with separate observed session and resource totals and explicit bounded/incomplete coverage. Only wholly healthy observed sessions are summarized; active or mixed sessions and actionable records remain individual. `fragcap doctor --history-details` expands exact human history, while `--json` always preserves every stable check identity and resource fact. Observed findings remain present even when the inventory reports limitations. A terminal resource state does not prove inactive session ownership, retained evidence is separate from cleanup residue, and this read-only projection performs no deletion or lifecycle decision.
+
+The human report defaults to an 80-column wrapping target for deterministic redirected output. Interactive width is bounded to 40 through 80 columns. Names, status words, details, remediations, and readiness fields use actual emitted widths and four-space anchors at every width. Color/plain output shares visible anchors; exact non-secret values are never truncated and an indivisible token may exceed the width. Quiet and silent suppress optional progress while Doctor stdout remains the command-result report; structured JSON remains complete and plain.
 
 JSON check records keep their existing `section`, machine `name`, machine
 `detail`, `status`, `scope`, and optional `remediation`. Every native residue
@@ -4776,6 +4786,12 @@ retires only the exact owner record; it does not broaden legacy evidence into
 authority over unrelated files or processes.
 
 Compatibility calibration progress names confirmation, proxy readiness, managed launch, observation, fact persistence, finalization, and cleanup. Human output and structured events carry the same phase and terminal outcome without requiring a machine consumer to parse prose. Every refusal names the missing precondition and states that no calibration effects were applied.
+
+S168 separates the attempted-case verdict from current exact applicable stored readiness in one additive `calibration.verdict` event and one ordinary human final block per guided invocation. Stored applicability uses the same facade assessment as proposal construction, including conflict, stale, target/launch/route/family/backend/product/target-version and protocol identity, independently from transient warm launch readiness. One supported next command states its purpose; absent final-client acquisition/correlation is an inconclusive blocker under #468, not a generic gameplay remedy. Quiet and silent preserve existing suppression; complete canonical plan output and its exact reviewed identifier still govern consent.
+
+S168 terminal evidence reports typed bounded connection causes and accepted/completed/failed/forced/live/incomplete totals independently from completed HTTP/1 exchanges, HTTP/2 streams and HTTP/3 streams. Seven completed HTTP exchanges can coexist with six failed connection endings. Aggregate cause counts and retained/lost/unavailable details reconcile without parsing cleanup prose or exposing capabilities or payloads. Semantic observation timestamps are distinct from exchange-start timestamps: only observation-window records can qualify routing, CA or protocol facts; later owner-release records remain retained and explicitly labeled. Observation cutoff also limits eligible packet-correlation windows, without changing the separate acquisition defect #468.
+
+Session finalization, artifact write results, manifest/process-trace completeness, readable producer-context access, stored fact writes, and resource cleanup each retain their own authority. A finite metadata-only terminal projection reports available process limitation counts, prints one bundle root with relative filenames, and reports omissions without invented files. Read failure or metadata size beyond the projection bound yields unavailable detail, never complete evidence. Producer-context readable access does not prove ordinary-user access (#464). The normal-shutdown route-owner action and finite deadline remain visible while the proxy is active; released resources do not imply calibration success or delete retained evidence.
 
 Native Deep Capture human authorization includes a readable consequence summary before the unchanged complete canonical plan and exact identifier. The summary distinguishes active target-scoped inspection from passive Capture, identifies launch and routing scope, the exact trust action and store, payload retention, optional HAR, TLS key-log and client-identity selection, sensitive evidence, retained bundle location, and exact cleanup/recovery consequences. Required plan and consent text survives quiet and silent; checked writes and flushes still precede input, and one complete exact plan remains the only session authorization authority.
 

@@ -67,65 +67,30 @@ pub struct LiveStatusSnapshot {
 /// the frame's text and its line count, since [`redraw::RedrawState`] needs
 /// the count to erase the right number of lines before the next frame.
 ///
-/// A truncating width and color are mutually exclusive: a raw truncation
-/// could otherwise slice a `WARN`/`RESET` escape sequence in half, leaking
-/// color into whatever the terminal prints next (spec Edge Cases: a narrow
-/// terminal). A terminal narrow enough to need truncation is already a
-/// degraded-fidelity case, so `width.is_some()` disables color for the whole
-/// frame rather than truncating around escape bytes.
+/// Values hang beneath measured four-space anchors. Exact tokens may exceed
+/// the width; complete ANSI sequences remain intact and redraw counts physical
+/// rows occupied by terminal wrapping when a terminal width is available.
 pub fn render_status(
     snapshot: &LiveStatusSnapshot,
     use_color_flag: bool,
     width: Option<usize>,
 ) -> (String, usize) {
-    let use_color_flag = use_color_flag && width.is_none();
-    let mut lines: Vec<String> = vec![
-        header_line(snapshot),
-        elapsed_line(snapshot),
-        filter_line(snapshot),
-        discards_line(snapshot, use_color_flag),
-    ];
-    lines.extend(holder_lines(snapshot));
-
-    let lines: Vec<String> = match width {
-        Some(w) => lines.into_iter().map(|l| truncate(&l, w)).collect(),
-        None => lines,
-    };
-
-    let count = lines.len();
-    let mut text = lines.join("\n");
-    text.push('\n');
-    (text, count)
-}
-
-fn header_line(snapshot: &LiveStatusSnapshot) -> String {
-    match &snapshot.process {
-        Some(p) => {
-            // A pid can be bound before its image name is known (the
-            // attach-to-running seeding path); say so explicitly rather than
-            // leaving a blank gap where the name would be (Copilot review of
-            // PR #196).
-            let name = p.name.as_deref().unwrap_or("(name unknown)");
-            // Printing "role X/X" when no distinct stage is known is noisy
-            // and reads as if two different facts were being reported
-            // (Copilot review of PR #196); show the stage only when it is
-            // actually distinct from the role.
+    let terminal_width = width;
+    let width = width.unwrap_or(80);
+    let process = snapshot
+        .process
+        .as_ref()
+        .map(|p| {
+            let name =
+                crate::display::human_display_value(p.name.as_deref().unwrap_or("(name unknown)"));
             match p.stage.as_deref() {
-                Some(stage) if stage != p.role => format!(
-                    "  fragcap  capturing  {}  pid {}  role {}/{}",
-                    name, p.pid, p.role, stage
-                ),
-                _ => format!(
-                    "  fragcap  capturing  {}  pid {}  role {}",
-                    name, p.pid, p.role
-                ),
+                Some(stage) if stage != p.role => {
+                    format!("capturing {name} pid {} role {}/{}", p.pid, p.role, stage)
+                }
+                _ => format!("capturing {name} pid {} role {}", p.pid, p.role),
             }
-        }
-        None => "  fragcap  waiting for a target".to_string(),
-    }
-}
-
-fn elapsed_line(snapshot: &LiveStatusSnapshot) -> String {
+        })
+        .unwrap_or_else(|| "waiting for a target".into());
     let secs = snapshot.elapsed.as_secs();
     let elapsed = format!(
         "{:02}:{:02}:{:02}",
@@ -134,82 +99,78 @@ fn elapsed_line(snapshot: &LiveStatusSnapshot) -> String {
         secs % 60
     );
     let volume = match (snapshot.byte_bound, snapshot.packet_bound) {
-        (Some(bound), _) => format!("{} / {} bytes", snapshot.written_bytes, bound),
-        (None, Some(bound)) => format!("{} / {} pkts", snapshot.written_packets, bound),
-        (None, None) => format!(
+        (Some(bound), _) => format!("{} / {bound} bytes", snapshot.written_bytes),
+        (None, Some(bound)) => format!("{} / {bound} pkts", snapshot.written_packets),
+        _ => format!(
             "{} pkts, {} bytes",
             snapshot.written_packets, snapshot.written_bytes
         ),
     };
-    format!("  elapsed  {elapsed}        written  {volume}")
-}
-
-fn filter_line(snapshot: &LiveStatusSnapshot) -> String {
-    if snapshot.narrowed {
-        format!(
-            "   filter  narrowed, {} endpoint(s)",
-            snapshot.active_endpoints
-        )
-    } else {
-        "   filter  not yet narrowed".to_string()
-    }
-}
-
-fn discards_line(snapshot: &LiveStatusSnapshot, use_color_flag: bool) -> String {
-    let counters = [
+    let fields = vec![
+        ("fragcap".into(), process),
+        ("elapsed".into(), elapsed),
+        ("written".into(), volume),
+        (
+            "filter".into(),
+            if snapshot.narrowed {
+                format!("narrowed, {} endpoint(s)", snapshot.active_endpoints)
+            } else {
+                "not yet narrowed".into()
+            },
+        ),
+    ];
+    let mut text = crate::display::render_fields(2, &fields, width);
+    let rows: Vec<Vec<String>> = [
         ("watch", snapshot.watch_discarded),
         ("window", snapshot.out_of_window_discarded),
         ("scope", snapshot.scope_discarded),
         ("unresolved", snapshot.scope_unresolved_discarded),
         ("buffer", snapshot.buffer_dropped),
         ("sink", snapshot.sink_dropped),
-    ];
-    let mut out = String::from("discards ");
-    for (i, (label, value)) in counters.iter().enumerate() {
-        if i > 0 {
-            out.push_str("   ");
-        }
-        if use_color_flag && *value > 0 {
-            out.push_str(WARN);
-            out.push_str(&format!("{label} {value}"));
-            out.push_str(RESET);
-        } else {
-            out.push_str(&format!("{label} {value}"));
-        }
+    ]
+    .into_iter()
+    .map(|(label, count)| {
+        vec![
+            label.into(),
+            if use_color_flag && count > 0 {
+                format!("{WARN}{count}{RESET}")
+            } else {
+                count.to_string()
+            },
+        ]
+    })
+    .collect();
+    text.push_str("discards\n");
+    let layout = crate::display::ColumnLayout::new(2, &rows);
+    for row in rows {
+        text.push_str(&layout.render_wrapped_row(&row, width));
+        text.push('\n');
     }
-    out
-}
-
-fn holder_lines(snapshot: &LiveStatusSnapshot) -> Vec<String> {
-    if snapshot.holder_tally.is_empty() {
-        return Vec::new();
-    }
-    let mut out: Vec<String> = snapshot
+    let fields: Vec<(String, String)> = snapshot
         .holder_tally
         .iter()
         .take(HOLDER_ROWS)
-        .map(|(image, count)| format!("    {image:<19} {count}"))
+        .map(|(image, count)| (image.to_string(), count.to_string()))
         .collect();
+    text.push_str(&crate::display::render_fields(4, &fields, width));
     if snapshot.holder_tally.len() > HOLDER_ROWS {
-        out.push(format!(
-            "    ... and {} more",
+        text.push_str(&format!(
+            "    ... and {} more\n",
             snapshot.holder_tally.len() - HOLDER_ROWS
         ));
     }
-    out
+    let count = text
+        .lines()
+        .map(|line| {
+            terminal_width.map_or(1, |width| {
+                crate::display::display_width(line)
+                    .div_ceil(width.max(1))
+                    .max(1)
+            })
+        })
+        .sum();
+    (text, count)
 }
-
-/// Truncate `line` to `width` characters, never splitting inside a UTF-8
-/// character boundary. Safe against a mid-escape-sequence cut because
-/// `render_status` disables color whenever a width is supplied, so no line
-/// reaching this function ever contains a `WARN`/`RESET` byte.
-fn truncate(line: &str, width: usize) -> String {
-    if line.chars().count() <= width {
-        return line.to_string();
-    }
-    line.chars().take(width).collect()
-}
-
 /// Whether the live status display should render on this run: stderr is a
 /// real terminal, `NO_COLOR`-independent (color and terminal-ness are
 /// separate questions; `use_color` folds `NO_COLOR` in only for the color
@@ -227,16 +188,9 @@ pub fn use_status_color() -> bool {
 
 /// Standard error's current column width, when it can be determined.
 ///
-/// Queried fresh on every redraw (Codex and Copilot review of PR #196: the
-/// production call site had been passing `None` unconditionally, so
-/// `render_status`'s truncation path, and the narrow-terminal edge case it
-/// exists for, was never actually reached, and a resize was never observed
-/// either). `None` (render at natural width, no truncation) when standard
-/// error is not attached to a terminal that reports one, matching
-/// `terminal_size`'s own "can't determine" case; this function is only ever
-/// called from the already-terminal-gated redraw path, so a `None` here
-/// reflects a terminal that declines to report its size, not a redirected
-/// stream.
+/// Queried fresh on every redraw so wrapping and occupied-row accounting follow
+/// terminal resizes. `None` selects the default report width when the terminal
+/// cannot report one. This is called only from the terminal-gated redraw path.
 pub fn terminal_width() -> Option<usize> {
     terminal_size::terminal_size_of(std::io::stderr()).map(|(width, _)| width.0 as usize)
 }
@@ -324,7 +278,10 @@ mod tests {
             ("buffer", 5),
             ("sink", 6),
         ] {
-            assert!(plain.contains(&format!("{label} {value}")));
+            assert!(plain
+                .lines()
+                .any(|line| line.trim_start().starts_with(label)
+                    && line.trim_end().ends_with(&value.to_string())));
         }
         assert!(!plain.contains(WARN), "no color when use_color is false");
 
@@ -368,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_width_truncates_lines_and_disables_color_rather_than_splitting_a_color_code() {
+    fn a_narrow_width_preserves_exact_values_and_complete_color_sequences() {
         let mut s = base_snapshot();
         s.sink_dropped = 9;
         s.process = Some(BoundProcess {
@@ -381,17 +338,13 @@ mod tests {
         let (wide, _) = render_status(&s, true, None);
         assert!(wide.contains(WARN), "color applies with no width limit");
 
-        let (narrow, _) = render_status(&s, true, Some(10));
-        assert!(
-            !narrow.contains('\x1b'),
-            "a truncating width must never leave a raw escape byte in the output"
-        );
-        for line in narrow.lines() {
-            assert!(
-                line.chars().count() <= 10,
-                "line {line:?} exceeds the requested width"
-            );
-        }
+        let (narrow, physical_rows) = render_status(&s, true, Some(10));
+        assert!(narrow.contains("AngelLegion.exe"));
+        assert!(narrow.contains("44460"));
+        assert!(narrow.contains("client"));
+        assert!(narrow.contains(WARN) && narrow.contains(RESET));
+        assert!(!narrow.contains("AngelLegio\n"));
+        assert!(physical_rows > narrow.lines().count());
     }
 
     // S069 T039, SC-005. Reproduces the run that prompted issue #186: a

@@ -1,49 +1,47 @@
 Identity
-  version                ok    0.0.0-test
-  binary                 ok    C:\Program Files\fragcap\fragcap.exe
-  catalog db             ok    C:\Users\gamer\AppData\Roaming\fragcap\catalog.db
-                               (present)
-  local db               ok    C:\Users\gamer\AppData\Roaming\fragcap\local.db
-                               (present)
+  version                   ok    0.0.0-test
+  binary                    ok    C:\Program Files\fragcap\fragcap.exe
+  catalog db                ok    C:\Users\gamer\AppData\Roaming\fragcap\catalog.db
+                                  (present)
+  local db                  ok    C:\Users\gamer\AppData\Roaming\fragcap\local.db
+                                  (present)
 
 Platform
-  os                     ok    Windows 11
-  subsystem              ok    native
-  privilege              ok    elevated
+  os                        ok    Windows 11
+  subsystem                 ok    native
+  privilege                 ok    elevated
 
 Capture driver
-  npcap                  ok    version 1.79
-  loopback adapter       ok    loopback capture supported
-  winpcap api mode       ok    WinPcap API compatible
-  live backend           ok    live capture backend is built in
-  socket-table backend   ok    socket-table attribution is built in
+  npcap                     ok    version 1.79
+  loopback adapter          ok    loopback capture supported
+  winpcap api mode          ok    WinPcap API compatible
+  live backend              ok    live capture backend is built in
+  socket-table backend      ok    socket-table attribution is built in
 
 Tracing
-  process events         ok    process-event session available
+  process events            ok    process-event session available
 
 Interfaces
-  adapter                ok    Ethernet 192.0.2.10
+  adapter                   ok    Ethernet  192.0.2.10
 
 Integration
-  analyzer extcap        ok    installed for the current user in
-                               C:\Users\gamer\AppData\Roaming\Wireshark\extcap
+  analyzer extcap           ok    installed for the current user in
+                                  C:\Users\gamer\AppData\Roaming\Wireshark\extcap
 
 Deep Capture
-  proxy backend          ok    fragcap-native 0.8.0
-  IPv4 loopback listener ok    exact ephemeral bind to 127.0.0.1 succeeded
-  IPv6 loopback listener ok    exact ephemeral bind to ::1 succeeded
-  local CA trust         ok    no fragcap Deep Capture CA trust found
-  analyzer key log       ok    TLS key-log path is visible to this session
-  native inventory       ok    no native Deep Capture session residue found
-  session storage        ok    C:\Users\gamer\AppData\Roaming\fragcap\sessions
-                               (absent)
+  proxy backend             ok    fragcap-native 0.8.0
+  IPv4 loopback listener    ok    exact ephemeral bind to 127.0.0.1 succeeded
+  IPv6 loopback listener    ok    exact ephemeral bind to ::1 succeeded
+  local CA trust            ok    no fragcap Deep Capture CA trust found
+  analyzer key log          ok    TLS key-log path is visible to this session
+  native inventory          ok    no native Deep Capture session residue found
+  session storage           ok    C:\Users\gamer\AppData\Roaming\fragcap\sessions
+                                  (absent)
 
-Capture: ready
-Deep Capture: ready
+Capture:         ready
+Deep Capture:    ready
 
 Deep Capture setup
   Environment readiness is step one.
-  Next command:
-    fragcap targets discover
-  Then run:
-    fragcap calibrate "<game>"
+  Next command:    fragcap targets discover
+  Then run:        fragcap calibrate "<game>"

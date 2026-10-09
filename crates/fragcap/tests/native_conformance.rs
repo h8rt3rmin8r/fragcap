@@ -13,9 +13,9 @@ use fragcap::deep_capture::{
     compatibility_fact_candidates, project_application_har, read_application_prefix,
     read_lifecycle_prefix, read_resource_journal, validate_v2, ApplicationArtifactLease,
     ApplicationStreamStatus, CalibrationPhase, CompatibilityObservation, CorrelationState,
-    Inspectability, JournalStatus, LifecycleStreamStatus, LifecycleWriter, ManifestDocument,
-    ManifestVersion, ProtocolClassification, ResourceJournal, ResourceKind, ResourceState,
-    ResourceTransition,
+    EvidenceWindow, Inspectability, JournalStatus, LifecycleStreamStatus, LifecycleWriter,
+    ManifestDocument, ManifestVersion, ProtocolClassification, ResourceJournal, ResourceKind,
+    ResourceState, ResourceTransition,
 };
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
@@ -448,6 +448,7 @@ fn controlled_observation(protocol: CompatibilityProtocol) -> CompatibilityObser
     let classification = ProtocolClassification::from_proxy_evidence(label, inspectability, None);
     assert_eq!(classification.family().as_str(), protocol.as_str());
     CompatibilityObservation {
+        evidence_window: EvidenceWindow::Observation,
         flow_id: None,
         proxy_connection_id: format!("controlled-{label}"),
         client_peer: None,

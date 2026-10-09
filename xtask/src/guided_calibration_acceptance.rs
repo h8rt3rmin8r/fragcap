@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -324,7 +323,7 @@ fn validate_test_source(source: &str, function: &str, platform: &str) -> Result<
 }
 
 fn tracked_rust_sources(root: &Path) -> io::Result<BTreeSet<String>> {
-    let output = Command::new("git")
+    let output = crate::hidden_command("git")
         .current_dir(root)
         .args(["ls-files", "--", "crates", "xtask"])
         .output()?;

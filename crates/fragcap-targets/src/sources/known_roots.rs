@@ -108,8 +108,14 @@ impl<'a> KnownRootsSource<'a> {
                 // Name the root that failed so "some access error occurred" is
                 // recoverable to which of the eleven roots on which volume failed,
                 // while the scalar count stays conserved (P-4).
-                out.warnings
-                    .push(format!("could not read known root: {dir}"));
+                out.warn(crate::DiscoveryDiagnostic {
+                    source: self.name().to_string(),
+                    root: Some(dir.to_string()),
+                    target: None,
+                    operation: "root-descent".to_string(),
+                    kind: "access".to_string(),
+                    message: format!("could not read known root: {dir}"),
+                });
             }
             DirListing::Present(children) => {
                 for child in children {
@@ -123,7 +129,16 @@ impl<'a> KnownRootsSource<'a> {
                     // coverage; name it so a partial scan is visible, not silent
                     // (P-4). The lines arrive finished, so a cause added later is
                     // forwarded here without this walk knowing about it.
-                    out.warnings.extend(classification.coverage_warnings);
+                    for message in classification.coverage_warnings {
+                        out.warn(crate::DiscoveryDiagnostic {
+                            source: self.name().to_string(),
+                            root: Some(child.clone()),
+                            target: Some(child.clone()),
+                            operation: "detection".to_string(),
+                            kind: "coverage".to_string(),
+                            message,
+                        });
+                    }
                     match classification.verdict {
                         ClassifierVerdict::Hit {
                             classification,
@@ -154,9 +169,11 @@ impl<'a> KnownRootsSource<'a> {
                                 self.walk(&child, depth + 1, out);
                             } else {
                                 out.account.container_descent_truncated += 1;
-                                out.warnings.push(format!(
-                                    "known-roots container reached the descent limit; descendants may remain undiscovered: {child}"
-                                ));
+                                out.warn(crate::DiscoveryDiagnostic {
+                                    source: self.name().to_string(), root: Some(child.clone()), target: None,
+                                    operation: "root-descent".to_string(), kind: "descent-limit".to_string(),
+                                    message: format!("known-roots container reached the descent limit; descendants may remain undiscovered: {child}"),
+                                });
                             }
                         }
                         ClassifierVerdict::Miss => {

@@ -5,7 +5,6 @@ use std::fs;
 use std::io;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -254,7 +253,7 @@ fn validate_corpus(root: &Path, value: &Value, problems: &mut Vec<String>) -> io
     let files = seed_files(root, value)?;
     let mut per_target = BTreeMap::<String, usize>::new();
     let mut seen = BTreeMap::<String, BTreeSet<Vec<u8>>>::new();
-    let tracked = Command::new("git")
+    let tracked = crate::hidden_command("git")
         .current_dir(root)
         .args(["ls-files", "--", "fuzz/corpus"])
         .output()?;

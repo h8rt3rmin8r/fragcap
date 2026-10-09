@@ -284,6 +284,7 @@ load-bearing rather than bookkeeping.
 | `h2`, `bytes` | runtime, direct | S105 | Native bounded HTTP/2 stream and flow-control ownership; both were already lock-resolved |
 | `async-compression` | runtime, direct | S105 | Exact-pinned pure-Rust gzip, zlib-deflate, and Brotli body derivations with only the selected Tokio codecs enabled |
 | `flate2` | runtime, direct | S106 | Stateful raw DEFLATE for negotiated WebSocket per-message compression; exact-resolved and already present in the lock graph |
+| `unicode-width` | runtime, direct CLI | S168 | Exact-pinned 0.2.2, default features off, for complete-string terminal widths including combining scripts and composed emoji; one lock package, Rust 1.66 upstream minimum |
 
 S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
 crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend
@@ -1060,6 +1061,8 @@ tracked files in every surface and are the exception.
 agreement. It does not verify hashes; `skills/README.md` says why.
 
 ## Non-negotiables
+
+Every application-authored human multi-column report MUST use actual emitted display-cell widths and a gap of exactly four spaces beyond the maximum preceding column width, for every adjacent column pair. Include headings, delimiters, optional/indexed labels, Unicode, ANSI styling, stdout/stderr, and continuation rows. Use the shared `fragcap-cli::display` layout; narrow terminals retain anchors and exact tokens rather than reducing gaps or truncating values. Any development-time exception requires explicit operator permission. Preserve structured schemas and machine protocols independently.
 
 These restate the constitution's sharpest edges. The constitution is
 authoritative; this list is the one to keep in working memory.

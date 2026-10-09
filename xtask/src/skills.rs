@@ -33,7 +33,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 /// Where vendored skills live, repository-relative. Forward slashes, because
 /// this string is compared against `git ls-files` output.
@@ -448,7 +447,7 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) -> io::Result<()> {
 /// narrow character set, and the escaped form would not compare equal to the
 /// path the directory walk produced.
 fn tracked(root: &Path) -> io::Result<BTreeSet<String>> {
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .current_dir(root)
         .args(["ls-files", "-z", "--", SKILLS_DIR])
         .output()

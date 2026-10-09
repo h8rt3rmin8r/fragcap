@@ -240,12 +240,16 @@ impl AuthorizationPlan {
             .expect("the authorization plan contains only serializable values");
         emitter
             .required_human_checked(&format!(
-                "{}Deep Capture authorization plan\n  plan id: {}\n{}\n",
+                "{}Deep Capture authorization plan\n{}{}\n",
                 session_ux::authorization_summary(
                     &self.canonical,
                     crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
                 ),
-                self.id,
+                crate::display::render_fields(
+                    2,
+                    &[("plan id:".into(), self.id.clone())],
+                    usize::MAX
+                ),
                 rendered
             ))
             .map_err(|error| {
@@ -619,12 +623,36 @@ fn run_warm_restart(
         images: context.plan.images().to_vec(),
         deadline_secs: CalibrationDeadlines::seconds(context.plan.deadline()),
     });
+    let fields = vec![
+        ("target:".into(), context.target.clone()),
+        (
+            "observed case:".into(),
+            context.plan.warm_case().as_str().into(),
+        ),
+        ("declared images:".into(), context.plan.images().join(", ")),
+        (
+            "identity:".into(),
+            "image-name observation only; ownership is not proven".into(),
+        ),
+        (
+            "deadline:".into(),
+            format!(
+                "{}s",
+                CalibrationDeadlines::seconds(context.plan.deadline())
+            ),
+        ),
+        (
+            "action:".into(),
+            "close the application through its normal Exit or Quit control".into(),
+        ),
+        (
+            "process control:".into(),
+            "none; fragcap will never force kill or signal it".into(),
+        ),
+    ];
     emitter.required_human(&format!(
-        "Warm-to-cold restart plan\n  target: {}\n  observed case: {}\n  declared images: {}\n  identity: image-name observation only; ownership is not proven\n  deadline: {}s\n  action: close the application through its normal Exit or Quit control\n  process control: none; fragcap will never force kill or signal it\n",
-        context.target,
-        context.plan.warm_case().as_str(),
-        context.plan.images().join(", "),
-        CalibrationDeadlines::seconds(context.plan.deadline()),
+        "Warm-to-cold restart plan\n{}",
+        crate::display::render_fields(2, &fields, usize::MAX)
     ));
     crate::orchestrator::install_interrupt_handler();
     if !confirm_warm_restart(
@@ -1326,8 +1354,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     }
 }
 
-struct LibraryFactAdapter<'e, 'w> {
-    emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
+struct LibraryFactAdapter {
     store: Rc<RefCell<Store>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
@@ -1335,16 +1362,12 @@ struct LibraryFactAdapter<'e, 'w> {
     family: DeepCaptureProxyFamilyArg,
 }
 
-impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter<'_, '_> {
+impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
     fn append(
         &mut self,
         target: &deep_capture_api::PreparedTarget,
         fact: &deep_capture_api::CompatibilityFact,
     ) -> deep_capture_api::FactWriteStatus {
-        self.emitter.borrow_mut().progress(session_ux::wrapped(
-            "Persisting a directly observed compatibility fact; requested protocols alone are not evidence.",
-            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
-        ).trim_end());
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
             Err(error) => {
@@ -1877,6 +1900,7 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 ..
             } => {
                 emitter.event(&Event::DeepCaptureApplication {
+                    evidence_window: observation.evidence_window.as_str().to_string(),
                     session_id: session_id.clone(),
                     flow_id: observation.flow_id.map(|flow_id| flow_id.to_string()),
                     proxy_connection_id: observation.proxy_connection_id.clone(),
@@ -2354,6 +2378,7 @@ pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
     pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
+    pub assessment: Option<crate::commands::calibrate::assessment::AttemptAssessment>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2516,12 +2541,14 @@ pub(crate) fn run_with_outcome(
                 observations: Vec::new(),
                 disposition: RunDisposition::Declined,
                 terminal_error: None,
+                assessment: None,
             });
         }
         AuthorizationDecision::Interrupted => {
             return Ok(RunOutcome {
                 observations: Vec::new(),
                 disposition: RunDisposition::Interrupted,
+                assessment: None,
                 terminal_error: Some(CliError::failure(
                     "Deep Capture authorization was interrupted; no effects were applied",
                 )),
@@ -2653,7 +2680,6 @@ pub(crate) fn run_with_outcome(
             mode,
         }),
         facts: Box::new(LibraryFactAdapter {
-            emitter: Rc::clone(&emitter),
             store: Rc::clone(&store),
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
@@ -2774,30 +2800,34 @@ pub(crate) fn run_with_outcome(
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
-    if let Some(phase) = calibration {
+    let assessment = calibration.map(|phase| {
         let runtime = runtime.borrow();
-        let outcome = terminal_calibration_outcome(
+        let mut assessment = crate::commands::calibrate::assessment::AttemptAssessment::from_report(
+            &report,
             phase,
             args.calibration_protocol
                 .map(calibration_protocol)
                 .expect("calibration protocol validated"),
-            &report.snapshot.observations,
-            runtime.interrupted,
-            !report.snapshot.failures.is_empty(),
+            runtime.process_evidence.as_ref(),
+            runtime.retained_target_packets,
         );
-        emitter.borrow_mut().terminal_human(&format!(
-            "Calibration outcome: {outcome}. Reason: {}.\n",
-            calibration_outcome_reason(phase, outcome)
-        ));
+        assessment.process_completeness =
+            session_ux::artifact_process_completeness(&report.artifacts);
+        let mut value = assessment.json();
+        value["artifact_access"] =
+            serde_json::json!(session_ux::artifact_access(&report.artifacts));
+        emitter.borrow_mut().event(&Event::CalibrationAttempt {
+            assessment: value.clone(),
+        });
+        emitter.borrow_mut().calibration_attempt(value.clone());
         emitter
             .borrow_mut()
-            .terminal_human(&session_ux::calibration_diagnosis(
-                &report.snapshot,
-                runtime.process_evidence.as_ref(),
-                runtime.retained_target_packets,
+            .terminal_human(&session_ux::attempt_diagnosis(
+                &value,
                 crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
             ));
-    }
+        assessment
+    });
     emitter
         .borrow_mut()
         .terminal_human(&session_ux::terminal_summary(
@@ -2812,6 +2842,7 @@ pub(crate) fn run_with_outcome(
             observations: report.snapshot.observations,
             disposition: RunDisposition::Completed,
             terminal_error: None,
+            assessment,
         })
     } else {
         let disposition =
@@ -2830,6 +2861,7 @@ pub(crate) fn run_with_outcome(
             observations: report.snapshot.observations,
             disposition,
             terminal_error: Some(CliError::failure(detail)),
+            assessment,
         })
     }
 }
@@ -5223,6 +5255,7 @@ mod tests {
             client_peer: None,
             proxy_local: None,
             observed_at: "2026-01-01T00:00:00Z".to_string(),
+            evidence_window: deep_capture_api::EvidenceWindow::Observation,
             process_id: None,
             process_image: None,
             role: None,

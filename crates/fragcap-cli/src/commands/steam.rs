@@ -32,7 +32,9 @@ use fragcap::write_json_string;
 
 use crate::cli::{SteamArgs, SteamCommand};
 use crate::commands::targets::default_local_store;
-use crate::display::{display_width, human_display_value, pad_display, selected_stdout_width};
+use crate::display::{
+    display_width, human_display_value, render_fields, selected_stdout_width, ColumnLayout,
+};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
@@ -202,14 +204,49 @@ fn render_human(rows: &[ListingRow<'_>], width: usize, out: &mut dyn Write) {
     }
 
     let display_rows: Vec<HumanRow> = rows.iter().map(HumanRow::from).collect();
-    let widths = ColumnWidths::for_rows(&display_rows);
-    if widths.table_width() <= width {
-        render_aligned(&display_rows, widths, out);
-    } else {
-        render_vertical(&display_rows, out);
+    let mut cells = vec![vec![
+        "APP ID".into(),
+        "NAME".into(),
+        "STATE".into(),
+        "TARGET".into(),
+    ]];
+    cells.extend(display_rows.iter().map(|row| {
+        vec![
+            row.app_id.clone(),
+            row.name.clone(),
+            row.state.into(),
+            row.target.clone(),
+        ]
+    }));
+    let layout = ColumnLayout::new(0, &cells);
+    if cells
+        .iter()
+        .any(|row| display_width(&layout.render_row(row)) > width)
+    {
+        let _ = writeln!(out, "INSTALLED STEAM TITLES");
+        for row in &display_rows {
+            let _ = writeln!(out);
+            let _ = write!(
+                out,
+                "{}",
+                render_fields(
+                    0,
+                    &[
+                        ("APP ID:".into(), row.app_id.clone()),
+                        ("NAME:".into(), row.name.clone()),
+                        ("STATE:".into(), row.state.into()),
+                        ("TARGET:".into(), row.target.clone()),
+                    ],
+                    width
+                )
+            );
+        }
+        return;
+    }
+    for row in cells {
+        let _ = writeln!(out, "{}", layout.render_wrapped_row(&row, width));
     }
 }
-
 struct HumanRow {
     app_id: String,
     name: String,
@@ -237,74 +274,6 @@ impl From<&ListingRow<'_>> for HumanRow {
             name: human_display_value(&row.title.name),
             state,
             target,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ColumnWidths {
-    app_id: usize,
-    name: usize,
-    state: usize,
-    target: usize,
-}
-
-impl ColumnWidths {
-    fn for_rows(rows: &[HumanRow]) -> Self {
-        let mut widths = ColumnWidths {
-            app_id: display_width("APP ID"),
-            name: display_width("NAME"),
-            state: display_width("STATE"),
-            target: display_width("TARGET"),
-        };
-        for row in rows {
-            widths.app_id = widths.app_id.max(display_width(&row.app_id));
-            widths.name = widths.name.max(display_width(&row.name));
-            widths.state = widths.state.max(display_width(row.state));
-            widths.target = widths.target.max(display_width(&row.target));
-        }
-        widths
-    }
-
-    fn table_width(self) -> usize {
-        self.app_id + self.name + self.state + self.target + 6
-    }
-}
-
-fn render_aligned(rows: &[HumanRow], widths: ColumnWidths, out: &mut dyn Write) {
-    let _ = writeln!(
-        out,
-        "{}  {}  {}  TARGET",
-        pad_display("APP ID", widths.app_id),
-        pad_display("NAME", widths.name),
-        pad_display("STATE", widths.state)
-    );
-    for row in rows {
-        let prefix = format!(
-            "{}  {}  {}",
-            pad_display(&row.app_id, widths.app_id),
-            pad_display(&row.name, widths.name),
-            pad_display(row.state, widths.state)
-        );
-        if row.target.is_empty() {
-            let _ = writeln!(out, "{prefix}");
-        } else {
-            let _ = writeln!(out, "{prefix}  {}", row.target);
-        }
-    }
-}
-
-fn render_vertical(rows: &[HumanRow], out: &mut dyn Write) {
-    let _ = writeln!(out, "INSTALLED STEAM TITLES");
-    for row in rows {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "APP ID: {}", row.app_id);
-        let _ = writeln!(out, "NAME: {}", row.name);
-        let _ = writeln!(out, "STATE: {}", row.state);
-        if row.target.is_empty() {
-            let _ = writeln!(out, "TARGET:");
-        } else {
-            let _ = writeln!(out, "TARGET: {}", row.target);
         }
     }
 }
@@ -353,6 +322,7 @@ pub(crate) fn map_steam_error(error: SteamError) -> CliError {
     match error {
         SteamError::NotInstalled
         | SteamError::UnsupportedPlatform
+        | SteamError::AmbiguousTitle { .. }
         | SteamError::TitleNotFound { .. } => CliError::usage(error.to_string()),
         SteamError::Io { .. }
         | SteamError::NoExecutables { .. }
@@ -455,9 +425,9 @@ mod tests {
             .expect("snapshot");
 
         let titles = vec![
-            title("100", "Positioned Title"),
-            title("200", "Unpositioned Title"),
-            title("300", "Unregistered Title"),
+            title("100", "Positioned"),
+            title("200", "Unpositioned"),
+            title("300", "Unregistered"),
         ];
         let mut buf: Vec<u8> = Vec::new();
         let mut e = emitter(&mut buf);
@@ -469,15 +439,15 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         let mut lines = text.lines();
         let header = lines.next().expect("header");
-        assert!(header.starts_with("APP ID  NAME"));
-        assert!(header.contains("  STATE  "));
+        assert!(header.starts_with("APP ID    NAME"));
+        assert!(header.contains("    STATE    "));
         assert!(header.ends_with("TARGET"));
         assert!(!text.contains('\t'));
         assert!(text.contains("positioned_handle (#1)"));
         assert!(text.contains("unpositioned_handle (no position)"));
-        assert!(text.contains("300     Unregistered Title  unregistered"));
+        assert!(text.contains("300       Unregistered    unregistered"));
         assert!(
-            !text.contains("Unregistered Title  unregistered  handle"),
+            !text.contains("Unregistered Title    unregistered    handle"),
             "an unregistered row never carries a handle"
         );
     }
@@ -537,10 +507,13 @@ mod tests {
         render_human(&rows, 40, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("INSTALLED STEAM TITLES\n\n"));
-        assert!(text.contains("APP ID: 123456789"));
-        assert!(text.contains("NAME: 界界 e\u{301} title\\tpart\\nwith a deliberately long suffix"));
-        assert!(text.contains("NAME: Short"));
-        assert!(text.contains("STATE: unregistered"));
+        assert!(text.contains("APP ID:    123456789"));
+        assert!(
+            text.contains("NAME:      界界 e\u{301} title\\tpart\\nwith a")
+                && text.contains("deliberately long suffix")
+        );
+        assert!(text.contains("NAME:      Short"));
+        assert!(text.contains("STATE:     unregistered"));
         assert!(text.contains("TARGET:\n"));
         assert!(!text.contains('\t'));
         assert!(!text.contains("..."));

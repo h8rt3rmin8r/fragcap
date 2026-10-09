@@ -325,6 +325,8 @@ pub struct RuntimeFailure {
 pub struct RuntimeResourceAccounting {
     pub failure_detail_capacity: u64,
     pub failure_details_dropped_oldest: u64,
+    pub connection_details_dropped_oldest: u64,
+    pub connection_details_unavailable: u64,
     pub connection_tasks_current: u64,
     pub connection_tasks_peak: u64,
     pub connection_tasks_spawned: u64,
@@ -338,6 +340,109 @@ pub struct RuntimeResourceAccounting {
     pub application_queue_capacity: u64,
     pub application_queue_current: u64,
     pub application_queue_peak: u64,
+}
+
+/// Stable causal population for a connection's terminal result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionFailureCategory {
+    Authentication,
+    Protocol,
+    Transport,
+    Upstream,
+    Timeout,
+    Cancelled,
+    Unavailable,
+}
+
+impl ConnectionFailureCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::Protocol => "protocol",
+            Self::Transport => "transport",
+            Self::Upstream => "upstream",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// Classify an internal stable code, never an error's private detail text.
+    pub(crate) fn from_code(code: &str) -> Self {
+        if code == "pre-authentication-failed" {
+            Self::Unavailable
+        } else if code.contains("timeout") || code.contains("deadline") {
+            Self::Timeout
+        } else if code.contains("cancelled") || code.contains("shutdown") {
+            Self::Cancelled
+        } else if code.starts_with("upstream-")
+            || code.starts_with("destination-")
+            || code.contains("dns")
+        {
+            Self::Upstream
+        } else if code.contains("transport")
+            || code.contains("io-failed")
+            || code.contains("read-failed")
+            || code.contains("write-failed")
+        {
+            Self::Transport
+        } else if code
+            .split('-')
+            .any(|part| matches!(part, "auth" | "authentication" | "authorization"))
+        {
+            Self::Authentication
+        } else if code.contains("task-") {
+            Self::Unavailable
+        } else if code.starts_with("http-")
+            || code.starts_with("http2-")
+            || code.starts_with("http3-")
+            || code.starts_with("socks-")
+            || code.starts_with("client-tls-")
+            || code.starts_with("tls-")
+            || code.starts_with("websocket-")
+            || code.starts_with("upgrade-")
+        {
+            Self::Protocol
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+/// Fixed-size counters have no history-dependent growth or silent eviction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConnectionCauseCounts {
+    pub authentication: u64,
+    pub protocol: u64,
+    pub transport: u64,
+    pub upstream: u64,
+    pub timeout: u64,
+    pub cancelled: u64,
+    pub unavailable: u64,
+}
+
+impl ConnectionCauseCounts {
+    pub(crate) fn record(&mut self, category: ConnectionFailureCategory, count: u64) {
+        let value = match category {
+            ConnectionFailureCategory::Authentication => &mut self.authentication,
+            ConnectionFailureCategory::Protocol => &mut self.protocol,
+            ConnectionFailureCategory::Transport => &mut self.transport,
+            ConnectionFailureCategory::Upstream => &mut self.upstream,
+            ConnectionFailureCategory::Timeout => &mut self.timeout,
+            ConnectionFailureCategory::Cancelled => &mut self.cancelled,
+            ConnectionFailureCategory::Unavailable => &mut self.unavailable,
+        };
+        *value = value.saturating_add(count);
+    }
+}
+
+/// Bounded terminal identity and stable reason, with no payload or private detail.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectionDiagnostic {
+    pub connection_id: u64,
+    pub terminal: &'static str,
+    pub cause: Option<ConnectionFailureCategory>,
+    pub code: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -354,6 +459,9 @@ pub struct RuntimeObservation {
     pub live_connections: usize,
     pub peak_live_connections: usize,
     pub failures: Vec<RuntimeFailure>,
+    /// Closed connection categories remain exact when detail retention overflows.
+    pub connection_causes: ConnectionCauseCounts,
+    pub connection_diagnostics: Vec<ConnectionDiagnostic>,
     pub resources: RuntimeResourceAccounting,
     pub protocol: ProtocolAccounting,
     pub application: Vec<ProxyObservation>,
@@ -374,6 +482,8 @@ impl RuntimeObservation {
             live_connections: 0,
             peak_live_connections: 0,
             failures: Vec::new(),
+            connection_causes: ConnectionCauseCounts::default(),
+            connection_diagnostics: Vec::new(),
             resources: RuntimeResourceAccounting::default(),
             protocol: ProtocolAccounting::default(),
             application: Vec::new(),
@@ -385,6 +495,8 @@ impl RuntimeObservation {
 pub struct ProtocolAccounting {
     pub requests: u64,
     pub responses: u64,
+    /// Response body and exchange completed, independently from connection closure.
+    pub http1_exchanges_completed: u64,
     pub informational_responses: u64,
     pub connect_requests: u64,
     pub client_tls_completed: u64,
@@ -505,6 +617,8 @@ pub struct ProxyObservation {
     pub client_peer: SocketAddr,
     pub proxy_local: SocketAddr,
     pub timestamp_ns: u64,
+    /// Instant when the retained semantic result became known, not request start.
+    pub evidence_observed_at_ns: Option<u64>,
     pub connection_opened_at_ns: u64,
     pub connection_closed_at_ns: u64,
     pub protocol: String,

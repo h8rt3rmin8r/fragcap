@@ -89,6 +89,13 @@ pub trait ProxyLease {
     fn application_classification_summary(&self) -> Option<super::ClassificationSummary> {
         None
     }
+    /// Seal calibration eligibility at the exact end of the observation stage.
+    /// Adapters must explicitly assign each observation's evidence window.
+    fn end_observation_window(&mut self, _ended_at: SystemTime) {}
+    /// Independently typed native terminal counters, when the adapter owns them.
+    fn terminal_diagnostics(&self) -> Option<super::ProxyDiagnostics> {
+        None
+    }
     fn stop(&mut self, budget: Budget) -> CleanupResult;
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult>;
 }

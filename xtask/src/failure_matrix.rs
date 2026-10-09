@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -248,7 +247,7 @@ fn validate_test_references(
     value: &Value,
     problems: &mut Vec<String>,
 ) -> io::Result<()> {
-    let tracked = Command::new("git")
+    let tracked = crate::hidden_command("git")
         .current_dir(root)
         .args(["ls-files"])
         .output()?;

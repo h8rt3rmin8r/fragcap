@@ -8,7 +8,7 @@ use fragcap::deep_capture::api::{
 };
 use serde_json::Value;
 
-use crate::display::{display_width, human_display_value, wrap_hanging};
+use crate::display::{human_display_value, wrap_hanging};
 
 fn display_value(value: &str) -> String {
     human_display_value(value)
@@ -29,15 +29,157 @@ pub(crate) fn wrapped(text: &str, width: usize) -> String {
         .collect()
 }
 
+fn render_exact_fields(fields: &[(String, String)], width: usize) -> String {
+    let rows: Vec<Vec<String>> = fields
+        .iter()
+        .map(|(label, value)| vec![human_display_value(label), human_display_value(value)])
+        .collect();
+    let layout = crate::display::ColumnLayout::new(0, &rows);
+    rows.iter()
+        .map(|row| {
+            let exact = matches!(row[0].as_str(), "Target:" | "Bundle:" | "Next action:")
+                || row[0].starts_with("Case ")
+                || row[1].contains("; written;")
+                || row[1].contains("; failed;");
+            format!(
+                "{}\n",
+                if exact {
+                    layout.render_row(row)
+                } else {
+                    layout.render_wrapped_row(row, width.clamp(40, 80))
+                }
+            )
+        })
+        .collect()
+}
+
 /// Exact values are never reflowed internally, even when wider than the terminal.
-fn exact_detail(label: &str, value: &str, width: usize) -> String {
-    let value = display_value(value);
-    let line = format!("{label}: {value}");
-    if display_width(&line) <= width.clamp(40, 80) {
-        format!("{line}\n")
+pub(crate) fn calibration_verdict(value: &Value, width: usize) -> String {
+    let scalar = |value: &Value| match value {
+        Value::Null => "unavailable".to_string(),
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    };
+    let mut text = String::from("\nCalibration verdict\n\n");
+    let mut fields = vec![
+        ("Target:".into(), scalar(&value["target"])),
+        ("Target id:".into(), scalar(&value["target_id"])),
+        ("Verdict:".into(), scalar(&value["verdict"])),
+        ("Workflow status:".into(), scalar(&value["status"])),
+        ("Reason:".into(), scalar(&value["reason"])),
+    ];
+    if let Some(attempt) = value.get("attempted_case") {
+        fields.push(("Attempted case:".into(), scalar(&attempt["verdict"])));
+        fields.push(("Attempt reason:".into(), scalar(&attempt["reason"])));
+        fields.push((
+            "Earliest boundary:".into(),
+            scalar(&attempt["earliest_boundary"]),
+        ));
+        if let Some(identity) = attempt["identity"].as_object() {
+            for (key, value) in identity {
+                fields.push((format!("Attempt {key}:"), scalar(value)));
+            }
+        }
     } else {
-        format!("{label}:\n{value}\n")
+        fields.push(("Attempted case:".into(), "not run".into()));
     }
+    if let Some(current) = value.get("current_case") {
+        fields.push((
+            "Current applicable readiness:".into(),
+            scalar(&current["verdict"]),
+        ));
+        fields.push(("Readiness reason:".into(), scalar(&current["reason"])));
+        fields.push((
+            "Deep Capture routing prerequisite:".into(),
+            scalar(&current["deep_capture_routing_prerequisite_satisfied"]),
+        ));
+        fields.push((
+            "Launch readiness:".into(),
+            scalar(
+                value
+                    .get("launch_readiness")
+                    .unwrap_or(&current["launch_readiness"]),
+            ),
+        ));
+        fields.push((
+            "Protocol readiness:".into(),
+            if current["protocol"].is_null() {
+                "not assessed; routing case only".into()
+            } else {
+                scalar(&current["protocol"])
+            },
+        ));
+        if let Some(identity) = current.get("identity").and_then(Value::as_object) {
+            for (key, value) in identity {
+                fields.push((
+                    if key == "target_id" {
+                        "Case stored target row:".into()
+                    } else {
+                        format!("Case {key}:")
+                    },
+                    scalar(value),
+                ));
+            }
+        }
+    } else {
+        fields.push((
+            "Current applicable readiness:".into(),
+            "unavailable; exact current case not established".into(),
+        ));
+    }
+    if let Some(limitations) = value["limitations"].as_array() {
+        for (index, limitation) in limitations.iter().enumerate() {
+            fields.push((format!("Limitation {}:", index + 1), scalar(limitation)));
+        }
+    }
+    if let Some(error) = value["terminal_error"].as_str() {
+        fields.push(("Terminal error:".into(), error.into()));
+    }
+    fields.push((
+        "Remaining protocols:".into(),
+        value["remaining_protocols"]
+            .as_array()
+            .map(|values| {
+                if values.is_empty() {
+                    "none in the established case".into()
+                } else {
+                    values.iter().map(&scalar).collect::<Vec<_>>().join(", ")
+                }
+            })
+            .unwrap_or_else(|| "unavailable".into()),
+    ));
+    if let Some(id) = value["workflow_id"].as_i64() {
+        fields.push(("Workflow identity:".into(), format!("{id}; resume reuses intent and attempt history, with fresh preflight and authorization")));
+        fields.push((
+            "Workflow revision:".into(),
+            scalar(&value["workflow_revision"]),
+        ));
+        fields.push(("Workflow state:".into(), scalar(&value["workflow_state"])));
+    }
+    if let Some(number) = value["attempt"].as_u64() {
+        fields.push((
+            "Attempt ordinal:".into(),
+            format!(
+                "{number}; {} / {}",
+                scalar(&value["phase"]),
+                scalar(&value["protocol"])
+            ),
+        ));
+    }
+    fields.push((
+        "Next action:".into(),
+        value["next_command"]
+            .as_str()
+            .unwrap_or("none supported by the current evidence; review the stated blocker")
+            .into(),
+    ));
+    fields.push((
+        "Action purpose:".into(),
+        scalar(&value["next_command_purpose"]),
+    ));
+    text.push_str(&render_exact_fields(&fields, width));
+    text.push_str(&wrapped("Attempted evidence and current stored readiness are independent. Session finalization, artifact writes, readable access, process completeness, and resource cleanup do not establish target compatibility.", width));
+    text
 }
 
 pub(crate) fn lifecycle_progress(event: &DeepCaptureEvent, width: usize) -> Option<String> {
@@ -55,11 +197,10 @@ pub(crate) fn lifecycle_progress(event: &DeepCaptureEvent, width: usize) -> Opti
 
 pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
     let label = |pointer: &str| {
-        display_value(
-            plan.pointer(pointer)
-                .and_then(Value::as_str)
-                .unwrap_or("unavailable"),
-        )
+        plan.pointer(pointer)
+            .and_then(Value::as_str)
+            .unwrap_or("unavailable")
+            .to_string()
     };
     let selection = |pointer: &str| {
         if plan.pointer(pointer).is_some_and(Value::is_string) {
@@ -68,34 +209,62 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
             "not selected"
         }
     };
-    let mut text = wrapped(
+    let fields = vec![
+        ("Target:".into(), label("/target/name")),
+        (
+            "Target id:".into(),
+            plan.pointer("/target/stable_id")
+                .unwrap_or(&Value::Null)
+                .to_string(),
+        ),
+        ("Launch case:".into(), label("/launch/observed_case")),
+        ("Routing:".into(), label("/proxy/routing_scope")),
+        ("CA trust:".into(), label("/trust/action")),
+        (
+            "CA store:".into(),
+            if label("/trust/action") == "none" {
+                "none".into()
+            } else {
+                label("/trust/store")
+            },
+        ),
+        (
+            "Payload retention:".into(),
+            if plan
+                .pointer("/capture/payload_retention")
+                .and_then(Value::as_bool)
+                == Some(false)
+            {
+                "disabled".into()
+            } else {
+                "enabled".into()
+            },
+        ),
+        ("HAR:".into(), selection("/artifacts/har").into()),
+        (
+            "TLS key log:".into(),
+            selection("/artifacts/key_log").into(),
+        ),
+        (
+            "Client identity:".into(),
+            selection("/artifacts/client_certificate").into(),
+        ),
+        (
+            "Sensitive evidence:".into(),
+            label("/artifacts/sensitivity"),
+        ),
+        ("Bundle:".into(), label("/artifacts/bundle")),
+    ];
+    let mut text = String::from("Authorization\n\n");
+    text.push_str(&wrapped(
         "Deep Capture: active target-scoped inspection. Capture remains passive.",
         width,
-    );
-    text.push_str(&exact_detail("Target", &label("/target/name"), width));
-    text.push_str(&wrapped(&format!(
-        "Target id: {}. Launch case: {}.\n\
-         Routing: {}. No system-wide proxy change.\n\
-         CA trust: {}. Only exact session-owned additions are removed during cleanup.\n\
-         CA store: {}.\n\
-         Separate CA trust and sensitive-output consent remain required by the complete plan; this summary does not replace authorization.\n\
-         Payload retention: {}.\nHAR: {}.\nTLS key log: {}.\nClient identity: {}.\n\
-         Sensitive evidence: {}. Key logs contain secret TLS material when selected; supplied client identity is used only for upstream client authentication.\n\
-         Evidence is retained after external resource cleanup; review before sharing.\n\
-         Cleanup stops owned capture/proxy work, removes only session-added trust, and retains exact recovery records for incomplete obligations. Run fragcap doctor --fix to review unresolved residue with explicit confirmation.\n\
-         Review the complete canonical plan below, including deadlines, before authorizing its exact identifier.\n",
-        plan.pointer("/target/stable_id").unwrap_or(&Value::Null),
-        label("/launch/observed_case"), label("/proxy/routing_scope"), label("/trust/action"),
-        if plan.pointer("/trust/action").and_then(Value::as_str) == Some("none") {
-            "none".to_string()
-        } else { label("/trust/store") },
-        if plan.pointer("/capture/payload_retention").and_then(Value::as_bool) == Some(false) {
-            "disabled"
-        } else { "enabled" },
-        selection("/artifacts/har"), selection("/artifacts/key_log"),
-        selection("/artifacts/client_certificate"), label("/artifacts/sensitivity"),
-    ), width));
-    text.push_str(&exact_detail("Bundle", &label("/artifacts/bundle"), width));
+    ));
+    text.push_str(&render_exact_fields(&fields, width));
+    text.push_str(&wrapped(
+        "No system-wide proxy change. Separate CA trust and sensitive-output consent remain required by the complete plan. Key logs contain secret TLS material when selected; supplied client identity is used only for upstream client authentication. Evidence is retained after external resource cleanup; review before sharing. Cleanup removes only exact session-added trust and reports unresolved recovery obligations. Review the complete canonical plan below, including deadlines, before authorizing its exact identifier.",
+        width,
+    ));
     text
 }
 
@@ -143,38 +312,127 @@ pub(crate) fn terminal_summary(
         SessionOutcome::Failed => "failed",
         _ => "unavailable",
     };
-    let mut text = wrapped(&format!("Deep Capture outcome: {outcome}. Session outcome, artifact completeness, and resource cleanup are independent.\n"), width);
+    let manifest = artifacts
+        .iter()
+        .find(|artifact| artifact.role == "manifest")
+        .and_then(|artifact| read_manifest_projection(&artifact.path));
+    let completeness = manifest
+        .as_ref()
+        .and_then(|value| value.get("state").or_else(|| value.get("completeness")))
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    let mut text = String::from("\nCaptured evidence\n\n");
+    let mut fields = vec![
+        ("Session finalization:".into(), outcome.into()),
+        ("Evidence completeness:".into(), completeness.into()),
+    ];
+    let root = artifacts
+        .iter()
+        .find(|artifact| artifact.role == "manifest")
+        .and_then(|artifact| artifact.path.parent())
+        .or_else(|| {
+            artifacts
+                .first()
+                .and_then(|artifact| artifact.path.parent())
+        });
+    if let Some(root) = root.filter(|root| !root.as_os_str().is_empty()) {
+        fields.push(("Bundle:".into(), root.display().to_string()));
+    }
     let mut retained = false;
     for artifact in artifacts {
-        let status = match &artifact.status {
-            ArtifactStatus::Written => "written",
-            ArtifactStatus::Omitted { .. } => "omitted",
-            ArtifactStatus::Failed { .. } => "failed",
-            _ => "unavailable",
-        };
-        let present =
-            !matches!(artifact.status, ArtifactStatus::Omitted { .. }) && artifact.path.is_file();
-        retained |= present;
-        text.push_str(&wrapped(
-            &format!("Artifact {}: {status}.\n", display_value(&artifact.role),),
-            width,
-        ));
-        text.push_str(&exact_detail(
-            if present {
-                "retained at"
-            } else {
-                "no retained file confirmed at"
+        let (status, detail) = match &artifact.status {
+            ArtifactStatus::Written => match std::fs::File::open(&artifact.path) {
+                Ok(_) => {
+                    retained = true;
+                    let semantic = manifest
+                        .as_ref()
+                        .and_then(|value| value["artifacts"].as_array())
+                        .and_then(|entries| {
+                            entries.iter().find(|entry| entry["role"] == artifact.role)
+                        })
+                        .and_then(|entry| entry["completeness"].as_str())
+                        .unwrap_or("unavailable");
+                    (
+                        "written; readable in producer context",
+                        format!("completeness={semantic}"),
+                    )
+                }
+                Err(_) => (
+                    "written; access unavailable",
+                    "ordinary-user access unresolved; see #464".into(),
+                ),
             },
-            &artifact.path.display().to_string(),
-            width,
-        ));
+            ArtifactStatus::Omitted { reason } => ("omitted", reason.clone()),
+            ArtifactStatus::Failed { code, detail } => ("failed", format!("{code}: {detail}")),
+            _ => ("unavailable", "no artifact result".into()),
+        };
+        let value = if matches!(artifact.status, ArtifactStatus::Omitted { .. }) {
+            format!("{status}; {detail}")
+        } else {
+            let path = root
+                .and_then(|root| artifact.path.strip_prefix(root).ok())
+                .unwrap_or(&artifact.path);
+            format!("{}; {status}; {detail}", path.display())
+        };
+        fields.push((format!("{}:", display_value(&artifact.role)), value));
     }
+    if let Some(entries) = manifest
+        .as_ref()
+        .and_then(|value| value["artifacts"].as_array())
+    {
+        for entry in entries {
+            if entry["role"] == "process-trace" {
+                if let Some(loss) = entry["loss"].as_object() {
+                    for (name, value) in loss {
+                        if value.as_u64().is_some_and(|value| value > 0) {
+                            fields.push((format!("Process trace {name}:"), value.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(trace) = artifacts
+        .iter()
+        .find(|artifact| artifact.role == "process-trace")
+        .and_then(|artifact| read_trace_projection(&artifact.path))
+    {
+        if let Some(summary) = fragcap::deep_capture::read_process_trace(&trace) {
+            fields.push((
+                "Process trace finalization:".into(),
+                summary.finalization.into(),
+            ));
+            fields.push((
+                "Process trace completeness:".into(),
+                summary.completeness.into(),
+            ));
+            fields.push((
+                "Process trace limitations:".into(),
+                summary.limitations.to_string(),
+            ));
+            for line in trace
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            {
+                if line["type"] == "process-trace.limitation" {
+                    if let (Some(reason), Some(count)) =
+                        (line["reason"].as_str(), line["count"].as_u64())
+                    {
+                        fields.push((format!("Process trace {reason}:"), count.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    text.push_str(&render_exact_fields(&fields, width));
     if !retained {
-        text.push_str("No retained artifact was confirmed.\n");
+        text.push_str("No retained artifact was confirmed readable.\n");
     } else {
-        text.push_str(&wrapped("Retained evidence may be sensitive or incomplete. External resource cleanup does not delete it; review before sharing.", width));
+        text.push_str(&wrapped("Retained evidence may be sensitive. Producer-context readability does not prove ordinary-user access (#464). External resource cleanup does not delete retained evidence.", width));
     }
+    text.push_str("\nResource cleanup\n\n");
     let mut unresolved = false;
+    let mut rows = Vec::new();
     for result in cleanup {
         let status = match result.status {
             CleanupStatus::Released => "released",
@@ -183,80 +441,254 @@ pub(crate) fn terminal_summary(
             CleanupStatus::Failed => "failed",
             _ => "unavailable",
         };
-        unresolved |= !matches!(
+        let failed = !matches!(
             result.status,
             CleanupStatus::Released | CleanupStatus::NotNeeded
         );
-        text.push_str(&exact_detail(
-            &format!("Cleanup {}", display_value(&result.resource)),
-            status,
-            width,
+        unresolved |= failed;
+        rows.push((
+            format!("{}:", display_value(&result.resource)),
+            status.into(),
         ));
-        text.push_str(&wrapped(&display_value(&result.reason), width));
+        if failed {
+            rows.push((
+                format!("{} reason:", display_value(&result.resource)),
+                result.reason.clone(),
+            ));
+        }
     }
+    text.push_str(&crate::display::render_fields(0, &rows, width));
     if cleanup.is_empty() {
-        text.push_str(&wrapped(
-            "No cleanup result was reported; no absence of residue is inferred.",
-            width,
-        ));
-    }
-    if unresolved {
-        text.push_str(&wrapped("Unresolved owned resource obligations remain. Run fragcap doctor --fix to inspect exact recovery records and review repair with explicit confirmation. Never remove trust or files by name alone.", width));
-    }
-    if outcome != "complete" {
-        text.push_str(&wrapped("Review retained evidence and the reported failure or interruption before retrying. A retry requires a freshly prepared and separately authorized session; retained records never authorize new effects.", width));
+        text.push_str("No cleanup result was reported; absence of residue is unproven.\n");
+    } else if unresolved {
+        text.push_str(&wrapped("Unresolved owned resource obligations remain. Run fragcap doctor --fix to inspect exact recovery records and review repair with explicit confirmation.", width));
     }
     text
 }
 
-/// A causal calibration projection from the session's retained authorities.
-/// Unknown counters remain unavailable; artifact creation is never reachability.
-pub(crate) fn calibration_diagnosis(
-    snapshot: &fragcap::deep_capture::api::TerminalSnapshot,
-    process: Option<&fragcap::deep_capture::CaptureProcessEvidence>,
-    retained_target_packets: Option<u64>,
-    width: usize,
-) -> String {
-    use fragcap::deep_capture::api::{FactWriteStatus, RouteVerificationState};
-
-    let route_reached = snapshot
-        .route_verification
-        .as_ref()
-        .is_some_and(|route| route.state == RouteVerificationState::ReachedSocketOwner);
-    let stage = calibration_stage(snapshot.target.launch_case, process, route_reached);
-    let proxy_accepted = snapshot
-        .cleanup
-        .iter()
-        .find(|result| result.resource == "native-proxy-listener")
-        .and_then(|result| result.reason.strip_prefix("accepted="))
-        .and_then(|tail| tail.split(',').next())
-        .and_then(|value| value.parse::<u64>().ok());
-    let fact_writes = if snapshot.fact_writes.is_empty() {
-        "none reported".to_string()
-    } else {
-        snapshot
-            .fact_writes
-            .iter()
-            .map(|write| {
-                let status = match &write.status {
-                    FactWriteStatus::Appended => "appended",
-                    FactWriteStatus::Skipped { .. } => "skipped",
-                    FactWriteStatus::Failed { .. } => "failed",
-                    _ => "unavailable",
-                };
-                format!("{}={} ({status})", write.fact.kind, write.fact.value)
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    wrapped(&format!(
-        "Calibration diagnosis: earliest known stage: {stage}. Target packets retained: {}. Proxy connections accepted: {}. Compatibility facts: {fact_writes}. Route verification: {}. These values do not infer later stages from written artifacts.",
-        retained_target_packets.map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
-        proxy_accepted.map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
-        snapshot.route_verification.as_ref().map_or("unavailable", |route| route.state.as_str()),
-    ), width)
+/// Read only the finite metadata manifest, never payload evidence or key material.
+fn read_manifest_projection(path: &std::path::Path) -> Option<Value> {
+    use std::io::Read;
+    const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    (value["manifest_version"] == 2 && value["artifacts"].is_array()).then_some(value)
 }
 
+fn read_trace_projection(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    const MAX_TRACE_BYTES: u64 = 4 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_TRACE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_TRACE_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Readable producer-context access and semantic completeness remain independent.
+pub(crate) fn artifact_access(artifacts: &[ArtifactResult]) -> &'static str {
+    let written: Vec<_> = artifacts
+        .iter()
+        .filter(|artifact| matches!(artifact.status, ArtifactStatus::Written))
+        .collect();
+    if written.is_empty() {
+        "unavailable"
+    } else if written
+        .iter()
+        .all(|artifact| std::fs::File::open(&artifact.path).is_ok())
+    {
+        "readable-in-producer-context;ordinary-user-unverified"
+    } else {
+        "unavailable;ordinary-user-access-unresolved-464"
+    }
+}
+
+pub(crate) fn artifact_process_completeness(artifacts: &[ArtifactResult]) -> &'static str {
+    artifacts
+        .iter()
+        .find(|artifact| artifact.role == "manifest")
+        .and_then(|artifact| read_manifest_projection(&artifact.path))
+        .and_then(|manifest| manifest["artifacts"].as_array().cloned())
+        .and_then(|entries| {
+            entries
+                .into_iter()
+                .find(|entry| entry["role"] == "process-trace")
+        })
+        .and_then(|entry| entry["completeness"].as_str().map(str::to_owned))
+        .map_or("unavailable", |value| match value.as_str() {
+            "complete" => "complete",
+            "partial" => "partial",
+            _ => "unavailable",
+        })
+}
+
+/// Typed connection totals never substitute for application or ownership evidence.
+pub(crate) fn attempt_diagnosis(value: &Value, width: usize) -> String {
+    let count = |pointer: &str| {
+        value
+            .pointer(pointer)
+            .filter(|value| !value.is_null())
+            .map_or_else(|| "unavailable".into(), Value::to_string)
+    };
+    let mut fields = vec![
+        (
+            "Attempt result:".into(),
+            value["verdict"].as_str().unwrap_or("unavailable").into(),
+        ),
+        (
+            "Reason:".into(),
+            value["reason"].as_str().unwrap_or("unavailable").into(),
+        ),
+        (
+            "Earliest boundary:".into(),
+            value["earliest_boundary"]
+                .as_str()
+                .unwrap_or("unavailable")
+                .into(),
+        ),
+        (
+            "Target packets retained:".into(),
+            count("/retained_target_packets"),
+        ),
+    ];
+    for (label, key) in [
+        ("Connections accepted", "accepted_connections"),
+        ("Connections completed", "completed_connections"),
+        ("Connections failed", "failed_connections"),
+        ("Connections forced", "forced_connections"),
+        ("Connections live", "live_connections"),
+        ("Connections incomplete", "incomplete_connections"),
+        ("HTTP/1 exchanges completed", "http1_exchanges_completed"),
+        ("HTTP/2 streams completed", "http2_streams_completed"),
+        ("HTTP/3 streams completed", "http3_streams_completed"),
+        ("Response heads", "response_heads"),
+        ("Connection detail loss", "connection_details_lost"),
+        (
+            "Connection detail unavailable",
+            "connection_details_unavailable",
+        ),
+        ("Failure detail loss", "failure_details_lost"),
+        ("Observation loss", "observations_lost"),
+    ] {
+        fields.push((format!("{label}:"), count(&format!("/proxy/{key}"))));
+    }
+    for cause in [
+        "authentication",
+        "protocol",
+        "transport",
+        "upstream",
+        "timeout",
+        "cancelled",
+        "unavailable",
+    ] {
+        fields.push((
+            format!("Cause {cause}:"),
+            count(&format!("/proxy/causes/{cause}")),
+        ));
+    }
+    for window in [
+        "observation_records",
+        "owner_release_records",
+        "unavailable_records",
+    ] {
+        fields.push((
+            format!("Window {window}:"),
+            count(&format!("/evidence_windows/{window}")),
+        ));
+    }
+    for ownership in [
+        "matched_records",
+        "flow_only_records",
+        "ambiguous_records",
+        "unavailable_records",
+        "other_owner_records",
+        "eligible_final_client_records",
+    ] {
+        fields.push((
+            format!("Ownership {ownership}:"),
+            count(&format!("/ownership/{ownership}")),
+        ));
+    }
+    for key in [
+        "finalization",
+        "artifact_writes",
+        "artifact_access",
+        "process_completeness",
+        "cleanup",
+    ] {
+        fields.push((
+            format!("{key}:"),
+            value[key].as_str().unwrap_or("unavailable").into(),
+        ));
+    }
+    fields.push((
+        "Fact writes:".into(),
+        format!(
+            "appended={}, skipped={}, failed={}",
+            count("/fact_writes/appended"),
+            count("/fact_writes/skipped"),
+            count("/fact_writes/failed")
+        ),
+    ));
+    if let Some(results) = value["fact_write_results"].as_array() {
+        for (index, result) in results.iter().enumerate() {
+            fields.push((
+                format!("Failed fact {}:", index + 1),
+                format!(
+                    "{}; {}: {}",
+                    result["kind"].as_str().unwrap_or("unavailable"),
+                    result["code"].as_str().unwrap_or("unavailable"),
+                    result["detail"].as_str().unwrap_or("unavailable")
+                ),
+            ));
+        }
+    }
+    let mut text = String::from("\nObserved case evidence\n\n");
+    text.push_str(&render_exact_fields(&fields, width));
+    if let Some(connections) = value
+        .pointer("/proxy/connections")
+        .and_then(Value::as_array)
+    {
+        let rows: Vec<Vec<String>> = connections
+            .iter()
+            .map(|record| {
+                vec![
+                    record["connection_id"].to_string(),
+                    record["terminal"].as_str().unwrap_or("unavailable").into(),
+                    record["category"].as_str().unwrap_or("none").into(),
+                    record["code"].as_str().unwrap_or("none").into(),
+                ]
+            })
+            .collect();
+        if !rows.is_empty() {
+            text.push_str("\nConnection endings (retained bounded details)\n");
+            let layout = crate::display::ColumnLayout::new(0, &rows);
+            for row in &rows {
+                text.push_str(&layout.render_row(row));
+                text.push('\n');
+            }
+        }
+    }
+    text.push_str(&wrapped("Connection endings and application exchanges count different populations. Ownership counters describe retained records; late owner-release records cannot satisfy the attempted observation case. Unknown or lost details remain explicit.", width));
+    if value["reason"] == "final-client-correlation-missing" {
+        text.push_str(&wrapped("Final-client acquisition or correlation remains unresolved (#468). The observed proxy traffic does not prove the selected client reached the proxy. No gameplay remedy or retry command is established by this evidence.", width));
+    }
+    text
+}
+
+#[cfg(test)]
 fn calibration_stage(
     launch_case: fragcap::deep_capture::api::LaunchCase,
     process: Option<&fragcap::deep_capture::CaptureProcessEvidence>,
@@ -307,6 +739,162 @@ mod tests {
     use crate::display::display_width;
     use fragcap::deep_capture::api::{ArtifactStatus, CleanupStatus, Sensitivity};
     use serde_json::json;
+
+    #[test]
+    fn artifact_summary_reports_partial_semantics_and_one_bundle_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("manifest.json");
+        std::fs::write(&manifest, r#"{"manifest_version":2,"state":"partial","artifacts":[{"role":"process-trace","completeness":"partial","loss":{"limitations":3437}}]}"#).unwrap();
+        let trace = dir.path().join("process-trace.jsonl");
+        std::fs::write(&trace, "controlled trace\n").unwrap();
+        let artifacts = vec![
+            ArtifactResult {
+                role: "manifest".into(),
+                path: manifest,
+                sensitivity: Sensitivity::Metadata,
+                required: true,
+                status: ArtifactStatus::Written,
+            },
+            ArtifactResult {
+                role: "process-trace".into(),
+                path: trace,
+                sensitivity: Sensitivity::Payload,
+                required: true,
+                status: ArtifactStatus::Written,
+            },
+            ArtifactResult {
+                role: "har".into(),
+                path: dir.path().join("http.har"),
+                sensitivity: Sensitivity::Payload,
+                required: false,
+                status: ArtifactStatus::Omitted {
+                    reason: "artifact was not requested".into(),
+                },
+            },
+        ];
+        let text = terminal_summary(SessionOutcome::Complete, true, &artifacts, &[], 80);
+        assert!(text.contains("Session finalization:"));
+        assert!(text.contains("partial"));
+        assert!(text.contains("process-trace.jsonl"));
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert!(!text.contains("http.har"));
+        assert!(!text.contains("Deep Capture outcome: complete"));
+    }
+
+    #[test]
+    fn synthetic_transcript_separates_partial_process_six_endings_and_seven_exchanges() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        std::fs::write(&manifest_path, json!({"manifest_version":2,"state":"partial","artifacts":[{"role":"process-trace","completeness":"partial"}]}).to_string()).unwrap();
+        let trailer = json!({"type":"process-trace.trailer","finalization":"complete","completeness":"partial","records":4,"process_instances":2,"flow_owner_intervals":0,"limitations":3437,"events_lost":0,"unparseable_events":0,"buffers_lost":0,"rundown_ignored":0,"events_unretained":0,"stage_transitions_unretained":0,"unresolved_flow_owners":0});
+        let trace_path = dir.path().join("process-trace.jsonl");
+        std::fs::write(&trace_path, format!("{}\n{}\n{}\n{}\n", json!({"type":"process-trace.header"}), json!({"type":"process-trace.limitation","reason":"packet-evidence-unretained","count":3435}), json!({"type":"process-trace.limitation","reason":"process-exit-unobserved","count":2}), trailer)).unwrap();
+        let artifacts = [
+            ArtifactResult {
+                role: "manifest".into(),
+                path: manifest_path,
+                sensitivity: Sensitivity::Metadata,
+                required: true,
+                status: ArtifactStatus::Written,
+            },
+            ArtifactResult {
+                role: "process-trace".into(),
+                path: trace_path,
+                sensitivity: Sensitivity::Payload,
+                required: true,
+                status: ArtifactStatus::Written,
+            },
+        ];
+        let value = json!({"verdict":"inconclusive","reason":"final-client-correlation-missing","earliest_boundary":"final-client-correlation","proxy":{"accepted_connections":6,"completed_connections":0,"failed_connections":6,"http1_exchanges_completed":7,"causes":{"protocol":5,"timeout":1}},"evidence_windows":{"observation_records":0,"owner_release_records":7,"unavailable_records":0},"ownership":{"eligible_final_client_records":0},"cleanup":"released","fact_writes":{"appended":1,"skipped":0,"failed":0}});
+        let text = format!(
+            "{}{}",
+            attempt_diagnosis(&value, 80),
+            terminal_summary(
+                SessionOutcome::Complete,
+                true,
+                &artifacts,
+                &[CleanupResult {
+                    resource: "native-proxy-listener".into(),
+                    status: CleanupStatus::Released,
+                    reason: "private implementation text".into()
+                }],
+                80
+            )
+        );
+        let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for expected in [
+            "Connections accepted: 6",
+            "Connections completed: 0",
+            "Connections failed: 6",
+            "HTTP/1 exchanges completed: 7",
+            "Cause protocol: 5",
+            "Cause timeout: 1",
+            "Window owner_release_records: 7",
+            "Process trace limitations: 3437",
+            "Process trace packet-evidence-unretained: 3435",
+            "Process trace process-exit-unobserved: 2",
+            "Evidence completeness: partial",
+            "Session finalization: complete",
+        ] {
+            assert!(words.contains(expected), "missing {expected}: {text}");
+        }
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert!(!text.contains("private implementation text"));
+        assert!(words.contains("#468") && words.contains("No gameplay remedy"));
+        assert_eq!(artifact_process_completeness(&artifacts), "partial");
+        assert!(!text.contains("classification failed=0"));
+    }
+
+    #[test]
+    fn artifact_access_failure_does_not_claim_readable_evidence() {
+        let artifacts = [ArtifactResult {
+            role: "proxy-lifecycle".into(),
+            path: "missing-proxy.jsonl".into(),
+            sensitivity: Sensitivity::Payload,
+            required: true,
+            status: ArtifactStatus::Written,
+        }];
+        let text = terminal_summary(SessionOutcome::Complete, true, &artifacts, &[], 80);
+        assert!(text.contains("access unavailable"));
+        assert!(text.contains("#464"));
+    }
+
+    #[test]
+    fn authorization_fields_use_four_space_actual_label_anchors() {
+        let text = authorization_summary(&plan(false, false), 80);
+        let rows: Vec<_> = text
+            .lines()
+            .filter(|line| {
+                line.starts_with("Target:")
+                    || line.starts_with("Launch case:")
+                    || line.starts_with("Payload retention:")
+            })
+            .collect();
+        assert_eq!(rows.len(), 3);
+        let anchors: Vec<_> = rows
+            .iter()
+            .map(|line| {
+                let colon = line.find(':').unwrap();
+                colon + 1 + line[colon + 1..].chars().take_while(|c| *c == ' ').count()
+            })
+            .collect();
+        assert!(anchors.iter().all(|anchor| *anchor == anchors[0]));
+        let longest = text
+            .lines()
+            .filter(|line| line.contains(':'))
+            .max_by_key(|line| line.find(':').unwrap())
+            .unwrap();
+        assert_eq!(
+            longest
+                .split_once(':')
+                .unwrap()
+                .1
+                .chars()
+                .take_while(|c| *c == ' ')
+                .count(),
+            4
+        );
+    }
 
     #[test]
     fn calibration_stage_uses_only_proven_launch_and_client_edges() {
@@ -391,11 +979,16 @@ mod tests {
                 assert!(text.contains("Capture remains passive"));
                 assert!(text.contains("界 Game") && text.contains("75000"));
                 assert!(text.contains("managed child environment only"));
-                assert_ne!(text.contains("CA trust: none"), trust);
-                assert!(text.contains("HAR: selected") == sensitive);
-                assert!(text.contains("TLS key log: selected") == sensitive);
-                assert!(text.contains("Client identity: selected") == sensitive);
-                assert!(text.contains("Payload retention: disabled"));
+                let field = |label: &str| {
+                    text.lines()
+                        .find_map(|line| line.strip_prefix(label).map(str::trim))
+                        .unwrap()
+                };
+                assert_ne!(field("CA trust:") == "none", trust);
+                assert_eq!(field("HAR:") == "selected", sensitive);
+                assert_eq!(field("TLS key log:") == "selected", sensitive);
+                assert_eq!(field("Client identity:") == "selected", sensitive);
+                assert_eq!(field("Payload retention:"), "disabled");
                 assert!(text.contains("retained") && text.contains("credentials"));
                 assert!(text.contains("Separate") && text.contains("consent"));
             }
@@ -451,8 +1044,16 @@ mod tests {
                 &cleanup,
                 80,
             );
-            assert!(text.contains(&format!("outcome: {expected}")));
-            assert!(text.contains(&path.display().to_string()) && text.contains("retained"));
+            assert_eq!(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("Session finalization:").map(str::trim)),
+                Some(expected)
+            );
+            assert!(
+                text.contains(&dir.path().display().to_string())
+                    && text.contains("application.jsonl")
+                    && text.contains("retained")
+            );
             assert!(text.contains("exact-ca-thumbprint") && text.contains("failed"));
             assert!(text.contains("fragcap doctor --fix") && text.contains("confirmation"));
         }
@@ -462,7 +1063,11 @@ mod tests {
             reason: "owned proxy stopped".into(),
         }];
         let text = terminal_summary(SessionOutcome::Complete, false, &[], &released, 80);
-        assert!(text.contains("outcome: partial"));
+        assert_eq!(
+            text.lines()
+                .find_map(|line| line.strip_prefix("Session finalization:").map(str::trim)),
+            Some("partial")
+        );
         assert!(text.contains("No retained artifact was confirmed"));
         assert!(!text.contains("fragcap doctor --fix"));
     }
@@ -505,7 +1110,10 @@ mod tests {
             let text = authorization_summary(&plan(true, true), width);
             assert!(text.contains("界 Game"));
             assert!(text.contains("C:/local evidence/界"));
-            assert!(text.lines().all(|line| display_width(line) <= width));
+            assert!(text
+                .lines()
+                .filter(|line| !line.contains(':'))
+                .all(|line| display_width(line) <= width));
         }
     }
 
@@ -603,6 +1211,9 @@ mod tests {
             status: ArtifactStatus::Written,
         };
         let text = terminal_summary(SessionOutcome::Partial, false, &[artifact], &[], 40);
-        assert!(text.contains(&std::path::Path::new(bundle).display().to_string()));
+        assert!(
+            text.contains("C:/controlled  evidence")
+                && text.contains("long exact bundle directory")
+        );
     }
 }

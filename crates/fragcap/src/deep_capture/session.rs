@@ -131,6 +131,8 @@ impl PreparedSession {
             routing: None,
             launch: None,
             observations: Vec::new(),
+            proxy_diagnostics: None,
+            evidence_windows: EvidenceWindows::default(),
             classification_records_lost: 0,
             application_classification_summary: None,
             failures: Vec::new(),
@@ -164,6 +166,8 @@ pub struct DeepCaptureSession<'a> {
     routing: Option<Box<dyn RoutingLease>>,
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
+    proxy_diagnostics: Option<ProxyDiagnostics>,
+    evidence_windows: EvidenceWindows,
     classification_records_lost: u64,
     application_classification_summary: Option<ClassificationSummary>,
     failures: Vec<StageFailure>,
@@ -715,6 +719,7 @@ impl DeepCaptureSession<'_> {
                 .applied(),
             budget,
         );
+        self.seal_observation_window();
         let cancellation_requested = self.cancellation.is_requested();
         match capture_result {
             Ok(result) => {
@@ -776,10 +781,12 @@ impl DeepCaptureSession<'_> {
         if self.cancellation.is_requested() {
             self.record_cancellation();
         }
+        self.seal_observation_window();
         if self.launch.is_some() {
             let started = self.adapters.clock.monotonic_elapsed();
             let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
             let result = self.adapters.capture.release_route_owners(budget);
+            self.evidence_windows.owner_release_ended_at = Some(self.adapters.clock.wall_now());
             self.record_cleanup(result);
             if self.deadline_expired(started, self.plan.deadlines.route_owner_release) {
                 self.fail(
@@ -861,6 +868,10 @@ impl DeepCaptureSession<'_> {
                 }
                 Err(error) => self.failures.push(error),
             }
+            self.proxy_diagnostics = self
+                .proxy
+                .as_ref()
+                .and_then(|proxy| proxy.terminal_diagnostics());
         }
         if self.deadline_expired(started, self.plan.deadlines.shutdown) {
             self.fail(
@@ -870,7 +881,13 @@ impl DeepCaptureSession<'_> {
             );
         }
         if let Some(routing) = self.routing.as_ref() {
-            self.route_verification = Some(routing.verify(&self.observations));
+            let eligible = self
+                .observations
+                .iter()
+                .filter(|observation| observation.evidence_window == EvidenceWindow::Observation)
+                .cloned()
+                .collect::<Vec<_>>();
+            self.route_verification = Some(routing.verify(&eligible));
         }
         self.transition(LifecycleState::Stopped);
         Ok(())
@@ -1480,6 +1497,16 @@ impl DeepCaptureSession<'_> {
         }
     }
 
+    fn seal_observation_window(&mut self) {
+        if self.evidence_windows.observation_ended_at.is_none() {
+            let ended_at = self.adapters.clock.wall_now();
+            self.evidence_windows.observation_ended_at = Some(ended_at);
+            if let Some(proxy) = self.proxy.as_mut() {
+                proxy.end_observation_window(ended_at);
+            }
+        }
+    }
+
     fn snapshot(&mut self) -> TerminalSnapshot {
         let outcome = if self.interrupted {
             SessionOutcome::Interrupted
@@ -1491,6 +1518,8 @@ impl DeepCaptureSession<'_> {
             SessionOutcome::Partial
         };
         TerminalSnapshot {
+            proxy_diagnostics: self.proxy_diagnostics.clone().map(Box::new),
+            evidence_windows: self.evidence_windows.clone(),
             session_id: self.plan.session_id.clone(),
             plan_id: self.plan.id.clone(),
             target: self.plan.target.clone(),

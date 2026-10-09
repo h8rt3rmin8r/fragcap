@@ -20,6 +20,71 @@ use fragcap::targets::{
 
 const STABLE_ID: i64 = 75_000;
 
+fn final_verdict(events: &str) -> serde_json::Value {
+    let verdicts: Vec<_> = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "calibration.verdict")
+        .collect();
+    assert_eq!(verdicts.len(), 1, "exactly one terminal verdict: {events}");
+    verdicts[0]["assessment"].clone()
+}
+
+#[test]
+fn final_verdict_preserves_exact_stored_readiness_and_resumed_status_without_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let (code, _, events) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{events}");
+    let verdict = final_verdict(&events);
+    assert_eq!(verdict["verdict"], "calibrated");
+    assert_eq!(verdict["current_case"]["verdict"], "calibrated");
+    assert_eq!(
+        verdict["current_case"]["identity"]["stable_target_id"],
+        STABLE_ID
+    );
+    assert!(verdict["attempted_case"].is_null());
+    assert!(verdict["next_command_purpose"]
+        .as_str()
+        .unwrap()
+        .contains("fresh authorized"));
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    let workflow = verdict["workflow_id"].as_i64().unwrap().to_string();
+    let (code, _, events) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        &workflow,
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{events}");
+    let resumed = final_verdict(&events);
+    assert_eq!(resumed["current_case"]["verdict"], "calibrated");
+    assert_eq!(resumed["verdict"], "calibrated");
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    let (_, _, missing) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        "999999",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(final_verdict(&missing)["verdict"], "blocked");
+}
+
 struct FixedAuthorization {
     terminal: bool,
     response: Vec<u8>,
@@ -309,6 +374,10 @@ impl ControlledEnvironment {
 }
 
 const CONTROLLED_ENVIRONMENT_NAMES: &[&str] = &[
+    "FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING",
+    "FRAGCAP_CONTROLLED_CALIBRATION_INVENTORY_ERROR",
+    "FRAGCAP_CONTROLLED_CALIBRATION_SLOW_DOWNSTREAM",
+    "FRAGCAP_CONTROLLED_CALIBRATION_WARM_AFTER_PREFLIGHT",
     "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
     "FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER",
     "FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS",
@@ -317,6 +386,321 @@ const CONTROLLED_ENVIRONMENT_NAMES: &[&str] = &[
     "FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_AMBIGUOUS",
     "FRAGCAP_CONTROLLED_TARGET_STEAM_CLIENT_DRIFT",
 ];
+
+#[test]
+fn warm_steam_preflight_refuses_before_slow_setup_or_new_workflow() {
+    let _environment = controlled_environment_guard();
+    let _steam = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING", "1");
+    let _slow = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_SLOW_DOWNSTREAM", "1");
+    for stored in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let local = temp.path().join("local.db");
+        let bundle = temp.path().join("bundle");
+        if stored {
+            seed_missing_steam_target(&local);
+        }
+        let mut auth = RecordingEchoAuthorization {
+            plan_ids: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let (code, _, events) = run_with_authorization(
+            &[
+                "--json",
+                "calibrate",
+                if stored { "Sample Target" } else { "75000" },
+                "--controlled-target",
+                "--local-db",
+                local.to_str().unwrap(),
+                "--bundle",
+                bundle.to_str().unwrap(),
+            ],
+            &mut auth,
+        );
+        assert_eq!(code, 0, "{events}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "warm refusal must beat the five-second fail-if-called adapter"
+        );
+        assert!(events.contains("\"status\":\"blocked\""));
+        assert!(!events.contains("calibration.steam_client_plan"));
+        assert!(!events.contains("calibration.registration_plan"));
+        assert!(!events.contains("deep_capture.authorization_plan"));
+        assert!(auth.plan_ids.is_empty());
+        assert!(!bundle.exists());
+        let store = Store::open(&local).unwrap();
+        assert!(store.calibration_workflow(1).unwrap().is_none());
+    }
+}
+
+#[test]
+fn steam_inventory_failure_is_explicit_before_setup() {
+    let _environment = controlled_environment_guard();
+    let _inventory =
+        EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_INVENTORY_ERROR", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    seed_missing_steam_target(&local);
+    let (code, _, events) = run(&[
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0);
+    assert!(events.contains("Steam process observation unavailable"));
+    assert!(Store::open(local)
+        .unwrap()
+        .calibration_workflow(1)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn early_steam_preflight_preserves_resume_history_and_explicit_restart() {
+    let _environment = controlled_environment_guard();
+    let _steam = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    let id = seed_missing_steam_target(&local);
+    let mut store = Store::open(&local).unwrap();
+    let target = store.target_by_stable_id(id).unwrap().unwrap();
+    let workflow = store
+        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .unwrap();
+    drop(store);
+    let (code, _, events) = run(&[
+        "--json",
+        "calibrate",
+        "--resume",
+        &workflow.id.to_string(),
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{events}");
+    let current = Store::open(&local)
+        .unwrap()
+        .calibration_workflow(workflow.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        current.revision, workflow.revision,
+        "early guard does not advance authorized resume history"
+    );
+    assert!(events.contains("warm-steam-preflight"));
+    assert!(events.contains("--resume"));
+    let mut decline = FixedAuthorization {
+        terminal: true,
+        response: b"no\n".to_vec(),
+    };
+    let (code, _, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "Sample Target",
+            "--restart-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut decline,
+    );
+    assert_ne!(code, 0);
+    assert!(events.contains("deep_capture.restart_plan"));
+    assert!(!events.contains("calibration.steam_client_plan"));
+    assert!(events.contains("warm restart was declined"));
+}
+
+#[test]
+fn unrelated_running_steam_does_not_block_direct_target() {
+    let _environment = controlled_environment_guard();
+    let _steam = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    seed_target(&local, false);
+    let mut decline = FixedAuthorization {
+        terminal: true,
+        response: b"no\n".to_vec(),
+    };
+    let (code, _, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            "75000",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut decline,
+    );
+    assert_eq!(
+        code, 2,
+        "the deliberate invalid session confirmation follows ordinary direct preflight: {events}"
+    );
+    assert!(!events.contains("warm-steam-preflight"));
+    assert!(events.contains("deep_capture.authorization_plan"));
+}
+
+#[test]
+fn early_warm_restart_observes_operator_shutdown_before_fresh_setup() {
+    struct CloseNormally {
+        calls: usize,
+    }
+    impl fragcap_cli::DeepCaptureAuthorizationInput for CloseNormally {
+        fn is_terminal(&self) -> bool {
+            true
+        }
+        fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+            self.calls += 1;
+            if self.calls == 1 {
+                assert_eq!(plan_id, "warm-restart");
+                assert!(!exact);
+                std::env::remove_var("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING");
+                Ok(b"yes\n".to_vec())
+            } else {
+                Ok(b"no\n".to_vec())
+            }
+        }
+    }
+    let _environment = controlled_environment_guard();
+    let _steam = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    seed_missing_steam_target(&local);
+    let mut auth = CloseNormally { calls: 0 };
+    let (_, _, events) = run_with_authorization(
+        &[
+            "calibrate",
+            "Sample Target",
+            "--restart-warm",
+            "--client-executable",
+            "client.exe",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut auth,
+    );
+    assert_eq!(
+        auth.calls, 2,
+        "fresh client setup confirmation follows observed normal shutdown: {events}"
+    );
+    assert!(!events.contains("proxy.started"));
+    assert!(Store::open(local)
+        .unwrap()
+        .target_by_anchor("steam:75000")
+        .unwrap()
+        .unwrap()
+        .launch_entries
+        .is_none());
+}
+
+#[test]
+fn warm_steam_does_not_replace_cross_source_name_ambiguity_or_block_direct_choice() {
+    let _environment = controlled_environment_guard();
+    let _warm = EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING", "1");
+    let _ambiguous =
+        EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_AMBIGUOUS", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    let base = [
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ];
+    let (code, _, events) = run(&base);
+    assert_eq!(code, 2, "{events}");
+    assert!(!events.contains("warm-steam-preflight"));
+    let choices = calibration_choices(&events);
+    assert_eq!(choices.len(), 2);
+    let direct = choices
+        .iter()
+        .find(|choice| choice["source"] == "filesystem")
+        .and_then(|choice| choice["id"].as_str())
+        .unwrap()
+        .to_string();
+    let steam = choices
+        .iter()
+        .find(|choice| choice["identity"] == "steam:75000")
+        .and_then(|choice| choice["id"].as_str())
+        .unwrap()
+        .to_string();
+    let mut auth = BoundedEchoAuthorization {
+        calls: 0,
+        accepted: 1,
+    };
+    let (_, _, selected) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "Sample Target",
+            "--candidate",
+            &direct,
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut auth,
+    );
+    assert!(!selected.contains("warm-steam-preflight"), "{selected}");
+    assert!(selected.contains("\"status\":\"registered\""), "{selected}");
+    assert!(!selected.contains("calibration.steam_client_plan"));
+    let registered = Store::open(&local).unwrap().targets().unwrap();
+    assert_eq!(registered.len(), 1);
+    assert!(registered[0].anchor.is_none());
+    let other = temp.path().join("steam-choice.db");
+    let (code, _, selected) = run(&[
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--candidate",
+        &steam,
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        other.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{selected}");
+    assert!(selected.contains("warm-steam-preflight"));
+    assert!(!selected.contains("calibration.registration_plan"));
+    assert!(Store::open(other).unwrap().targets().unwrap().is_empty());
+}
+
+#[test]
+fn fresh_calibration_observation_catches_steam_becoming_warm() {
+    let _environment = controlled_environment_guard();
+    let _race =
+        EnvironmentValueGuard::set("FRAGCAP_CONTROLLED_CALIBRATION_WARM_AFTER_PREFLIGHT", "1");
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local.db");
+    let id = seed_missing_steam_target(&local);
+    let mut store = Store::open(&local).unwrap();
+    let mut target = store.target_by_stable_id(id).unwrap().unwrap();
+    target.launch_entries = Some(resolved_client_launch("client.exe"));
+    store.merge_targets(&[target]).unwrap();
+    drop(store);
+    let (code, _, events) = run(&[
+        "--json",
+        "calibrate",
+        "Sample Target",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{events}");
+    assert!(events.contains("\"status\":\"warm\""));
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    assert!(!events.contains("deep_capture.proxy_started"));
+}
 
 struct ControlledEnvironmentGuard {
     _lock: MutexGuard<'static, ()>,
@@ -2477,14 +2861,17 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
     ]);
     assert_eq!(code, 0, "stderr:\n{human}");
     assert!(out.is_empty());
-    assert!(human.contains("workflow_id="), "stderr:\n{human}");
-    assert!(human.contains("workflow_revision="), "stderr:\n{human}");
+    assert!(human.contains("Workflow identity:"), "stderr:\n{human}");
+    assert!(human.contains("Workflow revision:"), "stderr:\n{human}");
     assert!(
-        human.contains("workflow_state=completed"),
+        human.lines().any(|line| line
+            .strip_prefix("Workflow state:")
+            .is_some_and(|value| value.trim() == "completed")),
         "stderr:\n{human}"
     );
-    assert!(human.contains("pause_reason=none"), "stderr:\n{human}");
-    assert!(human.contains("resume_command=fragcap calibrate --resume"));
+    assert!(human.contains("Next action:") && human.contains("fragcap deep-capture"));
+    assert_eq!(human.matches("fragcap deep-capture").count(), 1);
+    assert!(!human.contains("resume_command="));
 }
 
 #[test]
@@ -2617,19 +3004,56 @@ fn direct_steam_and_publisher_current_cases_preserve_topology_and_durable_handof
         ]);
         assert_eq!(code, 0, "events:\n{events}");
         assert!(out.is_empty());
-        let event: serde_json::Value =
-            serde_json::from_str(events.lines().next().unwrap()).unwrap();
+        let event: serde_json::Value = events
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["event"] == "calibration.guidance")
+            .unwrap();
         assert_eq!(event["topology"], expected_topology);
         assert_eq!(event["selected_launch_case"], launch_case.as_str());
         assert!(event["launch_case_assertion"].is_null());
-        assert_eq!(event["routing_strategy"], "child-environment");
-        assert_eq!(event["address_family"], "ipv4");
+        if event["reason"] == "warm-steam-preflight" {
+            let verdict = events
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|event| event["event"] == "calibration.verdict")
+                .unwrap();
+            assert_eq!(
+                verdict["assessment"]["current_case"]["identity"]["routing_strategy"],
+                "child-environment"
+            );
+            assert_eq!(
+                verdict["assessment"]["current_case"]["identity"]["address_family"],
+                "ipv4"
+            );
+            assert_eq!(
+                verdict["assessment"]["launch_readiness"],
+                "blocked-running-steam"
+            );
+        } else {
+            assert_eq!(event["routing_strategy"], "child-environment");
+            assert_eq!(event["address_family"], "ipv4");
+        }
         if event["status"] == "ready" {
             assert_next_command_selects_store(&events, "deep-capture", stable_id, &local);
         } else {
             assert_eq!(expected_topology, "steam");
             assert_eq!(event["status"], "warm");
-            assert_next_command_selects_store(&events, "calibrate", stable_id, &local);
+            if event["reason"] == "warm-steam-preflight" {
+                let command = event["next_command"].as_str().unwrap();
+                assert!(
+                    command.contains(&format!("--id {stable_id}"))
+                        && command.contains("--local-db")
+                        && command.contains("--restart-warm")
+                );
+                assert!(Store::open(&local)
+                    .unwrap()
+                    .calibration_workflow(1)
+                    .unwrap()
+                    .is_none());
+            } else {
+                assert_next_command_selects_store(&events, "calibrate", stable_id, &local);
+            }
         }
     }
 }
@@ -2880,8 +3304,12 @@ fn declined_and_wrong_authorization_never_claim_completion() {
         &mut decline,
     );
     assert_eq!(code, 0, "guidance:\n{guidance}");
-    assert!(guidance.contains("status=declined"));
-    assert!(!guidance.contains("status=completed"));
+    assert!(guidance.lines().any(|line| line
+        .strip_prefix("Workflow status:")
+        .is_some_and(|value| value.trim() == "declined")));
+    assert!(!guidance.lines().any(|line| line
+        .strip_prefix("Workflow status:")
+        .is_some_and(|value| value.trim() == "completed")));
     assert!(guidance.contains("fragcap calibrate --resume"));
     assert!(!declined_bundle.exists());
 
@@ -3054,7 +3482,15 @@ fn declining_a_later_plan_stops_before_its_bundle_or_fact_effects() {
 
     assert_eq!(code, 0, "guidance:\n{guidance}");
     assert_eq!(authorization.calls, 2);
-    assert!(guidance.contains("status=declined"));
+    assert!(
+        guidance.lines().any(|line| line
+            .strip_prefix("Attempted case:")
+            .is_some_and(|value| value.trim() == "not-run")),
+        "declined later plan must not inherit the earlier calibrated attempt: {guidance}"
+    );
+    assert!(guidance.lines().any(|line| line
+        .strip_prefix("Workflow status:")
+        .is_some_and(|value| value.trim() == "declined")));
     assert!(bundle.join("manifest.json").is_file());
     assert!(!dir
         .path()

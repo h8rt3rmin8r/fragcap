@@ -690,6 +690,7 @@ impl CorrelationState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompatibilityObservation {
+    pub evidence_window: super::EvidenceWindow,
     pub flow_id: Option<FlowId>,
     pub proxy_connection_id: String,
     pub client_peer: Option<SocketAddr>,
@@ -817,6 +818,8 @@ pub struct EventDeliveryFailure {
 /// Immutable post-fact, post-cleanup bundle input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalSnapshot {
+    pub proxy_diagnostics: Option<Box<super::ProxyDiagnostics>>,
+    pub evidence_windows: super::EvidenceWindows,
     pub session_id: String,
     pub plan_id: PlanId,
     pub target: PreparedTarget,

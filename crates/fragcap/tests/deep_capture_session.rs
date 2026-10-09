@@ -111,6 +111,7 @@ impl ProxyLease for ProxyRun {
     fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
         self.0.borrow_mut().push("proxy.observe".into());
         Ok(vec![CompatibilityObservation {
+            evidence_window: EvidenceWindow::Observation,
             flow_id: fragcap::FlowId::new(9),
             proxy_connection_id: "proxy-1".into(),
             client_peer: None,
@@ -1648,6 +1649,114 @@ fn run_with(mut environment: AdapterSet<'_>) -> TerminalReport {
     prepared
         .into_session(environment)
         .run_to_completion(authorization)
+}
+
+struct LateObservationProxy(Ledger);
+impl ProxyBackend for LateObservationProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "late-evidence".into(),
+            version: "1".into(),
+        }
+    }
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(LateObservationProxyRun(self.0.clone())))
+    }
+}
+
+struct LateObservationProxyRun(Ledger);
+impl ProxyLease for LateObservationProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+    fn observations(
+        &mut self,
+        budget: Budget,
+    ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        let mut observations = ProxyRun(self.0.clone()).observations(budget)?;
+        for observation in &mut observations {
+            observation.evidence_window = EvidenceWindow::OwnerRelease;
+        }
+        Ok(observations)
+    }
+    fn end_observation_window(&mut self, _: SystemTime) {
+        self.0
+            .borrow_mut()
+            .push("proxy.observation_window_ended".into());
+    }
+    fn terminal_diagnostics(&self) -> Option<ProxyDiagnostics> {
+        Some(ProxyDiagnostics {
+            accepted_connections: 1,
+            completed_connections: 1,
+            http1_exchanges_completed: 1,
+            ..ProxyDiagnostics::default()
+        })
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        released("native-proxy-listener")
+    }
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        vec![released("native-proxy-runtime")]
+    }
+}
+
+#[test]
+fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(LateObservationProxy(ledger.clone()));
+    let report = run_with(environment);
+    assert_eq!(report.snapshot.observations.len(), 1);
+    assert_eq!(
+        report.snapshot.observations[0].evidence_window,
+        EvidenceWindow::OwnerRelease
+    );
+    assert!(report
+        .snapshot
+        .evidence_windows
+        .observation_ended_at
+        .is_some());
+    assert!(report
+        .snapshot
+        .evidence_windows
+        .owner_release_ended_at
+        .is_some());
+    assert_eq!(
+        report
+            .snapshot
+            .proxy_diagnostics
+            .as_ref()
+            .unwrap()
+            .http1_exchanges_completed,
+        1
+    );
+    assert!(!report
+        .snapshot
+        .fact_writes
+        .iter()
+        .any(|write| write.fact.kind == "inspectability"
+            || write.fact.value == "reached-client"
+            || write.fact.value == "local-ca-accepted"));
+    assert_eq!(
+        terminal_calibration_outcome(
+            CalibrationPhase::Tls,
+            fragcap::targets::CompatibilityProtocol::Https,
+            &report.snapshot.observations,
+            false,
+            false
+        ),
+        CalibrationOutcome::Inconclusive
+    );
+    let events = ledger.borrow();
+    let cutoff = events
+        .iter()
+        .position(|event| event == "proxy.observation_window_ended")
+        .unwrap();
+    let release = events
+        .iter()
+        .position(|event| event == "capture.release_route_owners")
+        .unwrap();
+    assert!(cutoff < release);
 }
 
 #[test]

@@ -44,7 +44,7 @@ enum BashShellcheck {
 
 /// Whether bash is available to run the checkers and syntax checks.
 fn has_bash() -> bool {
-    Command::new("bash")
+    crate::hidden_command("bash")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -55,7 +55,7 @@ fn has_bash() -> bool {
 /// Bash compliance checker. Checking from the host shell or login bash is
 /// insufficient because either can see a different PATH than the checker.
 fn shellcheck_for_bash() -> Option<BashShellcheck> {
-    if Command::new("bash")
+    if crate::hidden_command("bash")
         .args(["-c", "command -v shellcheck >/dev/null 2>&1"])
         .output()
         .map(|o| o.status.success())
@@ -64,7 +64,7 @@ fn shellcheck_for_bash() -> Option<BashShellcheck> {
         return Some(BashShellcheck::Native);
     }
 
-    if Command::new("bash")
+    if crate::hidden_command("bash")
         .args(["-c", "command -v shellcheck.exe >/dev/null 2>&1"])
         .output()
         .map(|o| o.status.success())
@@ -81,8 +81,13 @@ fn shellcheck_for_bash() -> Option<BashShellcheck> {
 /// real PowerShell parser catches a syntax-broken `.ps1`, so its absence makes
 /// the gate unable to run rather than a false pass.
 fn has_pwsh() -> bool {
-    Command::new("pwsh")
-        .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
+    crate::hidden_command("pwsh")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$PSVersionTable.PSVersion.Major",
+        ])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -128,7 +133,7 @@ fn check_bash_vendored(
 
     let (ok, out) = match shellcheck {
         BashShellcheck::Native => run_cmd(
-            Command::new("bash")
+            crate::hidden_command("bash")
                 .current_dir(root)
                 .arg(BASH_CHECKER_REL)
                 .arg(target_rel),
@@ -138,7 +143,12 @@ fn check_bash_vendored(
                 "PATH=target/xtask-shellcheck-shim:\"$PATH\"\n\
                  exec bash {BASH_CHECKER_REL} {target_rel}"
             );
-            run_cmd(Command::new("bash").current_dir(root).arg("-c").arg(script))
+            run_cmd(
+                crate::hidden_command("bash")
+                    .current_dir(root)
+                    .arg("-c")
+                    .arg(script),
+            )
         }
     };
 
@@ -160,7 +170,7 @@ fn check_powershell_vendored(root: &Path, target_rel: &str, label: &str) -> usiz
     }
 
     let (ok, out) = run_cmd(
-        Command::new("bash")
+        crate::hidden_command("bash")
             .current_dir(root)
             .arg(POWERSHELL_CHECKER_REL)
             .arg(target_rel),
@@ -179,7 +189,12 @@ fn check_bash_syntax(root: &Path, rel: &str, label: &str) -> usize {
         return 0;
     }
 
-    let (ok, out) = run_cmd(Command::new("bash").current_dir(root).arg("-n").arg(rel));
+    let (ok, out) = run_cmd(
+        crate::hidden_command("bash")
+            .current_dir(root)
+            .arg("-n")
+            .arg(rel),
+    );
     if ok {
         println!("wrappers: OK  {label} parses (bash -n)");
         0
@@ -195,7 +210,7 @@ fn check_bash_help(root: &Path, rel: &str, label: &str) -> usize {
     }
 
     let (ok, _) = run_cmd(
-        Command::new("bash")
+        crate::hidden_command("bash")
             .current_dir(root)
             .arg(rel)
             .arg("--help"),
@@ -215,7 +230,7 @@ fn check_fragcap_sh_dry_run(root: &Path) -> usize {
     }
 
     let (ok, out) = run_cmd(
-        Command::new("bash")
+        crate::hidden_command("bash")
             .current_dir(root)
             .arg(FRAGCAP_SH_REL)
             .args([
@@ -255,12 +270,11 @@ fn check_powershell_parse(root: &Path, rel: &str, label: &str) -> usize {
              $e | ForEach-Object {{ $_.Message }} | Write-Output; exit 1 \
          }}"
     );
-    let (ok, out) =
-        run_cmd(
-            Command::new("pwsh")
-                .current_dir(root)
-                .args(["-NoProfile", "-Command", &parse]),
-        );
+    let (ok, out) = run_cmd(crate::hidden_command("pwsh").current_dir(root).args([
+        "-NoProfile",
+        "-Command",
+        &parse,
+    ]));
     if ok {
         println!("wrappers: OK  {label} parses (PowerShell)");
         0
@@ -277,8 +291,8 @@ fn check_powershell_help(root: &Path, rel: &str, label: &str) -> usize {
     }
 
     let (ok, _) = run_cmd(
-        Command::new("pwsh")
-            .args(["-NoProfile", "-File"])
+        crate::hidden_command("pwsh")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
             .arg(script)
             .arg("-Help"),
     );
@@ -298,8 +312,8 @@ fn check_invoke_fragcap_ps1_dry_run(root: &Path) -> usize {
     }
 
     let (ok, out) = run_cmd(
-        Command::new("pwsh")
-            .args(["-NoProfile", "-File"])
+        crate::hidden_command("pwsh")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
             .arg(script)
             .args([
                 "-DryRun",

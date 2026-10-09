@@ -108,12 +108,95 @@ fn forwards_absolute_form_and_preserves_informational_response() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.requests, 1);
     assert_eq!(report.observation.protocol.responses, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
     assert_eq!(report.observation.protocol.informational_responses, 1);
     assert_eq!(report.observation.application.len(), 1);
     assert_eq!(report.observation.application[0].status, Some(200));
     assert!(report.observation.application[0]
         .transformations
         .contains(&"absolute-to-origin-form"));
+}
+
+#[test]
+fn completed_exchanges_survive_later_idle_connection_failure() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..7 {
+            let (mut stream, _) = origin.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            read_head(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .unwrap();
+        }
+    });
+    let limits = ProtocolLimits {
+        header_timeout: Duration::from_millis(300),
+        ..ProtocolLimits::default()
+    };
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    for _ in 0..5 {
+        let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client.write_all(b"not-http\r\n\r\n").unwrap();
+        let mut ignored = Vec::new();
+        client.read_to_end(&mut ignored).unwrap();
+    }
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let authorization = lease.capability_proof().proxy_authorization();
+    for ordinal in 0..7 {
+        write!(client, "GET http://{address}/{ordinal} HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\n\r\n", authorization.as_str()).unwrap();
+        assert!(read_head(&mut client).starts_with(b"HTTP/1.1 200"));
+        let mut body = [0; 2];
+        client.read_exact(&mut body).unwrap();
+        assert_eq!(&body, b"OK");
+    }
+    let mut tail = Vec::new();
+    client.read_to_end(&mut tail).unwrap();
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean());
+    assert_eq!(report.observation.accepted_connections, 6);
+    assert_eq!(report.observation.authenticated_connections, 1);
+    assert_eq!(report.observation.completed_connections, 0);
+    assert_eq!(report.observation.failed_connections, 6);
+    assert_eq!(report.observation.connection_causes.protocol, 5);
+    assert_eq!(report.observation.connection_causes.timeout, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 7);
+    assert_eq!(
+        report
+            .observation
+            .application
+            .iter()
+            .filter(|value| value.status == Some(200))
+            .count(),
+        7
+    );
+    assert!(report.observation.application.iter().all(|value| value
+        .evidence_observed_at_ns
+        .is_some_and(|at| at >= value.timestamp_ns)));
 }
 
 #[test]

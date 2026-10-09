@@ -79,10 +79,10 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     let report = checks::run(&ready());
     assert_eq!(report.exit().code(), 0);
     let human = report.render_human();
-    assert!(human.contains("Capture: ready"), "{human}");
-    assert!(human.contains("Deep Capture: ready"), "{human}");
+    assert!(human.contains("Capture:         ready"), "{human}");
+    assert!(human.contains("Deep Capture:    ready"), "{human}");
     assert!(
-        human.contains("Next command:\n    fragcap targets discover")
+        human.contains("Next command:    fragcap targets discover")
             && human.contains("fragcap calibrate"),
         "environment readiness must bridge to target setup and calibration: {human}"
     );
@@ -284,18 +284,21 @@ fn the_json_form_is_one_record_per_check() {
 }
 
 #[test]
-fn the_plain_human_report_has_no_color_and_fits_eighty_columns() {
-    let report = checks::run(&ready());
+fn the_plain_human_report_has_no_color_and_preserves_exact_path_tokens() {
+    let facts = ready();
+    let report = checks::run(&facts);
     let human = report.render_human();
     assert!(
         !human.contains('\u{1b}'),
         "render_human must be plain: no ANSI escapes"
     );
-    for line in human.lines() {
+    for path in [facts.catalog_db_path, facts.local_db_path, facts.extcap_dir]
+        .into_iter()
+        .flatten()
+    {
         assert!(
-            line.chars().count() <= 80,
-            "line exceeds 80 columns ({}): {line:?}",
-            line.chars().count()
+            human.contains(&path.display().to_string()),
+            "exact path was truncated: {human}"
         );
     }
 }

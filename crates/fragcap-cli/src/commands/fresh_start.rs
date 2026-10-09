@@ -959,21 +959,36 @@ fn emit_inventory(
         .map_err(|error| CliError::failure(error.to_string()))?;
     writeln!(out, "Irreversible after confirmation. Exact roots:")
         .map_err(|error| CliError::failure(error.to_string()))?;
-    for root in &inventory.roots {
-        writeln!(
-            out,
-            "  {} {}: {} ({})",
-            root.profile,
-            root.kind,
-            root.path.display(),
-            if root.present { "eligible" } else { "absent" }
-        )
-        .map_err(|error| CliError::failure(error.to_string()))?;
+    let rows: Vec<Vec<String>> = inventory
+        .roots
+        .iter()
+        .map(|root| {
+            vec![
+                crate::display::human_display_value(&root.profile),
+                root.kind.into(),
+                crate::display::human_display_value(&root.path.display().to_string()),
+                if root.present { "eligible" } else { "absent" }.into(),
+            ]
+        })
+        .collect();
+    let layout = crate::display::ColumnLayout::new(2, &rows);
+    for row in rows {
+        writeln!(out, "{}", layout.render_wrapped_row(&row, 80))
+            .map_err(|error| CliError::failure(error.to_string()))?;
     }
-    writeln!(out, "Categories: {}", OWNED_CATEGORIES.join(", "))
-        .map_err(|error| CliError::failure(error.to_string()))?;
-    writeln!(out, "Inventory: {}", inventory.identifier)
-        .map_err(|error| CliError::failure(error.to_string()))?;
+    write!(
+        out,
+        "{}",
+        crate::display::render_fields(
+            0,
+            &[
+                ("Categories:".into(), OWNED_CATEGORIES.join(", ")),
+                ("Inventory:".into(), inventory.identifier.clone()),
+            ],
+            80
+        )
+    )
+    .map_err(|error| CliError::failure(error.to_string()))?;
     Ok(())
 }
 

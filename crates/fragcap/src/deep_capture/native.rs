@@ -512,6 +512,8 @@ impl ProxyBackend for NativeProxyAdapter {
             proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
             observations_lost: 0,
+            diagnostics: None,
+            observation_ended_at_ns: None,
             application_classification_summary: None,
             stop_authority: None,
         }))
@@ -560,6 +562,8 @@ struct NativeProxyLease {
     observations_lost: u64,
     application_classification_summary: Option<ClassificationSummary>,
     stop_authority: Option<NativeStopAuthority>,
+    diagnostics: Option<super::ProxyDiagnostics>,
+    observation_ended_at_ns: Option<u64>,
 }
 
 impl NativeProxyLease {
@@ -598,6 +602,7 @@ impl NativeProxyLease {
             )
         });
         self.observations_lost = observation.protocol.observations_dropped_oldest;
+        self.diagnostics = Some(super::ProxyDiagnostics::from_runtime(&observation));
         let observations = self.map_observations(observation.application);
         if complete {
             Ok(ObservationDrain::complete(observations))
@@ -617,6 +622,21 @@ impl NativeProxyLease {
         observations
             .into_iter()
             .map(|value| {
+                let evidence_window = native_evidence_window(
+                    value.evidence_observed_at_ns,
+                    self.observation_ended_at_ns,
+                );
+                // Correlation authority for an observation-phase result cannot
+                // be supplied solely by packets captured during owner release.
+                let correlation_closed_at_ns =
+                    if evidence_window == super::EvidenceWindow::Observation {
+                        self.observation_ended_at_ns
+                            .map_or(value.connection_closed_at_ns, |cutoff| {
+                                value.connection_closed_at_ns.min(cutoff)
+                            })
+                    } else {
+                        value.connection_closed_at_ns
+                    };
                 let (
                     flow_id,
                     process_id,
@@ -645,7 +665,7 @@ impl NativeProxyLease {
                         value.client_peer,
                         value.proxy_local,
                         value.connection_opened_at_ns,
-                        value.connection_closed_at_ns,
+                        correlation_closed_at_ns,
                     )
                 };
                 let protocol = match value.protocol.as_str() {
@@ -660,6 +680,7 @@ impl NativeProxyLease {
                     reason.as_deref(),
                 );
                 CompatibilityObservation {
+                    evidence_window,
                     flow_id,
                     proxy_connection_id: value.connection_id.to_string(),
                     client_peer: Some(value.client_peer),
@@ -726,8 +747,20 @@ impl ProxyLease for NativeProxyLease {
         self.application_classification_summary.clone()
     }
 
+    fn end_observation_window(&mut self, ended_at: SystemTime) {
+        self.observation_ended_at_ns = ended_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| elapsed.as_nanos().try_into().ok());
+    }
+
+    fn terminal_diagnostics(&self) -> Option<super::ProxyDiagnostics> {
+        self.diagnostics.clone()
+    }
+
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
+        self.diagnostics = Some(super::ProxyDiagnostics::from_runtime(&report.observation));
         self.stop_authority = Some(NativeStopAuthority::from_report(&report));
         self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
@@ -806,6 +839,17 @@ impl ProxyLease for NativeProxyLease {
             results.push(lab.cleanup());
         }
         results
+    }
+}
+
+fn native_evidence_window(
+    timestamp_ns: Option<u64>,
+    observation_ended_at_ns: Option<u64>,
+) -> super::EvidenceWindow {
+    match (timestamp_ns, observation_ended_at_ns) {
+        (Some(at), Some(cutoff)) if at <= cutoff => super::EvidenceWindow::Observation,
+        (Some(_), Some(_)) => super::EvidenceWindow::OwnerRelease,
+        _ => super::EvidenceWindow::Unavailable,
     }
 }
 
@@ -1244,6 +1288,26 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_result_timestamp_has_exact_cutoff_and_unknown_is_ineligible() {
+        assert_eq!(
+            native_evidence_window(Some(100), Some(100)),
+            super::super::EvidenceWindow::Observation
+        );
+        assert_eq!(
+            native_evidence_window(Some(101), Some(100)),
+            super::super::EvidenceWindow::OwnerRelease
+        );
+        assert_eq!(
+            native_evidence_window(None, Some(100)),
+            super::super::EvidenceWindow::Unavailable
+        );
+        assert_eq!(
+            native_evidence_window(Some(99), None),
+            super::super::EvidenceWindow::Unavailable
+        );
+    }
 
     #[test]
     fn observation_drain_requires_clean_stop_and_every_terminal_predicate() {

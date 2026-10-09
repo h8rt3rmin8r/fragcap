@@ -267,15 +267,17 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         _ => unreachable!("non-ready proposals returned above"),
     };
     let routing_case = exact_case(request, launch_case, CompatibilityProtocol::Routing);
-    match assess_facts(
+    match assess_calibration_evidence(
         &request.facts,
         request.target.id,
         CompatibilityFactKey::ProxyRouting,
         &routing_case,
         "reached-client",
     ) {
-        EvidenceAssessment::Positive => add_protocol_steps(request, launch_case, &mut proposal),
-        EvidenceAssessment::Needs(reason) => {
+        CalibrationEvidenceAssessment::Positive => {
+            add_protocol_steps(request, launch_case, &mut proposal)
+        }
+        CalibrationEvidenceAssessment::Needs(reason) => {
             proposal.steps.push(CalibrationProposalStep {
                 phase: CalibrationPhase::Reachability,
                 case: routing_case,
@@ -582,7 +584,7 @@ fn add_protocol_steps(
 ) {
     for protocol in valid_protocols(&request.protocol_candidates) {
         let case = exact_case(request, launch_case, protocol);
-        if let EvidenceAssessment::Needs(reason) = assess_facts(
+        if let CalibrationEvidenceAssessment::Needs(reason) = assess_calibration_evidence(
             &request.facts,
             request.target.id,
             CompatibilityFactKey::Inspectability,
@@ -614,18 +616,21 @@ fn valid_protocols(protocols: &[CompatibilityProtocol]) -> Vec<CompatibilityProt
     protocols
 }
 
-enum EvidenceAssessment {
+/// Shared exact stored-fact verdict, independent from launch readiness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CalibrationEvidenceAssessment {
     Positive,
     Needs(CalibrationProposalReason),
 }
 
-fn assess_facts(
+/// Assess current values using the same applicability and conflict authority as proposals.
+pub fn assess_calibration_evidence(
     facts: &[CompatibilityFact],
     target_id: Option<i64>,
     key: CompatibilityFactKey,
     case: &CompatibilityCase,
     positive_value: &str,
-) -> EvidenceAssessment {
+) -> CalibrationEvidenceAssessment {
     let relevant: Vec<_> = facts
         .iter()
         .filter(|fact| Some(fact.target_id) == target_id && fact.key == key)
@@ -638,13 +643,13 @@ fn assess_facts(
     current_values.sort_unstable();
     current_values.dedup();
     if current_values.len() > 1 {
-        return EvidenceAssessment::Needs(CalibrationProposalReason::Conflict);
+        return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Conflict);
     }
     if let Some(value) = current_values.first() {
         return if *value == positive_value {
-            EvidenceAssessment::Positive
+            CalibrationEvidenceAssessment::Positive
         } else {
-            EvidenceAssessment::Needs(CalibrationProposalReason::Negative)
+            CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Negative)
         };
     }
 
@@ -658,18 +663,18 @@ fn assess_facts(
             && candidate.applicability(case) == CompatibilityApplicability::Applicable
     });
     if stale_exact {
-        return EvidenceAssessment::Needs(CalibrationProposalReason::Stale);
+        return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Stale);
     }
     if relevant
         .iter()
         .any(|fact| fact.applicability(case) == CompatibilityApplicability::LegacyIncomplete)
     {
-        return EvidenceAssessment::Needs(CalibrationProposalReason::LegacyIncomplete);
+        return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::LegacyIncomplete);
     }
     if !relevant.is_empty() {
-        return EvidenceAssessment::Needs(CalibrationProposalReason::ContextMismatch);
+        return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::ContextMismatch);
     }
-    EvidenceAssessment::Needs(CalibrationProposalReason::Missing)
+    CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Missing)
 }
 
 fn unique_images<I>(images: I) -> Vec<String>

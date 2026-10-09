@@ -73,15 +73,14 @@ fragcap targets show sample-target
 With evidence, the detail view adds one line per stored fact:
 
 ```text
-compatibility:
-  proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
-  inspectability = metadata-only | source=stale-observation | freshness=stale
+compatibility proxy-routing:     reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
+compatibility inspectability:    metadata-only | source=stale-observation | freshness=stale
 ```
 
 Without evidence, it says:
 
 ```text
-compatibility:  unknown (no stored evidence)
+compatibility:    unknown (no stored evidence)
 ```
 
 Repeated or conflicting rows remain visible. fragcap does not collapse them
@@ -131,6 +130,38 @@ The workflow stores an immutable target snapshot and exact-case intent. Resume r
 If a delegated session fails, the terminal diagnosis names the earliest known stage from retained launch, process, route, fact, and cleanup evidence. An artifact marked written can contain zero retained target packets. A paused failed workflow retains its attempt history, so `--resume` does not automatically retry that failed exact case. Review the cause, correct it, and start a new workflow with the target selector when another measurement is appropriate. A zero-observation attempt may append a launch-case fact while appending no proxy-routing fact; inspect the exact fact-write report.
 
 Ordinary eligibility uses the latest exact applicable routing row for target/version, launch case, route, loopback family, selected measurement, native backend/version, and fragcap version. A historical `current` display label, imported fact, protocol fact, launcher observation, or another workflow cannot substitute for that decision. See the [CLI reference](/docs/reference/cli#calibrate) for full options.
+
+### Reading a calibration result
+
+The next-source S168 contract presents authorization, observation, captured evidence, resource cleanup, and one final calibration verdict as separate blocks. The complete canonical plan and exact identifier still govern authorization. Human field anchors use the widest actual label plus four spaces; redirected output is plain, quiet suppresses ordinary guided progress and its final human verdict, silent suppresses terminal evidence, and JSON carries additive `calibration.verdict` decisions instead of prose. Required authorization and actionable cleanup notices retain their established visibility.
+
+The final verdict separates the attempted case from current applicable stored readiness. Its case identity includes target, launch, route, address family, native backend/version, fragcap version, target version when available, and protocol. A prior exact positive fact remains valid when a later unrelated attempt is inconclusive; a stale or conflicting fact cannot establish readiness. A satisfied stored routing prerequisite still requires fresh launch preflight, recovery, and authorization. Remaining protocols are explicit. Resume preserves workflow intent and attempt history and obtains a new plan; one supported next command is printed with that purpose.
+
+Connection endings and application exchanges count different populations. For example, a controlled session can report six failed connections, with five protocol failures and one idle timeout, while seven HTTP exchanges completed successfully. The timeout does not erase those exchanges. Separate fields show accepted/completed/failed/forced/live connections, retained failure categories, exchange/stream totals, bounded detail loss, record ownership, and unavailable correlation. Records observed during the observation window and later owner release remain distinguishable. Later records are retained but cannot satisfy the earlier calibration case.
+
+A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, producer-context readable access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. Ordinary-user access remains independently unresolved under issue #464; S168 does not repair ACLs.
+
+When accepted proxy traffic lacks eligible final-client correlation, the result says inconclusive and identifies the unresolved acquisition/correlation boundary (#468). It does not present gameplay or a speculative retry as a known remedy. The route-owner action remains visible with its finite normal-shutdown deadline while the proxy is active. Successful resource cleanup establishes resource release only. Controlled synthetic tests establish these result contracts; no new real-game run is needed.
+
+```text
+Observed case evidence
+
+Connections accepted:          6
+Connections completed:         0
+Connections failed:            6
+HTTP/1 exchanges completed:    7
+Cause protocol:                5
+Cause timeout:                 1
+
+Calibration verdict
+
+Attempted case:                  inconclusive
+Attempt reason:                  final-client-correlation-missing
+Current applicable readiness:    incomplete
+Next action:                     review unresolved final-client acquisition/correlation (#468)
+```
+
+This abbreviated synthetic example retains the four-space gap after the longest actual label in each block. Full reports additionally expose the exact case, independent artifact/process/cleanup fields, remaining work, and reason codes.
 
 ### Advanced single-phase measurements
 

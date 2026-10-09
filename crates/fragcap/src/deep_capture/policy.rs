@@ -9,8 +9,8 @@ use crate::targets::{
 
 use super::{
     CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
-    CompatibilityObservation, CorrelationState, DetectionState, InspectabilityState, LaunchCase,
-    PreflightRefusal, SessionMode, TrafficFamily,
+    CompatibilityObservation, CorrelationState, DetectionState, EvidenceWindow,
+    InspectabilityState, LaunchCase, PreflightRefusal, SessionMode, TrafficFamily,
 };
 
 /// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
@@ -107,6 +107,20 @@ pub fn compatibility_fact_candidates(
     calibration: Option<CalibrationPhase>,
     selected_protocol: Option<CompatibilityProtocol>,
 ) -> Vec<CompatibilityFactCandidate> {
+    // Late retained traffic is evidence of the release period, never authority
+    // for an earlier calibration observation phase.
+    let eligible_indices: Vec<_> = observations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, observation)| {
+            (observation.evidence_window == EvidenceWindow::Observation).then_some(index)
+        })
+        .collect();
+    let eligible: Vec<_> = eligible_indices
+        .iter()
+        .map(|&index| observations[index].clone())
+        .collect();
+    let observations = eligible.as_slice();
     let mut facts = Vec::new();
     // A cold Steam launch is rooted in the exact platform process fragcap
     // created with the scoped proxy environment. A correlated final client can
@@ -268,6 +282,9 @@ pub fn compatibility_fact_candidates(
             );
         }
     }
+    for fact in &mut facts {
+        fact.final_owner_index = fact.final_owner_index.map(|index| eligible_indices[index]);
+    }
     facts
 }
 
@@ -299,6 +316,7 @@ pub fn observed_protocol_candidates(
 ) -> Vec<CompatibilityProtocol> {
     let mut protocols = observations
         .iter()
+        .filter(|observation| observation.evidence_window == EvidenceWindow::Observation)
         .filter(|observation| observation_is_final_client(observation, controlled))
         .filter(|observation| classification_is_fact_eligible(&observation.classification))
         .filter_map(|observation| compatibility_protocol_family(&observation.classification))
@@ -350,14 +368,26 @@ pub fn calibration_outcome(
     phase: CalibrationPhase,
     observations: &[CompatibilityObservation],
 ) -> CalibrationOutcome {
+    calibration_outcome_from(
+        phase,
+        observations
+            .iter()
+            .filter(|observation| observation.evidence_window == EvidenceWindow::Observation),
+    )
+}
+
+fn calibration_outcome_from<'a>(
+    phase: CalibrationPhase,
+    observations: impl Iterator<Item = &'a CompatibilityObservation> + Clone,
+) -> CalibrationOutcome {
     match phase {
         CalibrationPhase::Reachability => {
-            if observations.iter().any(|observation| {
+            if observations.clone().any(|observation| {
                 observation_is_correlated_to_final_client(observation)
                     || controlled_harness_client(observation)
             }) {
                 CalibrationOutcome::ReachedClient
-            } else if observations.iter().any(|observation| {
+            } else if observations.clone().any(|observation| {
                 matches!(
                     observation
                         .role
@@ -368,23 +398,23 @@ pub fn calibration_outcome(
             }) {
                 CalibrationOutcome::LauncherOnly
             } else if observations
-                .iter()
+                .clone()
                 .any(|observation| observation.reason.as_deref() == Some("escaped-tree"))
             {
                 CalibrationOutcome::EscapedTree
             } else if observations
-                .iter()
+                .clone()
                 .any(|observation| observation.reason.as_deref() == Some("no-relevant-traffic"))
             {
                 CalibrationOutcome::NoRelevantTraffic
             } else if observations
-                .iter()
+                .clone()
                 .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
             {
                 CalibrationOutcome::ProxyNotReached
-            } else if observations.is_empty() {
+            } else if observations.clone().next().is_none() {
                 CalibrationOutcome::Inconclusive
-            } else if observations.iter().all(|observation| {
+            } else if observations.clone().all(|observation| {
                 observation.classification.detection() == DetectionState::Unsupported
             }) {
                 CalibrationOutcome::UnsupportedProtocol
@@ -393,29 +423,29 @@ pub fn calibration_outcome(
             }
         }
         CalibrationPhase::Tls => {
-            if observations.iter().any(|observation| {
+            if observations.clone().any(|observation| {
                 observation_proves_final_client_ca_acceptance(observation)
                     || (controlled_harness_client(observation)
                         && classification_proves_tls(&observation.classification))
             }) {
                 CalibrationOutcome::LocalCaAccepted
             } else if observations
-                .iter()
+                .clone()
                 .any(|observation| observation.reason.as_deref() == Some("certificate-pinned"))
             {
                 CalibrationOutcome::CertificatePinned
             } else if observations
-                .iter()
+                .clone()
                 .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
             {
                 CalibrationOutcome::ProxyNotReached
-            } else if observations.is_empty() {
+            } else if observations.clone().next().is_none() {
                 CalibrationOutcome::Inconclusive
-            } else if observations.iter().all(|observation| {
+            } else if observations.clone().all(|observation| {
                 observation.classification.detection() == DetectionState::Unsupported
             }) {
                 CalibrationOutcome::UnsupportedProtocol
-            } else if observations.iter().any(|observation| {
+            } else if observations.clone().any(|observation| {
                 observation.classification.inspectability() == InspectabilityState::MetadataOnly
             }) {
                 CalibrationOutcome::MetadataOnly
@@ -427,7 +457,8 @@ pub fn calibration_outcome(
 }
 
 fn controlled_harness_client(observation: &CompatibilityObservation) -> bool {
-    observation.attribution.as_deref() == Some("controlled-harness")
+    observation.evidence_window == EvidenceWindow::Observation
+        && observation.attribution.as_deref() == Some("controlled-harness")
         && observation.role.as_deref() == Some("client")
 }
 
@@ -456,7 +487,8 @@ fn classification_proves_tls(classification: &super::ProtocolClassification) -> 
 
 /// Whether the observation is packet-correlated to the final client role.
 pub fn observation_is_correlated_to_final_client(observation: &CompatibilityObservation) -> bool {
-    observation.flow_id.is_some()
+    observation.evidence_window == EvidenceWindow::Observation
+        && observation.flow_id.is_some()
         && observation
             .role
             .as_deref()
@@ -481,33 +513,32 @@ pub fn terminal_calibration_outcome(
     interrupted: bool,
     failed: bool,
 ) -> CalibrationOutcome {
+    let observations = observations
+        .iter()
+        .filter(|observation| observation.evidence_window == EvidenceWindow::Observation);
     if interrupted {
         CalibrationOutcome::Interrupted
     } else if failed {
         CalibrationOutcome::Failed
     } else {
         match phase {
-            CalibrationPhase::Reachability => calibration_outcome(phase, observations),
+            CalibrationPhase::Reachability => calibration_outcome_from(phase, observations.clone()),
             CalibrationPhase::Tls => {
                 // A phase-level failure has no protocol family to match. Preserve
                 // it before selecting protocol-derived observations, otherwise an
                 // exact protocol calibration would turn "proxy-not-reached" into
                 // an inconclusive empty evidence set.
                 if observations
-                    .iter()
+                    .clone()
                     .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
                 {
                     return CalibrationOutcome::ProxyNotReached;
                 }
-                let matching = observations
-                    .iter()
-                    .filter(|observation| {
-                        compatibility_protocol_family(&observation.classification)
-                            == Some(selected_protocol)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                calibration_outcome(phase, &matching)
+                let matching = observations.clone().filter(|observation| {
+                    compatibility_protocol_family(&observation.classification)
+                        == Some(selected_protocol)
+                });
+                calibration_outcome_from(phase, matching)
             }
         }
     }
@@ -563,6 +594,7 @@ mod launch_case_tests {
 
     fn correlated_client_observation() -> CompatibilityObservation {
         CompatibilityObservation {
+            evidence_window: EvidenceWindow::Observation,
             flow_id: crate::FlowId::new(1),
             proxy_connection_id: "proxy-1".into(),
             client_peer: None,
@@ -590,6 +622,60 @@ mod launch_case_tests {
             )
             .unwrap(),
         }
+    }
+
+    #[test]
+    fn late_and_unknown_window_records_are_retained_without_calibration_authority() {
+        for window in [EvidenceWindow::OwnerRelease, EvidenceWindow::Unavailable] {
+            let mut late = correlated_client_observation();
+            late.evidence_window = window;
+            assert_eq!(
+                calibration_outcome(CalibrationPhase::Reachability, &[late.clone()]),
+                CalibrationOutcome::Inconclusive
+            );
+            assert!(observed_protocol_candidates(&[late.clone()], false).is_empty());
+            let facts = compatibility_fact_candidates(
+                "direct-exe-cold",
+                &[late.clone()],
+                false,
+                Some(CalibrationPhase::Reachability),
+                Some(CompatibilityProtocol::Routing),
+            );
+            assert!(!facts
+                .iter()
+                .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting
+                    && fact.value == "reached-client"));
+            let facts = compatibility_fact_candidates(
+                "direct-exe-cold",
+                &[late],
+                false,
+                Some(CalibrationPhase::Tls),
+                Some(CompatibilityProtocol::Https),
+            );
+            assert!(!facts
+                .iter()
+                .any(|fact| fact.key == CompatibilityFactKey::Inspectability
+                    || fact.key == CompatibilityFactKey::TlsTrustBehavior));
+        }
+    }
+
+    #[test]
+    fn eligibility_filter_preserves_original_final_owner_index() {
+        let mut late = correlated_client_observation();
+        late.evidence_window = EvidenceWindow::OwnerRelease;
+        let current = correlated_client_observation();
+        let facts = compatibility_fact_candidates(
+            "direct-exe-cold",
+            &[late, current],
+            false,
+            Some(CalibrationPhase::Reachability),
+            Some(CompatibilityProtocol::Routing),
+        );
+        assert!(facts
+            .iter()
+            .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting
+                && fact.value == "reached-client"
+                && fact.final_owner_index == Some(1)));
     }
 
     #[test]

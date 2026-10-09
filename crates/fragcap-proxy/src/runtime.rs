@@ -523,11 +523,17 @@ async fn connection_task(
             if error.authentication_refused {
                 return ConnectionOutcome::AuthenticationRefused(error.clone());
             }
-            return ConnectionOutcome::Failed(HttpRun {
+            let authenticated = run.authenticated;
+            let run = HttpRun {
                 observations: Vec::new(),
                 accounting: run.accounting,
                 failure: run.failure,
-            });
+            };
+            return if authenticated {
+                ConnectionOutcome::Failed(run)
+            } else {
+                ConnectionOutcome::PreAuthenticationFailed(run)
+            };
         }
         return ConnectionOutcome::Completed(HttpRun {
             observations: Vec::new(),
@@ -537,7 +543,7 @@ async fn connection_task(
     }
     let first = tokio::select! {
         _ = shutdown.changed() => {
-            return ConnectionOutcome::Failed(HttpRun {
+            return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
                 observations: Vec::new(),
                 accounting: Default::default(),
                 failure: Some(ProtocolError::new("connection-cancelled", "runtime is stopping")),
@@ -557,7 +563,7 @@ async fn connection_task(
             return ConnectionOutcome::AuthenticationRefused(error)
         }
         Err(error) => {
-            return ConnectionOutcome::Failed(HttpRun {
+            return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
                 observations: Vec::new(),
                 accounting: Default::default(),
                 failure: Some(error),
@@ -604,6 +610,8 @@ async fn connection_task(
                 )),
             });
         }
+        let connect_accepted =
+            connect_observation(&config.session_id, connection_id, peer, local, &first, None);
         let server_config = {
             let mut cache = services.leaf_cache.lock().await;
             match client_server_config(
@@ -641,14 +649,7 @@ async fn connection_task(
                 Err(error) => {
                     return ConnectionOutcome::Failed(HttpRun {
                         observations: vec![
-                            connect_observation(
-                                &config.session_id,
-                                connection_id,
-                                peer,
-                                local,
-                                &first,
-                                None,
-                            ),
+                            connect_accepted.clone(),
                             tls_observation(
                                 &config.session_id,
                                 connection_id,
@@ -674,6 +675,14 @@ async fn connection_task(
             &authority,
             client_tls.get_ref().1.protocol_version(),
             client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec),
+        );
+        let client_tls_observed = tls_observation(
+            &config.session_id,
+            connection_id,
+            peer,
+            local,
+            client_tls_facts.clone(),
+            None,
         );
         let client_alpn = client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
         let selected_protocol = match crate::protocol::negotiated_protocol(client_alpn.as_deref()) {
@@ -781,6 +790,14 @@ async fn connection_task(
             upstream.protocol_version(),
             upstream.alpn_protocol(),
         );
+        let upstream_tls_observed = tls_observation(
+            &config.session_id,
+            connection_id,
+            peer,
+            local,
+            upstream_tls.clone(),
+            None,
+        );
         crate::application::emit(
             &services.application_sink,
             crate::ApplicationEvent::now(
@@ -817,30 +834,9 @@ async fn connection_task(
             .await;
             let mut run = HttpRun {
                 observations: vec![
-                    connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        None,
-                    ),
-                    tls_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        client_tls_facts,
-                        None,
-                    ),
-                    tls_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        upstream_tls,
-                        None,
-                    ),
+                    connect_accepted.clone(),
+                    client_tls_observed.clone(),
+                    upstream_tls_observed.clone(),
                 ],
                 accounting: h2.accounting,
                 failure: h2.failure,
@@ -917,30 +913,9 @@ async fn connection_task(
             accounting.timed_out = u64::from(failure.as_ref().is_some_and(|error| error.timed_out));
             let run = HttpRun {
                 observations: vec![
-                    connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        None,
-                    ),
-                    tls_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        client_tls_facts,
-                        None,
-                    ),
-                    tls_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        upstream_tls,
-                        None,
-                    ),
+                    connect_accepted.clone(),
+                    client_tls_observed.clone(),
+                    upstream_tls_observed.clone(),
                     generic_tls_observation(
                         &config.session_id,
                         connection_id,
@@ -1053,23 +1028,9 @@ async fn connection_task(
         run.observations.splice(
             0..0,
             [
-                connect_observation(&config.session_id, connection_id, peer, local, &first, None),
-                tls_observation(
-                    &config.session_id,
-                    connection_id,
-                    peer,
-                    local,
-                    client_tls_facts,
-                    None,
-                ),
-                tls_observation(
-                    &config.session_id,
-                    connection_id,
-                    peer,
-                    local,
-                    upstream_tls,
-                    None,
-                ),
+                connect_accepted.clone(),
+                client_tls_observed.clone(),
+                upstream_tls_observed.clone(),
             ],
         );
         return if run.failure.is_some() {
@@ -1179,6 +1140,13 @@ fn wall_clock_ns() -> u64 {
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn evidence_clock_ns() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| elapsed.as_nanos().try_into().ok())
 }
 
 async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
@@ -1366,6 +1334,7 @@ fn connect_observation(
         connection_opened_at_ns: 0,
         connection_closed_at_ns: 0,
         protocol: "connect".to_string(),
+        evidence_observed_at_ns: evidence_clock_ns(),
         method: Some(request.method().to_string()),
         url: Some(request.url().to_string()),
         status: reason.is_none().then_some(200),
@@ -1399,6 +1368,7 @@ fn tls_observation(
         connection_opened_at_ns: 0,
         connection_closed_at_ns: 0,
         protocol: "tls".to_string(),
+        evidence_observed_at_ns: evidence_clock_ns(),
         method: None,
         url: None,
         status: None,
@@ -1431,6 +1401,7 @@ fn generic_tls_observation(
         connection_opened_at_ns: 0,
         connection_closed_at_ns: 0,
         protocol: "tls-protocol-unknown".to_string(),
+        evidence_observed_at_ns: evidence_clock_ns(),
         method: None,
         url: Some(authority.lookup_host()),
         status: None,
@@ -1722,6 +1693,13 @@ async fn drain_tasks(
 
     let forced = tasks.len() as u64;
     observation.forced_connections = observation.forced_connections.saturating_add(forced);
+    observation
+        .connection_causes
+        .record(crate::ConnectionFailureCategory::Cancelled, forced);
+    observation.resources.connection_details_unavailable = observation
+        .resources
+        .connection_details_unavailable
+        .saturating_add(forced);
     observation.resources.connection_tasks_aborted = observation
         .resources
         .connection_tasks_aborted
@@ -1734,12 +1712,45 @@ async fn drain_tasks(
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             if !error.is_cancelled() {
+                observation.connection_causes.cancelled =
+                    observation.connection_causes.cancelled.saturating_sub(1);
+                observation
+                    .connection_causes
+                    .record(crate::ConnectionFailureCategory::Unavailable, 1);
                 push_runtime_failure(observation, join_failure(error, None));
                 observation.failed_connections = observation.failed_connections.saturating_add(1);
                 observation.forced_connections = observation.forced_connections.saturating_sub(1);
             }
         }
     }
+}
+
+fn record_connection_diagnostic(
+    observation: &mut RuntimeObservation,
+    connection_id: u64,
+    terminal: &'static str,
+    code: Option<&'static str>,
+    capacity: usize,
+) {
+    let cause = code.map(crate::ConnectionFailureCategory::from_code);
+    if let Some(category) = cause {
+        observation.connection_causes.record(category, 1);
+    }
+    if observation.connection_diagnostics.len() >= capacity.max(1) {
+        observation.connection_diagnostics.remove(0);
+        observation.resources.connection_details_dropped_oldest = observation
+            .resources
+            .connection_details_dropped_oldest
+            .saturating_add(1);
+    }
+    observation
+        .connection_diagnostics
+        .push(crate::ConnectionDiagnostic {
+            connection_id,
+            terminal,
+            cause,
+            code,
+        });
 }
 
 fn account_join(
@@ -1764,13 +1775,21 @@ fn account_join(
             .saturating_add(1);
     }
     match result {
-        Ok((_id, ConnectionOutcome::Completed(run))) => {
+        Ok((id, ConnectionOutcome::Completed(run))) => {
+            record_connection_diagnostic(observation, id, "complete", None, max_observations);
             observation.authenticated_connections =
                 observation.authenticated_connections.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
             merge_protocol(observation, run, max_observations);
         }
-        Ok((_id, ConnectionOutcome::AuthenticationRefused(error))) => {
+        Ok((id, ConnectionOutcome::AuthenticationRefused(error))) => {
+            record_connection_diagnostic(
+                observation,
+                id,
+                "refused",
+                Some(error.code),
+                max_observations,
+            );
             observation.authentication_refused =
                 observation.authentication_refused.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
@@ -1787,7 +1806,7 @@ fn account_join(
                 RuntimeFailure {
                     code: error.code,
                     detail: error.detail,
-                    connection_id: None,
+                    connection_id: Some(id),
                 },
             );
         }
@@ -1801,6 +1820,13 @@ fn account_join(
                     "connection failed before authentication",
                 )
             });
+            record_connection_diagnostic(
+                observation,
+                id,
+                "failed",
+                Some(failure.code),
+                max_observations,
+            );
             push_runtime_failure(
                 observation,
                 RuntimeFailure {
@@ -1818,6 +1844,13 @@ fn account_join(
             merge_protocol(observation, run, max_observations);
             let failure = failure
                 .unwrap_or_else(|| ProtocolError::new("connection-io-failed", "connection failed"));
+            record_connection_diagnostic(
+                observation,
+                id,
+                "failed",
+                Some(failure.code),
+                max_observations,
+            );
             push_runtime_failure(
                 observation,
                 RuntimeFailure {
@@ -1829,6 +1862,13 @@ fn account_join(
         }
         Err(error) => {
             observation.failed_connections = observation.failed_connections.saturating_add(1);
+            observation
+                .connection_causes
+                .record(crate::ConnectionFailureCategory::Unavailable, 1);
+            observation.resources.connection_details_unavailable = observation
+                .resources
+                .connection_details_unavailable
+                .saturating_add(1);
             push_runtime_failure(observation, join_failure(error, None));
         }
     }
@@ -1836,6 +1876,10 @@ fn account_join(
 
 fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observations: usize) {
     let source = run.accounting;
+    observation.protocol.http1_exchanges_completed = observation
+        .protocol
+        .http1_exchanges_completed
+        .saturating_add(source.http1_exchanges_completed);
     observation.protocol.requests = observation
         .protocol
         .requests
@@ -2431,6 +2475,105 @@ mod tests {
     }
 
     #[test]
+    fn six_failed_connections_preserve_seven_completed_exchanges_and_bounded_causes() {
+        let mut observed = observation();
+        observed.accepted_connections = 6;
+        observed.live_connections = 6;
+        observed.resources.failure_detail_capacity = 2;
+        for id in 1..=6 {
+            let failure = if id == 6 {
+                ProtocolError::timeout("http-idle-timeout")
+            } else {
+                ProtocolError::new(
+                    "http-header-malformed",
+                    "private detail must not be projected",
+                )
+            };
+            let mut accounting = crate::ProtocolAccounting::default();
+            if id == 6 {
+                accounting.http1_exchanges_completed = 7;
+                accounting.responses = 7;
+            }
+            account_join(
+                &mut observed,
+                Ok((
+                    id,
+                    ConnectionOutcome::Failed(HttpRun {
+                        observations: Vec::new(),
+                        accounting,
+                        failure: Some(failure),
+                    }),
+                )),
+                2,
+            );
+        }
+        assert_eq!(observed.failed_connections, 6);
+        assert_eq!(observed.completed_connections, 0);
+        assert_eq!(observed.protocol.http1_exchanges_completed, 7);
+        assert_eq!(observed.connection_causes.protocol, 5);
+        assert_eq!(observed.connection_causes.timeout, 1);
+        assert_eq!(observed.connection_diagnostics.len(), 2);
+        assert_eq!(observed.resources.connection_details_dropped_oldest, 4);
+        assert_eq!(observed.resources.failure_details_dropped_oldest, 4);
+    }
+
+    #[test]
+    fn causal_categories_are_independent_and_unknown_codes_remain_unavailable() {
+        let mut observed = observation();
+        for (id, code) in [
+            "proxy-auth-refused",
+            "http-header-malformed",
+            "http-write-failed",
+            "upstream-connect-failed",
+            "http-idle-timeout",
+            "generic-tls-cancelled",
+            "future-unclassified-failure",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record_connection_diagnostic(&mut observed, id as u64, "failed", Some(code), 2);
+        }
+        let causes = observed.connection_causes;
+        assert_eq!(
+            (
+                causes.authentication,
+                causes.protocol,
+                causes.transport,
+                causes.upstream,
+                causes.timeout,
+                causes.cancelled,
+                causes.unavailable
+            ),
+            (1, 1, 1, 1, 1, 1, 1)
+        );
+        assert_eq!(observed.connection_diagnostics.len(), 2);
+        assert_eq!(observed.resources.connection_details_dropped_oldest, 5);
+    }
+
+    #[test]
+    fn causal_codes_use_exact_components_and_preserve_failure_boundaries() {
+        use crate::ConnectionFailureCategory as Cause;
+        for (code, cause) in [
+            ("proxy-auth-required", Cause::Authentication),
+            ("socks-auth-refused", Cause::Authentication),
+            ("http-authority-missing", Cause::Protocol),
+            ("http2-authority-mismatch", Cause::Protocol),
+            ("tls-tunnel-authority-mismatch", Cause::Protocol),
+            ("http2-auth-timeout", Cause::Timeout),
+            ("socks-auth-write-failed", Cause::Transport),
+            ("upstream-connect-failed", Cause::Upstream),
+            ("destination-policy-refused", Cause::Upstream),
+            ("connection-cancelled", Cause::Cancelled),
+            ("connection-task-panicked", Cause::Unavailable),
+            ("pre-authentication-failed", Cause::Unavailable),
+            ("unrecognized-future-code", Cause::Unavailable),
+        ] {
+            assert_eq!(Cause::from_code(code), cause, "{code}");
+        }
+    }
+
+    #[test]
     fn generic_tls_failures_map_to_transport_lifecycle_terminals() {
         let failed = |code| {
             ConnectionOutcome::Failed(HttpRun {
@@ -2459,6 +2602,7 @@ mod tests {
             client_peer: "127.0.0.1:41000".parse().unwrap(),
             proxy_local: "127.0.0.1:40002".parse().unwrap(),
             timestamp_ns: connection_id,
+            evidence_observed_at_ns: Some(connection_id),
             connection_opened_at_ns: connection_id,
             connection_closed_at_ns: connection_id,
             protocol: "http".to_string(),
@@ -2499,6 +2643,7 @@ mod tests {
             client_peer: "127.0.0.1:41000".parse().unwrap(),
             proxy_local: "127.0.0.1:42000".parse().unwrap(),
             timestamp_ns: 15,
+            evidence_observed_at_ns: Some(15),
             connection_opened_at_ns: 0,
             connection_closed_at_ns: 0,
             protocol: "http".to_string(),

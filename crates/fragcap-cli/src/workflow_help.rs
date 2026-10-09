@@ -82,7 +82,12 @@ Next commands:
   fragcap calibrate "<installed game>"
 
 Use `fragcap doctor --fix` only for remediations Doctor reports, including exact
-recovery of interrupted Deep Capture sessions."#;
+recovery of interrupted Deep Capture sessions.
+
+Healthy retained history is summarized by observed session and resource counts.
+Use `fragcap doctor --history-details` for exact human history or --json for every
+stable resource record. Active, mixed, actionable, and incomplete inventory
+findings remain individually visible. Read-only Doctor never deletes history."#;
 
 pub(crate) const TARGETS_LONG_HELP: &str = r#"Deep Capture target path:
   fragcap targets discover
@@ -94,6 +99,13 @@ Registration identifies one installed target. Calibration separately measures
 whether its exact managed launch and protocols are currently compatible."#;
 
 pub(crate) const TARGETS_DISCOVER_LONG_HELP: &str = r#"Discovery is read-only and does not claim that a candidate is a game or compatible.
+
+Results use source chapters separated by an 80-underscore rule, target headings,
+and aligned child fields. Every distinct technology finding stays under its
+target. Values start four spaces after the longest displayed field key; wrapped
+continuations keep that anchor, and exact long tokens are never truncated.
+Color highlights headings and keys only. Redirected and NO_COLOR output use the
+same hierarchy. --summary prints aggregate counts without private inventory.
 
 Next commands:
   fragcap targets add --steam 620
@@ -529,7 +541,7 @@ fn ambiguous_target_error(
     let commands: Vec<_> = error
         .message()
         .lines()
-        .filter_map(|line| line.trim().split('\t').nth(1)?.parse::<i64>().ok())
+        .filter_map(|line| line.split_whitespace().nth(1)?.parse::<i64>().ok())
         .map(|id| match verb {
             WorkflowVerb::Calibrate => {
                 calibration_command(TargetReference::Id(id), calibration_context)
