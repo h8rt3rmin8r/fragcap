@@ -710,10 +710,13 @@ fn acl_principals(acl: *mut ACL) -> io::Result<Option<Vec<String>>> {
     let mut principals = Vec::new();
     let mut private = true;
     for index in 0..u32::from(count) {
-        let mut ace = ptr::null_mut();
-        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+        let mut ace = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        if unsafe { GetAce(acl, index, ace.as_mut_ptr()) } == 0 {
             return Err(error());
         }
+        // SAFETY: successful GetAce initializes its documented output pointer;
+        // the descriptor owns its storage throughout this bounded decode.
+        let ace = unsafe { ace.assume_init() };
         if ace.is_null() {
             return Err(bad("private output has a missing ACE"));
         }
@@ -915,7 +918,17 @@ pub(super) fn protect_child(path: &Path, directory: bool) -> io::Result<()> {
 pub(super) fn create_private_file(path: &Path) -> io::Result<File> {
     let _ancestors = pin_ancestors(path)?;
     let principals = parent_contract(path)?;
-    let descriptor = Descriptor::parse(&sddl(&principals, false))?;
+    create_with_principals(path, &principals)
+}
+pub(super) fn create_producer_file(path: &Path) -> io::Result<File> {
+    let _ancestors = pin_ancestors(path)?;
+    let mut principals = vec![user(CURRENT_TOKEN)?, "S-1-5-18".into()];
+    principals.sort();
+    principals.dedup();
+    create_with_principals(path, &principals)
+}
+fn create_with_principals(path: &Path, principals: &[String]) -> io::Result<File> {
+    let descriptor = Descriptor::parse(&sddl(principals, false))?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -1276,8 +1289,11 @@ pub(super) fn verify_denied_user(
 }
 pub(super) fn group_denied_fixture() -> io::Result<OutputRecipient> {
     let mut result = recipient(false)?;
-    let owned = current_owned()?;
-    let groups = info(owned.0, TokenGroups)?;
+    // Restrict the already validated ordinary context. Restricting the elevated
+    // producer instead retains its high integrity level on hosted runners.
+    let ordinary_token = result.platform.token.0;
+    ordinary(ordinary_token)?;
+    let groups = info(ordinary_token, TokenGroups)?;
     let group_info = unsafe { &*groups.as_ptr().cast::<TOKEN_GROUPS>() };
     let groups = unsafe {
         std::slice::from_raw_parts(group_info.Groups.as_ptr(), group_info.GroupCount as usize)
@@ -1293,7 +1309,7 @@ pub(super) fn group_denied_fixture() -> io::Result<OutputRecipient> {
     let mut token = 0;
     if unsafe {
         CreateRestrictedToken(
-            owned.0,
+            ordinary_token,
             DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
             disabled.len() as u32,
             disabled.as_ptr(),
@@ -1312,7 +1328,7 @@ pub(super) fn group_denied_fixture() -> io::Result<OutputRecipient> {
     result.proof_kind = "controlled-group-denied-equivalent".into();
     result.platform = Arc::new(RecipientToken {
         token,
-        session: session(CURRENT_TOKEN)?,
+        session: result.platform.session,
         desktop: false,
     });
     Ok(result)
@@ -1357,6 +1373,34 @@ pub(super) fn fixture_enumerate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn group_denied_fixture_retains_ordinary_identity_and_denies_the_logon_group() {
+        let base = recipient(false).unwrap();
+        let fixture = group_denied_fixture().unwrap();
+        ordinary(fixture.platform.token.0).unwrap();
+        assert_eq!(user(fixture.platform.token.0).unwrap(), base.sid);
+        assert_eq!(fixture.platform.session, base.platform.session);
+        assert_eq!(fixture.proof_kind, "controlled-group-denied-equivalent");
+        let logon_sid = fixture_logon_sid().unwrap();
+        let data = info(fixture.platform.token.0, TokenGroups).unwrap();
+        let group_info = unsafe { &*data.as_ptr().cast::<TOKEN_GROUPS>() };
+        let groups = unsafe {
+            std::slice::from_raw_parts(group_info.Groups.as_ptr(), group_info.GroupCount as usize)
+        };
+        let logon = groups
+            .iter()
+            .find(|group| sid_string(group.Sid).unwrap() == logon_sid)
+            .expect("ordinary fixture must retain its denied logon SID");
+        // SE_GROUP_USE_FOR_DENY_ONLY is 0x10; SE_GROUP_ENABLED is 0x4.
+        assert_ne!(logon.Attributes & 0x10, 0);
+        assert_eq!(logon.Attributes & 0x4, 0);
+        for group in groups {
+            if unsafe { IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) } != 0 {
+                assert_ne!(group.Attributes & 0x10, 0);
+                assert_eq!(group.Attributes & 0x4, 0);
+            }
+        }
+    }
     #[test]
     fn real_local_handoff_retains_authenticated_ordinary_context() {
         let root = tempfile::tempdir().unwrap();

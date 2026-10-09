@@ -326,6 +326,12 @@ pub(crate) fn pin_access_path(path: &Path, write_dacl: bool) -> io::Result<Pinne
         ))
     }
 }
+/// Create a new producer-private journal without adopting a legacy parent ACL.
+/// Existing files are never overwritten or have their permissions replaced.
+#[cfg(windows)]
+pub(crate) fn open_producer_private_file(path: &Path) -> io::Result<File> {
+    windows::create_producer_file(path)
+}
 impl PinnedAccessPath {
     pub(crate) fn refresh(&self) -> io::Result<(AccessObjectIdentity, String)> {
         #[cfg(windows)]
