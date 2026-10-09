@@ -2329,13 +2329,14 @@ fn explicit_candidate_selects_one_ambiguous_steam_client() {
 
 #[test]
 fn explicit_candidate_selects_one_ambiguous_stored_client() {
+    let _environment = controlled_environment_guard();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let mut store = Store::open(&local).unwrap();
     let target = TargetEntry {
         id: None,
-        stable_id: 85_001,
-        handle: "ambiguous-stored-client".to_string(),
+        stable_id: STABLE_ID,
+        handle: "controlled-target".to_string(),
         name: "Ambiguous Stored Client".to_string(),
         classification: TargetClassification::Game,
         classification_source: ClassificationSource::User,
@@ -2359,8 +2360,9 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
         "--json",
         "calibrate",
         "--id",
-        "85001",
+        "75000",
         "--authorize-stdin",
+        "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
     ]);
@@ -2387,10 +2389,11 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
             "--json",
             "calibrate",
             "--id",
-            "85001",
+            "75000",
             "--candidate",
             &selected,
             "--authorize-stdin",
+            "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
         ],
@@ -2399,6 +2402,8 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
     assert!(matches!(code, 0 | 2), "events:\n{events}");
     assert!(events.contains("calibration.stored_client_plan"));
     assert!(events.contains("\"reason\":\"stored-client-persisted\""));
+    assert!(!events.contains("proxy.started"));
+    assert!(!events.contains("deep_capture.result"));
     let plan_event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -2410,7 +2415,7 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
         .starts_with("stored-client-selection-v1:"));
     let canonical: serde_json::Value =
         serde_json::from_str(plan_event["canonical_json"].as_str().unwrap()).unwrap();
-    assert_eq!(canonical["target"]["stable_id"], 85_001);
+    assert_eq!(canonical["target"]["stable_id"], STABLE_ID);
     assert_eq!(canonical["proposed_executable"], "shared-client.exe");
     assert_eq!(
         canonical["resulting_launch_entries"][0]["arguments"],
@@ -2424,7 +2429,7 @@ fn explicit_candidate_selects_one_ambiguous_stored_client() {
     assert_eq!(canonical["no_effects"].as_array().unwrap().len(), 5);
     let selected_target = Store::open(&local)
         .unwrap()
-        .target_by_stable_id(85_001)
+        .target_by_stable_id(STABLE_ID)
         .unwrap()
         .unwrap();
     assert_eq!(
