@@ -165,8 +165,14 @@ fn producer_sid() -> Result<String, CertificateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-    use windows_sys::Win32::Security::GetFileSecurityW;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertStringSidToSidW,
+    };
+    use windows_sys::Win32::Security::{
+        EqualSid, GetAce, GetFileSecurityW, GetSecurityDescriptorDacl, IsWellKnownSid,
+        WinLocalSystemSid, ACCESS_ALLOWED_ACE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     #[test]
     fn issuer_private_dacl_names_exact_producer_without_owner_relative_access() {
@@ -222,10 +228,44 @@ mod tests {
         let text =
             String::from_utf16(unsafe { slice::from_raw_parts(descriptor, length) }).unwrap();
         unsafe { LocalFree(descriptor as isize) };
-        assert!(
-            text.contains(&format!(";;;{})", producer_sid().unwrap())),
-            "{text}"
+        let mut acl = ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorDacl(
+                    buffer.as_mut_ptr().cast(),
+                    &mut present,
+                    &mut acl,
+                    &mut defaulted,
+                )
+            },
+            0
         );
+        assert_ne!(present, 0);
+        assert!(!acl.is_null());
+        assert_eq!(unsafe { (*acl).AceCount }, 2, "{text}");
+        let producer = producer_sid().unwrap();
+        let mut producer_pointer = ptr::null_mut();
+        let producer_wide: Vec<u16> = producer.encode_utf16().chain(Some(0)).collect();
+        assert_ne!(
+            unsafe { ConvertStringSidToSidW(producer_wide.as_ptr(), &mut producer_pointer) },
+            0
+        );
+        let mut producer_count = 0;
+        let mut system_count = 0;
+        for index in 0..2 {
+            let mut ace = ptr::null_mut();
+            assert_ne!(unsafe { GetAce(acl, index, &mut ace) }, 0);
+            let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(allowed.Header.AceType, 0);
+            assert_eq!(allowed.Mask, FILE_ALL_ACCESS);
+            let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
+            producer_count += u32::from(unsafe { EqualSid(sid, producer_pointer) } != 0);
+            system_count += u32::from(unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0);
+        }
+        unsafe { LocalFree(producer_pointer as isize) };
+        assert_eq!((producer_count, system_count), (1, 1), "{text}");
         assert!(!text.contains(";;;OW)"), "{text}");
         assert!(text.contains(";;;SY)"), "{text}");
         assert!(

@@ -910,12 +910,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_sensitive_file_has_a_protected_owner_system_dacl() {
+    fn windows_sensitive_file_has_a_protected_exact_user_system_dacl() {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
         use std::ptr;
         use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-        use windows_sys::Win32::Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION};
+        use windows_sys::Win32::Security::{
+            EqualSid, GetAce, GetFileSecurityW, GetSecurityDescriptorDacl, IsWellKnownSid,
+            WinLocalSystemSid, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
         use windows_sys::Win32::System::Memory::LocalFree;
 
         let root = tempfile::tempdir().unwrap();
@@ -935,7 +939,8 @@ mod tests {
                 &mut needed,
             )
         };
-        let mut descriptor = vec![0_u8; needed as usize];
+        let mut descriptor =
+            vec![0_usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
         assert_ne!(
             unsafe {
                 GetFileSecurityW(
@@ -994,27 +999,37 @@ mod tests {
                 .as_ptr()
                 .cast::<windows_sys::Win32::Security::TOKEN_USER>()
         };
-        let mut sid = ptr::null_mut();
+        let mut acl = ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
         assert_ne!(
             unsafe {
-                windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(
-                    user.User.Sid,
-                    &mut sid,
+                GetSecurityDescriptorDacl(
+                    descriptor.as_mut_ptr().cast(),
+                    &mut present,
+                    &mut acl,
+                    &mut defaulted,
                 )
             },
             0
         );
-        let mut sid_len = 0;
-        while unsafe { *sid.add(sid_len) } != 0 {
-            sid_len += 1;
+        assert_ne!(present, 0);
+        assert!(!acl.is_null());
+        assert_eq!(unsafe { (*acl).AceCount }, 2, "{text}");
+        let mut user_count = 0;
+        let mut system_count = 0;
+        for index in 0..2 {
+            let mut ace = ptr::null_mut();
+            assert_ne!(unsafe { GetAce(acl, index, &mut ace) }, 0);
+            let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(allowed.Header.AceType, 0);
+            assert_eq!(allowed.Mask, FILE_ALL_ACCESS);
+            let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
+            user_count += u32::from(unsafe { EqualSid(sid, user.User.Sid) } != 0);
+            system_count += u32::from(unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0);
         }
-        let sid_text =
-            String::from_utf16(unsafe { std::slice::from_raw_parts(sid, sid_len) }).unwrap();
-        unsafe { LocalFree(sid as isize) };
-        assert!(
-            text.contains(&format!(";;;{sid_text})")) && text.contains(";;;SY)"),
-            "{text}"
-        );
+        // Windows may render this individual SID as LA/LG rather than numerically.
+        assert_eq!((user_count, system_count), (1, 1), "{text}");
         assert!(!text.contains(";;;OW)"), "{text}");
         assert!(
             !text.contains(";;;WD)") && !text.contains(";;;BU)"),

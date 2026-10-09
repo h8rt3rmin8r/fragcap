@@ -2,7 +2,7 @@
 
 ## Library interfaces
 
-The additive facade recipient object retains a validated ordinary context and exposes exact SID/proof description, directory protection, private-child protection and actual recipient-context verification. Existing prepare_bundle/open_sensitive_file signatures remain supported for explicit current-account library callers. A new prepare_bundle_for_recipient operation establishes an exact selected context for the session, and all independent writers inherit/preserve its private contract. No process-global mutable recipient is introduced.
+The additive facade recipient object retains a validated ordinary context and exposes exact SID/proof description, directory protection, private-child protection and actual recipient-context verification. Existing prepare_bundle/open_sensitive_file signatures remain supported for explicit current-account library callers. A new prepare_bundle_for_recipient operation establishes an exact selected context for the session, and all independent writers inherit/preserve its private contract. Missing output intermediates are created individually with exact recipient security attributes, normalized and verified before descendants; a concurrent pre-existing object refuses rather than being adopted. Existing accessible ancestor and sibling descriptors remain unchanged. No process-global mutable recipient is introduced.
 
 Facade inspection binds a recipient to an exact recognized bundle and pinned complete population. Repair accepts the current inspection plus exact authorization identifier and returns external per-path effects and recipient verification. Windows handle operations are shared through the access adapter, and platform-neutral core has no token or ACL dependencies.
 

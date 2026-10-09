@@ -182,6 +182,16 @@ fn security_descriptor(path: &Path) -> Vec<u8> {
 }
 
 fn old_group_only_policy(path: &Path, directory: bool) {
+    // Preserve the owner while reproducing historical group-dependent access.
+    let inheritance = if directory { "OICI" } else { "" };
+    let logon_sid = fragcap::deep_capture::current_fixture_logon_sid().unwrap();
+    let sddl = format!(
+        "D:P(A;{inheritance};FA;;;BA)(A;{inheritance};FA;;;{logon_sid})(A;{inheritance};FA;;;SY)"
+    );
+    fixture_policy(path, &sddl);
+}
+
+fn fixture_policy(path: &Path, sddl: &str) {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
@@ -195,11 +205,6 @@ fn old_group_only_policy(path: &Path, directory: bool) {
     // read via its exact logon-session group, but the selected group-denied
     // recipient cannot. Ordinary profile and volume group access is preserved.
     // No administrative owner assignment or elevation is required by the test.
-    let inheritance = if directory { "OICI" } else { "" };
-    let logon_sid = fragcap::deep_capture::current_fixture_logon_sid().unwrap();
-    let sddl = format!(
-        "D:P(A;{inheritance};FA;;;BA)(A;{inheritance};FA;;;{logon_sid})(A;{inheritance};FA;;;SY)"
-    );
     let source: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut descriptor = ptr::null_mut();
@@ -224,6 +229,63 @@ fn old_group_only_policy(path: &Path, directory: bool) {
     let error = std::io::Error::last_os_error();
     unsafe { LocalFree(descriptor as isize) };
     assert_ne!(result, 0, "old-policy fixture assignment failed: {error}");
+}
+
+#[test]
+fn missing_nested_containers_have_recipient_access_without_changing_existing_objects() {
+    let temp = tempfile::tempdir().unwrap();
+    let ancestor = temp.path().join("non-inheriting-recipient");
+    fs::create_dir(&ancestor).unwrap();
+    let recipient = OutputRecipient::group_denied_fixture().unwrap();
+    let logon_sid = fragcap::deep_capture::current_fixture_logon_sid().unwrap();
+    fixture_policy(
+        &ancestor,
+        &format!(
+            "D:P(A;;FA;;;{})(A;OICI;FA;;;{logon_sid})(A;OICI;FA;;;SY)",
+            recipient.sid()
+        ),
+    );
+    recipient.enumerate_fixture(&ancestor).unwrap();
+    // Ordinary enumeration of the existing parent proves no inheritable grant.
+    let sibling = ancestor.join("producer-only-sibling");
+    fs::create_dir(&sibling).unwrap();
+    fs::write(sibling.join("retained.txt"), b"unchanged sibling bytes").unwrap();
+    assert!(recipient.enumerate_fixture(&sibling).is_err());
+    let existing = [
+        ancestor.clone(),
+        sibling.clone(),
+        sibling.join("retained.txt"),
+    ];
+    let descriptors = existing
+        .iter()
+        .map(|path| (path.clone(), security_descriptor(path)))
+        .collect::<BTreeMap<_, _>>();
+    let root = ancestor.join("first").join("second").join("bundle");
+    write_bundle(&root, &recipient);
+    for directory in [
+        ancestor.join("first"),
+        ancestor.join("first/second"),
+        root.clone(),
+    ] {
+        assert!(!recipient.enumerate_fixture(&directory).unwrap().is_empty());
+    }
+    let verified = verify_bundle_access(&root, &recipient).unwrap();
+    assert!(verified.is_verified(), "{verified:?}");
+    for (name, bytes) in contents(&root) {
+        assert_eq!(recipient.read_fixture(&root.join(name)).unwrap(), bytes);
+    }
+    for (path, descriptor) in descriptors {
+        assert_eq!(
+            security_descriptor(&path),
+            descriptor,
+            "changed existing ACL: {path:?}"
+        );
+    }
+    assert_eq!(
+        fs::read(sibling.join("retained.txt")).unwrap(),
+        b"unchanged sibling bytes"
+    );
+    assert!(recipient.enumerate_fixture(&sibling).is_err());
 }
 
 #[test]

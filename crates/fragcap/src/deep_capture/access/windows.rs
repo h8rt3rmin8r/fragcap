@@ -703,6 +703,9 @@ fn private_contract(path: &Path) -> io::Result<Option<Vec<String>>> {
     acl_principals(acl)
 }
 fn acl_principals(acl: *mut ACL) -> io::Result<Option<Vec<String>>> {
+    if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
+        return Err(bad("private output has an invalid ACL"));
+    }
     let count = unsafe { (*acl).AceCount };
     let mut principals = Vec::new();
     let mut private = true;
@@ -711,16 +714,33 @@ fn acl_principals(acl: *mut ACL) -> io::Result<Option<Vec<String>>> {
         if unsafe { GetAce(acl, index, &mut ace) } == 0 {
             return Err(error());
         }
+        if ace.is_null() {
+            return Err(bad("private output has a missing ACE"));
+        }
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        // Check the common header before interpreting a variable-size ACE. The
+        // SID header itself occupies eight bytes before any subauthorities.
+        if header.AceType != 0 || usize::from(header.AceSize) < sid_offset + 8 {
+            private = false;
+            break;
+        }
         let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-        if allowed.Header.AceType != 0
-            || allowed.Mask != FILE_ALL_ACCESS
+        if allowed.Mask != FILE_ALL_ACCESS
             || allowed.Header.AceFlags & 3 != 3
             || allowed.Header.AceFlags & !(3 | 16) != 0
         {
             private = false;
             break;
         }
-        let sid = sid_string((&allowed.SidStart as *const u32).cast_mut().cast())?;
+        let sid_pointer = (&allowed.SidStart as *const u32).cast_mut().cast();
+        if unsafe { IsValidSid(sid_pointer) } == 0
+            || unsafe { GetLengthSid(sid_pointer) } as usize
+                > usize::from(header.AceSize) - sid_offset
+        {
+            return Err(bad("private output has an invalid ACE SID"));
+        }
+        let sid = sid_string(sid_pointer)?;
         if sid != "S-1-5-18" && !sid.starts_with("S-1-5-21-") && !sid.starts_with("S-1-12-1-") {
             private = false;
             break;
@@ -785,22 +805,107 @@ fn protected_directory(path: &Path) -> io::Result<bool> {
 }
 pub(super) fn protect_directory(path: &Path, recipient: &OutputRecipient) -> io::Result<()> {
     recipient.revalidate()?;
-    reject_reparse_ancestors(path)?;
-    let _ancestors = pin_ancestors(path)?;
-    let mut ancestor = path
-        .parent()
-        .ok_or_else(|| bad("recipient output has no parent"))?;
-    while !ancestor.exists() {
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| bad("recipient output has no existing ancestor"))?;
+    let path = std::path::absolute(path)?;
+    if path.components().count() > 128 {
+        return Err(bad("recipient output path depth exceeds limit"));
     }
+    reject_reparse_ancestors(&path)?;
+    let _ancestors = pin_ancestors(&path)?;
+    let mut missing = Vec::new();
+    let mut cursor = path.as_path();
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(meta) => {
+                if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(bad(
+                        "recipient output ancestor is not an ordinary directory",
+                    ));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if missing.len() >= 128 {
+                    return Err(bad("recipient output creation depth exceeds limit"));
+                }
+                missing.push(cursor.to_path_buf());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| bad("recipient output has no existing ancestor"))?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let ancestor = if missing.is_empty() {
+        path.parent()
+            .ok_or_else(|| bad("recipient output has no parent"))?
+    } else {
+        cursor
+    };
     let verification = recipient.verify_paths(ancestor, &[ancestor.to_path_buf()])?;
     if !verification.is_verified() {
         return Err(bad("ordinary recipient cannot enumerate the existing output ancestor; inspect/repair the exact owned container or choose an accessible explicit destination"));
     }
-    std::fs::create_dir_all(path)?;
-    pin(path, true)?.apply(recipient)
+    if missing.is_empty() {
+        return pin(&path, true)?.apply(recipient);
+    }
+    let principals = contract(recipient);
+    let descriptor = Descriptor::parse(&sddl(&principals, true))?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let mut created = Vec::new();
+    for directory in missing.into_iter().rev() {
+        let name = wide(&directory);
+        // Existing objects are never adopted after a concurrent creation. Every
+        // new intermediate gets the selected contract at its creation boundary.
+        if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
+            return Err(error());
+        }
+        let normalization = pin(&directory, true)?;
+        let created_descriptor = Descriptor::parse(&normalization.descriptor)?;
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe {
+            GetSecurityDescriptorControl(created_descriptor.0, &mut control, &mut revision)
+        } == 0
+        {
+            return Err(error());
+        }
+        if control & SE_DACL_PROTECTED as u16 == 0
+            || acl_principals(created_descriptor.dacl()?)?.as_ref() != Some(&principals)
+        {
+            return Err(bad(
+                "new output directory changed before permission normalization",
+            ));
+        }
+        if std::fs::read_dir(&directory)?.next().is_some() {
+            return Err(bad("new output directory changed during creation"));
+        }
+        // Normalize Windows' inheritable-ACE state before creating descendants.
+        // Creation already used the same protected exact-principal descriptor.
+        normalization.apply(recipient)?;
+        drop(normalization);
+        let pinned = pin(&directory, false)?;
+        if private_contract(&directory)?.as_ref() != Some(&principals) {
+            return Err(bad(
+                "new output directory lost the exact recipient contract",
+            ));
+        }
+        if std::fs::read_dir(&directory)?.next().is_some() {
+            return Err(bad("new output directory changed during creation"));
+        }
+        let verification = recipient.verify_paths(&directory, std::slice::from_ref(&directory))?;
+        if !verification.is_verified() {
+            return Err(bad(
+                "ordinary recipient cannot enumerate a newly protected output directory",
+            ));
+        }
+        // No-delete pins retain every created ancestor through the whole walk.
+        created.push(pinned);
+    }
+    Ok(())
 }
 pub(super) fn protect_child(path: &Path, directory: bool) -> io::Result<()> {
     let principals = parent_contract(path)?;
