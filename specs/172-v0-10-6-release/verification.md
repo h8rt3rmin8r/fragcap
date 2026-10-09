@@ -45,4 +45,8 @@ Two hosted audit attempts failed before running cargo-deny because Docker Hub re
 
 The follow-up full `cargo xtask ci` passed after this correction, including all 222 xtask tests and every repository acceptance gate. Five changed text files passed strict encoding and whitespace checks, and `git diff --check` passed. The final code/security review round and hosted audit must validate the pushed correction.
 
+The second round on `29bbc92` identified one P2 finding: the newly introduced Rust action ref was mutable. Pin the reviewed upstream composite action at `e2a55d2ffb04f378e9626c28d38b36d230d1e12f`, use its explicit `toolchain: 1.88.0` input, and require both in the wiring gate. The native audit passed on the preceding head; final-head hosted evidence remains required after this narrow correction. No third external review round is requested.
+
+After the pin correction, all 222 xtask tests, formatting, supply-chain, lint, specification and release-notes gates passed. A temporary mutable-action and stable-version drift produced both expected wiring findings and exit 1; restoring the exact action and Rust version passed. The second correction's dated fragment was assembled into v0.10.6 without duplicating earlier decisions.
+
 Final-head hosted acceptance, owner merge, v0.10.6 tag, public assets and registry publication remain subsequent states. The current published release remains v0.10.5. No real game, live capture, operator-session collection, real trust mutation, universal title-compatibility or independent whole-product review is claimed.

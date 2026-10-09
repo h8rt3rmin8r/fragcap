@@ -933,7 +933,8 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
         }
     }
     for required in [
-        "dtolnay/rust-toolchain@1.88.0",
+        "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
+        "toolchain: 1.88.0",
         "cargo install cargo-deny --version 0.20.2 --locked",
         "cargo deny --all-features check advisories licenses bans sources",
     ] {

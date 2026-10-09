@@ -73,6 +73,8 @@ The documentation site resolves Next.js 16.3.8 and its coordinated packages from
 
 **2026-10-09** (S172): Both hosted audit attempts failed before cargo-deny ran because Docker Hub refused the action's pinned Rust image with HTTP 429. Replace that container bootstrap with native Rust 1.88.0 and locked source installation of the same governed cargo-deny 0.20.2. Keep every all-feature advisory, license, ban and source check, existing dependency policy and fail-closed acceptance. The supply-chain wiring gate now requires these exact native commands. No exception, dependency version or review expiry changes.
 
+**2026-10-09** (S172 final review): Pin the native audit's Rust action to reviewed commit e2a55d2ffb04f378e9626c28d38b36d230d1e12f and select Rust 1.88.0 through its toolchain input. The upstream composite action was inspected for input handling, rustup installation and toolchain selection. The supply-chain wiring gate requires both the exact action commit and explicit version, preserving the same locked cargo-deny 0.20.2 and complete audit command. This resolves the final external finding without a third review trigger.
+
 ## [0.10.5] - 2026-10-05
 
 ### Fixed
