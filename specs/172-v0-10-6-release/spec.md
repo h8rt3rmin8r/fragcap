@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-09
 
-**Status**: Specification ready for planning
+**Status**: Locally verified candidate; pre-push handoff
 
 **Input**: Prepare the next patch release from merged S167-S171, reconcile the pending documentation-site dependency patch, align release identities and notes, and drive the authorized local work through the spec-kit autopilot protocol.
 
