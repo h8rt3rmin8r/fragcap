@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.90-draft \
-**Applies-To:** 0.10.5 \
+**Version:** 0.1.91-draft \
+**Applies-To:** 0.10.6 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-10-06 \
+**Date:** 2026-10-09 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -178,6 +178,7 @@ enforcement.
 | 0.1.88-draft | 2026-10-05 | Codex | S165 corrects the inherited managed-route lifetime defect reported against the active v0.10.4 release in #452. A separate finite route-owner release interval precedes proxy shutdown for Steam, direct, and declared publisher launches; complete query-only process absence permits a release claim, while a remaining or unknown owner creates explicit partial-cleanup and normal-exit recovery guidance. Updates sections 17.2.1 and 28.1 without claiming successful real-title Deep Capture or a new publication. |
 | 0.1.89-draft | 2026-10-05 | Codex | Prepares the v0.10.5 candidate under S166 from merged S165 and all remaining unreleased changes. Workspace, generated outputs, conformance identity, changelog and highlights move together while verified publication remains v0.10.4. Human review, merge, exact tag, protected registry approval, public-file verification and later records reconciliation remain separate states. Updates sections 1 and 27.3. |
 | 0.1.90-draft | 2026-10-06 | Codex | Reconciles verified v0.10.5 publication under S166. Owner merge and explicitly delegated annotated tag select exact source; all four release jobs pass after normal protected deployment approval. Six certified public files and ten non-yanked crate records reconcile before current markers move. S165 is now published without a universal title-compatibility or independent-review claim. Corrects current completion language to match the closed delivery issues and active-release defect policy. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.91-draft | 2026-10-09 | Codex | S172 prepares the v0.10.6 candidate from merged S167-S171, remaining publication records and the exact site dependency patch. First-party and generated identities, conformance, graph digests, changelog and highlights move together; published v0.10.5 and historical evidence remain independently bound. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4966,6 +4967,8 @@ S162 publishes v0.10.3 from merged S160 and S161, including bounded QUIC observa
 S164 publishes v0.10.4 from merged S163, with all unreleased fragments assembled. Candidate PR #449 passed final-head CI and two Codex review rounds before operator merge. Annotated tag v0.10.4 selects exact merged source f8bf4914e310a54ae83b41d8afbbe66d149168b8; all four release jobs pass after a normal protected-deployment review under explicit owner authorization, and six certified public files and ten non-yanked crate records reconcile independently. Both release wrappers and release.toml document the annotated-tag command and ten-crate count. Controlled S163 tests do not establish universal title compatibility or an owner field trial.
 
 S166 publishes v0.10.5 from merged S165 and all unreleased changes since v0.10.4. The owner merged PR #454 and explicitly delegated the annotated tag push on exact merged source `4e2869a972abfee11e5c0eae3101c1b1e16f6404`. All four release jobs passed after normal protected deployment approval; six certified public files and ten non-yanked crate records reconcile independently. S165's controlled lifecycle evidence supports the managed route-owner correction but does not prove any real title can complete Deep Capture.
+
+S172 prepares v0.10.6 from merged S167-S171 and all remaining unreleased fragments since v0.10.5, including the exact site dependency patch from PR #470. Candidate first-party versions, generated output, conformance metadata, specification applicability, audited graph digests, chronological changelog and bounded highlights agree. Published baseline v0.10.5 and immutable evidence remain unchanged until exact-source tagging, hosted package certification, protected registry publication and independent public-file reconciliation establish the new release. This candidate does not claim universal real-title compatibility or an independent whole-product review.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
