@@ -22,4 +22,6 @@ The final run includes 376 CLI unit tests, seven collector module tests, 14 coll
 
 ## Hosted handoff boundary
 
+The initial hosted Linux all-feature Clippy gate rejected a redundant return in the non-Windows Unsupported branch. The follow-up expresses that branch as its return value without changing platform behavior; format passes locally and the exact follow-up head must pass the hosted Linux gate before handoff.
+
 Official PR publication, exact final-head hosted CI and independent bot findings remain pending at this source checkpoint. External round one is automatic publication; at most one additional combined request is authorized. The final PR conversation records completion of T020 with commit identity, hosted checks, review responses and round count. Owner review and merge remain outside agent authority.

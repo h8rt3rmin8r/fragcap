@@ -149,10 +149,10 @@ fn apply(
     #[cfg(not(windows))]
     {
         let _ = (bundle, store, authorization_id, purge);
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "exact session collection requires the Windows object-handle adapter",
-        ));
+        ))
     }
     #[cfg(windows)]
     {
