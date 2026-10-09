@@ -125,19 +125,26 @@ pub struct InterfaceInventory {
     pub default_route_source: Option<IpAddr>,
 }
 
-/// Description marker used by npcap's loopback adapter.
-const NPCAP_LOOPBACK_MARKER: &str = "loopback";
+/// Known Npcap host-loopback descriptions, including its legacy adapter name.
+const NPCAP_LOOPBACK_DESCRIPTIONS: [&str; 3] = [
+    "Npcap Loopback Adapter",
+    "Adapter for loopback capture",
+    "Adapter for loopback traffic capture",
+];
 
 /// Whether an interface carries the evidence fragcap treats as loopback support.
 ///
-/// The platform loopback flag is the direct signal. The description marker keeps
+/// The platform loopback flag is the direct signal. Known Npcap descriptions keep
 /// npcap's own loopback adapter detectable on systems where the flag is not the
-/// only evidence surfaced through libpcap.
+/// only evidence surfaced through libpcap. Generic virtual/test loopback names
+/// do not prove capture of host-local traffic.
 pub fn is_loopback_adapter(is_loopback: bool, description: Option<&str>) -> bool {
     is_loopback
-        || description
-            .map(str::to_lowercase)
-            .is_some_and(|desc| desc.contains(NPCAP_LOOPBACK_MARKER))
+        || description.is_some_and(|description| {
+            NPCAP_LOOPBACK_DESCRIPTIONS
+                .iter()
+                .any(|known| description.trim().eq_ignore_ascii_case(known))
+        })
 }
 
 /// What the caller is asking for.
@@ -640,12 +647,31 @@ mod tests {
     }
 
     #[test]
+    fn generic_virtual_loopback_descriptions_do_not_prove_host_loopback_capture() {
+        for description in [
+            "Microsoft KM-TEST Loopback Adapter",
+            "Virtual loopback testing adapter",
+            "Ethernet with loopback diagnostics",
+        ] {
+            assert!(!is_loopback_adapter(false, Some(description)));
+        }
+    }
+
+    #[test]
     fn loopback_evidence_accepts_platform_flag_and_npcap_description() {
         assert!(is_loopback_adapter(true, None));
         assert!(is_loopback_adapter(false, Some("Npcap LoopBack Adapter")));
-        assert!(is_loopback_adapter(
+        assert!(!is_loopback_adapter(
             false,
             Some("network adapter 'npcap loopback adapter'")
+        ));
+        assert!(is_loopback_adapter(
+            false,
+            Some("Adapter for loopback capture")
+        ));
+        assert!(is_loopback_adapter(
+            false,
+            Some(" Adapter for loopback traffic capture ")
         ));
         assert!(!is_loopback_adapter(false, Some("Ethernet Adapter")));
         assert!(!is_loopback_adapter(false, None));

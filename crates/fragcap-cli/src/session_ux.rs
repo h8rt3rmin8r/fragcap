@@ -633,6 +633,39 @@ pub(crate) fn attempt_diagnosis(value: &Value, width: usize) -> String {
             value[key].as_str().unwrap_or("unavailable").into(),
         ));
     }
+    if let Some(reasons) = value.pointer("/correlation_evidence/reasons") {
+        for (label, reason) in [
+            ("Exact flow and owner", "exact-flow-and-owner"),
+            ("Flow never observed", "packet-flow-not-observed"),
+            (
+                "History withheld or bounded",
+                "packet-history-bound-exceeded",
+            ),
+            (
+                "Capture buffer history incomplete",
+                "capture-buffer-history-incomplete",
+            ),
+            (
+                "Flow outside observation window",
+                "packet-flow-has-no-overlapping-observation",
+            ),
+            ("Flow owner unavailable", "packet-flow-unattributed"),
+            (
+                "Flow owner partly unresolved",
+                "packet-owner-partially-unresolved",
+            ),
+            ("Conflicting packet owners", "conflicting-packet-owners"),
+            (
+                "Connection ending unavailable",
+                "connection-terminal-not-observed",
+            ),
+            ("Other correlation reason", "other"),
+        ] {
+            if let Some(total) = reasons[reason].as_u64().filter(|total| *total > 0) {
+                fields.push((format!("{label}:"), total.to_string()));
+            }
+        }
+    }
     fields.push((
         "Fact writes:".into(),
         format!(
@@ -683,7 +716,7 @@ pub(crate) fn attempt_diagnosis(value: &Value, width: usize) -> String {
     }
     text.push_str(&wrapped("Connection endings and application exchanges count different populations. Ownership counters describe retained records; late owner-release records cannot satisfy the attempted observation case. Unknown or lost details remain explicit.", width));
     if value["reason"] == "final-client-correlation-missing" {
-        text.push_str(&wrapped("Final-client acquisition or correlation remains unresolved (#468). The observed proxy traffic does not prove the selected client reached the proxy. No gameplay remedy or retry command is established by this evidence.", width));
+        text.push_str(&wrapped("The attempt has missing packet-flow correlation or unresolved final-client ownership. Run fragcap doctor to inspect Npcap loopback readiness, then inspect the retained application and process evidence for the correlation reasons above. Doctor checks acquisition prerequisites; it does not prove ownership or compatibility. No gameplay remedy or measurement retry is established by this evidence.", width));
     }
     text
 }
@@ -840,7 +873,9 @@ mod tests {
         }
         assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
         assert!(!text.contains("private implementation text"));
-        assert!(words.contains("#468") && words.contains("No gameplay remedy"));
+        assert!(words.contains("missing packet-flow correlation"));
+        assert!(words.contains("fragcap doctor"));
+        assert!(words.contains("No gameplay remedy"));
         assert_eq!(artifact_process_completeness(&artifacts), "partial");
         assert!(!text.contains("classification failed=0"));
     }
@@ -857,6 +892,42 @@ mod tests {
         let text = terminal_summary(SessionOutcome::Complete, true, &artifacts, &[], 80);
         assert!(text.contains("access unavailable"));
         assert!(text.contains("#464"));
+    }
+
+    #[test]
+    fn correlation_reason_counts_keep_measured_anchors_and_supported_guidance_at_narrow_widths() {
+        let value = json!({
+            "reason": "final-client-correlation-missing",
+            "correlation_evidence": {"reasons": {
+                "packet-flow-not-observed": 6,
+                "packet-history-bound-exceeded": 2,
+                "capture-buffer-history-incomplete": 1,
+                "exact-flow-and-owner": 0,
+            }},
+        });
+        for width in [20, 40, 80, 160] {
+            let text = attempt_diagnosis(&value, width);
+            let rows: Vec<_> = text.lines().filter(|line| line.contains(':')).collect();
+            let widest = rows
+                .iter()
+                .map(|row| display_width(&row[..=row.find(':').unwrap()]))
+                .max()
+                .unwrap();
+            for (label, count) in [
+                ("Flow never observed:", "6"),
+                ("History withheld or bounded:", "2"),
+                ("Capture buffer history incomplete:", "1"),
+            ] {
+                let row = rows.iter().find(|row| row.starts_with(label)).unwrap();
+                assert_eq!(row.trim_end().chars().last().unwrap().to_string(), count);
+                assert_eq!(row.find(count).unwrap(), widest + 4);
+            }
+            assert!(!text.contains("Exact flow and owner:"));
+            let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(words.contains("fragcap doctor"));
+            assert!(words.contains("does not prove ownership or compatibility"));
+            assert!(words.contains("No gameplay remedy or measurement retry"));
+        }
     }
 
     #[test]

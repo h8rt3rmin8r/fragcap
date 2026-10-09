@@ -1601,4 +1601,341 @@ mod tests {
         context.record_controlled_process_id(4242);
         assert_eq!(context.controlled_process_id(), Some(4242));
     }
+
+    fn loopback_packet_owner(
+        client: SocketAddr,
+        proxy: SocketAddr,
+        timestamp: Timestamp,
+        role: &str,
+    ) -> Attribution {
+        use fragcap_core::{FlowAttributor, StageId};
+
+        let inner = crate::SocketTableAttributor::new(
+            Box::new(crate::DeclaredTable::once(crate::SocketTable::new(
+                timestamp,
+                vec![
+                    crate::SocketTableEntry::tcp(proxy, client, 9),
+                    crate::SocketTableEntry::tcp(client, proxy, 7),
+                ],
+            ))),
+            Box::new(crate::DeclaredNames::from([
+                (7, "selected.exe"),
+                (9, "fragcap.exe"),
+            ])),
+            Arc::new(crate::TestClock::at(timestamp)),
+            crate::AttributorConfig::default(),
+        );
+        inner.refresh().unwrap();
+        let stamper = crate::session::RoleStampingAttributor::new(Arc::new(inner));
+        stamper
+            .publisher()
+            .publish(vec![(7, Some(Arc::from(role)), Some(StageId::new(role)))]);
+        let (local, remote) = if client <= proxy {
+            (client, proxy)
+        } else {
+            (proxy, client)
+        };
+        stamper
+            .resolve(&FlowKey::new(Proto::Tcp, local, remote), timestamp)
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_loopback_owner_reaches_native_join_in_both_port_orders_and_families() {
+        for ip in ["127.0.0.1", "::1"] {
+            for (client_port, proxy_port) in [(41000, 42000), (42000, 41000)] {
+                let client = SocketAddr::new(ip.parse().unwrap(), client_port);
+                let proxy = SocketAddr::new(ip.parse().unwrap(), proxy_port);
+                let at = Timestamp::from_nanos(20);
+                let owner = loopback_packet_owner(client, proxy, at, "client");
+                let registry = FlowRegistry::default();
+                let (local, remote) = if client <= proxy {
+                    (client, proxy)
+                } else {
+                    (proxy, client)
+                };
+                registry.observe_at(FlowKey::new(Proto::Tcp, local, remote), at, Some(&owner));
+
+                let result = correlate_native_observation(&registry, client, proxy, 10, 30);
+                assert_eq!(result.1, Some(7));
+                assert_eq!(result.2.as_deref(), Some("selected.exe"));
+                assert_eq!(result.3.as_deref(), Some("client"));
+                assert_eq!(result.5, 1);
+                assert_eq!(result.7, CorrelationState::Matched);
+                assert_eq!(result.8, "exact-flow-and-owner");
+            }
+        }
+    }
+
+    // The proxy and HTTP origin below use real finite sockets. Packet ownership
+    // is deliberately supplied by declared socket tables, not live Npcap. Keep
+    // controlled=false so neither final join nor facts use the harness shortcut.
+    fn native_join_test_lease(
+        ip: std::net::IpAddr,
+        origin: SocketAddr,
+        path: &std::path::Path,
+    ) -> NativeProxyLease {
+        let context = NativeObservationContext::default();
+        let registry = context.flow_registry();
+        let application = super::super::ApplicationArtifactLease::open_correlated(
+            path,
+            "s169-native-join",
+            super::super::DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+            Arc::new(move |window| {
+                let result = correlate_connection_window(&registry, window);
+                super::super::ApplicationCorrelation {
+                    target_id: Some(1),
+                    flow_id: result.0,
+                    process_id: result.1,
+                    process_image: result.2,
+                    role: result.3,
+                    attribution: result.4,
+                    packet_observations: result.5,
+                    packet_observations_unretained: result.6,
+                    state: Some(result.7.as_str().to_string()),
+                    reason: Some(result.8),
+                }
+            }),
+        )
+        .unwrap();
+        let config =
+            NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 16 * 1024, Duration::from_secs(3))
+                .unwrap()
+                .with_session_id("s169-native-join")
+                .unwrap();
+        let mut policy = DestinationPolicy::new(SocketAddr::new(ip, 0));
+        policy.grant_for_test(origin);
+        let runtime = RuntimeBackend::new(config)
+            .with_destination_policy(policy)
+            .with_application_event_sink(application.sink())
+            .start(Duration::from_secs(3))
+            .unwrap();
+        NativeProxyLease {
+            lease: runtime,
+            controlled: false,
+            controlled_lab: None,
+            observation_context: context,
+            application_artifact: Some(application),
+            proxy_lifecycle: None,
+            key_log: None,
+            observations_lost: 0,
+            application_classification_summary: None,
+            stop_authority: None,
+            diagnostics: None,
+            observation_ended_at_ns: None,
+        }
+    }
+
+    #[test]
+    fn real_http_exchange_reconciles_packet_owner_application_and_facts() {
+        use crate::targets::CompatibilityFactKey;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        for ip in ["127.0.0.1", "::1"] {
+            for role in [Some("client"), Some("platform"), None] {
+                let ip = ip.parse().unwrap();
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("application.jsonl");
+                let origin = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
+                let origin_address = origin.local_addr().unwrap();
+                origin.set_nonblocking(true).unwrap();
+                let (reached_sender, reached_receiver) = mpsc::sync_channel(1);
+                let (release_sender, release_receiver) = mpsc::sync_channel(1);
+                let worker = std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    let mut stream = loop {
+                        match origin.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "origin accept timed out");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("origin accept failed: {error}"),
+                        }
+                    };
+                    // Windows accepts can inherit the listener's nonblocking
+                    // mode. Switch the connected stream to bounded blocking I/O
+                    // before reading, independently of request arrival timing.
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        assert!(head.len() < 4096, "origin request exceeded its bound");
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        head.push(byte[0]);
+                    }
+                    reached_sender.send(()).unwrap();
+                    release_receiver
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nS169")
+                        .unwrap();
+                });
+                let mut lease = native_join_test_lease(ip, origin_address, &path);
+                let proxy = lease.lease.endpoint();
+                let mut client = TcpStream::connect(proxy).unwrap();
+                client
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                client
+                    .set_write_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let client_address = client.local_addr().unwrap();
+                write!(
+                    client,
+                    "GET http://{origin_address}/s169 HTTP/1.1\r\nHost: {origin_address}\r\nProxy-Authorization: {}\r\nConnection: close\r\n\r\n",
+                    lease.lease.capability_proof().proxy_authorization().as_str(),
+                )
+                .unwrap();
+                reached_receiver
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+                // The accepted request is waiting at the origin, so this exact
+                // observation lies within the real proxy connection lifetime.
+                if let Some(role) = role {
+                    let at = Timestamp::from_nanos(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos()
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let owner = loopback_packet_owner(client_address, proxy, at, role);
+                    let (local, remote) = if client_address <= proxy {
+                        (client_address, proxy)
+                    } else {
+                        (proxy, client_address)
+                    };
+                    lease.observation_context.flow_registry.observe_at(
+                        FlowKey::new(Proto::Tcp, local, remote),
+                        at,
+                        Some(&owner),
+                    );
+                }
+                release_sender.send(()).unwrap();
+                let mut response = Vec::new();
+                client.read_to_end(&mut response).unwrap();
+                assert!(response.starts_with(b"HTTP/1.1 200"));
+                assert!(response.ends_with(b"S169"));
+                worker.join().unwrap();
+                lease.end_observation_window(SystemTime::now());
+                assert_eq!(
+                    lease.stop(Budget::new(Duration::from_secs(3))).status,
+                    CleanupStatus::Released
+                );
+                let (qualified, status) = lease
+                    .drain_phase_observations(Budget::new(Duration::from_secs(1)))
+                    .unwrap()
+                    .unwrap()
+                    .into_parts();
+                assert_eq!(status, super::super::ObservationDrainStatus::Complete);
+                assert!(qualified.iter().all(
+                    |value| value.evidence_window == super::super::EvidenceWindow::Observation
+                ));
+                let windows = qualified
+                    .iter()
+                    .map(|value| value.evidence_window)
+                    .collect::<Vec<_>>();
+                let observations = qualified
+                    .into_iter()
+                    .map(|value| value.observation)
+                    .collect::<Vec<_>>();
+                assert_eq!(observations.len(), 1);
+                let observation = &observations[0];
+                assert_eq!(observation.status, Some(200));
+                assert_eq!(observation.client_peer, Some(client_address));
+                assert_eq!(observation.proxy_local, Some(proxy));
+                let expected_state = if role.is_some() {
+                    "matched"
+                } else {
+                    "unavailable"
+                };
+                let expected_reason = if role.is_some() {
+                    "exact-flow-and-owner"
+                } else {
+                    "packet-flow-not-observed"
+                };
+                assert_eq!(observation.correlation_state.as_str(), expected_state);
+                assert_eq!(observation.correlation_reason, expected_reason);
+                assert_eq!(observation.role.as_deref(), role);
+                assert_eq!(observation.packet_observations, u64::from(role.is_some()));
+                let facts = super::super::compatibility_fact_candidates_in_windows(
+                    super::super::LaunchCase::SteamProtocolCold.as_str(),
+                    &observations,
+                    &windows,
+                    false,
+                    Some(super::super::CalibrationPhase::Reachability),
+                    None,
+                );
+                for (key, expected) in [
+                    (
+                        CompatibilityFactKey::ProxyRouting,
+                        if role == Some("client") {
+                            "reached-client"
+                        } else {
+                            "inconclusive"
+                        },
+                    ),
+                    (
+                        CompatibilityFactKey::ProxyPropagation,
+                        if role == Some("client") {
+                            "confirmed"
+                        } else {
+                            "not-confirmed"
+                        },
+                    ),
+                ] {
+                    assert_eq!(
+                        facts.iter().find(|fact| fact.key == key).unwrap().value,
+                        expected
+                    );
+                }
+                let records = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let trailer = records.last().unwrap();
+                assert_eq!(trailer["type"], "application.trailer");
+                assert_eq!(trailer["writer_status"], "complete");
+                assert_eq!(trailer["dropped_records"], 0);
+                assert_eq!(trailer["writer_failures"], 0);
+                assert_eq!(trailer["accepted_records"], trailer["written_records"]);
+                assert_eq!(trailer["body_bytes_observed"], 4);
+                assert_eq!(trailer["body_bytes_retained"], 4);
+                let correlations = records
+                    .iter()
+                    .filter(|record| record["type"] == "application.correlation")
+                    .collect::<Vec<_>>();
+                assert_eq!(correlations.len(), 1);
+                let correlation = correlations[0];
+                assert_eq!(correlation["correlation_state"], expected_state);
+                assert_eq!(correlation["correlation_reason"], expected_reason);
+                assert_eq!(correlation["process_id"].as_u64(), role.map(|_| 7));
+                assert_eq!(correlation["role"].as_str(), role);
+                assert_eq!(
+                    correlation["packet_observations"],
+                    observation.packet_observations
+                );
+                assert_eq!(correlation["packet_observations_unretained"], 0);
+                assert_eq!(
+                    correlation["flow_id"].as_str(),
+                    observation.flow_id.map(|id| id.to_string()).as_deref()
+                );
+                assert!(lease
+                    .cleanup(Budget::new(Duration::from_secs(3)))
+                    .iter()
+                    .all(|result| result.status == CleanupStatus::Released));
+            }
+        }
+    }
 }

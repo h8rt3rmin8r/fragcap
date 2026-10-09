@@ -7,6 +7,7 @@
 //! boundary.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -1229,7 +1230,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         &mut self,
         config: &deep_capture_api::SessionConfig,
         _target: &deep_capture_api::PreparedTarget,
-        _endpoint: deep_capture_api::LoopbackEndpoint,
+        endpoint: deep_capture_api::LoopbackEndpoint,
     ) -> Result<deep_capture_api::PreparedCapture, deep_capture_api::PreflightRefusal> {
         self.mode = config.mode;
         if !self.args.controlled_target && self.prepared.borrow().is_none() {
@@ -1237,6 +1238,14 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 "capture-authority-missing",
                 "target preflight did not retain the exact authorized Capture preparation",
             ));
+        }
+        if let Some((_, prepared)) = self.prepared.borrow_mut().as_mut() {
+            prepared.with_proxy_acquisition(endpoint).map_err(|error| {
+                deep_capture_api::PreflightRefusal::new(
+                    "capture-acquisition-prerequisite",
+                    error.message(),
+                )
+            })?;
         }
         Ok(deep_capture_api::PreparedCapture {
             token: "ordinary-capture".to_string(),
@@ -4613,7 +4622,18 @@ fn manifest_json(
                 .iter()
                 .filter_map(|observation| observation.flow_id.map(|flow_id| flow_id.to_string()))
                 .collect::<Vec<_>>(),
-            "process_roles": if ctx.controlled { json!(["client"]) } else { json!([]) },
+            "process_roles": if ctx.controlled { json!(["client"]) } else {
+                json!(ctx.observations.iter()
+                    .filter(|observation| {
+                        observation.correlation_state == deep_capture_api::CorrelationState::Matched
+                            && observation.flow_id.is_some()
+                            && observation.process_id.is_some()
+                            && observation.packet_observations > 0
+                            && matches!(observation.attribution.as_deref(), Some("live" | "retained"))
+                    })
+                    .filter_map(|observation| observation.role.as_deref())
+                    .collect::<BTreeSet<_>>())
+            },
         },
         "cleanup": {
             "status": cleanup.status(),
@@ -5311,6 +5331,139 @@ mod tests {
             )
             .unwrap(),
         }
+    }
+
+    #[test]
+    fn manifest_reports_observed_roles_without_promoting_missing_ownership_or_partial_trace() {
+        let root = tempfile::tempdir().unwrap();
+        let listener =
+            deep_capture_api::LoopbackEndpoint::new("127.0.0.1:41000".parse().unwrap()).unwrap();
+        let session = DeepCaptureSession {
+            session_id: "s169-manifest".to_string(),
+            bundle: root.path().to_path_buf(),
+            target: TargetEntry {
+                id: Some(1),
+                stable_id: 1,
+                handle: "synthetic-client".to_string(),
+                name: "Synthetic client".to_string(),
+                classification: fragcap::targets::TargetClassification::Game,
+                classification_source: fragcap::targets::ClassificationSource::User,
+                fidelity: fragcap::profile::FidelityTier::Authored,
+                provenance: None,
+                anchor: None,
+                launch_entries: None,
+                install_root: None,
+                evidence: None,
+                detection_scan: None,
+                folder_name: None,
+                executable_hint: None,
+            },
+            target_id: 1,
+            backend: ProxyBackend {
+                name: "fragcap-native".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            launch_case: CompatibilityLaunchCase::SteamProtocolCold,
+            address_family: CompatibilityAddressFamily::Ipv4,
+            protocol: Some(CompatibilityProtocol::Http1),
+            routing: deep_capture_api::RoutingPlan::child_environment(listener, &[]).unwrap(),
+            listen_addr: "127.0.0.1".to_string(),
+            listen_port: 41000,
+            started_at: UNIX_EPOCH,
+        };
+        let trust = TrustOutcome {
+            state: "not-requested".to_string(),
+            action: "none".to_string(),
+            thumbprint: None,
+        };
+        let mut client = observation();
+        client.correlation_state = deep_capture_api::CorrelationState::Matched;
+        client.process_id = Some(43);
+        client.role = Some("client".to_string());
+        client.attribution = Some("live".to_string());
+        let mut platform = client.clone();
+        platform.process_id = Some(42);
+        platform.role = Some("platform".to_string());
+        let mut unavailable = observation();
+        unavailable.correlation_state = deep_capture_api::CorrelationState::Unavailable;
+        unavailable.role = Some("unproven".to_string());
+        let observations = [platform, client.clone(), client, unavailable];
+        let mut ctx = BundleContext {
+            session: &session,
+            controlled: false,
+            har_requested: false,
+            key_log_requested: false,
+            sensitive_retention: deep_capture_api::SensitiveRetention::Retain,
+            observations: &observations,
+            trust: &trust,
+            session_state: "complete",
+            process_evidence: None,
+            flow_summaries: &[],
+            globally_unretained_flow_observations: 0,
+            calibration: None,
+            calibration_outcome: None,
+            deadlines: CalibrationDeadlines {
+                launch: CALIBRATION_LAUNCH_TIMEOUT,
+                observation: CALIBRATION_OBSERVATION_TIMEOUT,
+                route_owner_release: ROUTE_OWNER_RELEASE_TIMEOUT,
+                shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
+                cleanup: CALIBRATION_CLEANUP_TIMEOUT,
+            },
+            fact_writes: &[],
+        };
+        let trace = fragcap::deep_capture::ProcessTraceSummary {
+            finalization: "complete",
+            completeness: "partial",
+            records: 3,
+            process_instances: 2,
+            flow_owner_intervals: 2,
+            limitations: 1,
+            events_lost: 0,
+            unparseable_events: 0,
+            buffers_lost: 0,
+            rundown_ignored: 0,
+            events_unretained: 1,
+            stage_transitions_unretained: 0,
+            unresolved_flow_owners: 0,
+        };
+        let render = |ctx: &BundleContext<'_>| -> Value {
+            serde_json::from_str(
+                &manifest_json(
+                    ctx,
+                    &CleanupReport::new(vec![]),
+                    false,
+                    false,
+                    ManifestOmissionReason::NotRequested,
+                    false,
+                    true,
+                    &trace,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let manifest = render(&ctx);
+        fragcap::deep_capture::validate_v2(&manifest).unwrap();
+        assert_eq!(
+            manifest["correlation"]["process_roles"],
+            json!(["client", "platform"])
+        );
+        assert_eq!(manifest["state"], "partial");
+        let process = manifest["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["role"] == "process-trace")
+            .unwrap();
+        assert_eq!(process["completeness"], "partial");
+        assert_eq!(process["loss"]["events_unretained"], 1);
+        ctx.observations = &observations[3..];
+        assert_eq!(render(&ctx)["correlation"]["process_roles"], json!([]));
+        ctx.controlled = true;
+        assert_eq!(
+            render(&ctx)["correlation"]["process_roles"],
+            json!(["client"])
+        );
     }
 
     #[test]

@@ -127,6 +127,7 @@ fn round_trip(
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let authorization = lease.capability_proof().proxy_authorization();
     let mut tcp = TcpStream::connect(endpoint).unwrap();
+    tcp.set_nodelay(true).unwrap();
     write!(
         tcp,
         "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\nProxy-Authorization: {}\r\n\r\n",
@@ -153,19 +154,23 @@ fn round_trip(
     if advertise_http_alpn {
         client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
     }
-    let connection = rustls::ClientConnection::new(
+    let mut connection = rustls::ClientConnection::new(
         Arc::new(client_config),
         ServerName::try_from("localhost").unwrap().to_owned(),
     )
     .unwrap();
-    let mut tls = rustls::StreamOwned::new(connection, tcp);
-    write!(
-        tls,
+    // Queue this fixture's complete request before driving the handshake, so
+    // the first application flight contains a recognizable HTTP request line.
+    // Separate formatting writes and delayed ACKs can exceed the finite
+    // no-ALPN prefix window and select generic TLS despite successful relay.
+    let request = format!(
         "{} /secure HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
         method,
         origin.port(),
-    )
-    .unwrap();
+    );
+    connection.writer().write_all(request.as_bytes()).unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, tcp);
+    tls.flush().unwrap();
     let mut response = String::new();
     if let Err(error) = tls.read_to_string(&mut response) {
         // HTTP Content-Length proves this fixture's response is complete.
@@ -182,6 +187,10 @@ fn round_trip(
     assert_eq!(report.observation.protocol.upstream_tls_completed, 1);
     assert_eq!(report.observation.protocol.requests, 1);
     assert_eq!(report.observation.protocol.responses, 1);
+    assert_eq!(
+        report.observation.protocol.generic_streams_tls_intercepted,
+        0
+    );
     assert_eq!(report.observation.application.len(), 4);
     let application_evidence_at = report
         .observation

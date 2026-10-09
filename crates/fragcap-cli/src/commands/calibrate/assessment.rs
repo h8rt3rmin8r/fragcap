@@ -9,6 +9,22 @@ use fragcap::deep_capture::api::{
 };
 use fragcap::deep_capture::{CaptureProcessEvidence, StageTransitionKind};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+// A closed vocabulary keeps adapter detail out of the report and bounds this
+// projection independently from the retained observation population.
+const CORRELATION_REASONS: [&str; 10] = [
+    "exact-flow-and-owner",
+    "packet-flow-not-observed",
+    "packet-history-bound-exceeded",
+    "capture-buffer-history-incomplete",
+    "packet-flow-has-no-overlapping-observation",
+    "packet-flow-unattributed",
+    "packet-owner-partially-unresolved",
+    "conflicting-packet-owners",
+    "connection-terminal-not-observed",
+    "other",
+];
 
 #[derive(Clone, Debug)]
 pub(crate) struct AttemptAssessment {
@@ -26,6 +42,7 @@ pub(crate) struct AttemptAssessment {
     pub(crate) unavailable_correlation_records: u64,
     pub(crate) other_owner_records: u64,
     pub(crate) final_client_records: u64,
+    correlation_reasons: BTreeMap<&'static str, u64>,
     pub(crate) retained_target_packets: Option<u64>,
     pub(crate) finalization: &'static str,
     pub(crate) artifact_writes: &'static str,
@@ -117,6 +134,10 @@ impl AttemptAssessment {
             unavailable_correlation_records: 0,
             other_owner_records: 0,
             final_client_records: 0,
+            correlation_reasons: CORRELATION_REASONS
+                .into_iter()
+                .map(|reason| (reason, 0))
+                .collect(),
             retained_target_packets,
             finalization,
             artifact_writes,
@@ -136,6 +157,16 @@ impl AttemptAssessment {
                 EvidenceWindow::Observation => value.observation_records += 1,
                 EvidenceWindow::OwnerRelease => value.owner_release_records += 1,
                 _ => value.unavailable_window_records += 1,
+            }
+            if window == EvidenceWindow::Observation {
+                let reason = CORRELATION_REASONS
+                    .into_iter()
+                    .find(|reason| *reason == observation.correlation_reason)
+                    .unwrap_or("other");
+                *value
+                    .correlation_reasons
+                    .get_mut(reason)
+                    .expect("closed reason vocabulary") += 1;
             }
             match observation.correlation_state {
                 CorrelationState::Matched => value.matched_records += 1,
@@ -215,6 +246,10 @@ impl AttemptAssessment {
                 "ambiguous_records": self.ambiguous_records, "unavailable_records": self.unavailable_correlation_records,
                 "other_owner_records": self.other_owner_records, "eligible_final_client_records": self.final_client_records,
                 "population": "retained-observation-records",
+            },
+            "correlation_evidence": {
+                "population": "retained-observation-window-records",
+                "reasons": self.correlation_reasons,
             },
             "finalization": self.finalization, "artifact_writes": self.artifact_writes,
             "artifact_access": "not-assessed", "process_completeness": self.process_completeness,
@@ -549,6 +584,61 @@ mod tests {
             )
             .unwrap(),
         }
+    }
+
+    #[test]
+    fn correlation_diagnosis_separates_absent_withheld_and_late_records() {
+        let mut report = report();
+        for reason in [
+            "packet-flow-not-observed",
+            "packet-history-bound-exceeded",
+            "capture-buffer-history-incomplete",
+            "packet-flow-has-no-overlapping-observation",
+            "packet-flow-unattributed",
+            "packet-owner-partially-unresolved",
+            "conflicting-packet-owners",
+            "connection-terminal-not-observed",
+            "an-unrecognized-adapter-reason",
+            "packet-flow-not-observed",
+        ] {
+            let mut value = observation(None);
+            value.correlation_reason = reason.into();
+            report.snapshot.observations.push(value);
+        }
+        let mut windows = vec![EvidenceWindow::Observation; 9];
+        windows.push(EvidenceWindow::OwnerRelease);
+        let value = AttemptAssessment::from_report(
+            &report,
+            CalibrationPhase::Reachability,
+            CompatibilityProtocol::Routing,
+            None,
+            Some(0),
+            Some(&diagnostics(windows)),
+        )
+        .json();
+        let reasons = &value["correlation_evidence"]["reasons"];
+        assert_eq!(reasons["packet-flow-not-observed"], 1);
+        assert_eq!(reasons["packet-history-bound-exceeded"], 1);
+        assert_eq!(reasons["capture-buffer-history-incomplete"], 1);
+        assert_eq!(reasons["packet-flow-has-no-overlapping-observation"], 1);
+        assert_eq!(reasons["packet-flow-unattributed"], 1);
+        assert_eq!(reasons["packet-owner-partially-unresolved"], 1);
+        assert_eq!(reasons["conflicting-packet-owners"], 1);
+        assert_eq!(reasons["connection-terminal-not-observed"], 1);
+        assert_eq!(reasons["other"], 1);
+        assert_eq!(
+            reasons
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|n| n.as_u64().unwrap())
+                .sum::<u64>(),
+            value["evidence_windows"]["observation_records"]
+                .as_u64()
+                .unwrap()
+        );
+        assert!(!value.to_string().contains("an-unrecognized-adapter-reason"));
+        assert_eq!(value["verdict"], "inconclusive");
     }
 
     #[test]

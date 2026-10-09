@@ -35,6 +35,14 @@ Review each named action and exact identity before its individual confirmation. 
 
 Published builds offer the official Npcap acquisition page after confirmation. Optional source-build `net` support may fetch and launch the vendor's signed installer after confirmation. Neither path silently installs or redistributes the driver. Wireshark/extcap remediation is optional for command-line Capture.
 
+## Proxy traffic without client packet ownership
+
+Current source (S169, unreleased) corrects several loopback acquisition gaps: Deep Capture includes its required loopback adapter even with named physical interfaces, recognizes Npcap loopback descriptions, provides the exact listener IP when adapter addresses are absent, and keeps the exact TCP listener in loopback filters during narrowing. The observed stage-bound client can own either canonical TCP endpoint orientation. Competing owners remain unresolved, and the existing acquisition gate and finite history bounds remain active.
+
+If exchanges complete but calibration says missing packet-flow correlation, run `fragcap doctor` to inspect Npcap and loopback readiness. Inspect the retained application correlation reasons and process trace separately. `packet-flow-not-observed` means no matching flow summary; `packet-history-bound-exceeded` means matching evidence was withheld or exceeded its bound; `capture-buffer-history-incomplete` means a global acquisition-buffer gap. A flow outside the connection window, missing owner or conflicting owners has its own reason. Counts describe retained observation-window records and do not include later route-owner release traffic. A readable artifact or successful HTTP response does not prove final-client ownership.
+
+Doctor is read-only and checks prerequisites; it does not repair packet ownership or prove compatibility. Gameplay retry is not an established remedy for a missing evidence path. Ordinary-user bundle access and historical permission repair remain separate work under #464. Controlled sockets and synthesized packet fixtures prove the source corrections; they do not prove live Npcap acquisition or universal title compatibility.
+
 ## A stalled check
 
 Historical v0.10.0 has coarse progress and a hidden `fragcap doctor --timings` switch that adds completion durations; it cannot update while a probe is blocked. v0.10.1 and later ship the S151 diagnostics below and are available for optional operator-owned installed observation. The historical stall cause was not measured on the affected host. If a current release stalls despite the elapsed and nested progress, file a defect naming the release, privilege state, visible phase, elapsed time and scrubbed reproduction details.

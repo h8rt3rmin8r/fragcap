@@ -88,6 +88,7 @@ use std::time::Instant;
 
 use crate::error::{SinkError, SourceError};
 use crate::filter::{FilterConfig, FilterManager, FilterProgram};
+use crate::flow::Endpoint;
 use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
@@ -348,6 +349,7 @@ pub struct Pipeline {
     sinks: Vec<Box<dyn Sink>>,
     config: PipelineConfig,
     filter_config: FilterConfig,
+    fixed_filter_endpoints: Vec<Vec<Endpoint>>,
     stop: StopHandle,
     /// Consulted by the output thread before the per-sink fan-out, if attached.
     /// `None` is the pre-slice-017 behavior: every captured packet reaches every
@@ -459,6 +461,7 @@ impl Pipeline {
             return Err(ConfigError::NoSources);
         }
         Ok(Pipeline {
+            fixed_filter_endpoints: vec![Vec::new(); sources.len()],
             sources,
             attributor,
             sinks: Vec::new(),
@@ -498,6 +501,21 @@ impl Pipeline {
     /// zero-debounce config here.
     pub fn set_filter_config(&mut self, config: FilterConfig) {
         self.filter_config = config;
+    }
+
+    /// Preserve exact infrastructure endpoints in one source's narrowed filter.
+    /// Configure before running; this changes acquisition, never output authority.
+    /// Returns false when the interface is absent without changing another source.
+    pub fn set_filter_endpoints(&mut self, interface: InterfaceId, endpoints: &[Endpoint]) -> bool {
+        let Some(position) = self
+            .sources
+            .iter()
+            .position(|source| source.id == interface)
+        else {
+            return false;
+        };
+        self.fixed_filter_endpoints[position] = endpoints.to_vec();
+        true
     }
 
     /// A live-readable clone of the counters the output loop otherwise keeps
@@ -547,6 +565,7 @@ impl Pipeline {
             sinks,
             config,
             filter_config,
+            fixed_filter_endpoints,
             stop,
             gate,
             live,
@@ -672,6 +691,9 @@ impl Pipeline {
             let control_stop = Arc::clone(&control_stop);
             std::thread::spawn(move || {
                 let mut manager = FilterManager::new(source_count, filter_config);
+                for (handle, endpoints) in fixed_filter_endpoints.iter().enumerate() {
+                    manager.set_fixed_endpoints(handle, endpoints);
+                }
                 while !control_stop.load(Ordering::Relaxed) {
                     // Apply the install acknowledgements the capture threads sent
                     // back (slice 016). The manager commits a handle's installed
@@ -2710,6 +2732,47 @@ mod tests {
             "the installed program admits exactly the active endpoint"
         );
         assert_eq!(report.ended, EndReason::SourceClosed);
+    }
+
+    #[test]
+    fn fixed_filter_endpoints_follow_interface_identity_without_leaking_to_another_source() {
+        let physical = Arc::new(Mutex::new(Vec::new()));
+        let loopback = Arc::new(Mutex::new(Vec::new()));
+        let listener = Endpoint::new("[::1]:41000".parse().unwrap(), Proto::Tcp);
+        let mut pipeline = Pipeline::new(
+            vec![
+                SourceBinding::new(
+                    InterfaceId::new(7),
+                    Box::new(RecordingSource::new(vec![], &physical)),
+                    local_addrs(),
+                ),
+                SourceBinding::new(
+                    InterfaceId::new(4),
+                    Box::new(RecordingSource::new(vec![], &loopback)),
+                    local_addrs(),
+                ),
+            ],
+            Box::new(StubAttributor::resolving().with_endpoints(vec![narrow_endpoint()])),
+            PipelineConfig::default(),
+        )
+        .unwrap();
+        pipeline.set_filter_config(FilterConfig {
+            debounce: Duration::ZERO,
+            min_reinstall_interval: Duration::ZERO,
+        });
+        assert!(!pipeline.set_filter_endpoints(InterfaceId::new(99), &[listener]));
+        assert!(pipeline.set_filter_endpoints(InterfaceId::new(4), &[listener]));
+        let report = pipeline.run();
+        assert_eq!(
+            physical.lock().unwrap().last(),
+            Some(&FilterProgram::narrowed(&[narrow_endpoint()]))
+        );
+        assert_eq!(
+            loopback.lock().unwrap().last(),
+            Some(&FilterProgram::narrowed(&[narrow_endpoint(), listener]))
+        );
+        assert_eq!(report.ended, EndReason::SourceClosed);
+        assert_eq!(report.stats.packets_captured, 0);
     }
 
     // S13, FR-005. Userspace attribution runs on every packet regardless of the
