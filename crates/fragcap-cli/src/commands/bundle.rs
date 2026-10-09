@@ -158,8 +158,199 @@ fn cleanup_failure(message: impl Into<String>, json: bool) -> CliError {
     }
 }
 
+fn render_collection(
+    value: &serde_json::Value,
+    json: bool,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
+    if json {
+        return render_access(value, true, out);
+    }
+    let width = crate::display::selected_stdout_width(std::io::stdout().is_terminal());
+    let mut fields = vec![
+        (
+            "Mode:".into(),
+            value["mode"].as_str().unwrap_or("unavailable").into(),
+        ),
+        (
+            "Session root:".into(),
+            value["root"].as_str().unwrap_or("unavailable").into(),
+        ),
+    ];
+    for (label, key) in [
+        ("Eligible sessions:", "eligible_sessions"),
+        ("Retained sessions:", "retained_sessions"),
+        ("Unresolved sessions:", "unresolved_sessions"),
+        ("Empty containers:", "empty_containers"),
+        ("Recoverable bundle bytes:", "recoverable_bytes"),
+        ("Removed bundle bytes:", "removed_bytes"),
+        ("Removed bundle files:", "removed_files"),
+        ("Complete:", "complete"),
+    ] {
+        fields.push((
+            label.into(),
+            value
+                .get(key)
+                .map_or_else(|| "unavailable".into(), ToString::to_string),
+        ));
+    }
+    write!(out, "{}", crate::display::render_fields(0, &fields, width))
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    if let Some(rows) = value["results"].as_array() {
+        for row in rows {
+            let fields = [
+                (
+                    "Bundle:".into(),
+                    row["bundle"].as_str().unwrap_or("unavailable").into(),
+                ),
+                (
+                    "Status:".into(),
+                    row["status"].as_str().unwrap_or("unresolved").into(),
+                ),
+                (
+                    "Reason:".into(),
+                    row["reason"]
+                        .as_str()
+                        .unwrap_or("see collection results")
+                        .into(),
+                ),
+                (
+                    "Recoverable bundle bytes:".into(),
+                    row.get("recoverable_logical_bytes")
+                        .map_or_else(|| "unavailable".into(), ToString::to_string),
+                ),
+            ];
+            write!(
+                out,
+                "\n{}",
+                crate::display::render_fields(0, &fields, width)
+            )
+            .map_err(|error| CliError::failure(error.to_string()))?;
+            if let Some(collection) = row.get("collection") {
+                let fields = [
+                    (
+                        "Removed bundle bytes:".into(),
+                        collection["removed_bytes"].to_string(),
+                    ),
+                    (
+                        "Removed bundle files:".into(),
+                        collection["removed_files"].to_string(),
+                    ),
+                    (
+                        "Container preserved:".into(),
+                        collection["preserved_container"].to_string(),
+                    ),
+                    ("Container purged:".into(), collection["purged"].to_string()),
+                ];
+                write!(out, "{}", crate::display::render_fields(0, &fields, width))
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                for path in collection["paths"].as_array().into_iter().flatten() {
+                    let fields = [
+                        (
+                            "Path:".into(),
+                            path["path"].as_str().unwrap_or("unavailable").into(),
+                        ),
+                        (
+                            "Result:".into(),
+                            path["status"].as_str().unwrap_or("unresolved").into(),
+                        ),
+                        (
+                            "Reason:".into(),
+                            path["reason"].as_str().unwrap_or("unavailable").into(),
+                        ),
+                    ];
+                    write!(out, "{}", crate::display::render_fields(4, &fields, width))
+                        .map_err(|error| CliError::failure(error.to_string()))?;
+                }
+            }
+        }
+    }
+    if let Some(limits) = value["limitations"].as_array() {
+        for limit in limits {
+            write!(
+                out,
+                "{}",
+                crate::display::render_fields(
+                    0,
+                    &[(
+                        "Limitation:".into(),
+                        limit.as_str().unwrap_or("unresolved inventory").into()
+                    )],
+                    width
+                )
+            )
+            .map_err(|error| CliError::failure(error.to_string()))?;
+        }
+    }
+    out.flush()
+        .map_err(|error| CliError::failure(error.to_string()))
+}
+
 pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
     match &args.command {
+        BundleCommand::Collect {
+            bundle,
+            include_retained,
+            purge_empty,
+            authorize,
+        } => {
+            let root = crate::paths::deep_capture_session_dir()
+                .ok_or_else(|| CliError::usage("no session root is available for collection"))?;
+            let result = match authorize {
+                Some(id) => crate::session_gc::apply(
+                    &root,
+                    bundle.as_deref(),
+                    *include_retained,
+                    *purge_empty,
+                    id,
+                ),
+                None => crate::session_gc::preview(
+                    &root,
+                    bundle.as_deref(),
+                    *include_retained,
+                    *purge_empty,
+                ),
+            }
+            .map_err(|error| {
+                CliError::failure(format!("session collection unresolved: {error}"))
+            })?;
+            render_collection(&result, json, out)?;
+            if !json && authorize.is_none() {
+                if let Some(id) = result["proposal_id"].as_str() {
+                    let mut command = String::from("fragcap bundle collect");
+                    if let Some(bundle) = bundle {
+                        command.push_str(" --bundle ");
+                        command.push_str(&crate::workflow_help::quote_powershell_argument(
+                            &bundle.display().to_string(),
+                        ));
+                    }
+                    if *include_retained {
+                        command.push_str(" --include-retained");
+                    }
+                    if *purge_empty {
+                        command.push_str(" --purge-empty");
+                    }
+                    command.push_str(" --authorize ");
+                    command.push_str(&crate::workflow_help::quote_powershell_argument(id));
+                    write!(
+                        out,
+                        "{}",
+                        crate::display::render_fields(
+                            0,
+                            &[("Apply reviewed proposal:".into(), command)],
+                            crate::display::selected_stdout_width(std::io::stdout().is_terminal()),
+                        )
+                    )
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                    out.flush()
+                        .map_err(|error| CliError::failure(error.to_string()))?;
+                }
+            }
+            if authorize.is_some() && result["complete"] == false {
+                return Err(CliError::failure("session collection remains unresolved; review actual results and obtain a fresh preview"));
+            }
+            Ok(Exit::SUCCESS)
+        }
         BundleCommand::AccessAuthorize { request, bundle } => {
             fragcap::deep_capture::authorize_output_recipient(
                 request,

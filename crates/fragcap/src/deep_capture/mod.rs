@@ -19,6 +19,7 @@ pub mod api;
 mod application;
 mod artifacts;
 mod classification;
+mod collection;
 mod diagnostics;
 #[doc(hidden)]
 pub mod fuzz_support;
@@ -41,6 +42,7 @@ pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;
 pub use classification::*;
+pub use collection::*;
 pub use diagnostics::*;
 pub use har::*;
 pub use journal::*;

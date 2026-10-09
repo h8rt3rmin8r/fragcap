@@ -4670,6 +4670,7 @@ fn low_level_args(
         local_db: args.local_db.clone(),
         launch: true,
         bundle: args.bundle.clone(),
+        retain_bundle: args.retain_bundle,
         output_recipient: args.output_recipient.clone(),
         duration: args.duration,
         wait: args.wait,
@@ -5021,6 +5022,41 @@ fn emit_guidance_with_attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guided_attempts_preserve_explicit_saved_retention_intent() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "fragcap",
+            "calibrate",
+            "target",
+            "--retain-bundle",
+            "--bundle",
+            "saved",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Calibrate(args)) = parsed.command else {
+            panic!("expected calibration");
+        };
+        let mut low = low_level_args(
+            &args,
+            42,
+            None,
+            deep_capture_api::CalibrationPhase::Reachability,
+            CompatibilityProtocol::Routing,
+            CompatibilityAddressFamily::Ipv4,
+        )
+        .unwrap();
+        low.bundle = attempt_bundle(
+            args.bundle.as_deref(),
+            2,
+            deep_capture_api::CalibrationPhase::Reachability,
+            CompatibilityProtocol::Routing,
+        )
+        .unwrap();
+        assert!(low.retain_bundle);
+        assert!(low.bundle.unwrap().to_string_lossy().contains("attempt-02"));
+    }
+
     use fragcap::profile::FidelityTier;
     use fragcap::targets::{
         resolved_client_launch, ClassificationSource, DiscoveryAccount, TargetClassification,

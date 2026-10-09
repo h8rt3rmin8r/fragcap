@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Cursor, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -471,8 +471,12 @@ pub fn read_resource_journal(path: &Path) -> io::Result<JournalPrefix> {
             "resource journal exceeds byte limit",
         ));
     }
-    let bytes = fs::read(path)?;
-    parse_resource_journal(&bytes)
+    // Preserve the byte bound even if a writer grows the file after metadata inspection.
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    read_resource_journal_bytes(&bytes)
 }
 
 pub(crate) fn read_resource_journal_bytes(bytes: &[u8]) -> io::Result<JournalPrefix> {

@@ -188,7 +188,7 @@ pub(crate) fn lifecycle_progress(event: &DeepCaptureEvent, width: usize) -> Opti
         DeepCaptureEvent::ProxyStarted { .. } => "Native proxy ready on the session-owned loopback listener. No target traffic or decryption is inferred.",
         DeepCaptureEvent::TrustAcquired { .. } => "Trust readiness step completed. Target CA acceptance remains unobserved until eligible traffic proves it.",
         DeepCaptureEvent::LaunchStarted { .. } => "Managed target launch started with child-scoped routing. Final-client ownership and proxy reachability remain to be observed.",
-        DeepCaptureEvent::Started { .. } => "Observing the authorized session. Ctrl+C requests bounded shutdown and cleanup; retained evidence is not automatically deleted.",
+        DeepCaptureEvent::Started { .. } => "Observing the authorized session. Ctrl+C requests bounded shutdown and cleanup. The current bundle is kept at session end; history retention follows the authorized policy.",
         DeepCaptureEvent::Cleanup { .. } => return None,
         _ => return None,
     };
@@ -255,6 +255,14 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
         ),
         ("Bundle:".into(), label("/artifacts/bundle")),
         (
+            "Evidence retention:".into(),
+            retention_label(&label("/artifacts/retention")),
+        ),
+        (
+            "Empty container:".into(),
+            "preserved; removal requires explicit purge".into(),
+        ),
+        (
             "Output recipient:".into(),
             label("/artifacts/output_recipient_sid"),
         ),
@@ -274,6 +282,39 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
         width,
     ));
     text
+}
+
+pub(crate) fn collection_summary(value: &Value, width: usize) -> String {
+    let observed = |key: &str| {
+        value
+            .get(key)
+            .map_or_else(|| "unavailable".into(), ToString::to_string)
+    };
+    let fields = [
+        ("Complete:".into(), observed("complete")),
+        ("Removed bundle bytes:".into(), observed("removed_bytes")),
+        ("Removed bundle files:".into(), observed("removed_files")),
+        ("Eligible sessions:".into(), observed("eligible_sessions")),
+        ("Retained sessions:".into(), observed("retained_sessions")),
+        (
+            "Unresolved sessions:".into(),
+            observed("unresolved_sessions"),
+        ),
+        ("Empty containers:".into(), observed("empty_containers")),
+        ("Limitations:".into(), observed("limitations")),
+    ];
+    let mut text = String::from("\nSession history maintenance\n\n");
+    text.push_str(&render_exact_fields(&fields, width));
+    text.push_str(&wrapped("Routine collection preserves empty containers and the bundle just returned. Saved and custom evidence remains retained until explicit cleanup. Review the backlog with fragcap bundle collect.", width));
+    text
+}
+
+fn retention_label(value: &str) -> String {
+    match value {
+        "managed-history-30-days-20-sessions-2-gib" => "Managed history: 30 days, 20 completed sessions, 2 GiB; oldest eligible contents collected first".into(),
+        "retain-until-explicit-cleanup" => "Retained until explicit cleanup".into(),
+        other => other.into(),
+    }
 }
 
 #[derive(Default)]
@@ -360,6 +401,16 @@ pub(crate) fn terminal_summary_with_access(
         ("Session finalization:".into(), outcome.into()),
         ("Evidence completeness:".into(), completeness.into()),
     ];
+    if let Some(retention) = manifest
+        .as_ref()
+        .and_then(|value| value["sensitive_artifacts"]["retention"].as_str())
+    {
+        fields.push(("Evidence retention:".into(), retention_label(retention)));
+        fields.push((
+            "Empty container:".into(),
+            "preserved; removal requires explicit purge".into(),
+        ));
+    }
     if let Some(access) = access {
         fields.push(("Output recipient:".into(), access.recipient_sid.clone()));
         fields.push(("Recipient proof:".into(), access.proof_kind.clone()));
@@ -803,6 +854,34 @@ fn calibration_stage(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn managed_retention_consequences_are_visible_and_unknown_maintenance_is_not_zero() {
+        let plan = serde_json::json!({"artifacts":{"retention":"managed-history-30-days-20-sessions-2-gib"}});
+        for width in [40, 60, 80] {
+            let text = super::authorization_summary(&plan, width)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for required in [
+                "30 days",
+                "20 completed sessions",
+                "2 GiB",
+                "explicit purge",
+            ] {
+                assert!(text.contains(required), "missing {required}: {text}");
+            }
+            let text = super::collection_summary(
+                &serde_json::json!({"complete":false,"limitations":["registry unreadable"]}),
+                width,
+            )
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+            assert!(text.contains("unavailable"));
+            assert!(text.contains("registry unreadable"));
+        }
+    }
+
     #[test]
     fn producer_readability_cannot_replace_required_recipient_proof() {
         let dir = tempfile::tempdir().unwrap();

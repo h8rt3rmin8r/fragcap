@@ -49,6 +49,7 @@ mod live_status;
 mod orchestrator;
 mod output;
 mod paths;
+mod session_gc;
 mod session_ux;
 #[cfg(windows)]
 mod windows_cert;

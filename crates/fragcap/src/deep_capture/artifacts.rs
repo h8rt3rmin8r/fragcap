@@ -15,12 +15,15 @@ const MAX_JOURNAL_RECORDS: usize = 4096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SensitiveRetention {
     Retain,
+    /// Declared finite tool-managed operational history, with empty containers preserved.
+    ManagedHistory,
 }
 
 impl SensitiveRetention {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Retain => "retain-until-explicit-cleanup",
+            Self::ManagedHistory => "managed-history-30-days-20-sessions-2-gib",
         }
     }
 }
