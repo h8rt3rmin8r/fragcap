@@ -2,7 +2,7 @@
 
 **Date**: 2026-10-09
 
-**Status**: Required local candidate gates passed; pre-push handoff. The candidate is not published.
+**Status**: Candidate accepted and owner-merged; v0.10.6 fully published and independently reconciled. Chronological candidate receipts below retain their original scope.
 
 ## Source and Preparation
 
@@ -50,3 +50,15 @@ The second round on `29bbc92` identified one P2 finding: the newly introduced Ru
 After the pin correction, all 222 xtask tests, formatting, supply-chain, lint, specification and release-notes gates passed. A temporary mutable-action and stable-version drift produced both expected wiring findings and exit 1; restoring the exact action and Rust version passed. The second correction's dated fragment was assembled into v0.10.6 without duplicating earlier decisions.
 
 Final-head hosted acceptance, owner merge, v0.10.6 tag, public assets and registry publication remain subsequent states. The current published release remains v0.10.5. No real game, live capture, operator-session collection, real trust mutation, universal title-compatibility or independent whole-product review is claimed.
+
+## Authorized Publication Reconciliation
+
+The owner authorized push and publication, merged PR #474 at `a2967166531c6f0430ceef6fe9d13e97e63ceb4e`, and confirmed continuation. Its tree exactly matches reviewed final head `3b997a5f99949fc8df39e781513af8a38eef8a5f`. Final-head hosted checks were 23 successful and two intended skips; the only second-round finding was corrected, replied to and resolved before owner merge. No third review was requested.
+
+Annotated `v0.10.6` tag object `926ed44c8a8d24a2f980632870d11810af168154` selects exact merged source. Release run 38002904552 passed all four jobs after normal protected `crates-io` approval under existing owner authorization. The release became public at `2026-10-09T23:22:49Z`. Six unauthenticated downloads match API sizes and SHA-256 digests, three sidecars match, and the tagged schema-version-4 report has zero findings and passes repository validation against those bytes. Ten exact non-yanked registry records and downloaded crate archives match their published SHA-256 checksums. The [release handoff](../../docs/maintainers/v0.10.6-release-handoff.md) records all file and archive identities.
+
+The separate publication-records branch updates fourteen current baseline markers, current prose, coverage identity, frozen review-candidate registry, six literal file authorities and replay job label. Historical release records and the pinned predecessor remain intact. No public binary was executed or installed locally, and independent whole-product review remains unperformed.
+
+## Publication-Records Local Acceptance
+
+The full `cargo xtask ci` passed after the records update, including all 222 xtask tests, controlled feature-specific coverage and every repository gate. The production site export passed under pinned pnpm 10.26.0 and Node 24.19.0; all 14 production accessibility tests passed in 3.7 minutes across 320/768/1440 pixels. All 30 changed text files passed strict UTF-8 without BOM, LF, one final newline, dash, trailing-whitespace and mojibake checks, and `git diff --check` passed. Receipt-only updates follow these results. Hosted acceptance and automatic review are recorded on the records PR's exact head; owner merge remains a separate action.

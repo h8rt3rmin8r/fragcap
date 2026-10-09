@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-09
 
-**Status**: Locally verified candidate; pre-push handoff
+**Status**: Candidate owner-merged and v0.10.6 published; separate publication-records reconciliation follows the later owner authorization.
 
 **Input**: Prepare the next patch release from merged S167-S171, reconcile the pending documentation-site dependency patch, align release identities and notes, and drive the authorized local work through the spec-kit autopilot protocol.
 

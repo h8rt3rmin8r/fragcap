@@ -51,3 +51,13 @@ T001-T006 precede implementation. T013 precedes candidate gate runs, and T007-T0
 ## Requirement Coverage
 
 FR-001: T001,T007,T012; FR-002: T007-T011; FR-003: T012; FR-004: T009,T017,T018; FR-005: T013,T015,T017; FR-006: T014,T016; FR-007: T003,T006,T014-T016,T019; FR-008: T017,T020; FR-009: T005,T014,T017. SC-001: T007-T013,T020; SC-002: T014-T016,T019; SC-003: T012,T017; SC-004: T017-T020.
+
+## Phase 7 - Later Owner-Authorized Publication
+
+- [x] T021 Verify owner merge and exact reviewed tree, push the annotated tag on that source, and retain its immutable identity.
+- [x] T022 Complete final tagged package certification, normal protected registry approval and all four release jobs; reconcile six public files, three sidecars, the report and ten downloaded non-yanked crate archives.
+- [x] T023 Advance current publication markers, frozen review-candidate authorities and source documentation in the separate publication-records branch, preserving historical evidence and the independent-review boundary.
+- [x] T024 Run appropriate repository, site and production accessibility gates; verify strict text hygiene and record the results.
+- [ ] T025 Push the records branch, open and attach its official PR, satisfy hosted checks and every automatic review finding, and hand off the records PR to the owner for merge.
+
+T025 is external to this committed local receipt. Its exact-head completion is recorded in the publication-records PR acceptance comment after hosted checks and automatic review finish.
