@@ -799,7 +799,10 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                             ResidueHealth::Unknown
                         }
                     },
-                    recoverable: owner_activity != OwnerActivity::Active,
+                    recoverable: matches!(
+                        owner_activity,
+                        OwnerActivity::Inactive | OwnerActivity::LegacyUnproven
+                    ),
                     ownership_authority: "session-owner-record".to_string(),
                     detail: match owner_activity {
                         OwnerActivity::Active => {

@@ -1385,6 +1385,79 @@ mod tests {
         assert!(!check.detail.contains("native residue"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn undetermined_registered_owner_is_inspection_only_without_cleanup_offer() {
+        use crate::doctor::action::{offered_actions, Capabilities};
+        use crate::doctor::residue::{inventory, ResidueHealth};
+
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("uncertain-owner");
+        let registry = root
+            .path()
+            .join(crate::doctor::residue::SESSION_OWNER_REGISTRY);
+        std::fs::create_dir(&bundle).unwrap();
+        std::fs::create_dir(&registry).unwrap();
+        let record = registry.join("legacy-local.json");
+        // An absent old Local mutex cannot prove inactivity for a still-live PID:
+        // its producer may belong to another Windows session or the PID may be reused.
+        let record_bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "bundle": bundle.canonicalize().unwrap(),
+            "owner_pid": std::process::id(),
+            "lease_id": format!("legacy-doctor-{}-{}", std::process::id(),
+                root.path().file_name().unwrap().to_string_lossy().chars()
+                    .filter(char::is_ascii_alphanumeric).collect::<String>()),
+        }))
+        .unwrap();
+        std::fs::write(&record, &record_bytes).unwrap();
+
+        let observed = inventory(Some(root.path()));
+        let owner = observed
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.resource_id == "session-owner" && finding.state == "generation-unproven"
+            })
+            .expect("unproven exact owner is retained in the inventory");
+        assert_eq!(owner.health, ResidueHealth::Unknown);
+        let report = crate::doctor::Report {
+            checks: native_residue_checks(&observed),
+        };
+        assert!(
+            offered_actions(
+                &report,
+                Capabilities {
+                    net: false,
+                    elevation: true
+                }
+            )
+            .is_empty(),
+            "Doctor must not offer an action that exact recovery cannot perform"
+        );
+        let check = report
+            .checks
+            .iter()
+            .find(|check| {
+                check
+                    .native_resource
+                    .as_ref()
+                    .is_some_and(|context| context.resource_id == "session-owner")
+            })
+            .unwrap();
+        assert!(!check.native_resource.as_ref().unwrap().recovery_eligible);
+        assert!(check
+            .human
+            .as_ref()
+            .unwrap()
+            .remediation
+            .as_ref()
+            .unwrap()
+            .contains("no exact cleanup action is available"));
+        assert_eq!(std::fs::read(record).unwrap(), record_bytes);
+        assert!(bundle.is_dir());
+    }
+
     #[test]
     fn human_identity_escapes_whitespace_without_losing_unicode() {
         assert_eq!(human_identity("session name"), "`session\\u{20}name`");
