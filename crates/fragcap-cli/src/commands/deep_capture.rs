@@ -2563,17 +2563,6 @@ pub(crate) fn run_with_outcome(
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
     validate_bundle_root(&bundle)?;
-    let recipient = Rc::new(super::bundle::resolve_output_recipient(
-        args.output_recipient.as_deref(),
-        &bundle,
-        args.controlled_target,
-        |access| {
-            emitter.event_checked(&Event::DeepCaptureOutputAccess {stage:"recipient-authentication".into(),access:access.clone()})
-                .and_then(|()| emitter.required_human_checked(&format!("Authenticate the exact output recipient from a normal desktop within 60 seconds:\n{}\n", access["command"].as_str().unwrap_or("unavailable"))))
-                .and_then(|()| emitter.flush())
-                .map_err(|error| CliError::failure(error.to_string()))
-        },
-    )?);
     require_prior_recovery_settled()?;
     deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
@@ -2592,6 +2581,19 @@ pub(crate) fn run_with_outcome(
         target_authority.resolved_launch = authority;
         drop(prepared);
     }
+    // Read-only target preflight precedes recipient authentication; the proof
+    // still precedes authorization, output creation and every session effect.
+    let recipient = Rc::new(super::bundle::resolve_output_recipient(
+        args.output_recipient.as_deref(),
+        &bundle,
+        args.controlled_target,
+        |access| {
+            emitter.event_checked(&Event::DeepCaptureOutputAccess {stage:"recipient-authentication".into(),access:access.clone()})
+                .and_then(|()| emitter.required_human_checked(&format!("Authenticate the exact output recipient from a normal desktop within 60 seconds:\n{}\n", access["command"].as_str().unwrap_or("unavailable"))))
+                .and_then(|()| emitter.flush())
+                .map_err(|error| CliError::failure(error.to_string()))
+        },
+    )?);
     let client_identity = load_client_identity(args)?;
     let authority_created = SystemTime::now();
     let prepared_authority = deep_capture_api::NativeProxyAdapter::prepare_authority(
