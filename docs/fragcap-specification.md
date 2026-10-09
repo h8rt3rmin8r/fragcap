@@ -1646,7 +1646,7 @@ Each interface is captured on its own handle and its own thread. All
 handles feed one bounded buffer, and packets carry an interface
 identifier that is preserved into output.
 
-S169 requires recognized loopback acquisition for Deep Capture, including when physical interfaces are selected explicitly. Recognition reuses the platform flag or Npcap loopback description; a missing or unopenable required adapter is a specific acquisition failure. The exact selected session listener IP supplies local-address semantics on that recognized adapter when enumeration reports no addresses, so the existing parser can retain a canonical flow key. Ordinary Capture interface precedence and physical-interface locality remain unchanged.
+S169 requires recognized loopback acquisition for Deep Capture, including when physical interfaces are selected explicitly. Recognition reuses the platform flag or an exact known Npcap loopback description; generic virtual/test loopback descriptions do not establish host-local capture support, and a missing or unopenable required adapter is a specific acquisition failure. The exact selected session listener IP supplies local-address semantics on that recognized adapter when enumeration reports no addresses, so the existing parser can retain a canonical flow key. Ordinary Capture interface precedence and physical-interface locality remain unchanged.
 
 ### 12.2 Kernel Filtering Strategy
 

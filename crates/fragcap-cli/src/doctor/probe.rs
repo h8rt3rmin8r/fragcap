@@ -1349,6 +1349,15 @@ mod tests {
     }
 
     #[test]
+    fn generic_virtual_loopback_description_does_not_report_host_loopback_ready() {
+        let mut record = test_record("NPF_{TEST}");
+        record.description = Some(Arc::from("Microsoft KM-TEST Loopback Adapter"));
+        let (_, loopback, error) = live_probe_with(true, || Ok(test_inventory(vec![record])));
+        assert_eq!(loopback, Some(false));
+        assert_eq!(error, None);
+    }
+
+    #[test]
     fn live_probe_accepts_loopback_description_marker() {
         let mut record = test_record("NPF_{1234}");
         record.description = Some(Arc::from("Npcap Loopback Adapter"));

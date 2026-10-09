@@ -1266,6 +1266,40 @@ mod tests {
     }
 
     #[test]
+    fn generic_virtual_loopback_cannot_satisfy_proxy_acquisition_or_gain_listener_locality() {
+        let mut inventory = acquisition_inventory();
+        inventory.interfaces[1].description = Some(Arc::from("Microsoft KM-TEST Loopback Adapter"));
+        let listener =
+            fragcap::deep_capture::LoopbackEndpoint::new("127.0.0.1:41000".parse().unwrap())
+                .unwrap();
+        assert!(select_capture_interfaces(
+            &inventory,
+            &fragcap::SelectionSettings::default(),
+            Some(listener),
+        )
+        .is_err());
+        assert!(capture_interface_addresses(&inventory.interfaces[1], Some(listener)).is_empty());
+        let mut genuine = inventory.interfaces[1].clone();
+        genuine.name = Arc::from("NPF_Loopback");
+        genuine.description = Some(Arc::from("Adapter for loopback capture"));
+        inventory.interfaces.push(genuine);
+        let selected = select_capture_interfaces(
+            &inventory,
+            &fragcap::SelectionSettings::default(),
+            Some(listener),
+        )
+        .unwrap();
+        assert!(selected
+            .selected
+            .iter()
+            .any(|source| source.record.name.as_ref() == "NPF_Loopback"));
+        assert!(selected
+            .selected
+            .iter()
+            .all(|source| source.record.name.as_ref() != "npcap-loopback"));
+    }
+
+    #[test]
     fn proxy_acquisition_requires_loopback_with_explicit_physical_selection() {
         let inventory = acquisition_inventory();
         let settings = fragcap::SelectionSettings {
