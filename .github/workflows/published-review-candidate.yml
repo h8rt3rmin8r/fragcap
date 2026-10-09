@@ -35,6 +35,19 @@ jobs:
       - name: Validate immutable candidate authority
         run: cargo xtask review-record
 
+      - name: Resolve verified published source
+        id: published-source
+        shell: pwsh
+        run: |
+          $candidate = Get-Content -Raw -LiteralPath docs/security/native-product-review-candidate.v1.json | ConvertFrom-Json -Depth 32
+          "revision=$($candidate.source_revision)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.published-source.outputs.revision }}
+          path: target/published-source
+          persist-credentials: false
+
       - name: Download and verify every published byte
         shell: pwsh
         run: |
@@ -58,9 +71,19 @@ jobs:
       - name: Replay portable and installed certification surfaces
         shell: pwsh
         run: |
-          pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory $env:FRAGCAP_REVIEW_ARTIFACTS -PredecessorPath $env:FRAGCAP_REVIEW_PREDECESSOR -ReportPath target/published-review/report.json -Confirm:$false
-          if ($LASTEXITCODE -ne 0) { throw "Published candidate replay exited $LASTEXITCODE" }
-          cargo xtask package-certification validate-report target/published-review/report.json $env:FRAGCAP_REVIEW_ARTIFACTS
+          $ErrorActionPreference = 'Stop'
+          $harness = (Resolve-Path -LiteralPath scripts/Test-PackageCertification.ps1).Path
+          $contract = (Resolve-Path -LiteralPath target/published-source/integration/windows-package-contract-v1.json).Path
+          $report = [System.IO.Path]::GetFullPath('target/published-review/report.json')
+          Push-Location -LiteralPath target/published-source
+          try {
+            pwsh -NoLogo -NoProfile -NonInteractive -File $harness -ContractPath $contract -ArtifactDirectory $env:FRAGCAP_REVIEW_ARTIFACTS -PredecessorPath $env:FRAGCAP_REVIEW_PREDECESSOR -ReportPath $report -Confirm:$false
+            if ($LASTEXITCODE -ne 0) { throw "Published candidate replay exited $LASTEXITCODE" }
+            cargo xtask package-certification validate-report $report $env:FRAGCAP_REVIEW_ARTIFACTS
+            if ($LASTEXITCODE -ne 0) { throw "Published candidate report validation exited $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Upload bounded sanitized replay evidence
         uses: actions/upload-artifact@v4
