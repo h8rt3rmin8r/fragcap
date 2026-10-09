@@ -2815,6 +2815,7 @@ pub fn run(
     value["verdict"] = json!(verdict);
     if value["next_command_purpose"].is_null() {
         value["next_command_purpose"] = json!(match value["next_command"].as_str() {
+            Some("fragcap doctor") => "inspect Npcap loopback acquisition readiness; this read-only check does not prove client ownership or authorize another calibration",
             Some(command) if command.contains("deep-capture") => "start a fresh authorized Deep Capture session for the exact stored case after independent launch/recovery preflight",
             Some(command) if command.contains("--resume") => "resume the same workflow intent and history with fresh preflight and authorization; it does not retry a failed exact case",
             Some(_) => "prepare a fresh measurement after addressing the stated blocker; the command does not prove compatibility",
@@ -4027,22 +4028,23 @@ fn run_inner(
                 &completed_protocols,
             ),
         };
-        let next_command =
-            if outcome.disposition == deep_capture::RunDisposition::Failed || correlation_missing {
-                None
-            } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
-                Some(target_command(
-                    "deep-capture",
-                    completed_target.stable_id,
-                    &local_store_argument,
-                    " --launch",
-                ))
-            } else {
-                Some(calibration_resume_command(
-                    workflow.id,
-                    &local_store_argument,
-                ))
-            };
+        let next_command = if correlation_missing {
+            Some("fragcap doctor".to_string())
+        } else if outcome.disposition == deep_capture::RunDisposition::Failed {
+            None
+        } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
+            Some(target_command(
+                "deep-capture",
+                completed_target.stable_id,
+                &local_store_argument,
+                " --launch",
+            ))
+        } else {
+            Some(calibration_resume_command(
+                workflow.id,
+                &local_store_argument,
+            ))
+        };
         let (workflow_state, pause_reason) = if correlation_missing {
             (
                 CalibrationWorkflowState::Paused,

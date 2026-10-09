@@ -52,9 +52,20 @@ pub(crate) struct PreparedCapture {
     profile: fragcap::Profile,
     promotion: Option<Promotion>,
     config: assemble::EffectiveConfig,
+    proxy_acquisition: Option<fragcap::deep_capture::LoopbackEndpoint>,
 }
 
 impl PreparedCapture {
+    /// Retain exact session infrastructure for required loopback acquisition.
+    pub(crate) fn with_proxy_acquisition(
+        &mut self,
+        endpoint: fragcap::deep_capture::LoopbackEndpoint,
+    ) -> Result<(), CliError> {
+        assemble::validate_proxy_acquisition(&self.config, endpoint)?;
+        self.proxy_acquisition = Some(endpoint);
+        Ok(())
+    }
+
     /// Canonical, secret-free authority for the exact resolved profile and
     /// managed launch that this preparation would execute.
     pub(crate) fn authorization_authority(&self) -> Value {
@@ -223,6 +234,7 @@ pub(crate) fn prepare(
         profile,
         promotion,
         config,
+        proxy_acquisition: None,
     })
 }
 
@@ -293,6 +305,7 @@ fn run_prepared_outcome(
         profile,
         promotion,
         mut config,
+        proxy_acquisition,
     } = prepared;
     // An observe-mode run cannot scope its output to a target it has not yet
     // identified. That is the whole point of the run: slice S059 promotes an
@@ -313,7 +326,8 @@ fn run_prepared_outcome(
         ));
         config.scope = CaptureScope::All;
     }
-    let mut components = assemble::components(&args.offline, &config)?;
+    let mut components =
+        assemble::components_with_proxy_acquisition(&args.offline, &config, proxy_acquisition)?;
     components.flow_registry = flow_registry;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a

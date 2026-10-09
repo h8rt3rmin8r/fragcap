@@ -36,6 +36,109 @@ use crate::exit::CliError;
 
 const PUBLISHER_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
 
+#[cfg_attr(not(all(feature = "live", windows, feature = "etw")), allow(dead_code))]
+fn select_capture_interfaces(
+    inventory: &fragcap::InterfaceInventory,
+    settings: &fragcap::SelectionSettings,
+    proxy: Option<fragcap::deep_capture::LoopbackEndpoint>,
+) -> Result<fragcap::SelectionOutcome, CliError> {
+    use fragcap::core::{SelectedInterface, SelectionError, SelectionReason};
+
+    if proxy.is_none() {
+        return fragcap::select(inventory, settings)
+            .map_err(|error| CliError::failure(format!("interface selection: {error}")));
+    }
+    let loopbacks: Vec<_> = inventory
+        .interfaces
+        .iter()
+        .filter(|record| {
+            fragcap::is_loopback_adapter(record.is_loopback, record.description.as_deref())
+        })
+        .collect();
+    if loopbacks.is_empty() {
+        return Err(CliError::failure(
+            "loopback capture prerequisite: no Npcap loopback capture interface was observed; inspect `fragcap doctor` driver and loopback readiness",
+        ));
+    }
+    let mut outcome = match fragcap::select(inventory, settings) {
+        Ok(outcome) => outcome,
+        Err(SelectionError::NothingSelected) => {
+            let required = fragcap::SelectionSettings {
+                explicit: loopbacks
+                    .iter()
+                    .map(|record| record.name.to_string())
+                    .collect(),
+                loopback: true,
+                broad: false,
+            };
+            let mut outcome = fragcap::select(inventory, &required)
+                .map_err(|error| CliError::failure(format!("interface selection: {error}")))?;
+            for selected in &mut outcome.selected {
+                selected.reason = SelectionReason::Loopback;
+            }
+            outcome
+        }
+        Err(error) => return Err(CliError::failure(format!("interface selection: {error}"))),
+    };
+    let mut excluded = Vec::new();
+    for (record, reason) in outcome.excluded.drain(..) {
+        if fragcap::is_loopback_adapter(record.is_loopback, record.description.as_deref()) {
+            outcome.selected.push(SelectedInterface {
+                id: InterfaceId::new(outcome.selected.len() as u32),
+                record,
+                reason: SelectionReason::Loopback,
+            });
+        } else {
+            excluded.push((record, reason));
+        }
+    }
+    outcome.excluded = excluded;
+    Ok(outcome)
+}
+
+#[cfg_attr(not(all(feature = "live", windows, feature = "etw")), allow(dead_code))]
+fn capture_interface_addresses(
+    record: &fragcap::InterfaceRecord,
+    proxy: Option<fragcap::deep_capture::LoopbackEndpoint>,
+) -> InterfaceAddrs {
+    let mut addresses = record.addresses.clone();
+    if let Some(proxy) = proxy
+        .filter(|_| fragcap::is_loopback_adapter(record.is_loopback, record.description.as_deref()))
+    {
+        let ip = proxy.address().ip();
+        if !addresses.contains(&ip) {
+            addresses.push(ip);
+        }
+    }
+    InterfaceAddrs::new(addresses)
+}
+
+/// Check required acquisition inventory before proxy, trust, or launch effects.
+pub(crate) fn validate_proxy_acquisition(
+    config: &EffectiveConfig,
+    proxy: fragcap::deep_capture::LoopbackEndpoint,
+) -> Result<(), CliError> {
+    #[cfg(all(feature = "live", windows, feature = "etw"))]
+    {
+        let inventory = fragcap::capture::enumerate()
+            .map_err(|error| CliError::failure(format!("interface enumeration: {error}")))?;
+        let settings = fragcap::SelectionSettings {
+            explicit: config.interfaces.clone(),
+            loopback: config.loopback,
+            broad: config.interfaces.is_empty(),
+        };
+        select_capture_interfaces(&inventory, &settings, Some(proxy))?;
+        Ok(())
+    }
+    #[cfg(not(all(feature = "live", windows, feature = "etw")))]
+    {
+        let _ = (config, proxy);
+        Err(CliError::failure(
+            "loopback capture prerequisite: this build has no supported live Windows capture and process watcher backend",
+        ))
+    }
+}
+
 /// The default snapshot length declared for a capture interface.
 const SNAP_LEN: u32 = 65_535;
 
@@ -347,6 +450,7 @@ pub enum EventStream {
 /// Everything a capture runs on, assembled from the offline substrate or, on a
 /// feature-gated build, from the live capture backends.
 pub struct CaptureComponents {
+    fixed_filter_endpoints: Vec<(InterfaceId, fragcap::Endpoint)>,
     /// The bound packet sources.
     pub sources: Vec<SourceBinding>,
     /// One `(name, link type)` per selected interface, in selection order, for
@@ -384,6 +488,15 @@ pub struct CaptureComponents {
     pub watcher: Option<fragcap::EtwWatcher>,
 }
 
+impl CaptureComponents {
+    /// Hand exact loopback infrastructure to the pipeline before it starts.
+    pub fn configure_pipeline_filters(&self, pipeline: &mut fragcap::Pipeline) {
+        for (interface, endpoint) in &self.fixed_filter_endpoints {
+            assert!(pipeline.set_filter_endpoints(*interface, &[*endpoint]));
+        }
+    }
+}
+
 // Slice 015 removed `RefreshDriver`. `FlowAttributor::refresh` now takes `&self`,
 // so the socket-table refresh is driven by the pipeline's own section 8.6
 // control thread through the shared `Arc<dyn FlowAttributor>` the capture threads
@@ -402,9 +515,17 @@ pub fn components(
     offline: &OfflineArgs,
     config: &EffectiveConfig,
 ) -> Result<CaptureComponents, CliError> {
+    components_with_proxy_acquisition(offline, config, None)
+}
+
+pub(crate) fn components_with_proxy_acquisition(
+    offline: &OfflineArgs,
+    config: &EffectiveConfig,
+    proxy: Option<fragcap::deep_capture::LoopbackEndpoint>,
+) -> Result<CaptureComponents, CliError> {
     match &offline.replay_source {
         Some(replay) => offline_components(replay, offline, config),
-        None => live_or_absent(config),
+        None => live_or_absent(config, proxy),
     }
 }
 
@@ -444,6 +565,7 @@ fn offline_components(
     let (events, startup_snapshot) = process_events(&offline.process_script)?;
 
     Ok(CaptureComponents {
+        fixed_filter_endpoints: Vec::new(),
         sources,
         interfaces,
         stamper: Some(stamper),
@@ -484,18 +606,21 @@ fn elevation_refusal(elevated: bool) -> Option<CliError> {
 }
 
 /// The live path, or the no-backend failure on a build without it.
-fn live_or_absent(config: &EffectiveConfig) -> Result<CaptureComponents, CliError> {
+fn live_or_absent(
+    config: &EffectiveConfig,
+    proxy: Option<fragcap::deep_capture::LoopbackEndpoint>,
+) -> Result<CaptureComponents, CliError> {
     #[cfg(all(feature = "live", windows))]
     {
         // Refuse before touching the driver when the session is not elevated.
         if let Some(refusal) = elevation_refusal(crate::doctor::probe::is_elevated()) {
             return Err(refusal);
         }
-        live_components(config)
+        live_components(config, proxy)
     }
     #[cfg(not(all(feature = "live", windows)))]
     {
-        let _ = config;
+        let _ = (config, proxy);
         Err(CliError::failure(
             "no capture source: this build has no live capture backend, and no offline replay \
              source was given",
@@ -511,10 +636,13 @@ fn live_or_absent(config: &EffectiveConfig) -> Result<CaptureComponents, CliErro
 /// can ever be acquired, so a live build lacking it fails here naming the
 /// missing feature rather than starting a capture that could never bind a stage.
 #[cfg(all(feature = "live", windows))]
-fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliError> {
+fn live_components(
+    config: &EffectiveConfig,
+    proxy: Option<fragcap::deep_capture::LoopbackEndpoint>,
+) -> Result<CaptureComponents, CliError> {
     #[cfg(not(feature = "etw"))]
     {
-        let _ = config;
+        let _ = (config, proxy);
         Err(CliError::failure(
             "live capture needs the `etw` feature so a live process event source exists; \
              without it no target can ever be acquired",
@@ -524,7 +652,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
     #[cfg(feature = "etw")]
     {
         use fragcap::capture::{enumerate, LiveOptions, LiveSource};
-        use fragcap::{select, PipelineConfig, SelectionSettings};
+        use fragcap::{PipelineConfig, SelectionSettings};
 
         // What the machine has, then the section 12.1 precedence over it. Broad
         // capture is requested when the operator named no interface; the
@@ -536,8 +664,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
             loopback: config.loopback,
             broad: config.interfaces.is_empty(),
         };
-        let outcome = select(&inventory, &settings)
-            .map_err(|e| CliError::failure(format!("interface selection: {e}")))?;
+        let outcome = select_capture_interfaces(&inventory, &settings, proxy)?;
 
         // A live handle per selected interface. The read timeout matches the
         // pipeline's own so a requested stop is observed promptly. Each
@@ -547,10 +674,33 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
         let read_timeout = PipelineConfig::default().read_timeout;
         let mut sources: Vec<SourceBinding> = Vec::new();
         let mut interfaces: Vec<(String, LinkType)> = Vec::new();
+        let mut fixed_filter_endpoints = Vec::new();
         for sel in &outcome.selected {
-            let source = LiveSource::open(&sel.record, LiveOptions::for_pipeline(read_timeout))?;
+            let required_proxy = proxy.filter(|_| {
+                fragcap::is_loopback_adapter(
+                    sel.record.is_loopback,
+                    sel.record.description.as_deref(),
+                )
+            });
+            let source = LiveSource::open(&sel.record, LiveOptions::for_pipeline(read_timeout))
+                .map_err(|error| match required_proxy {
+                    Some(_) => CliError::failure(format!("loopback capture prerequisite: required interface {} could not be opened: {error}", sel.record.name)),
+                    None => CliError::from(error),
+                })?;
+            if let Some(proxy) = required_proxy {
+                if !matches!(
+                    source.link_type(),
+                    LinkType::ETHERNET | LinkType::RAW | LinkType::NULL
+                ) {
+                    return Err(CliError::failure(format!("loopback capture prerequisite: required interface {} uses unsupported link type {}", sel.record.name, source.link_type().code())));
+                }
+                fixed_filter_endpoints.push((
+                    sel.id,
+                    fragcap::Endpoint::new(proxy.address(), fragcap::Proto::Tcp),
+                ));
+            }
             interfaces.push((sel.record.name.to_string(), source.link_type()));
-            let addrs = InterfaceAddrs::new(sel.record.addresses.iter().copied());
+            let addrs = capture_interface_addresses(&sel.record, proxy);
             sources.push(SourceBinding::new(sel.id, Box::new(source), addrs));
         }
         // select already errors on NothingSelected, so at least one source was
@@ -598,6 +748,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
         let snapshot_at = watcher.snapshot_taken_at();
 
         Ok(CaptureComponents {
+            fixed_filter_endpoints,
             sources,
             interfaces,
             stamper: Some(stamper),
@@ -1101,6 +1252,111 @@ pub const ARMED_AT: Timestamp = Timestamp::from_nanos(0);
 mod tests {
     use super::*;
     use crate::args::parse_sink;
+
+    fn acquisition_inventory() -> fragcap::InterfaceInventory {
+        let mut physical = fragcap::InterfaceRecord::new("eth0", LinkType::ETHERNET);
+        physical.is_up = true;
+        physical.addresses = vec!["192.0.2.10".parse().unwrap()];
+        let mut loopback = fragcap::InterfaceRecord::new("npcap-loopback", LinkType::NULL);
+        loopback.description = Some(Arc::from("Adapter for loopback traffic capture"));
+        fragcap::InterfaceInventory {
+            interfaces: vec![physical, loopback],
+            default_route_source: Some("192.0.2.10".parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn proxy_acquisition_requires_loopback_with_explicit_physical_selection() {
+        let inventory = acquisition_inventory();
+        let settings = fragcap::SelectionSettings {
+            explicit: vec!["eth0".into()],
+            loopback: true,
+            broad: false,
+        };
+        let listener =
+            fragcap::deep_capture::LoopbackEndpoint::new("127.0.0.1:41000".parse().unwrap())
+                .unwrap();
+        let ordinary = select_capture_interfaces(&inventory, &settings, None).unwrap();
+        assert_eq!(ordinary.selected.len(), 1);
+        let proxy = select_capture_interfaces(&inventory, &settings, Some(listener)).unwrap();
+        assert_eq!(proxy.selected.len(), 2);
+        assert_eq!(proxy.selected[0].record.name.as_ref(), "eth0");
+        assert_eq!(proxy.selected[1].record.name.as_ref(), "npcap-loopback");
+        assert_eq!(
+            proxy.selected.len() + proxy.excluded.len(),
+            inventory.interfaces.len()
+        );
+    }
+
+    #[test]
+    fn proxy_acquisition_refuses_missing_loopback_before_opening_sources() {
+        let mut inventory = acquisition_inventory();
+        inventory.interfaces.pop();
+        let listener =
+            fragcap::deep_capture::LoopbackEndpoint::new("[::1]:41000".parse().unwrap()).unwrap();
+        let error = select_capture_interfaces(
+            &inventory,
+            &fragcap::SelectionSettings::default(),
+            Some(listener),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("loopback capture prerequisite"));
+    }
+
+    #[test]
+    fn proxy_acquisition_selects_description_only_inventory_and_deduplicates_explicit_loopback() {
+        let mut inventory = acquisition_inventory();
+        let listener =
+            fragcap::deep_capture::LoopbackEndpoint::new("[::1]:41000".parse().unwrap()).unwrap();
+        let settings = fragcap::SelectionSettings {
+            explicit: vec!["npcap-loopback".into(), "eth0".into()],
+            loopback: true,
+            broad: false,
+        };
+        let selected = select_capture_interfaces(&inventory, &settings, Some(listener)).unwrap();
+        assert_eq!(selected.selected.len(), 2);
+        assert_eq!(selected.selected[0].record.name.as_ref(), "npcap-loopback");
+        assert_eq!(selected.selected[1].record.name.as_ref(), "eth0");
+        inventory.interfaces.remove(0);
+        let selected = select_capture_interfaces(
+            &inventory,
+            &fragcap::SelectionSettings::default(),
+            Some(listener),
+        )
+        .unwrap();
+        assert_eq!(selected.selected.len(), 1);
+        assert_eq!(selected.selected[0].id, InterfaceId::default());
+    }
+
+    #[test]
+    fn proxy_acquisition_preserves_unknown_explicit_interface_refusal() {
+        let inventory = acquisition_inventory();
+        let listener =
+            fragcap::deep_capture::LoopbackEndpoint::new("127.0.0.1:41000".parse().unwrap())
+                .unwrap();
+        let settings = fragcap::SelectionSettings {
+            explicit: vec!["missing".into()],
+            loopback: true,
+            broad: false,
+        };
+        let error = select_capture_interfaces(&inventory, &settings, Some(listener)).unwrap_err();
+        assert!(error.message().contains("missing"));
+    }
+
+    #[test]
+    fn proxy_loopback_locality_survives_empty_adapter_addresses() {
+        let inventory = acquisition_inventory();
+        for address in ["127.0.0.1:41000", "[::1]:41000"] {
+            let listener =
+                fragcap::deep_capture::LoopbackEndpoint::new(address.parse().unwrap()).unwrap();
+            let local = capture_interface_addresses(&inventory.interfaces[1], Some(listener));
+            assert!(local.contains(&listener.address().ip()));
+            let physical = capture_interface_addresses(&inventory.interfaces[0], Some(listener));
+            assert!(!physical.contains(&listener.address().ip()));
+            let ordinary = capture_interface_addresses(&inventory.interfaces[1], None);
+            assert!(ordinary.is_empty());
+        }
+    }
 
     fn base_config() -> EffectiveConfig {
         EffectiveConfig {

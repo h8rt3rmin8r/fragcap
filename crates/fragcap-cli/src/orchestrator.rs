@@ -479,6 +479,7 @@ fn spawn_pipeline(
         Box::new(stamper),
         PipelineConfig::default(),
     )?;
+    components.configure_pipeline_filters(&mut pipeline);
     if let Some(registry) = components.flow_registry.take() {
         pipeline.set_flow_registry(registry);
     }

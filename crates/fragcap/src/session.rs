@@ -945,8 +945,45 @@ impl RoleStampingAttributor {
 
 impl FlowAttributor for RoleStampingAttributor {
     fn resolve(&self, key: &FlowKey, at: Timestamp) -> Option<Attribution> {
-        let mut attribution = self.inner.resolve(key, at)?;
         let snapshot = self.publisher.snapshot();
+        let original = self.inner.resolve(key, at);
+        // A loopback flow has two local socket-table orientations. Its canonical
+        // port order identifies the conversation, not the selected process.
+        // Consult both exact pairs and choose only one distinct bound owner.
+        // The ordinary index still owns creation-time, retention and total rank.
+        let mut attribution = if key.proto == fragcap_core::flow::Proto::Tcp
+            && key.local.ip().is_loopback()
+            && key.remote.ip().is_loopback()
+            && key.local != key.remote
+        {
+            let reversed = self
+                .inner
+                .resolve(&FlowKey::new(key.proto, key.remote, key.local), at);
+            let first = original
+                .as_ref()
+                .filter(|owner| snapshot.contains_key(&owner.pid));
+            let second = reversed
+                .as_ref()
+                .filter(|owner| snapshot.contains_key(&owner.pid));
+            match (first, second) {
+                (Some(first), Some(second)) => {
+                    if first.pid != second.pid || first.process != second.process {
+                        // Optional attribution cannot name competing owners.
+                        // Keep it unresolved; the existing gate counts refusal.
+                        return None;
+                    }
+                    if second.fidelity == fragcap_core::attribution::Fidelity::Retained {
+                        second.clone()
+                    } else {
+                        first.clone()
+                    }
+                }
+                (Some(owner), None) | (None, Some(owner)) => owner.clone(),
+                (None, None) => original?,
+            }
+        } else {
+            original?
+        };
         if let Some((role, stage)) = snapshot.get(&attribution.pid) {
             if let Some(role) = role {
                 attribution = attribution.with_role(role);
@@ -1761,6 +1798,232 @@ mod stamping_tests {
         let a = stamper.resolve(&key(), at()).expect("resolves");
         assert_eq!(a.pid, 7);
         assert!(a.role.is_none(), "only the bound pid is stamped");
+    }
+
+    fn table_stamper(
+        entries: Vec<crate::SocketTableEntry>,
+        selected: &[u32],
+    ) -> RoleStampingAttributor {
+        let inner = crate::SocketTableAttributor::new(
+            Box::new(crate::DeclaredTable::once(crate::SocketTable::new(
+                Timestamp::from_nanos(20),
+                entries,
+            ))),
+            Box::new(crate::DeclaredNames::from([
+                (7, "client.exe"),
+                (9, "fragcap.exe"),
+            ])),
+            Arc::new(crate::TestClock::at(Timestamp::from_nanos(20))),
+            crate::AttributorConfig::default(),
+        );
+        inner.refresh().unwrap();
+        let stamper = RoleStampingAttributor::new(Arc::new(inner));
+        stamper.publisher().publish(
+            selected
+                .iter()
+                .map(|pid| {
+                    (
+                        *pid,
+                        Some(Arc::from("client")),
+                        Some(StageId::new("client")),
+                    )
+                })
+                .collect(),
+        );
+        stamper
+    }
+
+    #[test]
+    fn loopback_tcp_selects_bound_client_in_both_endpoint_orders_and_families() {
+        for ip in ["127.0.0.1", "::1"] {
+            for (client_port, proxy_port) in [(41000, 42000), (42000, 41000)] {
+                let client = SocketAddr::new(ip.parse().unwrap(), client_port);
+                let proxy = SocketAddr::new(ip.parse().unwrap(), proxy_port);
+                let stamper = table_stamper(
+                    vec![
+                        crate::SocketTableEntry::tcp(proxy, client, 9),
+                        crate::SocketTableEntry::tcp(client, proxy, 7),
+                    ],
+                    &[7],
+                );
+                for (local, remote) in [(client, proxy), (proxy, client)] {
+                    let owner = stamper
+                        .resolve(&FlowKey::new(Proto::Tcp, local, remote), at())
+                        .unwrap();
+                    assert_eq!(owner.pid, 7, "port order cannot select the proxy owner");
+                    assert_eq!(owner.role.as_deref(), Some("client"));
+                    assert_eq!(owner.stage.as_ref().map(StageId::as_str), Some("client"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loopback_tcp_refuses_two_distinct_bound_owners() {
+        let client = addr("127.0.0.1:42000");
+        let proxy = addr("127.0.0.1:41000");
+        let stamper = table_stamper(
+            vec![
+                crate::SocketTableEntry::tcp(client, proxy, 7),
+                crate::SocketTableEntry::tcp(proxy, client, 9),
+            ],
+            &[7, 9],
+        );
+        assert!(stamper
+            .resolve(&FlowKey::new(Proto::Tcp, proxy, client), at())
+            .is_none());
+    }
+
+    #[test]
+    fn loopback_tcp_deduplicates_the_same_bound_owner() {
+        let client = addr("127.0.0.1:42000");
+        let proxy = addr("127.0.0.1:41000");
+        let stamper = table_stamper(
+            vec![
+                crate::SocketTableEntry::tcp(client, proxy, 7),
+                crate::SocketTableEntry::tcp(proxy, client, 7),
+            ],
+            &[7],
+        );
+        let owner = stamper
+            .resolve(&FlowKey::new(Proto::Tcp, proxy, client), at())
+            .unwrap();
+        assert_eq!(owner.pid, 7);
+        assert_eq!(owner.role.as_deref(), Some("client"));
+    }
+
+    #[test]
+    fn loopback_tcp_same_owner_keeps_retained_fidelity_in_either_orientation() {
+        let client = addr("127.0.0.1:42000");
+        let proxy = addr("127.0.0.1:41000");
+        let clock = Arc::new(crate::TestClock::at(Timestamp::from_nanos(20)));
+        let inner = crate::SocketTableAttributor::new(
+            Box::new(crate::DeclaredTable::sequence(vec![
+                Ok(crate::SocketTable::new(
+                    Timestamp::from_nanos(20),
+                    vec![
+                        crate::SocketTableEntry::tcp(client, proxy, 7),
+                        crate::SocketTableEntry::tcp(proxy, client, 7),
+                    ],
+                )),
+                Ok(crate::SocketTable::new(
+                    Timestamp::from_nanos(30),
+                    vec![crate::SocketTableEntry::tcp(proxy, client, 7)],
+                )),
+            ])),
+            Box::new(crate::DeclaredNames::from([(7, "client.exe")])),
+            clock.clone(),
+            crate::AttributorConfig::default(),
+        );
+        inner.refresh().unwrap();
+        clock.set(Timestamp::from_nanos(30));
+        inner.refresh().unwrap();
+        let stamper = RoleStampingAttributor::new(Arc::new(inner));
+        stamper.publisher().publish(vec![(
+            7,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        for (local, remote) in [(client, proxy), (proxy, client)] {
+            let owner = stamper
+                .resolve(
+                    &FlowKey::new(Proto::Tcp, local, remote),
+                    Timestamp::from_nanos(30),
+                )
+                .unwrap();
+            assert_eq!(owner.pid, 7);
+            assert_eq!(owner.fidelity, Fidelity::Retained);
+        }
+    }
+
+    #[test]
+    fn loopback_tcp_refuses_same_pid_with_conflicting_process_identity() {
+        struct ConflictingIdentity;
+        impl FlowAttributor for ConflictingIdentity {
+            fn resolve(&self, key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+                let image = if key.local.port() == 41000 {
+                    "old.exe"
+                } else {
+                    "new.exe"
+                };
+                Some(Attribution::new(7, image, Fidelity::Live))
+            }
+            fn refresh(&self) -> Result<(), AttrError> {
+                Ok(())
+            }
+            fn active_endpoints(&self) -> Vec<Endpoint> {
+                Vec::new()
+            }
+        }
+        let stamper = RoleStampingAttributor::new(Arc::new(ConflictingIdentity));
+        stamper.publisher().publish(vec![(
+            7,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        assert!(stamper
+            .resolve(
+                &FlowKey::new(Proto::Tcp, addr("127.0.0.1:41000"), addr("127.0.0.1:42000"),),
+                at(),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn loopback_selection_preserves_unbound_and_nonloopback_and_udp_answers() {
+        for (proto, local, remote) in [
+            (Proto::Tcp, "127.0.0.1:41000", "127.0.0.1:42000"),
+            (Proto::Tcp, "192.0.2.10:41000", "192.0.2.11:42000"),
+            (Proto::Udp, "127.0.0.1:41000", "127.0.0.1:42000"),
+        ] {
+            let local = addr(local);
+            let remote = addr(remote);
+            let entries = if proto == Proto::Tcp {
+                vec![
+                    crate::SocketTableEntry::tcp(local, remote, 9),
+                    crate::SocketTableEntry::tcp(remote, local, 7),
+                ]
+            } else {
+                vec![
+                    crate::SocketTableEntry::udp(local, 9),
+                    crate::SocketTableEntry::udp(remote, 7),
+                ]
+            };
+            let selected: &[u32] = if local.ip().is_loopback() && proto == Proto::Tcp {
+                &[]
+            } else {
+                &[7]
+            };
+            let stamper = table_stamper(entries, selected);
+            let owner = stamper
+                .resolve(&FlowKey::new(proto, local, remote), at())
+                .unwrap();
+            assert_eq!(owner.pid, 9);
+            assert!(owner.role.is_none());
+        }
+    }
+
+    #[test]
+    fn loopback_tcp_never_uses_an_owner_created_after_the_packet() {
+        let client = addr("127.0.0.1:42000");
+        let proxy = addr("127.0.0.1:41000");
+        let stamper = table_stamper(
+            vec![
+                crate::SocketTableEntry::tcp(client, proxy, 7)
+                    .created_at(Timestamp::from_nanos(10)),
+                crate::SocketTableEntry::tcp(proxy, client, 9),
+            ],
+            &[7],
+        );
+        let key = FlowKey::new(Proto::Tcp, proxy, client);
+        assert_eq!(stamper.resolve(&key, at()).unwrap().pid, 9);
+        assert_eq!(
+            stamper
+                .resolve(&key, Timestamp::from_nanos(10))
+                .unwrap()
+                .pid,
+            7
+        );
     }
 
     // --- Slice 015: narrowing restricted to profiled processes -----------

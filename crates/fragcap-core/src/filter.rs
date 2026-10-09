@@ -159,6 +159,8 @@ enum Installed {
 }
 
 struct HandleState {
+    /// Exact session infrastructure that survives dynamic endpoint changes.
+    fixed: BTreeSet<Endpoint>,
     installed: Installed,
     last_install: Option<Instant>,
     /// Wanted endpoints the installed program excludes and that a gap has already
@@ -196,11 +198,20 @@ pub struct FilterManager {
 }
 
 impl FilterManager {
+    /// Configure endpoints preserved by every narrowed program on this handle.
+    /// Set before the first poll. Ordinary handles keep an empty fixed set.
+    pub fn set_fixed_endpoints(&mut self, handle: usize, endpoints: &[Endpoint]) {
+        if let Some(state) = self.handles.get_mut(handle) {
+            state.fixed = endpoints.iter().copied().collect();
+        }
+    }
+
     /// A manager for `handle_count` handles (one per capture thread), all
     /// starting in bootstrap.
     pub fn new(handle_count: usize, config: FilterConfig) -> Self {
         let handles = (0..handle_count)
             .map(|_| HandleState {
+                fixed: BTreeSet::new(),
                 installed: Installed::Bootstrap,
                 last_install: None,
                 gapped: BTreeSet::new(),
@@ -228,9 +239,9 @@ impl FilterManager {
     /// - Rate limit: a handle is reinstalled at most once per
     ///   `config.min_reinstall_interval`; an otherwise-due reinstall is deferred
     ///   to a later `poll`, never dropped.
-    /// - Never empty: a handle whose wanted set is empty keeps bootstrap (if
-    ///   never narrowed) or its prior narrowed program; no empty program is
-    ///   installed.
+    /// - Never empty: a handle with no dynamic endpoints keeps its prior narrowed
+    ///   program, including any fixed session endpoints and closing tails. Fixed
+    ///   endpoints can narrow bootstrap even when the dynamic set is empty.
     /// - Idempotence: a handle already narrowed to exactly the wanted set is left
     ///   alone.
     ///
@@ -264,7 +275,11 @@ impl FilterManager {
             }
             let excluded: BTreeSet<Endpoint> = match &handle.installed {
                 Installed::Bootstrap => BTreeSet::new(),
-                Installed::Narrowed(installed) => wanted.difference(installed).copied().collect(),
+                Installed::Narrowed(installed) => wanted
+                    .union(&handle.fixed)
+                    .filter(|endpoint| !installed.contains(endpoint))
+                    .copied()
+                    .collect(),
             };
             new_gaps += excluded.difference(&handle.gapped).count() as u64;
             handle.gapped = excluded;
@@ -279,16 +294,19 @@ impl FilterManager {
             return Vec::new();
         }
 
-        // The wanted set is empty: keep bootstrap or the prior narrowed program
-        // on every handle. Never install an empty program.
-        if wanted.is_empty() {
-            return Vec::new();
-        }
-
-        let ordered: Vec<Endpoint> = wanted.iter().copied().collect();
         let mut installs = Vec::new();
         for (idx, handle) in self.handles.iter_mut().enumerate() {
             if handle.retired {
+                continue;
+            }
+            // Preserve retained closing tails when the active set becomes empty.
+            // Every previous narrowed program already includes the fixed set.
+            if wanted.is_empty() && matches!(handle.installed, Installed::Narrowed(_)) {
+                continue;
+            }
+            let wanted: BTreeSet<Endpoint> = wanted.union(&handle.fixed).copied().collect();
+            // Keep the prior program when both dynamic and fixed sets are empty.
+            if wanted.is_empty() {
                 continue;
             }
             // Already narrowed to exactly this set: nothing to do.
@@ -319,6 +337,7 @@ impl FilterManager {
             // rate limited.
             handle.pending = Some(wanted.clone());
             handle.last_install = Some(now);
+            let ordered: Vec<Endpoint> = wanted.iter().copied().collect();
             installs.push(Install {
                 handle: idx,
                 program: FilterProgram::narrowed(&ordered),
@@ -469,6 +488,62 @@ mod tests {
             debounce: Duration::from_millis(debounce_ms),
             min_reinstall_interval: Duration::from_millis(rate_ms),
         }
+    }
+
+    #[test]
+    fn fixed_listener_survives_churn_and_empty_sets_on_its_handle_only() {
+        for listener in [
+            ep("127.0.0.1:41000", Proto::Tcp),
+            ep("[::1]:41000", Proto::Tcp),
+        ] {
+            let mut manager = FilterManager::new(2, cfg(0, 0));
+            manager.set_fixed_endpoints(1, &[listener]);
+            let start = Instant::now();
+            let client = ep("127.0.0.1:51000", Proto::Tcp);
+            let installs = manager.poll(&[client], start);
+            assert_eq!(installs.len(), 2);
+            assert_eq!(installs[0].program, FilterProgram::narrowed(&[client]));
+            assert_eq!(
+                installs[1].program,
+                FilterProgram::narrowed(&[client, listener])
+            );
+            for install in installs {
+                manager.acknowledge(install.handle, true);
+            }
+            let changed = ep("127.0.0.1:51001", Proto::Tcp);
+            let installs = manager.poll(&[changed], start + Duration::from_secs(1));
+            assert_eq!(
+                installs[1].program,
+                FilterProgram::narrowed(&[changed, listener])
+            );
+            for install in installs {
+                manager.acknowledge(install.handle, true);
+            }
+            let installs = manager.poll(&[], start + Duration::from_secs(2));
+            assert!(
+                installs.is_empty(),
+                "empty sets preserve prior closing tails and the fixed listener"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_listener_install_refusal_retries_under_existing_rate_limit() {
+        let listener = ep("127.0.0.1:41000", Proto::Tcp);
+        let mut manager = FilterManager::new(1, cfg(0, 5000));
+        manager.set_fixed_endpoints(0, &[listener]);
+        let start = Instant::now();
+        assert_eq!(manager.poll(&[], start).len(), 1);
+        manager.acknowledge(0, false);
+        assert!(manager.poll(&[], start + Duration::from_secs(4)).is_empty());
+        let retry = manager.poll(&[], start + Duration::from_secs(5));
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].program, FilterProgram::narrowed(&[listener]));
+        manager.acknowledge(0, true);
+        assert!(manager
+            .poll(&[], start + Duration::from_secs(10))
+            .is_empty());
+        assert_eq!(manager.filter_gaps(), 0);
     }
 
     #[test]
