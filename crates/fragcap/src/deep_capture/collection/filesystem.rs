@@ -221,9 +221,7 @@ pub(super) fn create_private_store(path: &Path) -> io::Result<()> {
 #[cfg(windows)]
 pub(super) fn validate_private_store(path: &Path) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
     use windows_sys::Win32::System::Memory::LocalFree;
     let object = Object::open(path, false)?;
@@ -232,6 +230,7 @@ pub(super) fn validate_private_store(path: &Path) -> io::Result<()> {
             "retirement store must be a producer-private directory",
         ));
     }
+    let producer = super::super::OutputRecipient::current_account()?;
     let mut descriptor = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
     let flags = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let result = unsafe {
@@ -253,57 +252,218 @@ pub(super) fn validate_private_store(path: &Path) -> io::Result<()> {
     if descriptor.is_null() {
         return Err(invalid("private store security descriptor output is null"));
     }
-    let mut text = std::mem::MaybeUninit::<*mut u16>::uninit();
-    let mut length = std::mem::MaybeUninit::<u32>::uninit();
-    let converted = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor,
-            1,
-            flags,
-            text.as_mut_ptr(),
-            length.as_mut_ptr(),
+    let result = validate_store_descriptor(descriptor, producer.producer_sid());
+    unsafe { LocalFree(descriptor as isize) };
+    result
+}
+
+#[cfg(windows)]
+fn validate_store_descriptor(
+    descriptor: *mut core::ffi::c_void,
+    producer_sid: &str,
+) -> io::Result<()> {
+    use std::mem::{offset_of, MaybeUninit};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{
+        EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        GetSecurityDescriptorOwner, IsValidAcl, IsValidSecurityDescriptor, IsValidSid,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Memory::LocalFree;
+    use windows_sys::Win32::System::SystemServices::SE_DACL_PROTECTED;
+
+    struct LocalSid(*mut core::ffi::c_void);
+    impl Drop for LocalSid {
+        fn drop(&mut self) {
+            unsafe { LocalFree(self.0 as isize) };
+        }
+    }
+    fn sid(text: &str) -> io::Result<LocalSid> {
+        let text = text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let mut output = MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        if unsafe { ConvertStringSidToSidW(text.as_ptr(), output.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let output = unsafe { output.assume_init() };
+        if output.is_null() {
+            return Err(invalid("private store expected SID output is null"));
+        }
+        let sid = LocalSid(output);
+        if unsafe { IsValidSid(sid.0) } == 0 {
+            return Err(invalid("private store expected SID is invalid"));
+        }
+        Ok(sid)
+    }
+    let refused = || {
+        invalid(
+            "retirement store ownership or permissions are not the exact producer-private contract",
         )
     };
-    let failure = if converted == 0 {
-        Some(io::Error::last_os_error())
-    } else {
-        None
-    };
-    unsafe { LocalFree(descriptor as isize) };
-    if let Some(error) = failure {
-        return Err(error);
+    if descriptor.is_null() || unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+        return Err(refused());
     }
-    let text = unsafe { text.assume_init() };
-    let length = unsafe { length.assume_init() };
-    if text.is_null() {
-        return Err(invalid("private store descriptor text output is null"));
+    let producer = sid(producer_sid)?;
+    let system = sid("S-1-5-18")?;
+    let mut owner = MaybeUninit::<*mut core::ffi::c_void>::uninit();
+    let mut defaulted = MaybeUninit::<i32>::uninit();
+    if unsafe { GetSecurityDescriptorOwner(descriptor, owner.as_mut_ptr(), defaulted.as_mut_ptr()) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
     }
-    if length == 0 || length > 8192 {
-        unsafe { LocalFree(text as isize) };
-        return Err(invalid("private store descriptor text length is invalid"));
+    let owner = unsafe { owner.assume_init() };
+    if owner.is_null()
+        || unsafe { IsValidSid(owner) } == 0
+        || unsafe { EqualSid(owner, producer.0) } == 0
+    {
+        return Err(refused());
     }
-    let mut words = Vec::new();
-    let mut terminated = false;
-    for index in 0..length as usize {
-        let word = unsafe { *text.add(index) };
-        if word == 0 {
-            terminated = true;
-            break;
+    let mut control = MaybeUninit::<u16>::uninit();
+    let mut revision = MaybeUninit::<u32>::uninit();
+    if unsafe {
+        GetSecurityDescriptorControl(descriptor, control.as_mut_ptr(), revision.as_mut_ptr())
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if u32::from(unsafe { control.assume_init() }) & SE_DACL_PROTECTED == 0 {
+        return Err(refused());
+    }
+    let mut present = MaybeUninit::<i32>::uninit();
+    let mut dacl = MaybeUninit::<*mut ACL>::uninit();
+    let mut defaulted = MaybeUninit::<i32>::uninit();
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            present.as_mut_ptr(),
+            dacl.as_mut_ptr(),
+            defaulted.as_mut_ptr(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let dacl = unsafe { dacl.assume_init() };
+    if unsafe { present.assume_init() } == 0 || dacl.is_null() || unsafe { IsValidAcl(dacl) } == 0 {
+        return Err(refused());
+    }
+    // Compare the security contract, not SDDL rendering. Windows can render a
+    // numeric SID as LA/BA/SY and protected ACE order is not part of ownership.
+    if unsafe { (*dacl).AceCount } != 2 {
+        return Err(refused());
+    }
+    let mut producer_seen = false;
+    let mut system_seen = false;
+    for index in 0..2 {
+        let mut ace = MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        if unsafe { GetAce(dacl, index, ace.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
         }
-        words.push(word);
+        let ace = unsafe { ace.assume_init() };
+        if ace.is_null() {
+            return Err(refused());
+        }
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        if header.AceType != 0
+            || header.AceFlags != 3
+            || usize::from(header.AceSize) < sid_offset + 8
+        {
+            return Err(refused());
+        }
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        if allowed.Mask != FILE_ALL_ACCESS {
+            return Err(refused());
+        }
+        let principal = (&allowed.SidStart as *const u32).cast_mut().cast();
+        if unsafe { IsValidSid(principal) } == 0
+            || unsafe { GetLengthSid(principal) } as usize
+                > usize::from(header.AceSize) - sid_offset
+        {
+            return Err(refused());
+        }
+        if unsafe { EqualSid(principal, producer.0) } != 0 && !producer_seen {
+            producer_seen = true;
+        } else if unsafe { EqualSid(principal, system.0) } != 0 && !system_seen {
+            system_seen = true;
+        } else {
+            return Err(refused());
+        }
     }
-    unsafe { LocalFree(text as isize) };
-    if !terminated {
-        return Err(invalid("private store descriptor text is not terminated"));
-    }
-    let actual = String::from_utf16(&words)
-        .map_err(|_| invalid("private store descriptor text is malformed"))?;
-    if actual.trim_end_matches('\0').replace("D:PAI", "D:P") != store_descriptor()? {
-        return Err(invalid(
-            "retirement store ownership or permissions are not the exact producer-private contract",
-        ));
+    // A SYSTEM producer creates the same two exact ACEs; no other duplicate
+    // principal may stand in for the separately required SYSTEM grant.
+    if !producer_seen || !system_seen {
+        return Err(refused());
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod descriptor_tests {
+    use super::*;
+
+    fn check(sddl: &str, producer: &str) -> io::Result<()> {
+        use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+        use windows_sys::Win32::System::Memory::LocalFree;
+        let text = sddl.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let mut descriptor = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    1,
+                    descriptor.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let descriptor = unsafe { descriptor.assume_init() };
+        assert!(!descriptor.is_null());
+        let result = validate_store_descriptor(descriptor, producer);
+        unsafe { LocalFree(descriptor as isize) };
+        result
+    }
+
+    #[test]
+    fn numeric_producer_sid_and_windows_alias_are_the_same_exact_principal() {
+        // Built-in Administrators is only a synthetic descriptor producer here;
+        // production always compares against its actual token's individual SID.
+        assert!(check("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", "S-1-5-32-544").is_ok());
+    }
+
+    #[test]
+    fn exact_allow_ace_order_and_auto_inherit_control_do_not_change_contract() {
+        let producer = super::super::super::OutputRecipient::current_account().unwrap();
+        let sid = producer.producer_sid();
+        assert!(check(
+            &format!("O:{sid}D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;{sid})"),
+            sid
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn equivalent_rendering_never_admits_extra_grants_wrong_owner_or_weaker_acl() {
+        for descriptor in [
+            "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;WD)",
+            "O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OICI;GR;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:P(D;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OICIID;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;BA)",
+        ] {
+            assert!(check(descriptor, "S-1-5-32-544").is_err(), "{descriptor}");
+        }
+    }
+
+    #[test]
+    fn system_producer_matches_its_two_exact_creation_aces() {
+        assert!(check("O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;SY)", "S-1-5-18").is_ok());
+    }
 }
 
 pub(super) fn guard_ancestors(path: &Path) -> io::Result<Vec<File>> {

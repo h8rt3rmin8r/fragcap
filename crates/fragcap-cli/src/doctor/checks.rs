@@ -1456,6 +1456,72 @@ mod tests {
             .contains("no exact cleanup action is available"));
         assert_eq!(std::fs::read(record).unwrap(), record_bytes);
         assert!(bundle.is_dir());
+
+        // Repeat the same operator-facing contract after an outstanding journal
+        // resource exists. Journal authority alone cannot establish owner inactivity.
+        use fragcap::deep_capture::{
+            read_resource_journal, ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+        let mut journal = ResourceJournal::create(&bundle, "uncertain-session", "plan").unwrap();
+        journal
+            .append(ResourceTransition::new(
+                "proxy",
+                ResourceKind::Proxy,
+                "127.0.0.1:1234",
+                "session:uncertain-session",
+                "release",
+                ResourceState::Applied,
+                "outstanding",
+            ))
+            .unwrap();
+        drop(journal);
+        let journal_path = bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL);
+        let journal_bytes = std::fs::read(&journal_path).unwrap();
+        assert!(read_resource_journal(&journal_path)
+            .unwrap()
+            .recovery_plan()
+            .actions
+            .iter()
+            .any(|action| action.resource_id == "proxy"));
+
+        let observed = inventory(Some(root.path()));
+        let resource = observed
+            .findings
+            .iter()
+            .find(|finding| finding.resource_id == "proxy")
+            .expect("outstanding journal resource remains visible");
+        assert_eq!(resource.health, ResidueHealth::Unknown);
+        let report = crate::doctor::Report {
+            checks: native_residue_checks(&observed),
+        };
+        assert!(
+            offered_actions(
+                &report,
+                Capabilities {
+                    net: false,
+                    elevation: true
+                }
+            )
+            .is_empty(),
+            "an outstanding journal does not authorize cleanup of an undetermined owner"
+        );
+        assert!(report
+            .checks
+            .iter()
+            .filter_map(|check| check.native_resource.as_ref())
+            .all(|context| !context.recovery_eligible));
+        let failures =
+            crate::doctor::fix::recover_deep_capture_journals(root.path(), &mut Vec::new())
+                .expect_err("exact recovery must refuse the undetermined generation");
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("could not determine session owner")));
+        assert_eq!(std::fs::read(&journal_path).unwrap(), journal_bytes);
+        assert_eq!(
+            std::fs::read(registry.join("legacy-local.json")).unwrap(),
+            record_bytes
+        );
+        assert!(bundle.is_dir());
     }
 
     #[test]

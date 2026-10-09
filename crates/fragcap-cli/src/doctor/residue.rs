@@ -97,6 +97,14 @@ enum OwnerActivity {
     Active,
 }
 
+impl OwnerActivity {
+    fn permits_recovery(self) -> bool {
+        // Legacy records have a separate explicit-confirmation recovery path;
+        // an uninspected generation never inherits that authority from a journal.
+        matches!(self, Self::Inactive | Self::LegacyUnproven)
+    }
+}
+
 /// A generation-specific owner proof retained for the exact session lifetime.
 #[derive(Debug)]
 pub(crate) struct SessionOwnerLease {
@@ -576,10 +584,11 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
             Ok(prefix) => {
                 let plan = prefix.recovery_plan();
                 for transition in prefix.latest().into_values() {
-                    let recoverable = plan
-                        .actions
-                        .iter()
-                        .any(|action| action.resource_id == transition.resource_id);
+                    let recoverable = owner_activity.permits_recovery()
+                        && plan
+                            .actions
+                            .iter()
+                            .any(|action| action.resource_id == transition.resource_id);
                     let health = if transition.state.terminal() {
                         ResidueHealth::Healthy
                     } else if owner_activity == OwnerActivity::Active {
@@ -799,10 +808,7 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                             ResidueHealth::Unknown
                         }
                     },
-                    recoverable: matches!(
-                        owner_activity,
-                        OwnerActivity::Inactive | OwnerActivity::LegacyUnproven
-                    ),
+                    recoverable: owner_activity.permits_recovery(),
                     ownership_authority: "session-owner-record".to_string(),
                     detail: match owner_activity {
                         OwnerActivity::Active => {
