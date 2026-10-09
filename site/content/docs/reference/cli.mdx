@@ -288,6 +288,27 @@ fragcap targets show sample-target
 
 ### `targets discover`
 
+Human discovery groups candidates into deterministic source chapters. Each source
+starts flush-left after an 80-character underscore rule, followed by target
+headings indented four spaces and child fields indented eight. Every candidate
+appears once; duplicate display names keep their exact identities, and repeated
+technology categories keep all findings and their fidelity.
+
+Values begin exactly four spaces after the longest displayed child key across
+the report. Long values continue at that same anchor; exact long tokens may
+extend past the terminal width. The divider stays 80 characters on narrow
+terminals. Supported color highlights headings and keys, then resets before
+values. Redirected output and `NO_COLOR` preserve the same plain hierarchy.
+Store paths, conserved discovery counts, registration eligibility/reasons and
+coverage warnings remain visible. `--summary` retains aggregate counts without
+private candidate or warning text.
+
+Targeted calibration refreshes only the exact selected Steam app and its install
+when its identity is known. Unrelated root coverage warnings remain in broad
+discovery. Relevant access, malformed metadata, ambiguity, missing identity and
+coverage limitations remain visible, with additive structured source, root,
+target, operation and diagnostic category provenance.
+
 Read installed-game candidates from Steam and known roots without registering
 the candidates. Detailed output reports whether each candidate is eligible for
 automatic registration and why. `--summary` emits aggregate counts only and is
@@ -408,15 +429,7 @@ Human output contains no tab separators. It uses an aligned `APP ID`, `NAME`, `S
 Report environment readiness. The default is read-only; `--fix` offers only the
 remediations already named by the report.
 
-Native Deep Capture residue is shown under a stable `native residue` label with
-plain-language ownership, readiness, and review guidance. Long session and
-resource identities wrap without truncation, and terminals use an aligned or
-compact layout from 40 through 80 display columns. With global `--json`, each
-native residue check retains its existing machine name and adds a
-`native_resource` object containing `session_id`, `resource_id`, `kind`,
-`state`, `health`, `ownership_authority`, and `recovery_eligible`. Read-only
-Doctor never performs cleanup; exact eligible records are reviewed and
-confirmed through `fragcap doctor --fix`.
+Current source (S168, unreleased) summarizes healthy retained history with separate observed session/resource counts and explicit bounded coverage. `--history-details` expands the exact human records. Active, mixed, actionable, and incomplete inventory findings remain individually visible; terminal resource state never proves inactive session ownership. Human reports use measured four-space column anchors at every width, including optional labels and Unicode, with exact indivisible values preserved. Global `--json` always retains every stable check and `native_resource` object containing `session_id`, `resource_id`, `kind`, `state`, `health`, `ownership_authority`, and `recovery_eligible`. Read-only Doctor never performs cleanup; exact eligible records are reviewed and confirmed through `fragcap doctor --fix`.
 
 ```powershell
 fragcap doctor
@@ -425,6 +438,7 @@ fragcap doctor
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--fix` | open | `false` | all | Offer remediations interactively. Refused with `--json` or non-interactive standard output. |
+| `--history-details` | open | `false` | all | S168 source: expand retained healthy session/resource history in the human report. JSON always retains exact records. |
 | `--timings` | open | `false` | all | Published since v0.10.1: show phase and nested readiness completion timings on interactive stderr progress. No JSON or final report changes. Historical v0.10.0 accepts this option but hides it and supplies only coarse completion timings. |
 | `--yes` | open | `false` | all | Pre-confirm offered actions with `--fix`; interactive standard output is still required. |
 

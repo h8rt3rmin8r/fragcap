@@ -46,15 +46,31 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             })?;
             let results: Vec<_> = recovered.into_iter().chain(results).collect();
             let failed = results.iter().any(|result| result.status == "failed");
-            for result in results {
-                writeln!(
-                    out,
-                    "{}\t{}\t{}",
-                    result.status,
-                    result.path.display(),
-                    result.reason
-                )
-                .map_err(|error| CliError::failure(error.to_string()))?;
+            let rows: Vec<Vec<String>> = results
+                .iter()
+                .map(|result| {
+                    vec![
+                        crate::display::human_display_value(&result.status),
+                        crate::display::human_display_value(&result.path.display().to_string()),
+                        crate::display::human_display_value(&result.reason),
+                    ]
+                })
+                .collect();
+            let layout = crate::display::ColumnLayout::new(0, &rows);
+            for (result, row) in results.iter().zip(&rows) {
+                if json {
+                    writeln!(
+                        out,
+                        "{}\t{}\t{}",
+                        result.status,
+                        result.path.display(),
+                        result.reason
+                    )
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                } else {
+                    writeln!(out, "{}", layout.render_wrapped_row(row, 80))
+                        .map_err(|error| CliError::failure(error.to_string()))?;
+                }
             }
             if failed {
                 return Err(cleanup_failure(

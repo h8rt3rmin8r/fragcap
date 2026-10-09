@@ -115,7 +115,18 @@ pub struct InstallLookup {
 /// `install_dir` so the engine rule and the walker can resolve from it (S030), and
 /// surfaces `warnings` rather than swallowing them.
 pub fn install_root_in(root: &Path, app_id: &str) -> Result<InstallLookup, SteamError> {
-    let installation = discover_in(root)?;
+    let app_id_number = app_id
+        .parse::<u32>()
+        .map_err(|_| SteamError::TitleNotFound {
+            app_id: app_id.to_string(),
+        })?;
+    let installation = discover_app_in(root, app_id_number)?;
+    if installation.titles.len() > 1 {
+        return Err(SteamError::AmbiguousTitle {
+            app_id: app_id.to_string(),
+            count: installation.titles.len(),
+        });
+    }
     let install_dir = installation
         .find(app_id)
         .map(|title| title.install_dir.clone());
@@ -131,6 +142,19 @@ pub fn install_root_in(root: &Path, app_id: &str) -> Result<InstallLookup, Steam
 /// without a registry or a real Steam install. A malformed manifest is recorded
 /// in `warnings` and skipped; the well-formed ones survive (FR-004).
 pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
+    discover_scoped_in(root, None)
+}
+
+/// Refresh one exact app identity without enumerating unrelated manifests or installs.
+/// Duplicate identities remain separate so callers can refuse ambiguity.
+pub fn discover_app_in(root: &Path, app_id: u32) -> Result<SteamInstallation, SteamError> {
+    discover_scoped_in(root, Some(app_id))
+}
+
+fn discover_scoped_in(
+    root: &Path,
+    selected_app: Option<u32>,
+) -> Result<SteamInstallation, SteamError> {
     let mut warnings = Vec::new();
     let mut libraries = vec![SteamLibrary {
         path: root.to_path_buf(),
@@ -142,13 +166,17 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
         }
     }
 
-    // Read the appinfo cache once per call and build an appid lookup, rather than
-    // once per title: a missing cache (no Steam has ever fetched metadata) is not a
+    // Read the appinfo cache once per call, scanning headers but decoding only the
+    // selected app body in exact mode. A missing cache is not a
     // discovery error, matching `read_appinfo`'s own "no cache is not an error"
     // contract. A present-but-unreadable cache is surfaced as a warning (it degrades
     // every title's type resolution to the `common/` fallback, which is worth
     // knowing) but does not fail the whole walk (slice S066).
-    let appinfo_index = match crate::appinfo::read_appinfo(root) {
+    let appinfo = match selected_app {
+        Some(appid) => crate::appinfo::read_appinfo_selected(root, appid),
+        None => crate::appinfo::read_appinfo(root),
+    };
+    let appinfo_index = match appinfo {
         Ok(parse) => {
             // A section that failed to decode is one app whose type could not be
             // read; it is absent from the index (so that one app falls back to
@@ -158,6 +186,12 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
             // isolated by `parse_appinfo` and does not degrade the rest of the
             // cache (review of PR #193).
             for failure in &parse.failures {
+                if selected_app.is_some()
+                    && failure.appid.is_some()
+                    && failure.appid != selected_app
+                {
+                    continue;
+                }
                 warnings.push(match failure.appid {
                     Some(appid) => format!(
                         "could not read appinfo section for app {appid}: {}; \
@@ -173,6 +207,7 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
             parse
                 .apps
                 .into_iter()
+                .filter(|app| selected_app.is_none_or(|selected| app.appid == selected))
                 .map(|a| {
                     // Classified from the full launch-entry list before `.first()`
                     // below narrows to just the hint executable: a borrow, not a
@@ -212,8 +247,13 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
             &mut malformed_manifests,
             warn_unreadable,
             &appinfo_index,
+            selected_app,
         ) {
-            if let Some(existing) = titles.iter().find(|t| t.app_id == title.app_id) {
+            let existing = selected_app
+                .is_none()
+                .then(|| titles.iter().find(|t| t.app_id == title.app_id))
+                .flatten();
+            if let Some(existing) = existing {
                 warnings.push(format!(
                     "app_id {} found in more than one library; keeping {} and ignoring {}",
                     title.app_id,
@@ -300,8 +340,42 @@ fn read_library_titles(
     malformed: &mut u64,
     warn_unreadable: bool,
     appinfo_index: &std::collections::HashMap<u32, AppinfoIndexEntry>,
+    selected_app: Option<u32>,
 ) -> Vec<InstalledTitle> {
     let steamapps = library.join("steamapps");
+    if let Some(app_id) = selected_app {
+        let path = steamapps.join(format!("appmanifest_{app_id}.acf"));
+        match std::fs::metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                *malformed += 1;
+                warnings.push(format!(
+                    "cannot inspect selected manifest {}: {error}",
+                    path.display()
+                ));
+                return Vec::new();
+            }
+            Ok(_) => {}
+        }
+        return match read_manifest(&path, &steamapps, appinfo_index) {
+            Ok(title) if title.app_id == app_id.to_string() => vec![title],
+            result => {
+                *malformed += 1;
+                let reason = match result {
+                    Ok(title) => format!(
+                        "manifest identity {} differs from requested app {app_id}",
+                        title.app_id
+                    ),
+                    Err(reason) => reason,
+                };
+                warnings.push(format!(
+                    "skipping selected manifest {}: {reason}",
+                    path.display()
+                ));
+                Vec::new()
+            }
+        };
+    }
     let entries = match std::fs::read_dir(&steamapps) {
         Ok(e) => e,
         Err(e) => {
@@ -398,6 +472,124 @@ fn read_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_app_lookup_ignores_unrelated_malformed_manifest() {
+        let temp = crate::test_support::TempTree::new();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("steamapps")).unwrap();
+        std::fs::write(
+            root.join("steamapps/appmanifest_620.acf"),
+            "\"AppState\" { \"appid\" \"620\" \"name\" \"Selected\" \"installdir\" \"Selected\" }",
+        )
+        .unwrap();
+        std::fs::write(root.join("steamapps/appmanifest_999.acf"), "malformed").unwrap();
+        let selected = discover_app_in(root, 620).unwrap();
+        assert_eq!(selected.titles.len(), 1);
+        assert!(selected.warnings.is_empty());
+        let broad = discover_in(root).unwrap();
+        assert_eq!(broad.malformed_manifests, 1);
+        assert!(!broad.warnings.is_empty());
+    }
+
+    #[test]
+    fn exact_app_lookup_decodes_selected_cache_body_and_keeps_relevant_faults() {
+        use crate::appinfo::fixtures::{
+            appinfo_bytes_with_bad_section, FixtureApp, FixtureLaunch, V28, V29,
+        };
+        for version in [V28, V29] {
+            let tree = TempTree::new();
+            let root = tree.path();
+            for appid in [620, 999] {
+                tree.write(
+                    &root.join(format!("steamapps/appmanifest_{appid}.acf")),
+                    &manifest(&appid.to_string(), "Fixture", "Fixture"),
+                );
+            }
+            let bytes = appinfo_bytes_with_bad_section(
+                version,
+                &[
+                    FixtureApp {
+                        appid: 999,
+                        change_number: 1,
+                        common_type: Some("Music".into()),
+                        launch: Vec::new(),
+                    },
+                    FixtureApp {
+                        appid: 620,
+                        change_number: 1,
+                        common_type: Some("Game".into()),
+                        launch: vec![FixtureLaunch::windows("selected.exe")],
+                    },
+                ],
+                0,
+            );
+            tree.write_bytes(&root.join("appcache/appinfo.vdf"), &bytes);
+            let selected = discover_app_in(root, 620).unwrap();
+            assert!(selected.warnings.is_empty(), "{:?}", selected.warnings);
+            assert_eq!(selected.titles.len(), 1);
+            assert_eq!(selected.titles[0].app_type.as_deref(), Some("Game"));
+            assert_eq!(
+                selected.titles[0].launch_executable.as_deref(),
+                Some("selected.exe")
+            );
+            let malformed_selected = discover_app_in(root, 999).unwrap();
+            assert_eq!(malformed_selected.titles[0].app_type, None);
+            assert_eq!(malformed_selected.warnings.len(), 1);
+            assert!(malformed_selected.warnings[0].contains("section for app 999"));
+            assert!(discover_in(root)
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("section for app 999")));
+        }
+    }
+
+    #[test]
+    fn exact_app_lookup_preserves_duplicate_and_malformed_selected_authority() {
+        let temp = crate::test_support::TempTree::new();
+        let root = temp.path();
+        let other = root.join("other");
+        std::fs::create_dir_all(root.join("steamapps")).unwrap();
+        std::fs::create_dir_all(other.join("steamapps")).unwrap();
+        std::fs::write(
+            root.join("steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"1\" {{ \"path\" \"{}\" }} }}",
+                other.display().to_string().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        for library in [root, &other] {
+            std::fs::write(
+                library.join("steamapps/appmanifest_620.acf"),
+                "\"AppState\" { \"appid\" \"620\" \"installdir\" \"Selected\" }",
+            )
+            .unwrap();
+        }
+        let selected = discover_app_in(root, 620).unwrap();
+        assert_eq!(
+            selected.titles.len(),
+            2,
+            "exact duplicate metadata remains ambiguous"
+        );
+        assert!(matches!(
+            install_root_in(root, "620"),
+            Err(SteamError::AmbiguousTitle { count: 2, .. })
+        ));
+        std::fs::write(
+            other.join("steamapps/appmanifest_620.acf"),
+            "\"AppState\" { \"appid\" \"999\" \"installdir\" \"Wrong\" }",
+        )
+        .unwrap();
+        let selected = discover_app_in(root, 620).unwrap();
+        assert_eq!(selected.titles.len(), 1);
+        assert_eq!(selected.malformed_manifests, 1);
+        assert!(selected.warnings[0].contains("differs from requested app 620"));
+        let missing = discover_app_in(root, 730).unwrap();
+        assert!(missing.titles.is_empty());
+        assert!(missing.warnings.is_empty());
+    }
     use crate::test_support::TempTree;
 
     fn manifest(app_id: &str, name: &str, installdir: &str) -> String {
@@ -716,27 +908,26 @@ mod tests {
             "\"AppState\" { \"appid\" \"2\" ", // malformed, discovery skips it
         );
 
-        // The installed title resolves, and the malformed-manifest warning is
-        // carried rather than swallowed (FR-008).
+        // The installed title resolves without attributing another app's malformed
+        // metadata to this selected identity (S168).
         let found = install_root_in(root, "1").unwrap();
         assert_eq!(
             found.install_dir,
             Some(root.join("steamapps").join("common").join("Good"))
         );
-        assert!(
-            found
-                .warnings
-                .iter()
-                .any(|w| w.contains("appmanifest_2.acf")),
-            "the malformed manifest is surfaced, got {:?}",
-            found.warnings
-        );
+        assert!(found.warnings.is_empty());
 
         // A title that is not installed still carries the warnings, so a malformed
         // manifest is never silently indistinguishable from an uninstalled title.
         let missing = install_root_in(root, "999").unwrap();
         assert!(missing.install_dir.is_none());
-        assert!(!missing.warnings.is_empty());
+        assert!(missing.warnings.is_empty());
+        let malformed = install_root_in(root, "2").unwrap();
+        assert!(malformed.install_dir.is_none());
+        assert!(malformed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("appmanifest_2.acf")));
     }
 
     #[test]

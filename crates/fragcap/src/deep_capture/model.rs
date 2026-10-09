@@ -912,4 +912,9 @@ pub enum DeepCaptureEvent {
         sequence: u64,
         report: TerminalSnapshot,
     },
+    Diagnostics {
+        sequence: u64,
+        session_id: String,
+        diagnostics: Box<super::TerminalDiagnostics>,
+    },
 }

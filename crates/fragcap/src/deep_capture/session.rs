@@ -131,6 +131,9 @@ impl PreparedSession {
             routing: None,
             launch: None,
             observations: Vec::new(),
+            proxy_diagnostics: None,
+            evidence_windows: EvidenceWindows::default(),
+            observation_windows: Vec::new(),
             classification_records_lost: 0,
             application_classification_summary: None,
             failures: Vec::new(),
@@ -164,6 +167,9 @@ pub struct DeepCaptureSession<'a> {
     routing: Option<Box<dyn RoutingLease>>,
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
+    proxy_diagnostics: Option<ProxyDiagnostics>,
+    evidence_windows: EvidenceWindows,
+    observation_windows: Vec<EvidenceWindow>,
     classification_records_lost: u64,
     application_classification_summary: Option<ClassificationSummary>,
     failures: Vec<StageFailure>,
@@ -715,6 +721,7 @@ impl DeepCaptureSession<'_> {
                 .applied(),
             budget,
         );
+        self.seal_observation_window();
         let cancellation_requested = self.cancellation.is_requested();
         match capture_result {
             Ok(result) => {
@@ -776,10 +783,12 @@ impl DeepCaptureSession<'_> {
         if self.cancellation.is_requested() {
             self.record_cancellation();
         }
+        self.seal_observation_window();
         if self.launch.is_some() {
             let started = self.adapters.clock.monotonic_elapsed();
             let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
             let result = self.adapters.capture.release_route_owners(budget);
+            self.evidence_windows.owner_release_ended_at = Some(self.adapters.clock.wall_now());
             self.record_cleanup(result);
             if self.deadline_expired(started, self.plan.deadlines.route_owner_release) {
                 self.fail(
@@ -846,7 +855,27 @@ impl DeepCaptureSession<'_> {
                     .shutdown
                     .saturating_sub(elapsed.saturating_sub(started)),
             );
-            match proxy.drain_observations(budget) {
+            let drain = proxy.drain_phase_observations(budget).unwrap_or_else(|| {
+                proxy.drain_observations(budget).map(|raw| {
+                    let (observations, status) = raw.into_parts();
+                    let observations = observations
+                        .into_iter()
+                        .map(|observation| PhaseQualifiedObservation {
+                            observation,
+                            evidence_window: EvidenceWindow::Observation,
+                        })
+                        .collect();
+                    match status {
+                        ObservationDrainStatus::Complete => {
+                            PhaseObservationDrain::complete(observations)
+                        }
+                        ObservationDrainStatus::Incomplete { code, detail } => {
+                            PhaseObservationDrain::incomplete(observations, code, detail)
+                        }
+                    }
+                })
+            });
+            match drain {
                 Ok(drain) => {
                     self.classification_records_lost = self
                         .classification_records_lost
@@ -854,13 +883,17 @@ impl DeepCaptureSession<'_> {
                     self.application_classification_summary =
                         proxy.application_classification_summary();
                     let (observations, status) = drain.into_parts();
-                    self.extend_observations(observations);
+                    self.extend_phase_observations(observations);
                     if let ObservationDrainStatus::Incomplete { code, detail } = status {
                         self.fail(Stage::Observe, code, detail);
                     }
                 }
                 Err(error) => self.failures.push(error),
             }
+            self.proxy_diagnostics = self
+                .proxy
+                .as_ref()
+                .and_then(|proxy| proxy.terminal_diagnostics());
         }
         if self.deadline_expired(started, self.plan.deadlines.shutdown) {
             self.fail(
@@ -870,8 +903,25 @@ impl DeepCaptureSession<'_> {
             );
         }
         if let Some(routing) = self.routing.as_ref() {
-            self.route_verification = Some(routing.verify(&self.observations));
+            let eligible = self
+                .observations
+                .iter()
+                .zip(&self.observation_windows)
+                .filter(|(_, window)| **window == EvidenceWindow::Observation)
+                .map(|(observation, _)| observation)
+                .cloned()
+                .collect::<Vec<_>>();
+            self.route_verification = Some(routing.verify(&eligible));
         }
+        self.emit(DeepCaptureEvent::Diagnostics {
+            sequence: 0,
+            session_id: self.plan.session_id.clone(),
+            diagnostics: Box::new(TerminalDiagnostics {
+                proxy: self.proxy_diagnostics.clone(),
+                evidence_windows: self.evidence_windows.clone(),
+                observation_windows: self.observation_windows.clone(),
+            }),
+        });
         self.transition(LifecycleState::Stopped);
         Ok(())
     }
@@ -1068,13 +1118,30 @@ impl DeepCaptureSession<'_> {
     }
 
     fn extend_observations(&mut self, observations: Vec<CompatibilityObservation>) {
-        for observation in observations {
+        self.extend_phase_observations(
+            observations
+                .into_iter()
+                .map(|observation| PhaseQualifiedObservation {
+                    observation,
+                    evidence_window: EvidenceWindow::Observation,
+                })
+                .collect(),
+        );
+    }
+
+    fn extend_phase_observations(&mut self, observations: Vec<PhaseQualifiedObservation>) {
+        for PhaseQualifiedObservation {
+            observation,
+            evidence_window,
+        } in observations
+        {
             self.emit(DeepCaptureEvent::Observation {
                 sequence: 0,
                 session_id: self.plan.session_id.clone(),
                 observation: observation.clone(),
             });
             self.observations.push(observation);
+            self.observation_windows.push(evidence_window);
         }
     }
 
@@ -1083,7 +1150,9 @@ impl DeepCaptureSession<'_> {
             return;
         }
         self.facts_persisted = true;
-        for fact in facts_from_observations(&self.plan, &self.observations) {
+        for fact in
+            facts_from_observations(&self.plan, &self.observations, &self.observation_windows)
+        {
             let status = self.adapters.facts.append(&self.plan.target, &fact);
             if let FactWriteStatus::Failed { code, detail } = &status {
                 self.fail(Stage::Facts, code.clone(), detail.clone());
@@ -1480,6 +1549,16 @@ impl DeepCaptureSession<'_> {
         }
     }
 
+    fn seal_observation_window(&mut self) {
+        if self.evidence_windows.observation_ended_at.is_none() {
+            let ended_at = self.adapters.clock.wall_now();
+            self.evidence_windows.observation_ended_at = Some(ended_at);
+            if let Some(proxy) = self.proxy.as_mut() {
+                proxy.end_observation_window(ended_at);
+            }
+        }
+    }
+
     fn snapshot(&mut self) -> TerminalSnapshot {
         let outcome = if self.interrupted {
             SessionOutcome::Interrupted
@@ -1647,15 +1726,17 @@ fn cap_deadlines(deadlines: Deadlines) -> Deadlines {
 fn facts_from_observations(
     plan: &SessionPlan,
     observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
 ) -> Vec<CompatibilityFact> {
     let calibration = match plan.mode {
         SessionMode::Capture => None,
         SessionMode::ReachabilityCalibration => Some(CalibrationPhase::Reachability),
         SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
     };
-    compatibility_fact_candidates(
+    compatibility_fact_candidates_in_windows(
         plan.target.launch_case.as_str(),
         observations,
+        windows,
         plan.controlled,
         calibration,
         plan.calibration_protocol,
@@ -1714,5 +1795,14 @@ fn with_sequence(event: DeepCaptureEvent, sequence: u64) -> DeepCaptureEvent {
         DeepCaptureEvent::Terminal { report, .. } => {
             DeepCaptureEvent::Terminal { sequence, report }
         }
+        DeepCaptureEvent::Diagnostics {
+            session_id,
+            diagnostics,
+            ..
+        } => DeepCaptureEvent::Diagnostics {
+            sequence,
+            session_id,
+            diagnostics,
+        },
     }
 }

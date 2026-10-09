@@ -32,6 +32,51 @@ async fn read_head(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     head
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleartext_http2_handshake_and_auth_wait_failures_are_not_authenticated() {
+    let limits = ProtocolLimits {
+        header_timeout: Duration::from_millis(150),
+        ..ProtocolLimits::default()
+    };
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        2,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_tls_client_config(support::isolated_tls_client_config())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    for settings in [
+        b"\x00\x00\x01\x04\x00\x00\x00\x00\x00x".as_slice(),
+        b"\x00\x00\x00\x04\x00\x00\x00\x00\x00".as_slice(),
+    ] {
+        let mut client = tokio::net::TcpStream::connect(lease.endpoint())
+            .await
+            .unwrap();
+        client
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .await
+            .unwrap();
+        client.write_all(settings).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean());
+    assert_eq!(report.observation.accepted_connections, 2);
+    assert_eq!(report.observation.failed_connections, 2);
+    assert_eq!(report.observation.authenticated_connections, 0);
+    assert_eq!(report.observation.connection_causes.protocol, 1);
+    assert_eq!(report.observation.connection_causes.timeout, 1);
+}
+
 fn compressed_websocket_frame(payload: &[u8], masking_key: Option<[u8; 4]>) -> Bytes {
     let mut compressor = Compress::new(Compression::fast(), false);
     let mut compressed = Vec::with_capacity(128);

@@ -140,6 +140,16 @@ fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     std::thread::sleep(Duration::from_millis(50));
     let report = lease.cleanup(Duration::from_secs(1));
     assert_eq!(report.observation.authentication_refused, 1);
+    assert_eq!(report.observation.connection_causes.authentication, 1);
+    assert!(report
+        .observation
+        .connection_diagnostics
+        .iter()
+        .any(|record| record.terminal == "refused"
+            && record.cause == Some(fragcap_proxy::ConnectionFailureCategory::Authentication)
+            && record
+                .code
+                .is_some_and(|code| code.starts_with("proxy-auth-"))));
     assert_eq!(report.observation.authenticated_connections, 1);
     assert_eq!(report.observation.accepted_connections, 2);
     let events = collector.0.lock().unwrap();

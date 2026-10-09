@@ -549,31 +549,29 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
 }
 
 fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> Vec<Check> {
+    let mut checks = Vec::new();
     if !inventory.limitations.is_empty() {
-        return vec![Check::fail(
+        checks.push(Check::fail(
             DEEP_CAPTURE,
             "native inventory",
             format!(
                 "inventory is incomplete: {}",
-                inventory
-                    .limitations
-                    .iter()
-                    .take(5)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("; ")
+                inventory.limitations.to_vec().join("; ")
             ),
             "resolve the reported inventory limitations before Deep Capture",
-        )];
+        ));
     }
     if inventory.findings.is_empty() {
-        return vec![Check::ok(
-            DEEP_CAPTURE,
-            "native inventory",
-            "no native Deep Capture session residue found",
-        )];
+        if checks.is_empty() {
+            checks.push(Check::ok(
+                DEEP_CAPTURE,
+                "native inventory",
+                "no native Deep Capture session residue found",
+            ));
+        }
+        return checks;
     }
-    inventory
+    checks.extend(inventory
         .findings
         .iter()
         .map(|finding| {
@@ -652,7 +650,8 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                 },
             )
         })
-        .collect()
+        );
+    checks
 }
 
 fn native_residue_diagnosis(
@@ -1423,6 +1422,100 @@ mod tests {
 
         assert_eq!(before, "native resource stable/proxy");
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn healthy_history_is_constant_size_without_hiding_mixed_actionable_or_scan_limit_records() {
+        use crate::doctor::residue::{NativeResidueInventory, ResidueHealth, ResourceFinding};
+        let finding = |session: &str, resource: &str, health| ResourceFinding {
+            session_id: session.into(),
+            bundle: std::path::PathBuf::from(session),
+            resource_id: resource.into(),
+            kind: "route".into(),
+            state: if health == ResidueHealth::Healthy {
+                "terminal"
+            } else {
+                "applied"
+            }
+            .into(),
+            health,
+            recoverable: health == ResidueHealth::Stale,
+            ownership_authority: "resource-journal".into(),
+            detail: "controlled evidence".into(),
+        };
+        let report = |healthy_count| {
+            let mut inventory = NativeResidueInventory {
+                findings: (0..healthy_count)
+                    .map(|index| {
+                        finding(
+                            &format!("history-{}", index / 3),
+                            &format!("resource-{index}"),
+                            ResidueHealth::Healthy,
+                        )
+                    })
+                    .collect(),
+                limitations: vec!["scan-entry-limit: additional entries omitted".into()],
+            };
+            inventory.findings.extend([
+                finding("mixed", "done", ResidueHealth::Healthy),
+                finding("mixed", "failed", ResidueHealth::Stale),
+                finding("live", "owner", ResidueHealth::Active),
+                finding("unknown", "journal", ResidueHealth::Unknown),
+                finding("unsupported", "journal", ResidueHealth::Unsupported),
+                finding("cleanup", "failed", ResidueHealth::CleanupFailed),
+            ]);
+            crate::doctor::Report {
+                checks: native_residue_checks(&inventory),
+            }
+        };
+        let small = report(1);
+        let large = report(150);
+        let human = large.render_human();
+        assert_eq!(small.render_human().lines().count(), human.lines().count());
+        assert!(human
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("150 healthy terminal resource record(s)"));
+        assert!(human
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("50 observed session(s)"));
+        assert!(human.contains("Incomplete bounded inventory"));
+        for identity in [
+            "mixed",
+            "failed",
+            "live",
+            "unknown",
+            "unsupported",
+            "cleanup",
+        ] {
+            assert!(human.contains(identity), "missing {identity}: {human}");
+        }
+        assert!(!human.contains("resource-149"));
+        assert!(large
+            .render_human_with_history(false, 80, true)
+            .contains("resource-149"));
+        assert!(large.render_json().contains("resource-149"));
+        assert_eq!(
+            large
+                .checks
+                .iter()
+                .filter(|check| check.native_resource.is_some())
+                .count(),
+            156
+        );
+        assert_eq!(
+            large
+                .checks
+                .iter()
+                .filter(|check| check.action.is_some())
+                .count(),
+            1
+        );
+        assert!(!large.deep_capture_ready());
+        assert_eq!(large.exit().code(), 1);
     }
 
     #[test]

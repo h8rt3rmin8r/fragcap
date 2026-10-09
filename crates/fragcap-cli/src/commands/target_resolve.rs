@@ -168,8 +168,20 @@ pub(crate) fn resolve_stored(
                 "the selector is ambiguous ({} targets match); select by handle or `--id`:",
                 matches.len()
             );
-            for t in &matches {
-                msg.push_str(&format!("\n  {}\t{}\t{}", t.handle, t.stable_id, t.name));
+            let rows = matches
+                .iter()
+                .map(|target| {
+                    vec![
+                        target.handle.clone(),
+                        target.stable_id.to_string(),
+                        crate::display::human_display_value(&target.name),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let layout = crate::display::ColumnLayout::new(2, &rows);
+            for row in rows {
+                msg.push('\n');
+                msg.push_str(&layout.render_row(&row));
             }
             return Err(CliError::usage(msg));
         }

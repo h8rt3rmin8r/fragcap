@@ -2,11 +2,14 @@
 
 //! Guided registration and bounded calibration sequencing for one exact target.
 
+pub(crate) mod assessment;
 mod steam_client_observation;
 
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +35,8 @@ use crate::emit::Emitter;
 use crate::events::Event;
 use crate::exit::{CliError, Exit};
 use crate::DeepCaptureAuthorizationInput;
+
+static CONTROLLED_PREFLIGHT_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct Guidance {
     topology: Option<String>,
@@ -559,17 +564,6 @@ fn resolve_or_register_target(
         )
         .map(|target| TargetFrontDoor::Ready(Box::new(target)));
     }
-    if emitter.is_json() && !args.authorize_stdin {
-        return Err(CliError::usage(
-            "JSON target registration requires --authorize-stdin and the exact emitted plan identifier",
-        ));
-    }
-    if !args.authorize_stdin && !authorization.is_terminal() {
-        return Err(CliError::usage(
-            "target registration requires an interactive terminal or --authorize-stdin",
-        ));
-    }
-
     let selector = args
         .selector
         .as_deref()
@@ -580,6 +574,40 @@ fn resolve_or_register_target(
     let discovery = discover_for_calibration(args, store, emitter)?;
     let candidate =
         select_discovery_candidate_with_choice(selector, &discovery, candidate_selection, emitter)?;
+    // A display name can belong to multiple sources. Apply the Steam guard only
+    // after the exact selected discovery identity establishes Steam topology,
+    // before refresh, registration confirmation or persistent workflow effects.
+    if matches!(candidate.identity, CandidateIdentity::SteamAppId(_))
+        && !early_steam_guard(
+            args,
+            authorization,
+            emitter,
+            &process_snapshot(args.controlled_target),
+            &candidate.display_name,
+            vec!["steam.exe".into()],
+        )?
+    {
+        return Ok(TargetFrontDoor::Declined);
+    }
+    if emitter.is_json() && !args.authorize_stdin {
+        return Err(CliError::usage(
+            "JSON target registration requires --authorize-stdin and the exact emitted plan identifier",
+        ));
+    }
+    if !args.authorize_stdin && !authorization.is_terminal() {
+        return Err(CliError::usage(
+            "target registration requires an interactive terminal or --authorize-stdin",
+        ));
+    }
+    let discovery = match candidate.identity {
+        CandidateIdentity::SteamAppId(app_id) if !args.controlled_target => {
+            let selected = discover_calibration_scope(args, store, emitter, Some(app_id))?;
+            revalidate_candidate(&candidate, &selected)?;
+            selected
+        }
+        _ => scope_discovery_diagnostics(discovery, &candidate),
+    };
+    emit_discovery_diagnostics(&discovery, emitter);
     let plan = RegistrationPlan::new(candidate, &discovery, local_store_path)?;
     plan.emit(emitter)?;
     let confirmation = match confirm_registration(args, authorization, emitter, &plan) {
@@ -648,8 +676,12 @@ fn resolve_or_register_target(
         }
     }
 
-    let current_discovery = match discover_for_calibration(args, store, emitter) {
-        Ok(discovery) => discovery,
+    let selected = match plan.candidate.identity {
+        CandidateIdentity::SteamAppId(app_id) if !args.controlled_target => Some(app_id),
+        _ => None,
+    };
+    let current_discovery = match discover_calibration_scope(args, store, emitter, selected) {
+        Ok(discovery) => scope_discovery_diagnostics(discovery, &plan.candidate),
         Err(_) => {
             registration_outcome(
                 emitter,
@@ -778,7 +810,33 @@ fn discover_for_calibration(
     store: &mut Store,
     emitter: &mut Emitter,
 ) -> Result<Discovery, CliError> {
+    let selected = args
+        .selector
+        .as_deref()
+        .or(args.target.as_deref())
+        .and_then(|value| {
+            value
+                .strip_prefix("steam:")
+                .unwrap_or(value)
+                .parse::<u32>()
+                .ok()
+        });
+    discover_calibration_scope(args, store, emitter, selected)
+}
+
+fn discover_calibration_scope(
+    args: &CalibrateArgs,
+    store: &mut Store,
+    emitter: &mut Emitter,
+    selected: Option<u32>,
+) -> Result<Discovery, CliError> {
     if args.controlled_target {
+        if std::env::var_os("FRAGCAP_CONTROLLED_CALIBRATION_SLOW_DOWNSTREAM").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            return Err(CliError::failure(
+                "controlled downstream discovery should not run",
+            ));
+        }
         let mut account = fragcap::targets::DiscoveryAccount::default();
         account.produce();
         let drifted = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_REGISTRATION_DRIFT").is_some();
@@ -850,6 +908,7 @@ fn discover_for_calibration(
             candidates,
             account,
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
         });
     }
 
@@ -868,6 +927,7 @@ fn discover_for_calibration(
             emitter.warn(warning);
             return Ok(Discovery {
                 warnings: vec![warning.to_string()],
+                diagnostics: Vec::new(),
                 ..Discovery::default()
             });
         }
@@ -875,15 +935,99 @@ fn discover_for_calibration(
             emitter.warn(&message);
             return Ok(Discovery {
                 warnings: vec![message],
+                diagnostics: Vec::new(),
                 ..Discovery::default()
             });
         }
     };
-    let discovery = crate::commands::targets::compose_and_discover(&catalog, store, None)?;
+    let discovery = match selected {
+        Some(app_id) => {
+            let root = fragcap::steam::installation_root().map_err(|error| {
+                CliError::failure(format!("selected Steam metadata unavailable: {error}"))
+            })?;
+            let catalog =
+                Store::open(&catalog).map_err(|error| CliError::failure(error.to_string()))?;
+            fragcap::SteamSource::new(root, &catalog)
+                .discover_selected(app_id)
+                .map_err(|error| CliError::failure(error.to_string()))?
+        }
+        None => crate::commands::targets::compose_and_discover(&catalog, store, None)?,
+    };
+    Ok(discovery)
+}
+
+fn emit_discovery_diagnostics(discovery: &Discovery, emitter: &mut Emitter) {
     for warning in &discovery.warnings {
         emitter.warn(warning);
     }
-    Ok(discovery)
+    for diagnostic in &discovery.diagnostics {
+        emitter.event(&Event::DiscoveryDiagnostic {
+            source: diagnostic.source.clone(),
+            root: diagnostic.root.clone(),
+            target: diagnostic.target.clone(),
+            operation: diagnostic.operation.clone(),
+            kind: diagnostic.kind.clone(),
+            message: diagnostic.message.clone(),
+        });
+    }
+}
+
+fn scope_discovery_diagnostics(mut discovery: Discovery, candidate: &CandidateTarget) -> Discovery {
+    // A legacy source may report an explicitly unknown limitation. Preserve it
+    // rather than infer relevance from its wording or erase reported loss.
+    let unscoped = discovery
+        .warnings
+        .iter()
+        .filter(|message| {
+            !discovery
+                .diagnostics
+                .iter()
+                .any(|diagnostic| &diagnostic.message == *message)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let identity = match &candidate.identity {
+        CandidateIdentity::SteamAppId(id) => format!("steam:{id}"),
+        CandidateIdentity::Path(path) => path.clone(),
+        CandidateIdentity::LaunchEntry(_) => String::new(),
+    };
+    discovery.diagnostics.retain(|diagnostic| {
+        if diagnostic.source != candidate.source_name {
+            return false;
+        }
+        if let Some(target) = &diagnostic.target {
+            return target == &identity;
+        }
+        // Source-global metadata can affect the requested lookup. A root limitation
+        // is relevant only when its component-bounded subtree contains the target.
+        if diagnostic.operation == "metadata" {
+            return true;
+        }
+        match (&diagnostic.root, &candidate.install_root) {
+            (Some(root), Some(selected)) => {
+                let root = root
+                    .replace('\\', "/")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                let selected = selected
+                    .replace('\\', "/")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                selected == root
+                    || selected
+                        .strip_prefix(&root)
+                        .is_some_and(|tail| tail.starts_with('/'))
+            }
+            _ => true,
+        }
+    });
+    discovery.warnings = discovery
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    discovery.warnings.extend(unscoped);
+    discovery
 }
 
 fn select_discovery_candidate_with_choice(
@@ -892,7 +1036,11 @@ fn select_discovery_candidate_with_choice(
     selection: &mut CandidateSelection,
     emitter: &mut Emitter,
 ) -> Result<CandidateTarget, CliError> {
-    let steam_id = selector.parse::<u32>().ok();
+    let steam_id = selector
+        .strip_prefix("steam:")
+        .unwrap_or(selector)
+        .parse::<u32>()
+        .ok();
     let folded_selector = selector.to_lowercase();
     let matches: Vec<_> = discovery
         .candidates
@@ -903,13 +1051,16 @@ fn select_discovery_candidate_with_choice(
         })
         .cloned()
         .collect();
+    if matches.len() != 1 {
+        emit_discovery_diagnostics(discovery, emitter);
+    }
     match matches.as_slice() {
         [candidate] if !selection.has_unconsumed() => Ok(candidate.clone()),
         [_] => Err(CliError::usage(
             "the supplied calibration candidate has no current ambiguous target-registration choice",
         )),
         [] => Err(CliError::usage(format!(
-            "no stored or discovered target exactly matches {selector:?}; discovery considered {}, produced {}, and reported {} warning(s)",
+            "no stored or discovered target exactly matches {selector:?}; discovery considered {}, produced {}, and reported {} warning(s). Reported discovery limitations can affect whether the requested target was resolvable; inspect the applicable diagnostics above",
             discovery.account.considered,
             discovery.account.produced,
             discovery.warnings.len(),
@@ -931,7 +1082,11 @@ fn select_discovery_candidate(
     selector: &str,
     discovery: &Discovery,
 ) -> Result<CandidateTarget, CliError> {
-    let steam_id = selector.parse::<u32>().ok();
+    let steam_id = selector
+        .strip_prefix("steam:")
+        .unwrap_or(selector)
+        .parse::<u32>()
+        .ok();
     let folded_selector = selector.to_lowercase();
     let matches = discovery
         .candidates
@@ -1032,22 +1187,30 @@ fn emit_candidate_choices(
         })
         .map_err(|error| CliError::usage(format!("could not write candidate choices: {error}")))?;
     let mut human = format!("Calibration choice required: scope={scope} selector={selector}\n");
-    for choice in projections {
-        human.push_str(&format!(
-            "  {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            choice["id"].as_str().unwrap_or("invalid-id"),
-            choice["source"].as_str().unwrap_or("unknown-source"),
-            choice["identity"].as_str().unwrap_or("unknown-identity"),
-            choice["fidelity"].as_str().unwrap_or("unknown-fidelity"),
-            choice["classification"]
-                .as_str()
-                .unwrap_or("unknown-classification"),
-            choice["display_name"].as_str().unwrap_or("unknown-name"),
-            choice["executable_hint"]
-                .as_str()
-                .unwrap_or("no-executable-hint"),
-            choice["install_root"].as_str().unwrap_or("no-install-root"),
-        ));
+    let rows = projections
+        .iter()
+        .map(|choice| {
+            [
+                "id",
+                "source",
+                "identity",
+                "fidelity",
+                "classification",
+                "display_name",
+                "executable_hint",
+                "install_root",
+            ]
+            .iter()
+            .map(|key| {
+                crate::display::human_display_value(choice[*key].as_str().unwrap_or("unavailable"))
+            })
+            .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let layout = crate::display::ColumnLayout::new(2, &rows);
+    for row in rows {
+        human.push_str(&layout.render_row(&row));
+        human.push('\n');
     }
     human.push_str("Rerun the same command with --candidate '<CANDIDATE_ID>'.\n");
     emitter
@@ -1430,8 +1593,9 @@ fn prepare_steam_client(
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     }
 
-    let discovery = discover_for_calibration(args, store, emitter)?;
     let app_id = steam_app_id(&target).expect("the early return checked the Steam app id");
+    let discovery = discover_calibration_scope(args, store, emitter, Some(app_id))?;
+    emit_discovery_diagnostics(&discovery, emitter);
     let current_candidates = discovery
         .candidates
         .iter()
@@ -1666,7 +1830,7 @@ fn prepare_steam_client(
             "the target changed after Steam client confirmation; review a fresh plan",
         ));
     };
-    let current_discovery = match discover_for_calibration(args, store, emitter) {
+    let current_discovery = match discover_calibration_scope(args, store, emitter, Some(app_id)) {
         Ok(discovery) => discovery,
         Err(error) => {
             steam_client_outcome(
@@ -1847,6 +2011,7 @@ fn stored_client_discovery(target: &TargetEntry) -> Discovery {
         candidates,
         account,
         warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -2221,6 +2386,7 @@ fn discovery_with_candidate(discovery: &Discovery, candidate: CandidateTarget) -
         candidates: vec![candidate],
         account: discovery.account.clone(),
         warnings: discovery.warnings.clone(),
+        diagnostics: discovery.diagnostics.clone(),
     }
 }
 
@@ -2360,7 +2526,314 @@ fn authored_steam_client_result<E: std::fmt::Display>(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum EarlySteamState {
+    Cold,
+    Warm,
+    Unavailable(String),
+}
+
+fn early_steam_state(
+    snapshot: &deep_capture_api::CalibrationProcessSnapshot,
+    applicable: bool,
+) -> EarlySteamState {
+    if !applicable {
+        return EarlySteamState::Cold;
+    }
+    match snapshot {
+        deep_capture_api::CalibrationProcessSnapshot::Complete(images) => {
+            if images.iter().any(|image| {
+                image
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("steam.exe"))
+            }) {
+                EarlySteamState::Warm
+            } else {
+                EarlySteamState::Cold
+            }
+        }
+        deep_capture_api::CalibrationProcessSnapshot::Unavailable { reason } => {
+            EarlySteamState::Unavailable(reason.clone())
+        }
+        _ => EarlySteamState::Unavailable("unsupported process inventory".to_string()),
+    }
+}
+
+fn early_steam_guard(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    snapshot: &deep_capture_api::CalibrationProcessSnapshot,
+    label: &str,
+    images: Vec<String>,
+) -> Result<bool, CliError> {
+    match early_steam_state(snapshot, true) {
+        EarlySteamState::Cold => return Ok(true),
+        EarlySteamState::Unavailable(reason) => {
+            return Err(CliError::failure(format!(
+                "Steam process observation unavailable: {reason}; cold state is not established"
+            )))
+        }
+        EarlySteamState::Warm => {}
+    }
+    if !args.restart_warm {
+        emitter.calibration_guidance(json!({
+            "target":label,"status":"blocked","reason":"warm-steam-preflight",
+            "launch_readiness":"blocked-running-steam","current_applicable_status":"unavailable",
+            "next_action":"Close Steam normally, then repeat the exact calibration command; --restart-warm authorizes a bounded operator-owned shutdown wait",
+        }));
+        emitter.event(&Event::DeepCapturePreflight {
+            status: "blocked".into(),
+            blockers: 1,
+            warnings: 0,
+            target: label.into(),
+            proxy_backend: "native".into(),
+            trust_state: "unchanged".into(),
+        });
+        emitter.required_human("Steam is already running. Close Steam through its normal Exit control, then retry calibration from a cold start. Select --restart-warm to authorize a bounded wait while you close Steam normally. No calibration workflow or session was created.\n");
+        return Ok(false);
+    }
+    if args.authorize_stdin || !authorization.is_terminal() {
+        return Err(CliError::usage("--restart-warm requires its operator-close step in an interactive terminal and cannot use --authorize-stdin"));
+    }
+    let plan = fragcap::deep_capture::WarmRestartPlan::new(
+        fragcap::deep_capture::LaunchCase::SteamProtocolWarm,
+        images,
+        args.wait,
+    )
+    .map_err(|error| CliError::usage(error.to_string()))?;
+    emitter.event(&Event::DeepCaptureRestartPlan {
+        target: label.into(),
+        warm_case: plan.warm_case().as_str().into(),
+        images: plan.images().to_vec(),
+        deadline_secs: plan.deadline().as_secs(),
+    });
+    emitter.required_human(&format!("Warm-to-cold restart\n{}Wait while you close Steam and the declared client normally? [y/N] ",crate::display::render_fields(2,&[
+        ("Target:".into(),label.into()),("Declared images:".into(),plan.images().join(", ")),("Deadline:".into(),format!("{} seconds",plan.deadline().as_secs())),("Action:".into(),"Use the application's normal Exit or Quit control; process control: none".into()),
+    ],80)));
+    emitter
+        .flush()
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    let answer = authorization
+        .read_response("warm-restart", false)
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    let confirmed = std::str::from_utf8(&answer)
+        .is_ok_and(|answer| matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"));
+    if !confirmed {
+        return Err(CliError::usage(
+            "warm restart was declined; no effects were applied",
+        ));
+    }
+    crate::orchestrator::install_interrupt_handler();
+    let started = std::time::Instant::now();
+    loop {
+        if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+            return Err(CliError::failure(
+                "warm restart was interrupted; no effects were applied",
+            ));
+        }
+        let current = process_snapshot(args.controlled_target);
+        let cold = match &current {
+            deep_capture_api::CalibrationProcessSnapshot::Complete(present) => {
+                plan.images().iter().all(|declared| {
+                    !present.iter().any(|image| {
+                        image
+                            .rsplit(['\\', '/'])
+                            .next()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(declared))
+                    })
+                })
+            }
+            deep_capture_api::CalibrationProcessSnapshot::Unavailable { reason } => {
+                return Err(CliError::failure(format!(
+                    "warm restart observation unavailable: {reason}"
+                )))
+            }
+            _ => false,
+        };
+        if cold {
+            emitter.event(&Event::DeepCaptureRestart {target:label.into(),stage:"observed-cold".into(),status:"completed".into(),warm_case:plan.warm_case().as_str().into(),cold_case:Some(plan.cold_case().as_str().into()),reason:"every declared image absent; fresh target preparation and authorization still required".into()});
+            return Ok(true);
+        }
+        if started.elapsed() >= plan.deadline() {
+            return Err(CliError::failure(format!(
+                "warm restart timed out after {} seconds; no process was stopped",
+                plan.deadline().as_secs()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn early_target_images(target: &TargetEntry) -> Vec<String> {
+    let mut images = vec!["steam.exe".to_string()];
+    images.extend(
+        fragcap::targets::entry_windows_launch_entries(target)
+            .iter()
+            .map(|entry| {
+                entry
+                    .executable()
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(entry.executable())
+                    .to_string()
+            }),
+    );
+    images
+}
+
+fn record_early_stored_case(
+    args: &CalibrateArgs,
+    emitter: &mut Emitter,
+    store: &Store,
+    target: &TargetEntry,
+    workflow: Option<&CalibrationWorkflow>,
+    local: &str,
+) -> Result<(), CliError> {
+    let protocol = workflow
+        .and_then(|workflow| workflow.remaining_protocols.first().copied())
+        .or_else(|| normalize_protocol_args(&args.protocol).first().copied())
+        .unwrap_or(CompatibilityProtocol::Routing);
+    let mut case = deep_capture::current_compatibility_case(
+        workflow
+            .and_then(|workflow| workflow.selected_launch_case)
+            .or(args.launch_case.map(compatibility_launch_case_arg))
+            .unwrap_or(CompatibilityLaunchCase::SteamProtocolCold),
+        workflow
+            .map(|workflow| proxy_family_arg(workflow.address_family))
+            .or(args.proxy_family)
+            .unwrap_or(DeepCaptureProxyFamilyArg::Ipv4),
+        protocol,
+    );
+    case.routing_strategy = workflow
+        .map(|workflow| workflow.routing_strategy)
+        .or(args.routing_strategy.map(compatibility_routing_arg))
+        .unwrap_or(CompatibilityRoutingStrategy::ChildEnvironment);
+    record_current_case(emitter, store, target, &case)?;
+    let next = if let Some(workflow) = workflow {
+        format!(
+            "{} --restart-warm",
+            calibration_resume_command(workflow.id, local)
+        )
+    } else {
+        let context = crate::workflow_help::CalibrationCommandContext::for_calibrate(args, None);
+        let mut command = crate::workflow_help::calibration_command(
+            crate::workflow_help::TargetReference::Id(target.stable_id),
+            Some(&context),
+        );
+        if !args.restart_warm {
+            command.push_str(" --restart-warm");
+        }
+        command
+    };
+    emit_guidance_with_attempt(
+        emitter,
+        target,
+        Guidance {
+            topology: Some("steam".into()),
+            action: "operator-action",
+            status: "warm",
+            observed_launch_case: Some("steam-protocol-warm".into()),
+            selected_launch_case: Some(case.launch_case.as_str().into()),
+            reason: Some("warm-steam-preflight".into()),
+            images: early_target_images(target),
+            limitations: Vec::new(),
+            requested_protocols: protocol_names(
+                &workflow
+                    .map(|workflow| workflow.requested_protocols.clone())
+                    .unwrap_or_else(|| normalize_protocol_args(&args.protocol)),
+            ),
+            observed_protocols: workflow
+                .map(|workflow| protocol_names(&workflow.observed_protocols))
+                .unwrap_or_default(),
+            completed_protocols: workflow
+                .map(|workflow| protocol_names(&workflow.completed_protocols))
+                .unwrap_or_default(),
+            remaining_protocols: protocol_names(
+                &workflow
+                    .map(|workflow| workflow.remaining_protocols.clone())
+                    .unwrap_or_else(|| normalize_protocol_args(&args.protocol)),
+            ),
+            next_command: Some(next.clone()),
+        },
+        None,
+        workflow.map(|workflow| (workflow, local)),
+    );
+    // The attempted preflight remains blocked while stored cold-case evidence is
+    // independently assessed; emitting the compatibility identity is not cold-state proof.
+    emitter.calibration_guidance(json!({"status":"blocked","target_id":target.stable_id,"next_command":next,"next_command_purpose":"Authorize a bounded wait while the operator closes the declared applications normally; fresh preparation and exact session authorization follow","launch_readiness":"blocked-running-steam"}));
+    Ok(())
+}
+
 pub fn run(
+    args: &CalibrateArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
+    emitter.begin_calibration();
+    let result = run_inner(args, authorization, emitter);
+    let (guidance, attempt) = emitter.finish_calibration();
+    let mut value = guidance.unwrap_or_else(|| {
+        json!({
+            "target": args.selector.as_deref().or(args.target.as_deref()),
+            "target_id": args.id,
+            "status": "blocked",
+            "current_applicable_status": "unavailable",
+            "reason": "preflight-did-not-establish-current-case",
+            "next_command": null,
+        })
+    });
+    if let Some(attempt) = attempt {
+        value["attempted_case"] = attempt;
+    }
+    if let Err(error) = &result {
+        value["terminal_error"] = json!(error.message());
+        if value["status"] == "selected" || value["status"].is_null() {
+            value["status"] = json!("blocked");
+        }
+    }
+    let status = value["status"].as_str().unwrap_or("blocked");
+    let verdict = match status {
+        "failed" => "failed",
+        "interrupted" => "interrupted",
+        "blocked" | "warm" | "refused" | "declined" => "blocked",
+        "ready"
+        | "completed"
+        | "workflow-complete"
+        | "requested-coverage-complete"
+        | "observed-coverage-complete"
+            if value
+                .pointer("/current_case/verdict")
+                .and_then(Value::as_str)
+                == Some("calibrated") =>
+        {
+            "calibrated"
+        }
+        _ => "incomplete",
+    };
+    value["verdict"] = json!(verdict);
+    if value["next_command_purpose"].is_null() {
+        value["next_command_purpose"] = json!(match value["next_command"].as_str() {
+            Some(command) if command.contains("deep-capture") => "start a fresh authorized Deep Capture session for the exact stored case after independent launch/recovery preflight",
+            Some(command) if command.contains("--resume") => "resume the same workflow intent and history with fresh preflight and authorization; it does not retry a failed exact case",
+            Some(_) => "prepare a fresh measurement after addressing the stated blocker; the command does not prove compatibility",
+            None => "review the observed blocker and retained diagnostics; no retry remedy is established",
+        });
+    }
+    emitter.event(&Event::CalibrationVerdict {
+        assessment: value.clone(),
+    });
+    if emitter.allows_progress() {
+        emitter.terminal_human(&crate::session_ux::calibration_verdict(
+            &value,
+            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+        ));
+    }
+    result
+}
+
+fn run_inner(
     args: &CalibrateArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
@@ -2406,6 +2879,12 @@ pub fn run(
             }
         })?;
     let mut requested_protocols = normalize_protocol_args(&args.protocol);
+    // The first substantive preflight is a lightweight process snapshot. Applying
+    // it needs only stored/workflow identity, never discovery or client scanning.
+    if args.controlled_target {
+        CONTROLLED_PREFLIGHT_OBSERVATIONS.store(0, Ordering::Relaxed);
+    }
+    let early_snapshot = process_snapshot(args.controlled_target);
     let local_store_path = deep_capture::local_store_path(args.local_db.as_deref())?;
     let mut store = Store::open(&local_store_path)
         .map_err(|error| CliError::failure(format!("cannot open local store: {error}")))?;
@@ -2480,6 +2959,27 @@ pub fn run(
             );
             return Ok(Exit::SUCCESS);
         }
+        if workflow.state != CalibrationWorkflowState::Completed
+            && steam_app_id(&target).is_some()
+            && !early_steam_guard(
+                args,
+                authorization,
+                emitter,
+                &early_snapshot,
+                &target.handle,
+                early_target_images(&target),
+            )?
+        {
+            record_early_stored_case(
+                args,
+                emitter,
+                &store,
+                &target,
+                Some(&workflow),
+                &local_store_argument,
+            )?;
+            return Ok(Exit::SUCCESS);
+        }
         if workflow.state == CalibrationWorkflowState::Paused {
             let checkpoint =
                 checkpoint_from_workflow(&workflow, CalibrationWorkflowState::Ready, None);
@@ -2487,6 +2987,63 @@ pub fn run(
         }
         (target, workflow)
     } else {
+        let minimal = deep_capture::select_target_input(
+            &store,
+            args.selector.as_deref(),
+            args.target.as_deref(),
+            args.id,
+        )?;
+        match &minimal {
+            Selection::Resolved(target) if steam_app_id(target).is_some() => {
+                if !early_steam_guard(
+                    args,
+                    authorization,
+                    emitter,
+                    &early_snapshot,
+                    &target.handle,
+                    early_target_images(target),
+                )? {
+                    record_early_stored_case(
+                        args,
+                        emitter,
+                        &store,
+                        target,
+                        None,
+                        &local_store_argument,
+                    )?;
+                    return Ok(Exit::SUCCESS);
+                }
+            }
+            Selection::NoMatch if args.id.is_none() => {
+                let selector = args
+                    .selector
+                    .as_deref()
+                    .or(args.target.as_deref())
+                    .unwrap_or("");
+                let exact_steam = selector
+                    .strip_prefix("steam:")
+                    .unwrap_or(selector)
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|id| id > 0);
+                // Exact platform selectors establish topology immediately.
+                // Names require cross-source resolution first; matching a Steam
+                // display name alone must not block a direct candidate.
+                if exact_steam
+                    && !early_steam_guard(
+                        args,
+                        authorization,
+                        emitter,
+                        &early_snapshot,
+                        selector,
+                        vec!["steam.exe".into()],
+                    )?
+                {
+                    return Ok(Exit::SUCCESS);
+                }
+            }
+            _ => {}
+        }
         let front_door = resolve_or_register_target(
             args,
             authorization,
@@ -2576,6 +3133,18 @@ pub fn run(
         &requested_protocols,
         &workflow,
     )?;
+    if let Some(launch_case) = proposal_cold_launch_case(&proposal) {
+        let mut case = deep_capture::current_compatibility_case(
+            launch_case,
+            proxy_family_arg(workflow.address_family),
+            requested_protocols
+                .first()
+                .copied()
+                .unwrap_or(CompatibilityProtocol::Routing),
+        );
+        case.routing_strategy = workflow.routing_strategy;
+        record_current_case(emitter, &store, &target, &case)?;
+    }
     if let Some(expected) = workflow.selected_launch_case {
         if let Some(current) = proposal_cold_launch_case(&proposal) {
             if current != expected {
@@ -3017,9 +3586,16 @@ pub fn run(
             let launch_case = ready_launch_case(&selected)?;
             let current = deep_capture::current_compatibility_case(
                 launch_case,
-                DeepCaptureProxyFamilyArg::Ipv4,
+                proxy_family_arg(workflow.address_family),
                 CompatibilityProtocol::Routing,
             );
+            let mut requested_case = current.clone();
+            requested_case.protocol = all_protocols
+                .first()
+                .copied()
+                .unwrap_or(CompatibilityProtocol::Routing);
+            requested_case.routing_strategy = workflow.routing_strategy;
+            record_current_case(emitter, &fresh_store, &fresh_target, &requested_case)?;
             deep_capture_api::validate_compatibility_prerequisites(
                 deep_capture_api::SessionMode::Capture,
                 args.controlled_target,
@@ -3225,6 +3801,15 @@ pub fn run(
             },
             progress,
         );
+        record_current_case(emitter, &fresh_store, &fresh_target, &step.case)?;
+        let identity = assessment::StoredCaseAssessment::from_facts(
+            required_row_id(&fresh_target)?,
+            &step.case,
+            &[],
+        )
+        .json()["identity"]
+            .clone();
+        emitter.begin_calibration_attempt(json!({"identity":identity,"verdict":"not-run","reason":"session-not-started","phase":step.phase.as_str(),"protocol":step.case.protocol.as_str()}));
         drop(fresh_store);
         let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
             Ok(outcome) => outcome,
@@ -3283,8 +3868,9 @@ pub fn run(
                 return Err(error);
             }
         };
-        let newly_observed = deep_capture_api::observed_protocol_candidates(
+        let newly_observed = deep_capture_api::observed_protocol_candidates_in_windows(
             &outcome.observations,
+            &outcome.observation_windows,
             args.controlled_target,
         );
         observed_protocols = merge_protocols(&observed_protocols, &newly_observed);
@@ -3415,8 +4001,13 @@ pub fn run(
         };
         let (completed_protocols, remaining_protocols) =
             coverage_from_proposal(&completed, &all_protocols);
+        record_current_case(emitter, &completed_store, &completed_target, &step.case)?;
         last_completed_protocols = completed_protocols.clone();
         last_remaining_protocols = remaining_protocols.clone();
+        let correlation_missing = outcome
+            .assessment
+            .as_ref()
+            .is_some_and(|assessment| assessment.reason == "final-client-correlation-missing");
         let (completed_status, completed_reason) = match outcome.disposition {
             deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
             deep_capture::RunDisposition::Interrupted => {
@@ -3424,6 +4015,9 @@ pub fn run(
             }
             deep_capture::RunDisposition::Failed => {
                 ("failed", "delegated-session-terminal-failure")
+            }
+            deep_capture::RunDisposition::Completed if correlation_missing => {
+                ("inconclusive", "final-client-correlation-missing")
             }
             deep_capture::RunDisposition::Completed => completion_outcome_for_step(
                 &completed,
@@ -3433,23 +4027,30 @@ pub fn run(
                 &completed_protocols,
             ),
         };
-        let next_command = if outcome.disposition == deep_capture::RunDisposition::Failed {
-            None
-        } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
-            Some(target_command(
-                "deep-capture",
-                completed_target.stable_id,
-                &local_store_argument,
-                " --launch",
-            ))
+        let next_command =
+            if outcome.disposition == deep_capture::RunDisposition::Failed || correlation_missing {
+                None
+            } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
+                Some(target_command(
+                    "deep-capture",
+                    completed_target.stable_id,
+                    &local_store_argument,
+                    " --launch",
+                ))
+            } else {
+                Some(calibration_resume_command(
+                    workflow.id,
+                    &local_store_argument,
+                ))
+            };
+        let (workflow_state, pause_reason) = if correlation_missing {
+            (
+                CalibrationWorkflowState::Paused,
+                Some(CalibrationPauseReason::Failure),
+            )
         } else {
-            Some(calibration_resume_command(
-                workflow.id,
-                &local_store_argument,
-            ))
+            terminal_workflow_state(outcome.disposition, completed_status)
         };
-        let (workflow_state, pause_reason) =
-            terminal_workflow_state(outcome.disposition, completed_status);
         let checkpoint = progress_checkpoint(
             &workflow,
             &requested_protocols,
@@ -3956,6 +4557,23 @@ fn valid_guided_step(step: &deep_capture_api::CalibrationProposalStep) -> bool {
     }
 }
 
+fn record_current_case(
+    emitter: &mut Emitter,
+    store: &Store,
+    target: &TargetEntry,
+    case: &fragcap::targets::CompatibilityCase,
+) -> Result<(), CliError> {
+    let row_id = required_row_id(target)?;
+    let facts = store
+        .compatibility_facts_for_target(row_id)
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    let assessment = assessment::StoredCaseAssessment::from_facts(row_id, case, &facts);
+    let mut value = assessment.json();
+    value["identity"]["stable_target_id"] = json!(target.stable_id);
+    emitter.calibration_guidance(json!({"current_case": value}));
+    Ok(())
+}
+
 fn build_proposal(
     store: &Store,
     target: &TargetEntry,
@@ -4006,6 +4624,19 @@ fn required_row_id(target: &TargetEntry) -> Result<i64, CliError> {
 
 fn process_snapshot(controlled: bool) -> deep_capture_api::CalibrationProcessSnapshot {
     if controlled {
+        if std::env::var_os("FRAGCAP_CONTROLLED_CALIBRATION_WARM_AFTER_PREFLIGHT").is_some()
+            && CONTROLLED_PREFLIGHT_OBSERVATIONS.fetch_add(1, Ordering::Relaxed) > 0
+        {
+            return deep_capture_api::CalibrationProcessSnapshot::complete(["steam.exe"]);
+        }
+        if std::env::var_os("FRAGCAP_CONTROLLED_CALIBRATION_INVENTORY_ERROR").is_some() {
+            return deep_capture_api::CalibrationProcessSnapshot::unavailable(
+                "controlled process inventory unavailable",
+            );
+        }
+        if std::env::var_os("FRAGCAP_CONTROLLED_CALIBRATION_STEAM_RUNNING").is_some() {
+            return deep_capture_api::CalibrationProcessSnapshot::complete(["steam.exe"]);
+        }
         // The reserved harness has no ambient target process. Its executable is
         // selected only after authorization by the controlled target adapter.
         return deep_capture_api::CalibrationProcessSnapshot::complete(Vec::<String>::new());
@@ -4326,36 +4957,62 @@ fn emit_guidance_with_attempt(
         ),
         resume_command: Box::new(resume_command.clone()),
     });
-    emitter.progress(&format!(
-        "Calibration guidance: target={} id={} topology={} action={} status={} observed_launch_case={} selected_launch_case={} launch_case_assertion={} routing_strategy={} address_family={} reason={} images={} limitations={} requested_protocols={} observed_protocols={} completed_protocols={} remaining_protocols={} attempt={} maximum_attempts={} phase={} protocol={} workflow_id={} workflow_revision={} workflow_state={} pause_reason={} process_control=none next_command={} resume_command={}",
-        target.handle,
-        target.stable_id,
-        guidance.topology.as_deref().unwrap_or("unavailable"),
-        guidance.action,
-        guidance.status,
-        guidance.observed_launch_case.as_deref().unwrap_or("none"),
-        guidance.selected_launch_case.as_deref().unwrap_or("none"),
-        workflow.and_then(|(value, _)| value.selected_launch_case).map(|value| value.as_str()).unwrap_or("none"),
-        workflow.map(|(value, _)| value.routing_strategy.as_str()).unwrap_or("unavailable"),
-        workflow.map(|(value, _)| value.address_family.as_str()).unwrap_or("unavailable"),
-        guidance.reason.as_deref().unwrap_or("none"),
-        if guidance.images.is_empty() { "none".to_string() } else { guidance.images.join(",") },
-        if guidance.limitations.is_empty() { "none".to_string() } else { guidance.limitations.join("; ") },
-        if guidance.requested_protocols.is_empty() { "none".to_string() } else { guidance.requested_protocols.join(",") },
-        if guidance.observed_protocols.is_empty() { "none".to_string() } else { guidance.observed_protocols.join(",") },
-        if guidance.completed_protocols.is_empty() { "none".to_string() } else { guidance.completed_protocols.join(",") },
-        if guidance.remaining_protocols.is_empty() { "none".to_string() } else { guidance.remaining_protocols.join(",") },
-        attempt.map(|value| value.number.to_string()).unwrap_or_else(|| "none".to_string()),
-        attempt.map(|_| MAX_GUIDED_ATTEMPTS.to_string()).unwrap_or_else(|| "none".to_string()),
-        attempt.map(|value| value.phase.as_str()).unwrap_or("none"),
-        attempt.map(|value| value.protocol.as_str()).unwrap_or("none"),
-        workflow.map(|(value, _)| value.id.to_string()).unwrap_or_else(|| "none".to_string()),
-        workflow.map(|(value, _)| value.revision.to_string()).unwrap_or_else(|| "none".to_string()),
-        workflow.map(|(value, _)| value.state.as_str()).unwrap_or("none"),
-        workflow.and_then(|(value, _)| value.pause_reason).map(|value| value.as_str()).unwrap_or("none"),
-        guidance.next_command.as_deref().unwrap_or("none"),
-        resume_command.as_deref().unwrap_or("none"),
-    ));
+    emitter.calibration_guidance(json!({
+        "schema_version": 1,
+        "target": target.handle, "target_id": target.stable_id,
+        "topology": guidance.topology, "status": guidance.status, "reason": guidance.reason,
+        "limitations": guidance.limitations,
+        "images": guidance.images,
+        "observed_launch_case": guidance.observed_launch_case,
+        "selected_launch_case": guidance.selected_launch_case,
+        "routing_strategy": workflow.map(|(value, _)| value.routing_strategy.as_str()),
+        "address_family": workflow.map(|(value, _)| value.address_family.as_str()),
+        "requested_protocols": guidance.requested_protocols,
+        "observed_protocols": guidance.observed_protocols,
+        "completed_protocols": guidance.completed_protocols,
+        "remaining_protocols": guidance.remaining_protocols,
+        "workflow_id": workflow.map(|(value, _)| value.id),
+        "workflow_revision": workflow.map(|(value, _)| value.revision),
+        "workflow_state": workflow.map(|(value, _)| value.state.as_str()),
+        "pause_reason": workflow.and_then(|(value, _)| value.pause_reason).map(|value| value.as_str()),
+        "phase": attempt.map(|value| value.phase.as_str()),
+        "protocol": attempt.map(|value| value.protocol.as_str()),
+        "attempt": attempt.map(|value| value.number),
+        "next_command": guidance.next_command,
+        "resume_command": resume_command,
+    }));
+    let mut fields = vec![
+        ("Target:".into(), target.handle.clone()),
+        ("Action:".into(), guidance.action.into()),
+        ("Status:".into(), guidance.status.into()),
+        (
+            "Reason:".into(),
+            guidance.reason.clone().unwrap_or_else(|| "none".into()),
+        ),
+        (
+            "Requested protocols:".into(),
+            guidance.requested_protocols.join(", "),
+        ),
+        (
+            "Observed protocols:".into(),
+            guidance.observed_protocols.join(", "),
+        ),
+        (
+            "Completed protocols:".into(),
+            guidance.completed_protocols.join(", "),
+        ),
+        (
+            "Remaining protocols:".into(),
+            guidance.remaining_protocols.join(", "),
+        ),
+    ];
+    fields.retain(|(_, value)| !value.is_empty());
+    if emitter.allows_progress() && guidance.status == "selected" {
+        emitter.terminal_human(&format!(
+            "\nCalibration workflow\n\n{}",
+            crate::display::render_fields(0, &fields, usize::MAX)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -4390,6 +5047,7 @@ mod tests {
             },
             candidates,
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -4500,6 +5158,7 @@ mod tests {
             },
             candidates: vec![first],
             warnings: vec!["one root was inaccessible".to_string()],
+            diagnostics: Vec::new(),
         };
         assert_ne!(
             same.id,
@@ -5000,5 +5659,83 @@ mod tests {
         let mut changed_root = target.clone();
         changed_root.install_root = Some("C:\\Other".to_string());
         assert!(!authority.matches(&changed_root));
+    }
+    #[test]
+    fn steam_preflight_is_case_scoped_and_observation_errors_are_not_cold() {
+        let warm = deep_capture_api::CalibrationProcessSnapshot::complete(["C:/Steam/STEAM.EXE"]);
+        assert_eq!(
+            super::early_steam_state(&warm, true),
+            super::EarlySteamState::Warm
+        );
+        assert_eq!(
+            super::early_steam_state(&warm, false),
+            super::EarlySteamState::Cold
+        );
+        let unavailable =
+            deep_capture_api::CalibrationProcessSnapshot::unavailable("snapshot failed");
+        assert_eq!(
+            super::early_steam_state(&unavailable, true),
+            super::EarlySteamState::Unavailable("snapshot failed".into())
+        );
+        assert_eq!(
+            super::early_steam_state(
+                &deep_capture_api::CalibrationProcessSnapshot::complete(Vec::<String>::new()),
+                true
+            ),
+            super::EarlySteamState::Cold
+        );
+    }
+
+    #[test]
+    fn selected_discovery_keeps_relevant_root_and_excludes_unrelated_provenance() {
+        let candidate = super::CandidateTarget {
+            identity: super::CandidateIdentity::Path("C:/Games/Selected".into()),
+            display_name: "Selected".into(),
+            source_name: "known-roots".into(),
+            install_root: Some("C:/Games/Selected".into()),
+            folder_name: None,
+            executable_hint: None,
+            fidelity: fragcap::profile::FidelityTier::Observed,
+            classification: fragcap::targets::TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+        };
+        let mut discovery = super::Discovery::default();
+        for root in ["C:/Games/Selected", "C:/Games/Unrelated"] {
+            discovery.warn(fragcap::targets::DiscoveryDiagnostic {
+                source: "known-roots".into(),
+                root: Some(root.into()),
+                target: None,
+                operation: "root-descent".into(),
+                kind: "descent-limit".into(),
+                message: format!("coverage at {root}"),
+            });
+        }
+        let selected = super::scope_discovery_diagnostics(discovery.clone(), &candidate);
+        assert_eq!(selected.warnings, vec!["coverage at C:/Games/Selected"]);
+        assert_eq!(
+            discovery.warnings.len(),
+            2,
+            "broad report retains both coverage limitations"
+        );
+        assert_eq!(
+            selected.diagnostics[0].root.as_deref(),
+            Some("C:/Games/Selected")
+        );
+        for format in [crate::emit::Format::Human, crate::emit::Format::Json] {
+            let mut output = Vec::new();
+            let mut emitter =
+                crate::emit::Emitter::new(&mut output, format, crate::emit::Verbosity::Normal);
+            super::emit_discovery_diagnostics(&selected, &mut emitter);
+            let rendered = String::from_utf8(output).unwrap();
+            assert!(rendered.contains("C:/Games/Selected"));
+            assert!(!rendered.contains("Unrelated"));
+        }
+        discovery
+            .warnings
+            .push("unprovenanced external-source limitation".into());
+        assert!(super::scope_discovery_diagnostics(discovery, &candidate)
+            .warnings
+            .contains(&"unprovenanced external-source limitation".into()));
     }
 }

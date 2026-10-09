@@ -280,6 +280,9 @@ blake3          = { version = "1", default-features = false }
 # absurd-transcription case the project adds dependencies to avoid (the same
 # argument as `pcap`'s struct layouts). MIT or Apache-2.0, low MSRV.
 unicode-normalization = "0.1"
+# S168: exact Unicode terminal widths replace incomplete handwritten ranges.
+# Normal (non-CJK ambiguous-width) calculation needs no optional features.
+unicode-width = { version = "=0.2.2", default-features = false }
 
 # External. Slice S051, research D-2: the general-category tests (`So`/`Sk`/`Cf`
 # stripped before NFKD, `Mn` after) of handle normalization. On `fragcap-targets`

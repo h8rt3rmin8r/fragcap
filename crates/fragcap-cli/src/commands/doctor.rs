@@ -91,6 +91,7 @@ fn run_with_terminal(
         args.yes,
         use_color(Stream::Stdout),
         human_width,
+        args.history_details,
         out,
         emitter,
     ))
@@ -114,7 +115,7 @@ fn run_read_only(
             if json {
                 report.render_json()
             } else {
-                report.render_human_with_width(color, width)
+                report.render_human_with_history(color, width, args.history_details)
             }
         });
         (text, report.exit())
@@ -166,6 +167,7 @@ mod tests {
 
     fn doctor_args(timings: bool, fix: bool) -> DoctorArgs {
         DoctorArgs {
+            history_details: false,
             fix,
             yes: false,
             timings,
@@ -245,6 +247,52 @@ mod tests {
         let _ = run_read_only(&args, true, &mut stdout, &mut emitter, true, fake_gather);
         drop(emitter);
         assert!(stderr.is_empty(), "json suppresses progress");
+    }
+
+    #[test]
+    fn history_detail_is_an_explicit_read_only_human_projection() {
+        let mut args = doctor_args(false, false);
+        args.history_details = true;
+        let mut inputs = fake_inputs();
+        inputs
+            .deep_capture
+            .native_residue
+            .findings
+            .push(crate::doctor::residue::ResourceFinding {
+                session_id: "retained-session".into(),
+                bundle: "controlled-bundle".into(),
+                resource_id: "retained-resource".into(),
+                kind: "route".into(),
+                state: "terminal".into(),
+                health: crate::doctor::residue::ResidueHealth::Healthy,
+                recoverable: false,
+                ownership_authority: "resource-journal".into(),
+                detail: "controlled retained evidence".into(),
+            });
+        for json in [false, true] {
+            for verbosity in [Verbosity::Normal, Verbosity::Quiet, Verbosity::Silent] {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let mut emitter = Emitter::new(
+                    &mut stderr,
+                    if json { Format::Json } else { Format::Human },
+                    verbosity,
+                );
+                let expected = checks::run(&inputs);
+                let facts = inputs.clone();
+                let exit =
+                    run_read_only(&args, json, &mut stdout, &mut emitter, false, move |_| {
+                        facts
+                    });
+                assert_eq!(exit, expected.exit());
+                let text = String::from_utf8(stdout).unwrap();
+                assert!(text.contains("retained-resource"));
+                if json {
+                    assert_eq!(text, expected.render_json());
+                }
+                assert!(stderr.is_empty());
+            }
+        }
     }
 
     fn fake_inputs() -> crate::doctor::Inputs {

@@ -159,6 +159,33 @@ pub struct Discovery {
     /// A warning is a report, not an outcome bucket: it does not affect
     /// [`DiscoveryAccount::is_conserved`].
     pub warnings: Vec<String>,
+    /// Machine-readable provenance for the corresponding legacy warning messages.
+    pub diagnostics: Vec<DiscoveryDiagnostic>,
+}
+
+/// A non-fatal limitation with enough scope to select diagnostics without parsing prose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryDiagnostic {
+    /// Producing source.
+    pub source: String,
+    /// Exact root whose coverage or metadata is affected.
+    pub root: Option<String>,
+    /// Exact selected identity when the operation targets one.
+    pub target: Option<String>,
+    /// Metadata lookup, executable detection, or root descent.
+    pub operation: String,
+    /// Stable category, independent of rendered wording.
+    pub kind: String,
+    /// Original diagnostic text, retained in legacy warning output.
+    pub message: String,
+}
+
+impl Discovery {
+    /// Record one diagnostic and its backwards-compatible message projection.
+    pub fn warn(&mut self, diagnostic: DiscoveryDiagnostic) {
+        self.warnings.push(diagnostic.message.clone());
+        self.diagnostics.push(diagnostic);
+    }
 }
 
 /// The discovery seam. Every origin of a capture target implements it.
@@ -187,6 +214,7 @@ pub fn discover_all(sources: &[&dyn TargetSource]) -> Result<Discovery, TargetsE
         let d = source.discover()?;
         merged.candidates.extend(d.candidates);
         merged.warnings.extend(d.warnings);
+        merged.diagnostics.extend(d.diagnostics);
         merged.account.considered += d.account.considered;
         merged.account.produced += d.account.produced;
         merged.account.parse_failed += d.account.parse_failed;

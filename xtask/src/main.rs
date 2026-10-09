@@ -82,8 +82,22 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Verification subprocesses inherit redirected output and never open a console.
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    command
+}
+
 fn cargo(args: &[&str]) -> bool {
-    let status = Command::new(env!("CARGO"))
+    let status = hidden_command(env!("CARGO"))
         .current_dir(repo_root())
         .args(args)
         .status();
@@ -96,7 +110,7 @@ fn cargo(args: &[&str]) -> bool {
 /// only see that something failed. The output is echoed as well as returned,
 /// so an automated log still shows the work.
 fn cargo_captured(args: &[&str]) -> (bool, String) {
-    match Command::new(env!("CARGO"))
+    match hidden_command(env!("CARGO"))
         .current_dir(repo_root())
         .args(args)
         .output()
@@ -345,7 +359,7 @@ fn main() -> ExitCode {
         }
 
         "neutral" => {
-            let installed = Command::new("rustup")
+            let installed = hidden_command("rustup")
                 .args(["target", "list", "--installed"])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains(NEUTRAL_TARGET))
@@ -414,7 +428,7 @@ fn main() -> ExitCode {
             };
             println!("msrv: declared minimum supported version is {msrv}");
 
-            let installed = Command::new("rustup")
+            let installed = hidden_command("rustup")
                 .args(["toolchain", "list"])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains(&msrv))
@@ -435,7 +449,7 @@ fn main() -> ExitCode {
             // `target/debug/xtask.exe`, and a workspace build would try to
             // replace the running binary and fail on Windows. It also keeps a
             // second toolchain's artifacts from thrashing the main cache.
-            let built = Command::new("rustup")
+            let built = hidden_command("rustup")
                 .current_dir(&root)
                 .args([
                     "run",

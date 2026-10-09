@@ -761,6 +761,7 @@ where
                 request_body.emit_failure(&error);
                 emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
                 observation.reason = Some(error.code.to_string());
+                stamp_observation_evidence(&mut observation);
                 observations.push(observation);
                 break Some(error);
             }
@@ -784,6 +785,12 @@ where
         observation.inspectability = "full";
         if response.upgrade && request.upgrade {
             let websocket = websocket_mode(&request, &response);
+            if websocket.is_ok() {
+                // The validated 101 completes the HTTP exchange. The upgraded
+                // relay owns its subsequent success or failure independently.
+                accounting.http1_exchanges_completed =
+                    accounting.http1_exchanges_completed.saturating_add(1);
+            }
             let result = match websocket {
                 Ok(Some(mode)) => {
                     relay_websocket(&mut client, &mut upstream, limits, &context, ordinal, mode)
@@ -807,6 +814,7 @@ where
             if let Some(error) = &result {
                 observation.reason = Some(error.code.to_string());
             }
+            stamp_observation_evidence(&mut observation);
             observations.push(observation);
             emit_http1_terminal(
                 &context,
@@ -878,9 +886,11 @@ where
             response_body.emit_failure(&error);
             emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
             observation.reason = Some(error.code.to_string());
+            stamp_observation_evidence(&mut observation);
             observations.push(observation);
             break Some(error);
         }
+        stamp_observation_evidence(&mut observation);
         observations.push(observation);
         let response_complete_at = Instant::now();
         crate::application::emit(
@@ -898,6 +908,8 @@ where
             ),
         );
         emit_http1_terminal(&context, ordinal, crate::StreamTerminal::Complete);
+        accounting.http1_exchanges_completed =
+            accounting.http1_exchanges_completed.saturating_add(1);
         if force_close
             || request.close
             || response.close
@@ -1753,6 +1765,13 @@ where
         .map_err(|error| ProtocolError::new("http-write-failed", error.to_string()))
 }
 
+fn stamp_observation_evidence(observation: &mut ProxyObservation) {
+    observation.evidence_observed_at_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| elapsed.as_nanos().try_into().ok());
+}
+
 fn request_observation(
     context: &ObservationContext<'_>,
     ordinal: u64,
@@ -1771,6 +1790,7 @@ fn request_observation(
             .try_into()
             .unwrap_or(u64::MAX),
         connection_opened_at_ns: 0,
+        evidence_observed_at_ns: None,
         connection_closed_at_ns: 0,
         protocol: context.protocol.to_string(),
         method: Some(request.method.clone()),

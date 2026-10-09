@@ -103,45 +103,40 @@ impl CompletionSummary {
     /// Render the human-readable summary, one field per line, to `out`.
     pub fn render(&self, out: &mut String) {
         out.push_str("capture complete\n");
+        let mut fields = Vec::new();
         if !self.acquired {
-            out.push_str("  target:               never acquired\n");
+            fields.push(("target:".into(), "never acquired".into()));
         }
-        push_field(out, "stop reason", self.stop_word());
-        push_count(out, "packets captured", self.packets_captured);
-        push_count(out, "retained", self.retained);
-        push_count(out, "attributed", self.packets_attributed);
-        push_count(out, "unattributed", self.packets_unattributed);
-        push_count(out, "watching discarded", self.watching_discarded);
-        push_count(out, "out of window", self.discarded_out_of_window);
-        push_count(out, "out of scope", self.scope_discarded);
-        push_count(out, "scope unresolved", self.scope_unresolved_discarded);
-        push_count(out, "buffer dropped", self.buffer_dropped);
-        push_count(out, "sink dropped", self.sink_dropped);
+        fields.push(("stop reason".into(), self.stop_word().into()));
+        for (label, value) in [
+            ("packets captured", self.packets_captured),
+            ("retained", self.retained),
+            ("attributed", self.packets_attributed),
+            ("unattributed", self.packets_unattributed),
+            ("watching discarded", self.watching_discarded),
+            ("out of window", self.discarded_out_of_window),
+            ("out of scope", self.scope_discarded),
+            ("scope unresolved", self.scope_unresolved_discarded),
+            ("buffer dropped", self.buffer_dropped),
+            ("sink dropped", self.sink_dropped),
+        ] {
+            fields.push((label.into(), value.to_string()));
+        }
+        out.push_str(&crate::display::render_fields(2, &fields, 80));
         // What actually reached the file, per image. Issue #184 was invisible in
         // this summary for want of exactly this: `attributed` counted packets
         // resolved to any process on the machine, which read as "attributed to
         // the game" while 91 percent of the file belonged to something else.
         if !self.written_by_image.is_empty() {
-            out.push_str(
-                "  written by process
-",
-            );
-            for (image, count) in &self.written_by_image {
-                out.push_str(&format!(
-                    "    {image:<19} {count}
-"
-                ));
-            }
+            out.push_str("  written by process\n");
+            let fields: Vec<(String, String)> = self
+                .written_by_image
+                .iter()
+                .map(|(image, count)| (image.clone(), count.to_string()))
+                .collect();
+            out.push_str(&crate::display::render_fields(4, &fields, 80));
         }
     }
-}
-
-fn push_field(out: &mut String, label: &str, value: &str) {
-    out.push_str(&format!("  {label:<21} {value}\n"));
-}
-
-fn push_count(out: &mut String, label: &str, value: u64) {
-    out.push_str(&format!("  {label:<21} {value}\n"));
 }
 
 #[cfg(test)]

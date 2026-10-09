@@ -237,6 +237,11 @@ pub(super) fn observe(
 
     let app_id = super::steam_app_id(target)
         .ok_or_else(|| CliError::usage("client observation requires one exact Steam target"))?;
+    match super::early_steam_state(&super::process_snapshot(false), true) {
+        super::EarlySteamState::Warm => return Err(CliError::usage("Steam is already running. Close Steam normally, then retry client observation from a cold start")),
+        super::EarlySteamState::Unavailable(reason) => return Err(CliError::failure(format!("Steam process observation unavailable: {reason}"))),
+        super::EarlySteamState::Cold => {}
+    }
     let profile = observation_profile(app_id)?;
     let inventory = GameExecutables::inventory(Path::new(
         target.install_root.as_deref().ok_or_else(|| {

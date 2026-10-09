@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -69,7 +68,7 @@ fn run_portable_harness(root: &Path) -> Vec<String> {
         ],
     ];
     for arguments in commands {
-        let status = Command::new(env!("CARGO"))
+        let status = crate::hidden_command(env!("CARGO"))
             .current_dir(root)
             .args(arguments)
             .status();
@@ -511,14 +510,14 @@ fn scan_committed_evidence(report: &Value) -> Vec<String> {
 
 fn run_analyzer(root: &Path) -> Result<(), String> {
     let directory = root.join(EVIDENCE);
-    let version = Command::new("tshark")
+    let version = crate::hidden_command("tshark")
         .arg("--version")
         .output()
         .map_err(|error| format!("TShark is required for analyzer mode: {error}"))?;
     if !version.status.success() {
         return Err("TShark version probe failed".to_string());
     }
-    let output = Command::new("tshark")
+    let output = crate::hidden_command("tshark")
         .current_dir(root)
         .args([
             "-r",

@@ -20,11 +20,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-use deep_capture_api::{calibration_outcome, observation_proves_final_client_ca_acceptance};
 use deep_capture_api::{
-    calibration_outcome_reason, terminal_calibration_outcome, CalibrationOutcome, CalibrationPhase,
-    ClassificationSummary, CompatibilityObservation as Observation, Inspectability,
-    ManifestOmissionReason,
+    calibration_outcome, observation_proves_final_client_ca_acceptance,
+    terminal_calibration_outcome,
+};
+use deep_capture_api::{
+    calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
+    CompatibilityObservation as Observation, Inspectability, ManifestOmissionReason,
 };
 #[cfg(windows)]
 use deep_capture_api::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
@@ -240,12 +242,16 @@ impl AuthorizationPlan {
             .expect("the authorization plan contains only serializable values");
         emitter
             .required_human_checked(&format!(
-                "{}Deep Capture authorization plan\n  plan id: {}\n{}\n",
+                "{}Deep Capture authorization plan\n{}{}\n",
                 session_ux::authorization_summary(
                     &self.canonical,
                     crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
                 ),
-                self.id,
+                crate::display::render_fields(
+                    2,
+                    &[("plan id:".into(), self.id.clone())],
+                    usize::MAX
+                ),
                 rendered
             ))
             .map_err(|error| {
@@ -619,12 +625,36 @@ fn run_warm_restart(
         images: context.plan.images().to_vec(),
         deadline_secs: CalibrationDeadlines::seconds(context.plan.deadline()),
     });
+    let fields = vec![
+        ("target:".into(), context.target.clone()),
+        (
+            "observed case:".into(),
+            context.plan.warm_case().as_str().into(),
+        ),
+        ("declared images:".into(), context.plan.images().join(", ")),
+        (
+            "identity:".into(),
+            "image-name observation only; ownership is not proven".into(),
+        ),
+        (
+            "deadline:".into(),
+            format!(
+                "{}s",
+                CalibrationDeadlines::seconds(context.plan.deadline())
+            ),
+        ),
+        (
+            "action:".into(),
+            "close the application through its normal Exit or Quit control".into(),
+        ),
+        (
+            "process control:".into(),
+            "none; fragcap will never force kill or signal it".into(),
+        ),
+    ];
     emitter.required_human(&format!(
-        "Warm-to-cold restart plan\n  target: {}\n  observed case: {}\n  declared images: {}\n  identity: image-name observation only; ownership is not proven\n  deadline: {}s\n  action: close the application through its normal Exit or Quit control\n  process control: none; fragcap will never force kill or signal it\n",
-        context.target,
-        context.plan.warm_case().as_str(),
-        context.plan.images().join(", "),
-        CalibrationDeadlines::seconds(context.plan.deadline()),
+        "Warm-to-cold restart plan\n{}",
+        crate::display::render_fields(2, &fields, usize::MAX)
     ));
     crate::orchestrator::install_interrupt_handler();
     if !confirm_warm_restart(
@@ -961,6 +991,7 @@ impl deep_capture_api::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
+    diagnostics: Option<deep_capture_api::TerminalDiagnostics>,
     managed_launch_attempted: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
     retained_target_packets: Option<u64>,
@@ -1326,8 +1357,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     }
 }
 
-struct LibraryFactAdapter<'e, 'w> {
-    emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
+struct LibraryFactAdapter {
     store: Rc<RefCell<Store>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
@@ -1335,16 +1365,12 @@ struct LibraryFactAdapter<'e, 'w> {
     family: DeepCaptureProxyFamilyArg,
 }
 
-impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter<'_, '_> {
+impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
     fn append(
         &mut self,
         target: &deep_capture_api::PreparedTarget,
         fact: &deep_capture_api::CompatibilityFact,
     ) -> deep_capture_api::FactWriteStatus {
-        self.emitter.borrow_mut().progress(session_ux::wrapped(
-            "Persisting a directly observed compatibility fact; requested protocols alone are not evidence.",
-            crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
-        ).trim_end());
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
             Err(error) => {
@@ -1545,10 +1571,14 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             _ => None,
         };
         let outcome = calibration.map(|phase| {
-            terminal_calibration_outcome(
+            deep_capture_api::terminal_calibration_outcome_in_windows(
                 phase,
                 self.protocol.expect("calibration protocol retained"),
                 &snapshot.observations,
+                runtime
+                    .diagnostics
+                    .as_ref()
+                    .map_or(&[], |value| value.observation_windows.as_slice()),
                 runtime.interrupted,
                 !snapshot.failures.is_empty(),
             )
@@ -1871,6 +1901,19 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 });
             }
             deep_capture_api::DeepCaptureEvent::Started { .. } => {}
+            deep_capture_api::DeepCaptureEvent::Diagnostics {
+                session_id,
+                diagnostics,
+                ..
+            } => {
+                self.runtime.borrow_mut().diagnostics = Some((**diagnostics).clone());
+                emitter.event(&Event::DeepCaptureDiagnostics {
+                    session_id: session_id.clone(),
+                    diagnostics: crate::commands::calibrate::assessment::diagnostics_json(
+                        diagnostics,
+                    ),
+                });
+            }
             deep_capture_api::DeepCaptureEvent::Observation {
                 session_id,
                 observation,
@@ -1902,13 +1945,17 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 let classification_summary = report.classification_summary();
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
                     let runtime = self.runtime.borrow();
-                    let outcome = terminal_calibration_outcome(
+                    let outcome = deep_capture_api::terminal_calibration_outcome_in_windows(
                         phase,
                         self.args
                             .calibration_protocol
                             .map(calibration_protocol)
                             .expect("calibration protocol validated"),
                         &report.observations,
+                        runtime
+                            .diagnostics
+                            .as_ref()
+                            .map_or(&[], |value| value.observation_windows.as_slice()),
                         runtime.interrupted,
                         !report.failures.is_empty(),
                     );
@@ -2352,8 +2399,10 @@ pub fn run(
 
 pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
+    pub observation_windows: Vec<deep_capture_api::EvidenceWindow>,
     pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
+    pub assessment: Option<crate::commands::calibrate::assessment::AttemptAssessment>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2514,14 +2563,18 @@ pub(crate) fn run_with_outcome(
             emitter.progress("Deep Capture declined; no effects were applied");
             return Ok(RunOutcome {
                 observations: Vec::new(),
+                observation_windows: Vec::new(),
                 disposition: RunDisposition::Declined,
                 terminal_error: None,
+                assessment: None,
             });
         }
         AuthorizationDecision::Interrupted => {
             return Ok(RunOutcome {
                 observations: Vec::new(),
+                observation_windows: Vec::new(),
                 disposition: RunDisposition::Interrupted,
+                assessment: None,
                 terminal_error: Some(CliError::failure(
                     "Deep Capture authorization was interrupted; no effects were applied",
                 )),
@@ -2653,7 +2706,6 @@ pub(crate) fn run_with_outcome(
             mode,
         }),
         facts: Box::new(LibraryFactAdapter {
-            emitter: Rc::clone(&emitter),
             store: Rc::clone(&store),
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
@@ -2774,30 +2826,35 @@ pub(crate) fn run_with_outcome(
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
-    if let Some(phase) = calibration {
+    let assessment = calibration.map(|phase| {
         let runtime = runtime.borrow();
-        let outcome = terminal_calibration_outcome(
+        let mut assessment = crate::commands::calibrate::assessment::AttemptAssessment::from_report(
+            &report,
             phase,
             args.calibration_protocol
                 .map(calibration_protocol)
                 .expect("calibration protocol validated"),
-            &report.snapshot.observations,
-            runtime.interrupted,
-            !report.snapshot.failures.is_empty(),
+            runtime.process_evidence.as_ref(),
+            runtime.retained_target_packets,
+            runtime.diagnostics.as_ref(),
         );
-        emitter.borrow_mut().terminal_human(&format!(
-            "Calibration outcome: {outcome}. Reason: {}.\n",
-            calibration_outcome_reason(phase, outcome)
-        ));
+        assessment.process_completeness =
+            session_ux::artifact_process_completeness(&report.artifacts);
+        let mut value = assessment.json();
+        value["artifact_access"] =
+            serde_json::json!(session_ux::artifact_access(&report.artifacts));
+        emitter.borrow_mut().event(&Event::CalibrationAttempt {
+            assessment: value.clone(),
+        });
+        emitter.borrow_mut().calibration_attempt(value.clone());
         emitter
             .borrow_mut()
-            .terminal_human(&session_ux::calibration_diagnosis(
-                &report.snapshot,
-                runtime.process_evidence.as_ref(),
-                runtime.retained_target_packets,
+            .terminal_human(&session_ux::attempt_diagnosis(
+                &value,
                 crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
             ));
-    }
+        assessment
+    });
     emitter
         .borrow_mut()
         .terminal_human(&session_ux::terminal_summary(
@@ -2807,11 +2864,18 @@ pub(crate) fn run_with_outcome(
             &report.snapshot.cleanup,
             crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
         ));
+    let observation_windows = runtime
+        .borrow()
+        .diagnostics
+        .as_ref()
+        .map_or_else(Vec::new, |value| value.observation_windows.clone());
     if report.is_complete() {
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            observation_windows,
             disposition: RunDisposition::Completed,
             terminal_error: None,
+            assessment,
         })
     } else {
         let disposition =
@@ -2828,8 +2892,10 @@ pub(crate) fn run_with_outcome(
             .unwrap_or_else(|| "Deep Capture completed with partial results".to_string());
         Ok(RunOutcome {
             observations: report.snapshot.observations,
+            observation_windows,
             disposition,
             terminal_error: Some(CliError::failure(detail)),
+            assessment,
         })
     }
 }
@@ -5541,6 +5607,11 @@ mod tests {
             let mut fact =
                 CompatibilityFact::new(1, key, value, CompatibilityEvidenceSource::UserConfirmed)
                     .unwrap();
+            fact.id = Some(if key == CompatibilityFactKey::ProxyRouting {
+                1
+            } else {
+                2
+            });
             fact.launch_case = Some(launch_case);
             fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
             fact.proxy_backend = Some("fragcap-native".to_string());
@@ -5588,6 +5659,7 @@ mod tests {
         )
         .unwrap();
         latest.launch_case = Some(selected);
+        latest.id = Some(3);
         latest.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
         latest.proxy_backend = Some("fragcap-native".to_string());
         latest.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());

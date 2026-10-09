@@ -472,7 +472,10 @@ fn extcap_scope_flags_target_the_right_directory_and_doctor_agrees() {
     common::run(&["extcap", "uninstall"]);
     let (_c, out, _e) = common::run(&["doctor"]);
     assert!(
-        out.contains("not registered as a Wireshark extcap source"),
+        out.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("not registered as a Wireshark extcap source"),
         "doctor reports it not registered after uninstall: {out}"
     );
 

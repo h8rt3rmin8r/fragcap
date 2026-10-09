@@ -156,6 +156,11 @@ impl<'a> SteamSource<'a> {
         }
     }
 
+    /// Discover only the selected Steam app, retaining its exact ambiguity and limitations.
+    pub fn discover_selected(&self, app_id: u32) -> Result<Discovery, TargetsError> {
+        self.discover_scope(Some(app_id))
+    }
+
     /// Return the installed Steam apps whose appinfo type is known to be
     /// non-game. Callers use this to keep lower-authority discovery tiers and
     /// listing surfaces from reintroducing platform-filtered app ids.
@@ -180,14 +185,38 @@ impl TargetSource for SteamSource<'_> {
     }
 
     fn discover(&self) -> Result<Discovery, TargetsError> {
-        let installation = fragcap_steam::discover_in(&self.steam_root)
-            .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
+        self.discover_scope(None)
+    }
+
+    fn default_fidelity(&self) -> FidelityTier {
+        FidelityTier::HeuristicUnverified
+    }
+}
+
+impl SteamSource<'_> {
+    fn discover_scope(&self, selected: Option<u32>) -> Result<Discovery, TargetsError> {
+        let installation = match selected {
+            Some(app_id) => fragcap_steam::discover_app_in(&self.steam_root, app_id),
+            None => fragcap_steam::discover_in(&self.steam_root),
+        }
+        .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
 
         // Detection is signature-driven and runs in every source's scan phase
         // (FR-006): load the catalog's signatures once and classify each installed
         // title's install directory below.
         let signature_set = SignatureSet::compile(&self.catalog.load_signatures()?);
         let mut warnings = installation.warnings;
+        let mut diagnostics = warnings
+            .iter()
+            .map(|message| fragcap_targets::DiscoveryDiagnostic {
+                source: "steam".to_string(),
+                root: Some(self.steam_root.display().to_string()),
+                target: selected.map(|app_id| format!("steam:{app_id}")),
+                operation: "metadata".to_string(),
+                kind: "metadata-limitation".to_string(),
+                message: message.clone(),
+            })
+            .collect::<Vec<_>>();
 
         let mut account = DiscoveryAccount::default();
         // A manifest that was present but would not parse is one title omitted from
@@ -227,8 +256,19 @@ impl TargetSource for SteamSource<'_> {
             // rides as evidence and raises the fidelity to `verified`, outranking the
             // remote catalog attribution (P-9); any anti-cheat or DRM rides as neutral
             // evidence. A title with no local engine keeps heuristic-unverified.
+            let warning_start = warnings.len();
             let (fidelity, mut evidence, detection_scan) =
                 detect_evidence(&signature_set, &title.install_dir, &mut warnings);
+            diagnostics.extend(warnings[warning_start..].iter().map(|message| {
+                fragcap_targets::DiscoveryDiagnostic {
+                    source: "steam".to_string(),
+                    root: Some(title.install_dir.display().to_string()),
+                    target: Some(format!("steam:{appid}")),
+                    operation: "detection".to_string(),
+                    kind: "coverage".to_string(),
+                    message: message.clone(),
+                }
+            }));
             // Merge in the appinfo-derived anti-cheat findings (slice S068, issue
             // #170), a second, zero-new-I/O evidence source alongside the
             // directory scan: a product both sources agree on reports once, at
@@ -263,11 +303,8 @@ impl TargetSource for SteamSource<'_> {
             // duplicate appid, an unreadable library) plus any detection coverage gap,
             // so an omission is visible rather than left on an unused side channel.
             warnings,
+            diagnostics,
         })
-    }
-
-    fn default_fidelity(&self) -> FidelityTier {
-        FidelityTier::HeuristicUnverified
     }
 }
 

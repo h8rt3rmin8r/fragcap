@@ -83,7 +83,8 @@ impl TargetSource for InteractiveSource<'_> {
         Ok(Discovery {
             candidates,
             account,
-            ..Discovery::default()
+            warnings: base.warnings,
+            diagnostics: base.diagnostics,
         })
     }
 

@@ -22,7 +22,6 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 /// The canonical section order. `highlights` leads: it carries the curated
 /// release summary the notes lead with, and it sits above `decisions` so the
@@ -467,7 +466,7 @@ fn release_gate_check(root: &Path) -> io::Result<usize> {
 
 /// The most recent `v*.*.*` release tag, the base for the release diff.
 fn last_release_tag(root: &Path) -> Option<String> {
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .current_dir(root)
         .args(["describe", "--tags", "--abbrev=0", "--match", "v*.*.*"])
         .output()
@@ -485,7 +484,7 @@ fn last_release_tag(root: &Path) -> Option<String> {
 
 /// The repository-relative paths changed since `base`, via `git diff --name-only`.
 fn changed_paths_since(root: &Path, base: &str) -> io::Result<Vec<String>> {
-    let out = Command::new("git")
+    let out = crate::hidden_command("git")
         .current_dir(root)
         .args(["diff", "--name-only", &format!("{base}..HEAD")])
         .output()?;
@@ -613,7 +612,7 @@ pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
 
             for path in fragment_paths(root)? {
                 let rel = path.strip_prefix(root).unwrap_or(&path);
-                let staged = Command::new("git")
+                let staged = crate::hidden_command("git")
                     .current_dir(root)
                     .arg("rm")
                     .arg("--quiet")

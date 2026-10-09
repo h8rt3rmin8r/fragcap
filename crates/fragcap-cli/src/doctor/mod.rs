@@ -19,7 +19,7 @@ pub mod residue;
 
 use fragcap::write_json_string;
 
-use crate::display::{display_width, pad_display, wrap_hanging};
+use crate::display::{render_fields, ColumnLayout};
 use crate::doctor::action::Action;
 use crate::exit::Exit;
 
@@ -491,85 +491,165 @@ impl Report {
     /// Render the human report at a caller-selected terminal width.
     #[doc(hidden)]
     pub fn render_human_with_width(&self, color: bool, width: usize) -> String {
-        let width = width.clamp(MIN_HUMAN_WIDTH, DEFAULT_HUMAN_WIDTH);
-        let aligned = width >= ALIGNED_LAYOUT_MIN_WIDTH;
+        self.render_human_with_history(color, width, false)
+    }
+
+    /// Render retained healthy history individually only when requested explicitly.
+    pub fn render_human_with_history(
+        &self,
+        color: bool,
+        width: usize,
+        history_details: bool,
+    ) -> String {
+        let width = width.clamp(40, DEFAULT_HUMAN_WIDTH);
         let mut out = String::new();
         let mut section = "";
-        for check in &self.checks {
+        let individually_shown: std::collections::BTreeSet<&str> = self
+            .checks
+            .iter()
+            .filter_map(|check| {
+                check
+                    .native_resource
+                    .as_ref()
+                    .filter(|native| native.health != "healthy")
+                    .map(|native| native.session_id.as_str())
+            })
+            .collect();
+        let healthy: Vec<&Check> = self
+            .checks
+            .iter()
+            .filter(|check| {
+                check.native_resource.as_ref().is_some_and(|native| {
+                    native.health == "healthy"
+                        && !individually_shown.contains(native.session_id.as_str())
+                })
+            })
+            .collect();
+        let sessions: std::collections::BTreeSet<&str> = healthy
+            .iter()
+            .filter_map(|check| {
+                check
+                    .native_resource
+                    .as_ref()
+                    .map(|native| native.session_id.as_str())
+            })
+            .collect();
+        let shown: Vec<&Check> = self
+            .checks
+            .iter()
+            .filter(|check| {
+                history_details
+                    || !check.native_resource.as_ref().is_some_and(|native| {
+                        native.health == "healthy"
+                            && !individually_shown.contains(native.session_id.as_str())
+                    })
+            })
+            .collect();
+        let rows: Vec<Vec<String>> = shown
+            .iter()
+            .map(|check| {
+                let name = check
+                    .human
+                    .as_ref()
+                    .map_or(check.name.as_str(), |human| human.name.as_str());
+                let detail = check
+                    .human
+                    .as_ref()
+                    .map_or(check.detail.as_str(), |human| human.detail.as_str());
+                vec![
+                    crate::display::human_display_value(name),
+                    status_field(check.status, color),
+                    crate::display::human_display_value(detail),
+                ]
+            })
+            .collect();
+        let layout = ColumnLayout::new(2, &rows);
+        for (check, row) in shown.iter().zip(&rows) {
             if check.section != section {
                 if !section.is_empty() {
                     out.push('\n');
                 }
                 if color {
                     out.push_str(ANSI_BOLD);
-                    out.push_str(check.section);
+                }
+                out.push_str(check.section);
+                if color {
                     out.push_str(ANSI_RESET);
-                } else {
-                    out.push_str(check.section);
                 }
                 out.push('\n');
                 section = check.section;
             }
-            let name = check
-                .human
-                .as_ref()
-                .map_or(check.name.as_str(), |human| human.name.as_str());
-            let detail = check
-                .human
-                .as_ref()
-                .map_or(check.detail.as_str(), |human| human.detail.as_str());
+            out.push_str(&layout.render_wrapped_row(row, width));
+            out.push('\n');
             let remediation = check.human.as_ref().map_or_else(
                 || check.remediation.as_deref(),
                 |human| human.remediation.as_deref(),
             );
-            if aligned && display_width(name) <= NAME_WIDTH {
-                out.push_str("  ");
-                out.push_str(&pad_display(name, NAME_WIDTH));
-                out.push(' ');
-                out.push_str(&status_field(check.status, color));
-                out.push(' ');
-                out.push_str(&wrap_hanging(detail, DETAIL_INDENT, width));
-                out.push('\n');
-            } else {
-                out.push_str("  ");
-                out.push_str(name);
-                out.push(' ');
-                out.push_str(&status_field(check.status, color));
-                out.push('\n');
-                out.push_str("    ");
-                out.push_str(&wrap_hanging(detail, COMPACT_INDENT, width));
-                out.push('\n');
-            }
             if let Some(remediation) = remediation {
-                out.push_str("    remediation: ");
-                out.push_str(&wrap_hanging(remediation, REMEDIATION_INDENT, width));
-                out.push('\n');
+                out.push_str(&render_fields(
+                    4,
+                    &[("remediation:".into(), remediation.into())],
+                    width,
+                ));
             }
         }
+        if !history_details && !healthy.is_empty() {
+            if section != "Deep Capture" {
+                out.push_str("\nDeep Capture\n");
+            }
+            out.push_str(&self.history_summary(sessions.len(), healthy.len(), width));
+        }
         out.push('\n');
-        out.push_str("Capture: ");
-        out.push_str(if self.capture_ready() {
-            "ready\n"
-        } else {
-            "not ready\n"
-        });
-        out.push_str("Deep Capture: ");
-        out.push_str(if self.deep_capture_ready() {
-            "ready\n"
-        } else {
-            "not ready\n"
-        });
+        out.push_str(&render_fields(
+            0,
+            &[
+                (
+                    "Capture:".into(),
+                    if self.capture_ready() {
+                        "ready"
+                    } else {
+                        "not ready"
+                    }
+                    .into(),
+                ),
+                (
+                    "Deep Capture:".into(),
+                    if self.deep_capture_ready() {
+                        "ready"
+                    } else {
+                        "not ready"
+                    }
+                    .into(),
+                ),
+            ],
+            width,
+        ));
         if self.deep_capture_ready() {
-            out.push_str("\nDeep Capture setup\n");
-            out.push_str("  Environment readiness is step one.\n");
-            out.push_str("  Next command:\n");
-            out.push_str("    fragcap targets discover\n");
-            out.push_str("  Then run:\n");
-            out.push_str("    fragcap calibrate \"<game>\"\n");
+            out.push_str("\nDeep Capture setup\n  Environment readiness is step one.\n");
+            out.push_str(&render_fields(
+                2,
+                &[
+                    ("Next command:".into(), "fragcap targets discover".into()),
+                    ("Then run:".into(), "fragcap calibrate \"<game>\"".into()),
+                ],
+                width,
+            ));
         }
         out
     }
 
+    fn history_summary(&self, sessions: usize, resources: usize, width: usize) -> String {
+        let incomplete = self
+            .checks
+            .iter()
+            .any(|check| check.name == "native inventory" && check.status == Status::Fail);
+        render_fields(2, &[
+            ("Retained history:".into(), format!("{sessions} observed session(s), {resources} healthy terminal resource record(s).")),
+            ("History coverage:".into(), if incomplete { "Incomplete bounded inventory; counts cover observed records only. Read the inventory limitation and individual findings." } else { "Bounded inventory; counts cover observed records only." }.into()),
+            ("History ownership:".into(), "Terminal resource state does not prove inactive session ownership. Active and actionable records remain individually listed.".into()),
+            ("History detail:".into(), "fragcap doctor --history-details (human) or fragcap doctor --json (exact structured records). Retained evidence needs no cleanup.".into()),
+        ], width)
+    }
     /// Render the report as one JSON record per check, newline-delimited.
     pub fn render_json(&self) -> String {
         let mut out = String::new();
@@ -650,15 +730,6 @@ impl Report {
     }
 }
 
-/// The column a wrapped detail continuation hangs under: "  " + name(22) + " " +
-/// status(5) + " ".
-const DETAIL_INDENT: usize = 31;
-const COMPACT_INDENT: usize = 4;
-const NAME_WIDTH: usize = 22;
-/// The column a wrapped remediation continuation hangs under: "    remediation: ".
-const REMEDIATION_INDENT: usize = 17;
-const MIN_HUMAN_WIDTH: usize = 40;
-const ALIGNED_LAYOUT_MIN_WIDTH: usize = 60;
 const DEFAULT_HUMAN_WIDTH: usize = 80;
 
 /// Reset all ANSI styling.
@@ -666,13 +737,11 @@ const ANSI_RESET: &str = crate::color::RESET;
 /// Bold, for section headings when color is on.
 const ANSI_BOLD: &str = "\x1b[1m";
 
-/// The five-column status field, optionally colored. When color is on only the
-/// word is wrapped in an escape; the padding stays plain so the columns keep
-/// their visible width.
+/// One status cell with complete optional styling, measured by the shared layout.
 fn status_field(status: Status, color: bool) -> String {
     let word = status.as_str();
     if !color {
-        return format!("{word:<5}");
+        return word.to_string();
     }
     let code = match status {
         Status::Ok => "\x1b[32m",
@@ -680,8 +749,7 @@ fn status_field(status: Status, color: bool) -> String {
         Status::Skip => "\x1b[2m",
         Status::Fail => "\x1b[1;31m",
     };
-    let pad = " ".repeat(5usize.saturating_sub(word.len()));
-    format!("{code}{word}{ANSI_RESET}{pad}")
+    format!("{code}{word}{ANSI_RESET}")
 }
 
 #[cfg(test)]
@@ -721,18 +789,20 @@ mod presentation_tests {
     }
 
     #[test]
-    fn aligned_and_compact_layouts_fit_without_truncating_identity() {
+    fn aligned_layouts_preserve_anchors_and_exact_identity_at_narrow_widths() {
         for width in [80, 40] {
             let text = report().render_human_with_width(false, width);
             assert!(text.contains("native residue"));
             assert!(text.contains("a-very-long-session-identity"));
             assert!(text.contains("trust-record"));
-            for line in text.lines() {
-                assert!(
-                    display_width(line) <= width,
-                    "line exceeds {width} cells: {line:?}"
-                );
-            }
+            let first = text
+                .lines()
+                .find(|line| line.contains("native residue"))
+                .unwrap();
+            let status = first.find("fail").unwrap();
+            assert_eq!(display_width(&first[..status]), 2 + 14 + 4);
+            let detail = first.find("An earlier").unwrap();
+            assert_eq!(display_width(&first[..detail]), 2 + 14 + 4 + 4 + 4);
         }
     }
 

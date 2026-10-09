@@ -15,6 +15,70 @@ use fragcap::steam::discover_in;
 use fragcap::targets::{CandidateIdentity, Store, TargetClassification, TargetSource};
 use fragcap::{steam_platform_inventory, SteamSource};
 
+#[test]
+fn selected_steam_refresh_avoids_unrelated_descent_and_metadata_limitations() {
+    use fragcap_targets::{
+        ClassifierResult, ClassifierVerdict, DirectoryClassifier, DriveType, FixtureInventory,
+        FixtureTree, KnownRootsSource, Volume,
+    };
+    use std::collections::HashSet;
+    struct Containers;
+    impl DirectoryClassifier for Containers {
+        fn classify(&self, _: &str) -> ClassifierResult {
+            ClassifierResult {
+                verdict: ClassifierVerdict::Container,
+                coverage_warnings: Vec::new(),
+            }
+        }
+    }
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    std::fs::create_dir_all(tree.path().join("steamapps/common/Portal 2")).unwrap();
+    tree.write(
+        &tree.path().join("steamapps/appmanifest_999.acf"),
+        "malformed metadata",
+    );
+    let catalog = catalog_with_cs2();
+    let steam = SteamSource::new(tree.path(), &catalog);
+    let inventory = FixtureInventory::new(vec![Volume {
+        identity: "fixture-volume".into(),
+        mount_point: "A:".into(),
+        drive_type: DriveType::Fixed,
+    }]);
+    let eligible = HashSet::from(["fixture-volume".to_string()]);
+    let directories = FixtureTree::new()
+        .with_dir("A:/Games", &["A:/Games/Unrelated"])
+        .with_dir("A:/Games/Unrelated", &["A:/Games/Unrelated/Container"]);
+    let classifier = Containers;
+    let roots = KnownRootsSource::new(&inventory, &eligible, &directories, &classifier);
+    let broad = fragcap::targets::discover_all(&[&steam, &roots]).unwrap();
+    assert!(broad.account.is_conserved());
+    assert!(broad
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == "descent-limit"
+            && diagnostic.root.as_deref() == Some("A:/Games/Unrelated/Container")));
+    assert!(broad.warnings.iter().any(|message| message.contains("999")));
+    for _ in 0..2 {
+        let selected = steam.discover_selected(620).unwrap();
+        assert!(selected.account.is_conserved());
+        assert_eq!(selected.account.considered, 1);
+        assert_eq!(selected.candidates.len(), 1);
+        assert_eq!(
+            selected.candidates[0].identity,
+            CandidateIdentity::SteamAppId(620)
+        );
+        assert!(!selected
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source == "known-roots"));
+        assert!(!selected
+            .warnings
+            .iter()
+            .any(|message| message.contains("999") || message.contains("Unrelated")));
+    }
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// A throwaway directory tree, removed on drop (mirrors the fragcap-steam pattern).

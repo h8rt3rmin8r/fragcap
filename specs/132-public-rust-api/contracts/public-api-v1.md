@@ -20,6 +20,8 @@ A correctness or security defect may require a breaking correction only when the
 
 New consumers construct session intent through `SessionConfigBuilder` and adapter ownership through `AdapterSetBuilder`. Builders validate required inputs and return typed errors. Existing public fields remain temporarily readable and constructible for source compatibility, but field-literal construction is not the additive evolution mechanism promised by version 1.
 
+S168 preserves existing `CompatibilityObservation` and `TerminalSnapshot` field construction. Optional `ProxyLease::drain_phase_observations`, new phase-qualified values and a non-exhaustive `DeepCaptureEvent::Diagnostics` variant carry additional timing and terminal metadata without changing those constructors. The default optional capability retains the legacy raw drain contract; native adapters provide explicit measured timing, while legacy producers remain responsible for their original evidence contract. Explicit phase-aware policy helpers require index-aligned windows and refuse unavailable or missing window entries.
+
 ## Enum evolution
 
 Status, reason, event, operation, route, protocol-classification, outcome, cleanup, artifact, fact, recovery, and lifecycle enums that may grow are non-exhaustive. Consumers include a fallback arm. A closed enum may remain exhaustive only when this contract names the fixed set as a durable protocol vocabulary.

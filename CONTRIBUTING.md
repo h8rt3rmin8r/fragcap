@@ -83,6 +83,8 @@ and use the body to ask the specific questions rather than guessing.
 
 ## Testing
 
+Human multi-column output must use the shared display-cell layout with exactly four spaces between measured column anchors. Include headings, optional/indexed keys, Unicode, and ANSI styling in the actual emitted row inventory. Add controlled narrow/plain/color regressions that preserve exact values and continuation anchors; do not shorten the gap or truncate tokens to fit. An exception requires explicit operator permission. Structured output is the automation contract and must retain its existing identities and fields.
+
 The testing strategy exists so that most of the project is verifiable with no
 capture driver, no elevation, and no game running. A replay `PacketSource`
 backed by capture fixtures and a scripted `FlowAttributor` make the whole

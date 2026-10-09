@@ -118,8 +118,8 @@ pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{is_row_index, resolve_id, resolve_positional, Selection};
 pub use signatures::{parse_seed_document, seed_bundled, BUNDLED_SIGNATURES};
 pub use source::{
-    discover_all, CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, FixtureSource,
-    TargetSource,
+    discover_all, CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount,
+    DiscoveryDiagnostic, FixtureSource, TargetSource,
 };
 pub use sources::directory::DirectorySource;
 pub use sources::interactive::{Confirm, InteractiveSource, ScriptedConfirm};

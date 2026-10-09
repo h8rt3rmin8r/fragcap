@@ -149,6 +149,26 @@ const MAGIC_V29: u32 = 0x0756_4429;
 /// framing fault (a truncated tail, a size past the end) is recorded with a `None`
 /// appid and stops the walk, because nothing beyond it can be trusted.
 pub fn parse_appinfo(bytes: &[u8]) -> AppInfoParse {
+    parse_appinfo_sections(bytes, None, |reader, section| reader.decode(section))
+}
+
+/// Read only the selected application's body while scanning framing headers.
+/// File-wide framing/string-table faults still affect the selected lookup.
+pub(crate) fn read_appinfo_selected(root: &Path, appid: u32) -> Result<AppInfoParse, SteamError> {
+    Ok(read_appinfo_bytes(root)?
+        .map(|bytes| {
+            parse_appinfo_sections(&bytes, Some(appid), |reader, section| {
+                reader.decode(section)
+            })
+        })
+        .unwrap_or_default())
+}
+
+fn parse_appinfo_sections(
+    bytes: &[u8],
+    selected_app: Option<u32>,
+    mut decode: impl FnMut(&AppInfoReader<'_>, &SectionInfo) -> Result<VdfValue, String>,
+) -> AppInfoParse {
     let mut reader = match AppInfoReader::open(bytes) {
         Ok(reader) => reader,
         Err(reason) => return header_failure(reason),
@@ -166,7 +186,10 @@ pub fn parse_appinfo(bytes: &[u8]) -> AppInfoParse {
                 });
                 break;
             }
-            Some(Ok(section)) => match reader.decode(&section) {
+            Some(Ok(section)) if selected_app.is_some_and(|appid| appid != section.appid) => {
+                continue
+            }
+            Some(Ok(section)) => match decode(&reader, &section) {
                 Ok(root) => apps.push(AppInfoApp {
                     appid: section.appid,
                     change_number: section.change_number,
@@ -870,6 +893,37 @@ mod tests {
             change_number: change,
             launch: vec![FixtureLaunch::windows(exe)],
             common_type: None,
+        }
+    }
+
+    #[test]
+    fn selected_parse_scans_headers_without_decoding_unrelated_bodies() {
+        for version in [V28, V29] {
+            let mut apps = (0..128)
+                .map(|offset| one_windows_app(1000 + offset, 1, "unrelated.exe"))
+                .collect::<Vec<_>>();
+            apps[64] = one_windows_app(620, 9, "selected.exe");
+            apps[64].common_type = Some("Game".into());
+            let bytes = appinfo_bytes_with_bad_section(version, &apps, 0);
+            let mut decoded = Vec::new();
+            let selected = parse_appinfo_sections(&bytes, Some(620), |reader, section| {
+                decoded.push(section.appid);
+                assert_eq!(section.appid, 620, "unrelated bodies must never be decoded");
+                reader.decode(section)
+            });
+            assert_eq!(decoded, vec![620]);
+            assert!(selected.failures.is_empty());
+            assert_eq!(selected.apps.len(), 1);
+            assert_eq!(selected.apps[0].common_type.as_deref(), Some("Game"));
+            assert_eq!(selected.apps[0].launch[0].executable, "selected.exe");
+            let broad = parse_appinfo(&bytes);
+            assert_eq!(broad.apps.len(), 127);
+            assert_eq!(broad.failures[0].appid, Some(1000));
+            let selected_bad = parse_appinfo_sections(&bytes, Some(1000), |reader, section| {
+                reader.decode(section)
+            });
+            assert!(selected_bad.apps.is_empty());
+            assert_eq!(selected_bad.failures[0].appid, Some(1000));
         }
     }
 

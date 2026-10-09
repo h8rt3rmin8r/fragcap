@@ -17,6 +17,7 @@ pub mod api;
 mod application;
 mod artifacts;
 mod classification;
+mod diagnostics;
 #[doc(hidden)]
 pub mod fuzz_support;
 mod har;
@@ -36,6 +37,7 @@ pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;
 pub use classification::*;
+pub use diagnostics::*;
 pub use har::*;
 pub use journal::*;
 pub use lifecycle::*;
@@ -49,9 +51,11 @@ pub use native::{
 };
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,
-    compatibility_owner_role, observation_is_correlated_to_final_client,
-    observation_proves_final_client_ca_acceptance, observed_protocol_candidates,
-    terminal_calibration_outcome, validate_compatibility_prerequisites,
+    compatibility_fact_candidates_in_windows, compatibility_owner_role,
+    observation_is_correlated_to_final_client, observation_proves_final_client_ca_acceptance,
+    observed_protocol_candidates, observed_protocol_candidates_in_windows,
+    terminal_calibration_outcome, terminal_calibration_outcome_in_windows,
+    validate_compatibility_prerequisites,
 };
 pub use process::*;
 pub use proposal::*;

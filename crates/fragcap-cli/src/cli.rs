@@ -1258,6 +1258,12 @@ pub struct TargetsSeedArgs {
 /// use. `--yes` has no meaning without `--fix`.
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
+    /// Show exact retained healthy session/resource history in the human report.
+    ///
+    /// Default output summarizes healthy history; --json always retains exact records.
+    #[arg(long)]
+    pub history_details: bool,
+
     /// Offer to perform the remediations the report names, under confirmation.
     #[arg(long)]
     pub fix: bool,
@@ -1421,6 +1427,19 @@ mod tests {
             }
             other => panic!("expected doctor command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn doctor_history_detail_is_visible_and_read_only_by_default() {
+        let cli = Cli::try_parse_from(["fragcap", "doctor", "--history-details"]).unwrap();
+        let Some(Command::Doctor(args)) = cli.command else {
+            panic!("doctor command");
+        };
+        assert!(args.history_details && !args.fix && !args.yes);
+        let help = Cli::try_parse_from(["fragcap", "doctor", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("--history-details"));
     }
 
     #[test]

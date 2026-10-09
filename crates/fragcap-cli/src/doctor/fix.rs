@@ -197,11 +197,16 @@ pub fn run_fix(
     yes: bool,
     color: bool,
     width: usize,
+    history_details: bool,
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Exit {
     let report = checks::run(&probe::gather());
-    let _ = write!(out, "{}", report.render_human_with_width(color, width));
+    let _ = write!(
+        out,
+        "{}",
+        report.render_human_with_history(color, width, history_details)
+    );
 
     let offered = offered_actions(&report, caps);
     if offered.is_empty() {

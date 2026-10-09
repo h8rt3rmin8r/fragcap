@@ -7,7 +7,6 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POLICY_REL: &str = "supply-chain/policy-v1.json";
@@ -98,7 +97,7 @@ fn metadata_graph(
     all_features: bool,
     release_only: bool,
 ) -> Result<Graph, String> {
-    let mut command = Command::new(env!("CARGO"));
+    let mut command = crate::hidden_command(env!("CARGO"));
     command.current_dir(root).args([
         "metadata",
         "--locked",
@@ -134,7 +133,7 @@ fn metadata_graph(
 }
 
 fn restrict_release_graph(root: &Path, mut graph: Graph) -> Result<Graph, String> {
-    let output = Command::new(env!("CARGO"))
+    let output = crate::hidden_command(env!("CARGO"))
         .current_dir(root)
         .args([
             "tree",
@@ -998,7 +997,7 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
 }
 
 fn validate_critical_declarations(root: &Path, policy: &Value) -> Result<Vec<String>, String> {
-    let output = Command::new(env!("CARGO"))
+    let output = crate::hidden_command(env!("CARGO"))
         .current_dir(root)
         .args([
             "metadata",

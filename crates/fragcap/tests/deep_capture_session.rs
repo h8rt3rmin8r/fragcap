@@ -1650,6 +1650,153 @@ fn run_with(mut environment: AdapterSet<'_>) -> TerminalReport {
         .run_to_completion(authorization)
 }
 
+struct LateObservationProxy(Ledger);
+impl ProxyBackend for LateObservationProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "late-evidence".into(),
+            version: "1".into(),
+        }
+    }
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(LateObservationProxyRun(self.0.clone())))
+    }
+}
+
+struct LateObservationProxyRun(Ledger);
+impl ProxyLease for LateObservationProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+    fn observations(
+        &mut self,
+        budget: Budget,
+    ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        ProxyRun(self.0.clone()).observations(budget)
+    }
+    fn drain_phase_observations(
+        &mut self,
+        budget: Budget,
+    ) -> Option<Result<PhaseObservationDrain, StageFailure>> {
+        Some(self.observations(budget).map(|observations| {
+            PhaseObservationDrain::complete(
+                observations
+                    .into_iter()
+                    .map(|observation| PhaseQualifiedObservation {
+                        observation,
+                        evidence_window: EvidenceWindow::OwnerRelease,
+                    })
+                    .collect(),
+            )
+        }))
+    }
+    fn end_observation_window(&mut self, _: SystemTime) {
+        self.0
+            .borrow_mut()
+            .push("proxy.observation_window_ended".into());
+    }
+    fn terminal_diagnostics(&self) -> Option<ProxyDiagnostics> {
+        Some(ProxyDiagnostics {
+            accepted_connections: 1,
+            completed_connections: 1,
+            http1_exchanges_completed: 1,
+            ..ProxyDiagnostics::default()
+        })
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        released("native-proxy-listener")
+    }
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        vec![released("native-proxy-runtime")]
+    }
+}
+
+#[test]
+fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(LateObservationProxy(ledger.clone()));
+    let captured = Rc::new(RefCell::new(None));
+    environment.events = Box::new(DiagnosticEvents(captured.clone(), ledger.clone()));
+    let report = run_with(environment);
+    assert_eq!(report.snapshot.observations.len(), 1);
+    let diagnostics = captured.borrow().clone().unwrap();
+    assert_eq!(
+        diagnostics.observation_windows,
+        vec![EvidenceWindow::OwnerRelease]
+    );
+    assert!(diagnostics.evidence_windows.observation_ended_at.is_some());
+    assert!(diagnostics
+        .evidence_windows
+        .owner_release_ended_at
+        .is_some());
+    assert_eq!(
+        diagnostics
+            .proxy
+            .as_ref()
+            .unwrap()
+            .http1_exchanges_completed,
+        1
+    );
+    assert!(!report
+        .snapshot
+        .fact_writes
+        .iter()
+        .any(|write| write.fact.kind == "inspectability"
+            || write.fact.value == "reached-client"
+            || write.fact.value == "local-ca-accepted"));
+    assert_eq!(
+        terminal_calibration_outcome_in_windows(
+            CalibrationPhase::Tls,
+            fragcap::targets::CompatibilityProtocol::Https,
+            &report.snapshot.observations,
+            &diagnostics.observation_windows,
+            false,
+            false
+        ),
+        CalibrationOutcome::Inconclusive
+    );
+    let events = ledger.borrow();
+    let cutoff = events
+        .iter()
+        .position(|event| event == "proxy.observation_window_ended")
+        .unwrap();
+    let release = events
+        .iter()
+        .position(|event| event == "capture.release_route_owners")
+        .unwrap();
+    assert!(cutoff < release);
+    let diagnostics_event = events
+        .iter()
+        .position(|event| event == "event.diagnostics")
+        .unwrap();
+    assert!(
+        diagnostics_event
+            < events
+                .iter()
+                .position(|event| event == "fact.append")
+                .unwrap()
+    );
+    assert!(
+        diagnostics_event
+            < events
+                .iter()
+                .position(|event| event == "artifact.compatibility")
+                .unwrap()
+    );
+}
+
+struct DiagnosticEvents(Rc<RefCell<Option<TerminalDiagnostics>>>, Ledger);
+impl EventSink for DiagnosticEvents {
+    fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
+        if let DeepCaptureEvent::Diagnostics { diagnostics, .. } = event {
+            *self.0.borrow_mut() = Some((**diagnostics).clone());
+            self.1.borrow_mut().push("event.diagnostics".into());
+        }
+        Events(self.1.clone()).emit(event)
+    }
+}
+
 #[test]
 fn trust_failure_still_cleans_the_proxy() {
     let ledger = Rc::new(RefCell::new(Vec::new()));

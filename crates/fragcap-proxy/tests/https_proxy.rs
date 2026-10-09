@@ -183,6 +183,24 @@ fn round_trip(
     assert_eq!(report.observation.protocol.requests, 1);
     assert_eq!(report.observation.protocol.responses, 1);
     assert_eq!(report.observation.application.len(), 4);
+    let application_evidence_at = report
+        .observation
+        .application
+        .iter()
+        .find(|item| item.protocol == "https")
+        .and_then(|item| item.evidence_observed_at_ns)
+        .unwrap();
+    assert!(
+        report
+            .observation
+            .application
+            .iter()
+            .filter(|item| item.tls.is_some())
+            .all(|item| item
+                .evidence_observed_at_ns
+                .is_some_and(|time| time <= application_evidence_at)),
+        "successful TLS evidence keeps handshake time instead of terminal synthesis time"
+    );
     let expected_version = if std::ptr::eq(version, &rustls::version::TLS12) {
         "TLS1.2"
     } else {

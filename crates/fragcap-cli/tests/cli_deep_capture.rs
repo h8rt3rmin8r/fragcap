@@ -1270,13 +1270,18 @@ fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
                 mode == "normal"
             );
             assert_eq!(
-                err.contains("Deep Capture outcome: complete"),
+                err.lines().any(|line| line
+                    .strip_prefix("Session finalization:")
+                    .is_some_and(|value| value.trim() == "complete")),
                 mode != "silent"
             );
             if mode != "silent" {
-                assert!(err.contains("application-jsonl") && err.contains("retained at"));
                 assert!(
-                    err.contains("Cleanup native-proxy-listener:") && err.contains("released"),
+                    err.contains("application-jsonl")
+                        && err.contains("readable in producer context")
+                );
+                assert!(
+                    err.contains("native-proxy-listener:") && err.contains("released"),
                     "{mode}:\n{err}"
                 );
             }
@@ -1311,11 +1316,13 @@ fn interrupted_or_failed_controlled_collection_retains_truthful_quiet_terminal_e
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
     assert_ne!(code, 0, "stderr:\n{err}");
-    assert!(!err.contains("Deep Capture outcome: complete"));
-    assert!(err.contains("Deep Capture outcome:") && err.contains("retained at"));
+    assert!(!err.lines().any(|line| line
+        .strip_prefix("Session finalization:")
+        .is_some_and(|value| value.trim() == "complete")));
+    assert!(err.contains("Session finalization:") && err.contains("readable in producer context"));
     assert!(
-        err.contains("may be sensitive or incomplete")
-            && err.contains("Cleanup native-proxy-listener:")
+        err.contains("Retained evidence may be sensitive")
+            && err.contains("native-proxy-listener:")
     );
     assert!(bundle.join("application.jsonl").is_file());
 }
@@ -1376,12 +1383,13 @@ fn quiet_terminal_inventory_includes_optional_sensitive_artifacts_and_omissions(
             let omitted = entry["completeness"] == "omitted";
             let status = if omitted { "omitted" } else { "written" };
             assert!(
-                err.contains(&format!("Artifact {role}: {status}.")),
+                err.lines()
+                    .any(|line| line.starts_with(&format!("{role}:")) && line.contains(status)),
                 "selected={selected}, partial={partial}:\n{err}"
             );
             if !omitted {
                 assert!(bundle.join(filename).is_file());
-                assert!(err.contains(&bundle.join(filename).display().to_string()));
+                assert!(err.contains(filename));
             }
         }
     }
@@ -1525,12 +1533,12 @@ fn failed_calibration_human_report_names_evidence_once_before_artifacts() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
     assert_eq!(code, 1, "diagnostics:\n{err}");
     let words = err.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(words.contains("Calibration diagnosis: earliest known stage: unavailable."));
-    assert!(words.contains("Target packets retained: unavailable."));
-    assert!(words.contains("Proxy connections accepted: 2."));
-    assert!(words.contains("Compatibility facts: launch-case=direct-exe-warm (appended)"));
+    assert!(words.contains("Earliest boundary: unavailable"));
+    assert!(words.contains("Target packets retained: unavailable"));
+    assert!(words.contains("Connections accepted: 2"));
+    assert!(words.contains("Fact writes: appended="));
     assert!(!err.contains("Owned resource cleanup result received"));
-    assert!(err.find("Calibration diagnosis:").unwrap() < err.find("Artifact pcapng:").unwrap());
+    assert!(err.find("Observed case evidence").unwrap() < err.find("Captured evidence").unwrap());
 }
 
 #[test]
@@ -1565,8 +1573,9 @@ fn complete_but_unreached_calibration_reports_inconclusive_human_outcome() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS");
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
     assert_eq!(code, 0, "diagnostics:\n{err}");
-    assert!(err.contains("Calibration outcome: inconclusive."), "{err}");
-    assert!(err.contains("Calibration diagnosis:"), "{err}");
-    assert!(err.contains("Proxy connections accepted: 0."), "{err}");
-    assert!(err.contains("Deep Capture outcome: complete"), "{err}");
+    let words = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Attempt result: inconclusive"), "{err}");
+    assert!(err.contains("Observed case evidence"), "{err}");
+    assert!(words.contains("Connections accepted: 0"), "{err}");
+    assert!(words.contains("Session finalization: complete"), "{err}");
 }

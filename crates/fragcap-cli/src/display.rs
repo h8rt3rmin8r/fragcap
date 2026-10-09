@@ -2,9 +2,94 @@
 
 //! Shared terminal display-cell accounting for CLI tables and reports.
 
+use unicode_width::UnicodeWidthStr;
+
 /// Return the visible terminal-cell width of `value`.
 pub(crate) fn display_width(value: &str) -> usize {
-    value.chars().map(display_cell_width).sum()
+    let mut chars = value.chars().peekable();
+    let mut plain = String::with_capacity(value.len());
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for escaped in chars.by_ref() {
+                if ('@'..='~').contains(&escaped) {
+                    break;
+                }
+            }
+        } else if c == '\u{1b}' && chars.peek() == Some(&']') {
+            chars.next();
+            while let Some(escaped) = chars.next() {
+                if escaped == '\u{7}' || (escaped == '\u{1b}' && chars.peek() == Some(&'\\')) {
+                    if escaped == '\u{1b}' {
+                        chars.next();
+                    }
+                    break;
+                }
+            }
+        } else if !c.is_control() {
+            plain.push(c);
+        }
+    }
+    plain.width()
+}
+
+/// One measured report block. Every adjacent pair has exactly four cells of gap.
+pub(crate) struct ColumnLayout {
+    indent: usize,
+    widths: Vec<usize>,
+}
+
+impl ColumnLayout {
+    pub(crate) fn new(indent: usize, rows: &[Vec<String>]) -> Self {
+        let count = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let mut widths = vec![0; count];
+        for row in rows {
+            for (column, cell) in row.iter().enumerate() {
+                widths[column] = widths[column].max(display_width(cell));
+            }
+        }
+        Self { indent, widths }
+    }
+
+    pub(crate) fn anchor(&self, column: usize) -> usize {
+        self.indent + self.widths.iter().take(column).sum::<usize>() + column * 4
+    }
+
+    pub(crate) fn render_row(&self, cells: &[String]) -> String {
+        self.render_wrapped_row(cells, usize::MAX)
+    }
+
+    pub(crate) fn render_wrapped_row(&self, cells: &[String], width: usize) -> String {
+        let end = cells
+            .iter()
+            .rposition(|cell| !cell.is_empty())
+            .map_or(0, |index| index + 1);
+        let cells = &cells[..end];
+        let mut out = " ".repeat(self.indent);
+        for (column, cell) in cells.iter().enumerate() {
+            if column > 0 {
+                out.push_str("    ");
+            }
+            if column + 1 == cells.len() {
+                out.push_str(&wrap_hanging(cell, self.anchor(column), width));
+            } else {
+                out.push_str(&pad_display(cell, self.widths[column]));
+            }
+        }
+        out
+    }
+}
+
+/// Render exact human key/value rows using the widest emitted key.
+pub(crate) fn render_fields(indent: usize, fields: &[(String, String)], width: usize) -> String {
+    let rows: Vec<Vec<String>> = fields
+        .iter()
+        .map(|(key, value)| vec![human_display_value(key), human_display_value(value)])
+        .collect();
+    let layout = ColumnLayout::new(indent, &rows);
+    rows.iter()
+        .map(|row| format!("{}\n", layout.render_wrapped_row(row, width)))
+        .collect()
 }
 
 /// Pad `value` with ASCII spaces to the requested visible width.
@@ -24,6 +109,7 @@ pub(crate) fn human_display_value(value: &str) -> String {
             '\t' => displayed.push_str("\\t"),
             '\r' => displayed.push_str("\\r"),
             '\n' => displayed.push_str("\\n"),
+            c if c.is_control() => displayed.push_str(&format!("\\u{{{:x}}}", c as u32)),
             _ => displayed.push(character),
         }
     }
@@ -73,14 +159,18 @@ pub(crate) fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
     let avail = width.saturating_sub(indent).max(1);
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
-    for word in text.split_whitespace() {
-        if cur.is_empty() {
-            cur.push_str(word);
-        } else if display_width(&cur) + 1 + display_width(word) <= avail {
-            cur.push(' ');
+    for word in text.split_inclusive(' ') {
+        if cur.is_empty()
+            || display_width(&cur) + display_width(word) <= avail
+            || word.trim().is_empty()
+        {
             cur.push_str(word);
         } else {
-            lines.push(std::mem::take(&mut cur));
+            let trailing = cur.len() - cur.trim_end_matches(' ').len();
+            let line = cur.trim_end_matches(' ').to_string();
+            lines.push(line);
+            cur.clear();
+            cur.push_str(&" ".repeat(trailing.saturating_sub(1)));
             cur.push_str(word);
         }
     }
@@ -91,88 +181,80 @@ pub(crate) fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
     lines.join(&format!("\n{indent_str}"))
 }
 
-fn display_cell_width(c: char) -> usize {
-    let u = c as u32;
-    if c.is_control()
-        || matches!(
-            u,
-            0x0300..=0x036F
-                | 0x1AB0..=0x1AFF
-                | 0x1DC0..=0x1DFF
-                | 0x200C..=0x200D
-                | 0x20D0..=0x20FF
-                | 0xFE00..=0xFE0F
-                | 0xFE20..=0xFE2F
-        )
-    {
-        0
-    } else if matches!(
-        u,
-        0x1100..=0x115F
-            | 0x231A..=0x231B
-            | 0x2329..=0x232A
-            | 0x23E9..=0x23EC
-            | 0x23F0
-            | 0x23F3
-            | 0x25FD..=0x25FE
-            | 0x2614..=0x2615
-            | 0x2648..=0x2653
-            | 0x267F
-            | 0x2693
-            | 0x26A1
-            | 0x26AA..=0x26AB
-            | 0x26BD..=0x26BE
-            | 0x26C4..=0x26C5
-            | 0x26CE
-            | 0x26D4
-            | 0x26EA
-            | 0x26F2..=0x26F3
-            | 0x26F5
-            | 0x26FA
-            | 0x26FD
-            | 0x2705
-            | 0x270A..=0x270B
-            | 0x2728
-            | 0x274C
-            | 0x274E
-            | 0x2753..=0x2755
-            | 0x2757
-            | 0x2764
-            | 0x2795..=0x2797
-            | 0x27B0
-            | 0x27BF
-            | 0x2B1B..=0x2B1C
-            | 0x2B50
-            | 0x2B55
-            | 0x2E80..=0xA4CF
-            | 0xAC00..=0xD7A3
-            | 0xF900..=0xFAFF
-            | 0xFE10..=0xFE19
-            | 0xFE30..=0xFE6F
-            | 0xFF00..=0xFF60
-            | 0xFFE0..=0xFFE6
-            | 0x1F300..=0x1FAFF
-            | 0x20000..=0x3FFFD
-    ) {
-        2
-    } else {
-        1
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{display_width, human_display_value, human_width, pad_display};
 
     #[test]
     fn counts_terminal_cells_for_supported_character_classes() {
+        assert_eq!(display_width("\u{1b}[31m界\u{1b}[0m"), 2);
+        assert_eq!(
+            display_width("\u{1b}]8;;https://example.test\u{7}界\u{1b}]8;;\u{7}"),
+            2
+        );
         assert_eq!(display_width("ascii"), 5);
         assert_eq!(display_width("e\u{301}"), 1);
         assert_eq!(display_width("\u{2764}\u{fe0f}"), 2);
         assert_eq!(display_width("界"), 2);
         assert_eq!(display_width("Ａ"), 2);
         assert_eq!(display_width("🎮"), 2);
+        assert_eq!(display_width("א\u{5b0}"), 1);
+        assert_eq!(display_width("👩\u{200d}💻"), 2);
+        assert_eq!(display_width("🇺🇸"), 2);
         assert_eq!(pad_display("界", 4), "界  ");
+    }
+
+    #[test]
+    fn wrapping_preserves_repeated_spaces() {
+        let value = "exact  words   here";
+        assert_eq!(super::wrap_hanging(value, 0, 80), value);
+    }
+
+    #[test]
+    fn empty_values_and_wrapping_emit_no_padding_at_line_ends() {
+        let fields = vec![
+            ("short:".into(), "".into()),
+            (
+                "optional [100]:".into(),
+                "several separate words stay complete".into(),
+            ),
+        ];
+        let rendered = super::render_fields(2, &fields, 32);
+        assert!(rendered.starts_with("  short:\n"));
+        assert!(rendered.lines().all(|line| line == line.trim_end()));
+        for word in ["several", "separate", "words", "stay", "complete"] {
+            assert!(rendered.contains(word));
+        }
+        for line in rendered.lines().skip(2) {
+            assert!(line.starts_with(&" ".repeat(2 + 15 + 4)));
+        }
+    }
+
+    #[test]
+    fn measures_optional_keys_and_every_column_in_styled_unicode_rows() {
+        let rows = vec![
+            vec!["key:".into(), "界".into(), "last".into()],
+            vec![
+                "optional [100]:".into(),
+                "\u{1b}[32me\u{301}\u{1b}[0m".into(),
+                "value".into(),
+            ],
+        ];
+        let layout = super::ColumnLayout::new(8, &rows);
+        assert_eq!(layout.anchor(1), 8 + 15 + 4);
+        assert_eq!(layout.anchor(2), 8 + 15 + 4 + 2 + 4);
+        for row in &rows {
+            let line = layout.render_row(row);
+            let last = line.find(row[2].as_str()).unwrap();
+            assert_eq!(display_width(&line[..last]), layout.anchor(2));
+        }
+        let wrapped = layout.render_wrapped_row(
+            &["key:".into(), "界".into(), "several words here".into()],
+            40,
+        );
+        for line in wrapped.lines().skip(1) {
+            assert!(line.starts_with(&" ".repeat(layout.anchor(2))));
+        }
     }
 
     #[test]

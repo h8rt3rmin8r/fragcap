@@ -20,8 +20,19 @@ use fragcap::write_json_string;
 /// A lifecycle event, emitted on standard error under `--json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    /// Discovery limitation with typed source and operation scope.
+    DiscoveryDiagnostic {
+        source: String,
+        root: Option<String>,
+        target: Option<String>,
+        operation: String,
+        kind: String,
+        message: String,
+    },
     /// The session armed: the capture handle is open and the watcher attached.
-    SessionArmed { interfaces: Vec<String> },
+    SessionArmed {
+        interfaces: Vec<String>,
+    },
     /// A stage matched a process.
     StageMatched {
         role: String,
@@ -29,9 +40,14 @@ pub enum Event {
         process: String,
     },
     /// A matched stage's process exited.
-    StageExited { role: String, pid: u32 },
+    StageExited {
+        role: String,
+        pid: u32,
+    },
     /// The capture filter narrowed to this many active endpoints.
-    FilterNarrowed { endpoints: usize },
+    FilterNarrowed {
+        endpoints: usize,
+    },
     /// The session completed, carrying the headline counters.
     SessionComplete {
         packets: u64,
@@ -66,7 +82,9 @@ pub enum Event {
     /// the rolling window. The sink's own retention accounting, distinct from the
     /// capture-wide `dropped`: an eviction is the operator's declared window scope,
     /// not a capture loss, but it is surfaced so the omission is never silent.
-    RingEvicted { evicted: u64 },
+    RingEvicted {
+        evicted: u64,
+    },
     /// A Deep Capture preflight decision.
     DeepCapturePreflight {
         status: String,
@@ -206,6 +224,12 @@ pub enum Event {
         continued: bool,
     },
     /// A guided calibration decision or terminal outcome.
+    CalibrationAttempt {
+        assessment: serde_json::Value,
+    },
+    CalibrationVerdict {
+        assessment: serde_json::Value,
+    },
     CalibrationGuidance {
         target_id: i64,
         target: String,
@@ -261,7 +285,10 @@ pub enum Event {
         listen_port: u16,
     },
     /// A live TLS key-log file is ready for an analyzer to follow.
-    DeepCaptureKeyLogReady { session_id: String, path: String },
+    DeepCaptureKeyLogReady {
+        session_id: String,
+        path: String,
+    },
     /// Deep Capture trust state was confirmed or changed.
     DeepCaptureTrust {
         session_id: String,
@@ -287,6 +314,11 @@ pub enum Event {
         family: String,
         detection: String,
         classification_reason: Option<String>,
+    },
+    /// Additive terminal diagnostics, with windows indexed to retained observations.
+    DeepCaptureDiagnostics {
+        session_id: String,
+        diagnostics: serde_json::Value,
     },
     /// Deep Capture wrote a bundle artifact.
     DeepCaptureBundle {
@@ -351,6 +383,7 @@ impl Event {
     /// The `event` discriminator string.
     fn kind(&self) -> &'static str {
         match self {
+            Event::DiscoveryDiagnostic { .. } => "discovery.diagnostic",
             Event::SessionArmed { .. } => "session.armed",
             Event::StageMatched { .. } => "stage.matched",
             Event::StageExited { .. } => "stage.exited",
@@ -371,6 +404,8 @@ impl Event {
             Event::CalibrationSteamClient { .. } => "calibration.steam_client",
             Event::CalibrationStoredClientPlan { .. } => "calibration.stored_client_plan",
             Event::CalibrationStoredClient { .. } => "calibration.stored_client",
+            Event::CalibrationAttempt { .. } => "calibration.attempt",
+            Event::CalibrationVerdict { .. } => "calibration.verdict",
             Event::CalibrationGuidance { .. } => "calibration.guidance",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
             Event::DeepCaptureRestart { .. } => "deep_capture.restart",
@@ -379,6 +414,7 @@ impl Event {
             Event::DeepCaptureTrust { .. } => "deep_capture.trust",
             Event::DeepCaptureLaunch { .. } => "deep_capture.launch",
             Event::DeepCaptureApplication { .. } => "deep_capture.application",
+            Event::DeepCaptureDiagnostics { .. } => "deep_capture.diagnostics",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
             Event::DeepCaptureComplete { .. } => "deep_capture.complete",
@@ -395,6 +431,30 @@ impl Event {
         line.push_str(",\"event\":");
         write_json_string(self.kind(), &mut line);
         match self {
+            Event::DiscoveryDiagnostic {
+                source,
+                root,
+                target,
+                operation,
+                kind,
+                message,
+            } => {
+                for (name, value) in [
+                    ("source", Some(source.as_str())),
+                    ("root", root.as_deref()),
+                    ("target", target.as_deref()),
+                    ("operation", Some(operation.as_str())),
+                    ("kind", Some(kind.as_str())),
+                    ("message", Some(message.as_str())),
+                ] {
+                    line.push_str(&format!(",\"{name}\":"));
+                    if let Some(value) = value {
+                        write_json_string(value, &mut line);
+                    } else {
+                        line.push_str("null");
+                    }
+                }
+            }
             Event::SessionArmed { interfaces } => {
                 line.push_str(",\"interfaces\":[");
                 for (i, name) in interfaces.iter().enumerate() {
@@ -836,6 +896,10 @@ impl Event {
                 line.push_str(",\"continued\":");
                 line.push_str(if *continued { "true" } else { "false" });
             }
+            Event::CalibrationAttempt { assessment } | Event::CalibrationVerdict { assessment } => {
+                line.push_str(",\"assessment\":");
+                line.push_str(&assessment.to_string());
+            }
             Event::CalibrationGuidance {
                 target_id,
                 target,
@@ -1064,6 +1128,15 @@ impl Event {
                 } else {
                     line.push_str("null");
                 }
+            }
+            Event::DeepCaptureDiagnostics {
+                session_id,
+                diagnostics,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"diagnostics\":");
+                line.push_str(&diagnostics.to_string());
             }
             Event::DeepCaptureBundle {
                 session_id,

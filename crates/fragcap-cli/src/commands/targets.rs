@@ -31,8 +31,9 @@ use crate::cli::{
 };
 use crate::color::{use_color, Stream, RESET, WARN};
 use crate::commands::target_resolve;
-use crate::display::{display_width, pad_display};
+use crate::display::{human_display_value, render_fields, selected_stdout_width, ColumnLayout};
 use crate::emit::Emitter;
+use crate::events::Event;
 use crate::exit::{CliError, Exit};
 use crate::paths;
 
@@ -263,7 +264,16 @@ fn hero_listing_with_machine_probe(
         .position(|t| install_presence(t) != InstallPresence::Missing)
         .unwrap_or(0)
         + 1;
-    let _ = writeln!(out, "\nNext command:  fragcap capture {next}");
+    let _ = writeln!(out);
+    let _ = write!(
+        out,
+        "{}",
+        render_fields(
+            0,
+            &[("Next command:".into(), format!("fragcap capture {next}"))],
+            80
+        )
+    );
 
     print_footer(out, footer);
     Ok(Exit::SUCCESS)
@@ -288,8 +298,18 @@ fn print_footer(out: &mut dyn Write, footer: bool) {
 fn empty_listing(out: &mut dyn Write) {
     let _ = writeln!(out, "  No targets yet.");
     let _ = writeln!(out);
-    let _ = writeln!(out, "  Add one:        fragcap targets add");
-    let _ = writeln!(out, "  Scan a folder:  fragcap targets scan <dir>");
+    let _ = write!(
+        out,
+        "{}",
+        render_fields(
+            2,
+            &[
+                ("Add one:".into(), "fragcap targets add".into()),
+                ("Scan a folder:".into(), "fragcap targets scan <dir>".into())
+            ],
+            80
+        )
+    );
 }
 
 /// Put every target into the final human order and return the ready-group length.
@@ -337,69 +357,41 @@ fn render_target_groups(targets: &[TargetEntry], ready_count: usize, out: &mut d
 ///
 /// # The width rule
 ///
-/// Every column but the last sizes to its own content; the last, SENSITIVITIES, is
-/// free-running and is neither padded nor truncated. Nothing here truncates a value
-/// and nothing wraps a row.
-///
-/// That is a decision, not an accident. Truncating a product name is the silent loss
-/// P-4 forbids: an operator reading `Easy Anti-Che...` cannot tell whether the value
-/// was clipped or whether a second product was dropped. Wrapping a row would break
-/// the column alignment the split exists to provide. A value wider than the terminal
-/// therefore overflows visibly, which is a legible failure rather than a lie.
-///
-/// The budget is therefore stated over the columns the tool controls. With every
-/// bounded column at its widest, everything but the handle costs 55 of an 80 column
-/// terminal, leaving 25 for a handle. The readiness column keeping its two short
-/// labels is what buys that much, which is why slice S065 retired the two long
-/// readiness sentences rather than moving them here (see the slice decisions
-/// fragment).
-///
-/// The operator's own machine does not fit, and that is the declared behavior rather
-/// than a defect: its longest handle is 47 characters
-/// (`warhammer_40_000_dawn_of_war_definitive_edition`), so its rows run to 100
-/// columns with every value intact. Shortening the handles a target carries is
-/// issues #166 and #173. `cli_targets.rs` measures the non-handle budget, the fit at
-/// the longest fitting handle, and the no-clipping overflow at that real 47
-/// character handle, all from rendered output. S083's uncertainty marker adds one
-/// visible character to below-verified technology products and follows the same
-/// no-clipping rule.
+/// S168 measures all actual values and headings for each readiness group. Every
+/// adjacent column has exactly four spaces beyond the preceding maximum width.
+/// Final-column wrapping preserves its measured anchor and complete values;
+/// indivisible long values can overflow. Integration coverage checks rendered
+/// anchors, fitting exact fixture values and no-clipping overflow. Uncertainty
+/// markers participate in the same actual display-width measurement.
 fn render_table(targets: &[TargetEntry], start_row: usize, out: &mut dyn Write) {
-    let num_w = (start_row + targets.len() - 1).to_string().len().max(1);
-    let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
-    let capture_w = width_of(
-        targets.iter().map(|target| {
+    let color = use_color(Stream::Stdout);
+    let mut rows = vec![vec![
+        "#".into(),
+        "TARGET".into(),
+        "CAPTURE".into(),
+        "ENGINE".into(),
+        "SENSITIVITIES".into(),
+    ]];
+    rows.extend(targets.iter().enumerate().map(|(index, target)| {
+        vec![
+            (start_row + index).to_string(),
+            human_display_value(&target.handle),
             fragcap::targets::capture_readiness(target)
                 .label()
-                .to_string()
-        }),
-        "CAPTURE",
-    );
-    let engine_w = width_of(
-        targets.iter().map(fragcap::targets::engine_summary),
-        "ENGINE",
-    );
-    let _ = writeln!(
-        out,
-        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
-        "#", "TARGET", "CAPTURE", "ENGINE"
-    );
-    let color = use_color(Stream::Stdout);
-    for (i, t) in targets.iter().enumerate() {
-        let capture = fragcap::targets::capture_readiness(t).label();
-        let engine = fragcap::targets::engine_summary(t);
-        let sensitivities = sensitivities_cell(t, color);
+                .to_string(),
+            human_display_value(&fragcap::targets::engine_summary(target)),
+            sensitivities_cell(target, color),
+        ]
+    }));
+    let layout = ColumnLayout::new(2, &rows);
+    for row in rows {
         let _ = writeln!(
             out,
-            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
-            start_row + i,
-            t.handle,
-            capture,
-            engine,
-            sensitivities
+            "{}",
+            layout.render_wrapped_row(&row, selected_stdout_width(std::io::stdout().is_terminal()))
         );
     }
 }
-
 /// Render the machine-scope anti-cheat section (slice S068, issue #170): a
 /// heading and one indented `<product> (<evidence>)` line per finding, printed
 /// after the per-target table and never touching any target row. Nothing is
@@ -424,7 +416,7 @@ fn render_machine_section(
 /// [`fragcap::targets::sensitivities_summary`] value, prefixed with
 /// [`INSTALL_MISSING_NOTE`] when the row's `install_root` is recorded and absent
 /// (issue #167). This is the whole of the missing-install-root rendering: the cell
-/// is free-running and exempt from padding (`render_table`'s own width budget), so
+/// is the last measured column in the shared layout, so
 /// a row not in this state returns exactly what it always has, unchanged in every
 /// color mode (FR-009). The `-` clean marker is replaced outright rather than
 /// joined, since `install folder not found; -` reads worse than the note alone.
@@ -443,17 +435,6 @@ fn sensitivities_cell(t: &TargetEntry, color: bool) -> String {
     } else {
         note
     }
-}
-
-/// The display width of a column: the widest value, never narrower than its heading.
-/// Counts characters rather than bytes so a non-ASCII product name (`Ren'Py` is
-/// ASCII, but a future one need not be) does not over-pad.
-fn width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
-    values
-        .map(|v| v.chars().count())
-        .chain(std::iter::once(heading.chars().count()))
-        .max()
-        .unwrap_or_else(|| heading.chars().count())
 }
 
 /// Discover and register into `store`, returning the number of newly registered
@@ -623,8 +604,27 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
                 "ambiguous: {} targets match; select by handle or --id:",
                 matches.len()
             );
+            let rows = matches
+                .iter()
+                .map(|t| {
+                    vec![
+                        t.handle.clone(),
+                        t.stable_id.to_string(),
+                        human_display_value(&t.name),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let layout = ColumnLayout::new(2, &rows);
             for t in &matches {
-                let _ = writeln!(out, "  {}\t{}\t{}", t.handle, t.stable_id, t.name);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    layout.render_row(&[
+                        t.handle.clone(),
+                        t.stable_id.to_string(),
+                        human_display_value(&t.name)
+                    ])
+                );
             }
             Ok(Exit::USAGE)
         }
@@ -737,8 +737,18 @@ fn discover(
     // (FR-005, raised in review of PR #190).
     if !args.summary {
         let _ = writeln!(out, "Discovery stores:");
-        let _ = writeln!(out, "  catalog: {}", catalog_db.display());
-        let _ = writeln!(out, "  local:   {}", local_db.display());
+        let _ = write!(
+            out,
+            "{}",
+            render_fields(
+                2,
+                &[
+                    ("catalog:".into(), catalog_db.display().to_string()),
+                    ("local:".into(), local_db.display().to_string())
+                ],
+                selected_stdout_width(std::io::stdout().is_terminal())
+            )
+        );
     }
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
@@ -758,11 +768,8 @@ fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, C
     let db = resolve_store(args.db.as_deref())?;
     let steam_root = match &args.steam_root {
         Some(root) => root.clone(),
-        None => {
-            fragcap::steam::discover()
-                .map_err(|e| CliError::failure(format!("Steam installation not available: {e}")))?
-                .root
-        }
+        None => fragcap::steam::installation_root()
+            .map_err(|e| CliError::failure(format!("Steam installation not available: {e}")))?,
     };
     let inventory = fragcap::steam_platform_inventory(&steam_root)
         .map_err(|e| CliError::failure(e.to_string()))?;
@@ -813,29 +820,40 @@ fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, C
 
 fn render_reconciliation_plan(plan: &fragcap::targets::ReconciliationPlan, out: &mut dyn Write) {
     let _ = writeln!(out, "Reconciliation preview:");
-    if plan.removable.is_empty() {
-        let _ = writeln!(out, "  removable: 0");
-    } else {
-        for item in &plan.removable {
-            let _ = writeln!(
-                out,
-                "  remove {}\t{}\t{}",
-                item.entry.stable_id,
-                item.entry.handle,
-                item.reason.as_str()
-            );
+    if !plan.removable.is_empty() {
+        let rows = plan
+            .removable
+            .iter()
+            .map(|item| {
+                vec![
+                    "remove".into(),
+                    item.entry.stable_id.to_string(),
+                    item.entry.handle.clone(),
+                    item.reason.as_str().to_string(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let layout = ColumnLayout::new(2, &rows);
+        for row in rows {
+            let _ = writeln!(out, "{}", layout.render_row(&row));
         }
     }
     let mut preserved = std::collections::BTreeMap::<&str, usize>::new();
     for item in &plan.preserved {
         *preserved.entry(item.reason.as_str()).or_default() += 1;
     }
-    for (reason, count) in preserved {
-        let _ = writeln!(out, "  preserve {reason}: {count}");
-    }
-    let _ = writeln!(out, "  inventory truncated: {}", plan.inventory_truncated);
+    let mut fields = vec![("removable:".to_string(), plan.removable.len().to_string())];
+    fields.extend(
+        preserved
+            .into_iter()
+            .map(|(reason, count)| (format!("preserve {reason}:"), count.to_string())),
+    );
+    fields.push((
+        "inventory truncated:".into(),
+        plan.inventory_truncated.to_string(),
+    ));
+    let _ = write!(out, "{}", render_fields(2, &fields, 80));
 }
-
 /// Compose the discovery sources (Steam tier 1, and on Windows the known-roots tier
 /// 2) against a catalog and run them through the shared driver, returning the
 /// conserved [`Discovery`]. The `local` store carries the volume eligibility
@@ -852,7 +870,7 @@ pub(crate) fn compose_and_discover(
     // Locate the Steam root: the explicit flag, else Steam's own installation.
     let steam_root = match steam_root_flag {
         Some(root) => Some(root.to_path_buf()),
-        None => fragcap::steam::discover().ok().map(|i| i.root),
+        None => fragcap::steam::installation_root().ok(),
     };
     let steam = steam_root
         .as_ref()
@@ -940,7 +958,7 @@ struct SteamNonGameExclusions {
 }
 
 fn steam_non_game_exclusions(catalog: &Store) -> SteamNonGameExclusions {
-    let Some(steam_root) = fragcap::steam::discover().ok().map(|i| i.root) else {
+    let Ok(steam_root) = fragcap::steam::installation_root() else {
         return SteamNonGameExclusions::default();
     };
     let source = fragcap::SteamSource::new(&steam_root, catalog);
@@ -1011,106 +1029,151 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emi
     for warning in &discovery.warnings {
         emitter.warn(warning);
     }
-}
-
-fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out: &mut dyn Write) {
-    let source_w = display_width_of(candidates.iter().map(|c| c.source_name.clone()), "SOURCE");
-    let identity_w = display_width_of(candidates.iter().map(discovery_identity), "IDENTITY");
-    let fidelity_w = display_width_of(
-        candidates.iter().map(|c| c.fidelity.as_str().to_string()),
-        "FIDELITY",
-    );
-    let automatic_w = "ELIGIBLE".len().max("REFUSED".len()).max("AUTO".len());
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "  {}  {}  {}  {}  NAME",
-        pad_display("SOURCE", source_w),
-        pad_display("IDENTITY", identity_w),
-        pad_display("FIDELITY", fidelity_w),
-        pad_display("AUTO", automatic_w)
-    );
-    for c in candidates {
-        let identity = discovery_identity(c);
-        let decision = fragcap::targets::automatic_registration_decision(c);
-        let automatic = match decision {
-            fragcap::targets::AutomaticRegistrationDecision::Eligible(_) => "eligible",
-            fragcap::targets::AutomaticRegistrationDecision::Refused(_) => "refused",
-        };
-        let _ = writeln!(
-            out,
-            "  {}  {}  {}  {}  {}",
-            pad_display(&c.source_name, source_w),
-            pad_display(&identity, identity_w),
-            pad_display(c.fidelity.as_str(), fidelity_w),
-            pad_display(automatic, automatic_w),
-            c.display_name
-        );
-        let reason = match decision {
-            fragcap::targets::AutomaticRegistrationDecision::Eligible(reason) => reason.as_str(),
-            fragcap::targets::AutomaticRegistrationDecision::Refused(reason) => reason.as_str(),
-        };
-        let _ = writeln!(out, "    automatic registration: {reason}");
-        // Detected technologies ride as neutral evidence (slice S053): a fact per
-        // line, never a status that frames the title as off limits (spec 3.6).
-        for f in &c.evidence {
-            let _ = writeln!(
-                out,
-                "    {}: {} ({})",
-                f.category.as_str(),
-                f.product,
-                f.fidelity.as_str()
-            );
-        }
+    for diagnostic in &discovery.diagnostics {
+        emitter.event(&Event::DiscoveryDiagnostic {
+            source: diagnostic.source.clone(),
+            root: diagnostic.root.clone(),
+            target: diagnostic.target.clone(),
+            operation: diagnostic.operation.clone(),
+            kind: diagnostic.kind.clone(),
+            message: diagnostic.message.clone(),
+        });
     }
 }
 
+fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out: &mut dyn Write) {
+    render_discovery_chapters(
+        candidates,
+        out,
+        use_color(Stream::Stdout),
+        selected_stdout_width(std::io::stdout().is_terminal()),
+    );
+}
+
+fn render_discovery_chapters(
+    candidates: &[fragcap::targets::CandidateTarget],
+    out: &mut dyn Write,
+    color: bool,
+    width: usize,
+) {
+    let style = |value: &str| {
+        if color {
+            format!("\u{1b}[36m{}\u{1b}[0m", human_display_value(value))
+        } else {
+            human_display_value(value)
+        }
+    };
+    let mut ordered = candidates.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| {
+        (&a.source_name, &a.display_name, discovery_identity(a)).cmp(&(
+            &b.source_name,
+            &b.display_name,
+            discovery_identity(b),
+        ))
+    });
+    let fields = ordered
+        .iter()
+        .map(|candidate| {
+            let decision = fragcap::targets::automatic_registration_decision(candidate);
+            let (automatic, reason) = match decision {
+                fragcap::targets::AutomaticRegistrationDecision::Eligible(reason) => {
+                    ("eligible", reason.as_str())
+                }
+                fragcap::targets::AutomaticRegistrationDecision::Refused(reason) => {
+                    ("refused", reason.as_str())
+                }
+            };
+            let mut fields = vec![
+                ("source:".to_string(), candidate.source_name.clone()),
+                ("identity:".to_string(), discovery_identity(candidate)),
+                ("name:".to_string(), candidate.display_name.clone()),
+                (
+                    "fidelity:".to_string(),
+                    candidate.fidelity.as_str().to_string(),
+                ),
+                ("automatic registration:".to_string(), automatic.to_string()),
+                ("registration reason:".to_string(), reason.to_string()),
+            ];
+            for (index, finding) in candidate.evidence.iter().enumerate() {
+                fields.push((
+                    format!("technology {} {}:", index + 1, finding.category.as_str()),
+                    format!("{} ({})", finding.product, finding.fidelity.as_str()),
+                ));
+            }
+            fields
+        })
+        .collect::<Vec<_>>();
+    let all_rows = fields
+        .iter()
+        .flatten()
+        .map(|(key, value)| vec![style(key), human_display_value(value)])
+        .collect::<Vec<_>>();
+    let layout = ColumnLayout::new(8, &all_rows);
+    let mut source = None;
+    for (candidate, fields) in ordered.iter().zip(fields) {
+        if source != Some(candidate.source_name.as_str()) {
+            let _ = writeln!(
+                out,
+                "\n{}\n{}\n",
+                "_".repeat(80),
+                style(&candidate.source_name)
+            );
+            source = Some(candidate.source_name.as_str());
+        }
+        let _ = writeln!(out, "    {}", style(&candidate.display_name));
+        for (key, value) in fields {
+            let _ = writeln!(
+                out,
+                "{}",
+                layout.render_wrapped_row(&[style(&key), human_display_value(&value)], width)
+            );
+        }
+        let _ = writeln!(out);
+    }
+}
 fn render_automatic_registration_account(discovery: &Discovery, out: &mut dyn Write) {
     let plan = fragcap::targets::automatic_registration_plan(&discovery.candidates);
     debug_assert!(plan.is_conserved());
     let _ = writeln!(out, "Automatic registration account:");
-    let _ = writeln!(out, "  eligible: {}", plan.accepted.len());
-    let _ = writeln!(out, "  refused: {}", plan.refused.len());
+    let _ = write!(
+        out,
+        "{}",
+        render_fields(
+            2,
+            &[
+                ("eligible:".into(), plan.accepted.len().to_string()),
+                ("refused:".into(), plan.refused.len().to_string())
+            ],
+            80
+        )
+    );
 }
-
 fn print_discovery_summary(discovery: &Discovery, out: &mut dyn Write) {
     let plan = fragcap::targets::automatic_registration_plan(&discovery.candidates);
     let account = &discovery.account;
+    let fields = vec![
+        ("considered:", account.considered),
+        ("produced:", account.produced),
+        ("eligible:", plan.accepted.len() as u64),
+        ("refused:", plan.refused.len() as u64),
+        ("parse failed:", account.parse_failed),
+        ("not a game:", account.considered_not_a_game),
+        ("declined:", account.declined_by_user),
+        ("container descended:", account.container_descended),
+        (
+            "container descent truncated:",
+            account.container_descent_truncated,
+        ),
+        ("volume skipped:", account.volume_skipped),
+        ("access error:", account.access_error),
+        ("warnings:", discovery.warnings.len() as u64),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect::<Vec<_>>();
     let _ = writeln!(out, "Discovery summary:");
-    let _ = writeln!(out, "  considered: {}", account.considered);
-    let _ = writeln!(out, "  produced: {}", account.produced);
-    let _ = writeln!(out, "  eligible: {}", plan.accepted.len());
-    let _ = writeln!(out, "  refused: {}", plan.refused.len());
-    let _ = writeln!(out, "  parse failed: {}", account.parse_failed);
-    let _ = writeln!(out, "  not a game: {}", account.considered_not_a_game);
-    let _ = writeln!(out, "  declined: {}", account.declined_by_user);
-    let _ = writeln!(
-        out,
-        "  container descended: {}",
-        account.container_descended
-    );
-    let _ = writeln!(
-        out,
-        "  container descent truncated: {}",
-        account.container_descent_truncated
-    );
-    let _ = writeln!(out, "  volume skipped: {}", account.volume_skipped);
-    let _ = writeln!(out, "  access error: {}", account.access_error);
-    let _ = writeln!(out, "  warnings: {}", discovery.warnings.len());
+    let _ = write!(out, "{}", render_fields(2, &fields, 80));
 }
-
-/// Display-cell width for the discovery table. This is deliberately narrower than
-/// full terminal rendering: it handles the operator path cases that break scalar
-/// counting, namely combining marks, joiners/selectors, CJK, fullwidth forms, and
-/// emoji ranges.
-fn display_width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
-    values
-        .map(|v| display_width(&v))
-        .chain(std::iter::once(display_width(heading)))
-        .max()
-        .unwrap_or_else(|| display_width(heading))
-}
-
 fn discovery_identity(candidate: &fragcap::targets::CandidateTarget) -> String {
     match &candidate.identity {
         CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
@@ -1122,10 +1185,10 @@ fn discovery_identity(candidate: &fragcap::targets::CandidateTarget) -> String {
 }
 
 fn render_discovery_account(a: &fragcap::targets::DiscoveryAccount, out: &mut dyn Write) {
-    let _ = writeln!(out);
-    let _ = writeln!(out, "Discovery account:");
-    let _ = writeln!(out, "  considered: {}", a.considered);
-    let _ = writeln!(out, "  produced: {}", a.produced);
+    let mut fields = vec![
+        ("considered:".into(), a.considered.to_string()),
+        ("produced:".into(), a.produced.to_string()),
+    ];
     let outcomes = [
         ("parse failed", a.parse_failed),
         ("declined", a.declined_by_user),
@@ -1140,14 +1203,15 @@ fn render_discovery_account(a: &fragcap::targets::DiscoveryAccount, out: &mut dy
         if count == 0 {
             zero.push(label);
         } else {
-            let _ = writeln!(out, "  {label}: {count}");
+            fields.push((format!("{label}:"), count.to_string()));
         }
     }
     if !zero.is_empty() {
-        let _ = writeln!(out, "  zero: {}", zero.join(", "));
+        fields.push(("zero:".into(), zero.join(", ")));
     }
+    let _ = writeln!(out, "\nDiscovery account:");
+    let _ = write!(out, "{}", render_fields(2, &fields, 80));
 }
-
 /// Register a target from a name (slice S051): derive a unique handle, assign a
 /// stable identity (anchored when an `--anchor` or `--steam` is given, otherwise
 /// random), and store it. A user-registered target is `authored` with a `user`
@@ -1208,10 +1272,18 @@ fn add(
             // A missing Steam or an unsupported platform is a usage error (exit 2); a
             // filesystem read failure is an expected runtime failure (exit 1). Reuse the
             // `steam` command's own mapping so the two entry points agree.
-            let installation =
-                fragcap::steam::discover().map_err(crate::commands::steam::map_steam_error)?;
+            let selected_id = app_id
+                .parse::<u32>()
+                .map_err(|_| CliError::usage("Steam app id must be a number"))?;
+            let root = fragcap::steam::installation_root()
+                .map_err(crate::commands::steam::map_steam_error)?;
+            let installation = fragcap::steam::discover_app_in(&root, selected_id)
+                .map_err(crate::commands::steam::map_steam_error)?;
             for warning in &installation.warnings {
                 emitter.warn(warning);
+            }
+            if installation.titles.len() > 1 {
+                return Err(CliError::usage(format!("Steam app {app_id} has multiple installed identities; resolve its library ambiguity before registration")));
             }
             let title = installation.find(app_id).ok_or_else(|| {
                 CliError::usage(format!(
@@ -1474,14 +1546,18 @@ fn evidence_from_scan(
         return (None, scan);
     }
     let mut findings = Vec::new();
+    let fields = outcome
+        .findings
+        .iter()
+        .map(|finding| {
+            (
+                format!("{}:", finding.category.as_str()),
+                format!("{} ({})", finding.product, finding.fidelity.as_str()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let _ = write!(out, "{}", render_fields(2, &fields, 80));
     for f in &outcome.findings {
-        let _ = writeln!(
-            out,
-            "  {}: {} ({})",
-            f.category.as_str(),
-            f.product,
-            f.fidelity.as_str()
-        );
         findings.push(serde_json::json!({
             "category": f.category.as_str(),
             "product": f.product,
@@ -1572,8 +1648,17 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
                 .compatibility_facts_for_target(target_id)
                 .map_err(|e| CliError::failure(e.to_string()))?;
             let compatibility = CompatibilityMatrix::from_facts(&facts);
-            print_target(&t, out);
-            print_compatibility(&compatibility, out);
+            let mut fields = target_fields(&t);
+            fields.extend(compatibility_fields(&compatibility));
+            let _ = write!(
+                out,
+                "{}",
+                render_fields(
+                    0,
+                    &fields,
+                    selected_stdout_width(std::io::stdout().is_terminal())
+                )
+            );
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
@@ -1590,8 +1675,27 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
                 "ambiguous: {} targets match; select by handle or --id:",
                 matches.len()
             );
+            let rows = matches
+                .iter()
+                .map(|t| {
+                    vec![
+                        t.handle.clone(),
+                        t.stable_id.to_string(),
+                        human_display_value(&t.name),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let layout = ColumnLayout::new(2, &rows);
             for t in &matches {
-                let _ = writeln!(out, "  {}\t{}\t{}", t.handle, t.stable_id, t.name);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    layout.render_row(&[
+                        t.handle.clone(),
+                        t.stable_id.to_string(),
+                        human_display_value(&t.name)
+                    ])
+                );
             }
             Ok(Exit::USAGE)
         }
@@ -1599,88 +1703,98 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 }
 
 /// Print every stored compatibility fact without selecting an aggregate verdict.
-fn print_compatibility(matrix: &CompatibilityMatrix, out: &mut dyn Write) {
+fn compatibility_fields(matrix: &CompatibilityMatrix) -> Vec<(String, String)> {
     if matrix.rows().is_empty() {
-        let _ = writeln!(out, "compatibility:  unknown (no stored evidence)");
-        return;
+        return vec![(
+            "compatibility:".into(),
+            "unknown (no stored evidence)".into(),
+        )];
     }
-
-    let _ = writeln!(out, "compatibility:");
-    for row in matrix.rows() {
-        let _ = write!(out, "  {} = {}", row.key.as_str(), row.value);
-        if let Some(launch_case) = row.launch_case {
-            let _ = write!(out, " | launch={}", launch_case.as_str());
-        }
-        if let Some(routing) = row.routing_strategy {
-            let _ = write!(out, " | route={}", routing.as_str());
-        }
-        if let Some(family) = row.address_family {
-            let _ = write!(out, " | family={}", family.as_str());
-        }
-        if let Some(protocol) = row.protocol {
-            let _ = write!(out, " | protocol={}", protocol.as_str());
-        }
-        let _ = writeln!(
-            out,
-            " | source={} | freshness={}",
-            row.evidence_source.as_str(),
-            row.freshness.as_str()
-        );
-    }
+    matrix
+        .rows()
+        .iter()
+        .map(|row| {
+            let mut value = row.value.clone();
+            if let Some(case) = row.launch_case {
+                value.push_str(&format!(" | launch={}", case.as_str()));
+            }
+            if let Some(route) = row.routing_strategy {
+                value.push_str(&format!(" | route={}", route.as_str()));
+            }
+            if let Some(family) = row.address_family {
+                value.push_str(&format!(" | family={}", family.as_str()));
+            }
+            if let Some(protocol) = row.protocol {
+                value.push_str(&format!(" | protocol={}", protocol.as_str()));
+            }
+            value.push_str(&format!(
+                " | source={} | freshness={}",
+                row.evidence_source.as_str(),
+                row.freshness.as_str()
+            ));
+            (format!("compatibility {}:", row.key.as_str()), value)
+        })
+        .collect()
 }
 
+#[cfg(test)]
+fn print_compatibility(matrix: &CompatibilityMatrix, out: &mut dyn Write) {
+    let _ = write!(
+        out,
+        "{}",
+        render_fields(0, &compatibility_fields(matrix), usize::MAX)
+    );
+}
 /// Print one resolved target's fields.
 ///
 /// The engine and sensitivities lines are the same derivations the listing renders,
 /// so the detail view and the table cannot disagree about what a technology is or
 /// about whether a scan happened.
-fn print_target(t: &TargetEntry, out: &mut dyn Write) {
-    let _ = writeln!(out, "handle:         {}", t.handle);
-    let _ = writeln!(out, "name:           {}", t.name);
-    let _ = writeln!(out, "id:             {}", t.stable_id);
-    let _ = writeln!(out, "classification: {}", t.classification.as_str());
-    let _ = writeln!(out, "fidelity:       {}", t.fidelity.as_str());
+fn target_fields(t: &TargetEntry) -> Vec<(String, String)> {
+    let mut fields = vec![
+        ("handle:".into(), t.handle.clone()),
+        ("name:".into(), t.name.clone()),
+        ("id:".into(), t.stable_id.to_string()),
+        ("classification:".into(), t.classification.as_str().into()),
+        ("fidelity:".into(), t.fidelity.as_str().into()),
+    ];
     if let Some(anchor) = &t.anchor {
-        let _ = writeln!(out, "anchor:         {anchor}");
+        fields.push(("anchor:".into(), anchor.clone()));
     }
     let launches = fragcap::targets::entry_windows_launch_entries(t);
     if launches.is_empty() {
-        let _ = writeln!(out, "active client:  none authored");
-    } else {
-        for (index, launch) in launches.iter().enumerate() {
-            let role = launch.role().unwrap_or("unspecified");
-            let _ = writeln!(
-                out,
-                "launch entry {}: {} (role: {role})",
-                index + 1,
-                launch.executable()
-            );
-        }
+        fields.push(("active client:".into(), "none authored".into()));
     }
-    // Steam appinfo records a launch hint, which may be an intermediate
-    // launcher. It is not the authored traffic-owning client declaration.
-    if let Some(executable_hint) = &t.executable_hint {
-        let _ = writeln!(out, "Steam launch hint: {executable_hint}");
+    for (index, launch) in launches.iter().enumerate() {
+        fields.push((
+            format!("launch entry {}:", index + 1),
+            format!(
+                "{} (role: {})",
+                launch.executable(),
+                launch.role().unwrap_or("unspecified")
+            ),
+        ));
     }
-    let _ = writeln!(
-        out,
-        "engine:         {}",
-        fragcap::targets::engine_summary(t)
-    );
-    let _ = writeln!(
-        out,
-        "sensitivities:  {}",
-        fragcap::targets::sensitivities_summary(t)
-    );
-    // A genuinely divergent folder name is worth surfacing (issue #173); a cosmetic
-    // or truncation-only difference stays quiet so the signal stays worth reading.
+    if let Some(hint) = &t.executable_hint {
+        fields.push(("Steam launch hint:".into(), hint.clone()));
+    }
+    fields.push(("engine:".into(), fragcap::targets::engine_summary(t)));
+    fields.push((
+        "sensitivities:".into(),
+        fragcap::targets::sensitivities_summary(t),
+    ));
     if name_divergence(t) == NameDivergence::Semantic {
-        if let Some(folder_name) = &t.folder_name {
-            let _ = writeln!(out, "note:           installed as {folder_name:?}");
+        if let Some(folder) = &t.folder_name {
+            fields.push(("note:".into(), format!("installed as {folder:?}")));
         }
     }
+    fields
 }
 
+#[cfg(test)]
+fn print_target(t: &TargetEntry, out: &mut dyn Write) {
+    let _ = write!(out, "{}", render_fields(0, &target_fields(t), 80));
+}
 /// The file stem of an executable name (drop a trailing extension), for the
 /// handle fallback chain.
 fn exe_stem(exe: &str) -> String {
@@ -1694,13 +1808,14 @@ fn exe_stem(exe: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
+        evidence_from_scan, filter_platform_non_game_steam_targets,
         hero_listing_with_machine_probe, order_targets_for_listing, print_compatibility,
         print_discovery, print_discovery_summary, print_target, prompt_socket_holder_with,
         reconcile, render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
         ClassificationSource, CompatibilityMatrix, DetectionScan, Discovery, ExeScan, FidelityTier,
         SteamNonGameExclusions, Store, TargetClassification, TargetEntry, TargetsReconcileArgs,
     };
+    use crate::display::display_width;
     use crate::emit::{Emitter, Format, Verbosity};
     use std::io::{self, Cursor, Write};
 
@@ -1769,8 +1884,13 @@ mod tests {
         let mut out = Vec::new();
         print_target(&target, &mut out);
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("active client:  none authored"));
-        assert!(text.contains("Steam launch hint: sample_launcher.exe"));
+        assert!(text
+            .lines()
+            .any(|line| line.starts_with("active client:") && line.ends_with("none authored")));
+        assert!(text
+            .lines()
+            .any(|line| line.starts_with("Steam launch hint:")
+                && line.ends_with("sample_launcher.exe")));
 
         let mut client = fragcap::targets::LaunchEntry::new("sample_client.exe").unwrap();
         client.role = Some("client".into());
@@ -1780,9 +1900,37 @@ mod tests {
         let mut out = Vec::new();
         print_target(&target, &mut out);
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("launch entry 1: sample_client.exe (role: client)"));
-        assert!(text.contains("Steam launch hint: sample_launcher.exe"));
+        assert!(text.lines().any(|line| line.starts_with("launch entry 1:")
+            && line.ends_with("sample_client.exe (role: client)")));
+        assert!(text
+            .lines()
+            .any(|line| line.starts_with("Steam launch hint:")
+                && line.ends_with("sample_launcher.exe")));
         assert!(!text.contains("none authored"));
+    }
+
+    #[test]
+    fn target_detail_measures_all_optional_keys_with_four_space_gap() {
+        let mut target = listing_target(42, "sample_game", Some("steam:42"));
+        target.executable_hint = Some("sample_launcher.exe".into());
+        let mut out = Vec::new();
+        print_target(&target, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        let longest = "Steam launch hint:".len();
+        assert_eq!(
+            text.lines()
+                .find(|line| line.starts_with("handle:"))
+                .unwrap()
+                .find("sample_game"),
+            Some(longest + 4)
+        );
+        assert_eq!(
+            text.lines()
+                .find(|line| line.starts_with("Steam launch hint:"))
+                .unwrap()
+                .find("sample_launcher.exe"),
+            Some(longest + 4)
+        );
     }
 
     #[test]
@@ -1923,16 +2071,24 @@ mod tests {
 
         let text = String::from_utf8(out).expect("utf-8");
         assert!(
-            text.contains("  SOURCE  IDENTITY   FIDELITY              AUTO      NAME"),
+            text.contains(&format!("{}\nsteam\n", "_".repeat(80))),
             "header names the discovery fields:\n{text}"
         );
         assert!(
-            text.contains("  steam   steam:620  heuristic-unverified  eligible  Portal 2"),
+            text.contains("    Portal 2")
+                && text.lines().any(
+                    |line| line.starts_with("        identity:") && line.ends_with("steam:620")
+                ),
             "candidate row is aligned and classification-free:\n{text}"
         );
-        assert!(text.contains("    automatic registration: authoritative-platform-identity"));
+        assert!(text
+            .lines()
+            .any(|line| line.starts_with("        registration reason:")
+                && line.ends_with("authoritative-platform-identity")));
         assert!(
-            text.contains("    engine: Source (verified)"),
+            text.lines()
+                .any(|line| line.starts_with("        technology 1 engine:")
+                    && line.ends_with("Source (verified)")),
             "evidence remains under its candidate with fidelity:\n{text}"
         );
         assert!(
@@ -1955,12 +2111,17 @@ mod tests {
                 ..Default::default()
             },
             warnings: vec!["could not read C:/Private/Account/Library".to_string()],
+            diagnostics: Vec::new(),
         };
         let mut out = Vec::new();
         print_discovery_summary(&discovery, &mut out);
         let text = String::from_utf8(out).expect("utf-8");
-        assert!(text.contains("produced: 1"));
-        assert!(text.contains("warnings: 1"));
+        assert!(text
+            .lines()
+            .any(|line| line.trim_start().starts_with("produced:") && line.ends_with("1")));
+        assert!(text
+            .lines()
+            .any(|line| line.trim_start().starts_with("warnings:") && line.ends_with("1")));
         for private in ["Secret Title", "C:/", "Account", "Library"] {
             assert!(
                 !text.contains(private),
@@ -2015,7 +2176,7 @@ mod tests {
         )
         .expect("preview");
         let preview = String::from_utf8(preview).expect("utf-8");
-        assert!(preview.contains("remove 123\tlegacy_steam\tplatform-client-root"));
+        assert!(preview.contains("remove    123    legacy_steam    platform-client-root"));
         assert_eq!(
             Store::open(&db)
                 .expect("store")
@@ -2158,7 +2319,7 @@ mod tests {
         let text = String::from_utf8(out).expect("utf-8");
         let rows: Vec<&str> = text
             .lines()
-            .filter(|line| line.starts_with("  known-roots"))
+            .filter(|line| line.starts_with("        fidelity:"))
             .collect();
         assert_eq!(rows.len(), 2, "two candidate rows:\n{text}");
         let first_fidelity = display_cell_index(rows[0], "verified");
@@ -2167,6 +2328,76 @@ mod tests {
             first_fidelity, second_fidelity,
             "fidelity starts in the same display column:\n{text}"
         );
+    }
+
+    #[test]
+    fn discovery_chapters_group_sources_keep_duplicate_names_and_align_every_field() {
+        let mut a = discovery_candidate("C:/Games/遊戲", "Same name");
+        a.source_name = "z-source".into();
+        a.evidence = vec![
+            fragcap::profile::DetectionFinding {
+                category: fragcap::profile::SignatureCategory::Engine,
+                product: "first engine".into(),
+                evidence: "first marker".into(),
+                fidelity: FidelityTier::Verified,
+            },
+            fragcap::profile::DetectionFinding {
+                category: fragcap::profile::SignatureCategory::Engine,
+                product: "second engine".into(),
+                evidence: "second marker".into(),
+                fidelity: FidelityTier::Observed,
+            },
+        ];
+        let mut b = discovery_candidate("C:/Games/Cafe\u{301}", "Same name");
+        b.source_name = "a-source".into();
+        let mut c = discovery_candidate("C:/Games/Third", "Long name with useful fields");
+        c.source_name = "z-source".into();
+        let candidates = vec![a, b, c];
+        let mut plain = Vec::new();
+        let mut colored = Vec::new();
+        super::render_discovery_chapters(&candidates, &mut plain, false, 40);
+        super::render_discovery_chapters(&candidates, &mut colored, true, 40);
+        let plain = String::from_utf8(plain).unwrap();
+        let colored = String::from_utf8(colored).unwrap();
+        assert_eq!(
+            colored.replace("\u{1b}[36m", "").replace("\u{1b}[0m", ""),
+            plain
+        );
+        assert_eq!(
+            plain.lines().filter(|line| *line == "_".repeat(80)).count(),
+            2
+        );
+        assert!(plain.find("a-source").unwrap() < plain.find("z-source").unwrap());
+        assert_eq!(
+            plain
+                .lines()
+                .filter(|line| *line == "    Same name")
+                .count(),
+            2
+        );
+        let words = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(words.contains("first engine") && words.contains("second engine"));
+        assert!(plain.contains("C:/Games/遊戲") && plain.contains("C:/Games/Cafe\u{301}"));
+        let anchor = 8 + "automatic registration:".len() + 4;
+        for line in plain.lines().filter(|line| {
+            line.starts_with("        ")
+                && line.as_bytes().get(8).is_some_and(|byte| *byte != b' ')
+                && line.contains(':')
+        }) {
+            let delimiter = line.find(':').unwrap() + 1;
+            let tail = &line[delimiter..];
+            let spaces = tail.chars().take_while(|c| *c == ' ').count();
+            assert_eq!(display_width(&line[..delimiter]) + spaces, anchor, "{line}");
+        }
+        for line in colored
+            .lines()
+            .filter(|line| line.starts_with("        \u{1b}"))
+        {
+            assert!(
+                line.contains("\u{1b}[0m    "),
+                "values start after a reset and >=4 spaces"
+            );
+        }
     }
 
     #[test]
@@ -2192,13 +2423,30 @@ mod tests {
             text.contains("Discovery account:"),
             "account is a labelled block:\n{text}"
         );
-        assert!(text.contains("  considered: 3"), "{text}");
-        assert!(text.contains("  produced: 1"), "{text}");
-        assert!(text.contains("  not a game: 1"), "{text}");
-        assert!(text.contains("  container descended: 1"), "{text}");
         assert!(
-            text.contains(
-                "  zero: parse failed, declined, container descent truncated, volume skipped, access error"
+            text.lines()
+                .any(|line| line.trim_start().starts_with("considered:") && line.ends_with("3")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with("produced:") && line.ends_with("1")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with("not a game:") && line.ends_with("1")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with("container descended:")
+                    && line.ends_with("1")),
+            "{text}"
+        );
+        assert!(
+            text.split_whitespace().collect::<Vec<_>>().join(" ").contains(
+                "zero: parse failed, declined, container descent truncated, volume skipped, access error"
             ),
             "zero-valued outcomes are grouped and container truncation remains named:\n{text}"
         );
@@ -2291,7 +2539,7 @@ mod tests {
 
         let text = String::from_utf8(out).expect("utf-8");
         assert!(
-            text.contains("Machine:\n  Sample Protection (sample machine finding)\n\nNext command:  fragcap capture 1\n"),
+            text.contains("Machine:\n  Sample Protection (sample machine finding)\n\nNext command:    fragcap capture 1\n"),
             "the suggestion must be a labelled section after machine findings: {text:?}"
         );
         assert_eq!(text.matches("Next command:").count(), 1);

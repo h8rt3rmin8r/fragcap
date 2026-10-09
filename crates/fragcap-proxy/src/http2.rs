@@ -26,6 +26,8 @@ use crate::{
 pub(crate) struct Http2Run {
     pub accounting: ProtocolAccounting,
     pub failure: Option<ProtocolError>,
+    /// Exact cleartext-ingress capability result. TLS ingress is authenticated by CONNECT.
+    pub authenticated: bool,
 }
 
 pub(crate) struct Http2ConnectionContext {
@@ -270,6 +272,7 @@ where
                 Ok(value) => value,
                 Err(_) => {
                     return Http2Run {
+                        authenticated: false,
                         accounting,
                         failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
                     }
@@ -292,6 +295,7 @@ where
             Ok(value) => value,
             Err(error) => {
                 return Http2Run {
+                    authenticated: false,
                     accounting,
                     failure: Some(ProtocolError::new("http2-accept-failed", error.to_string())),
                 }
@@ -357,6 +361,7 @@ where
     }
     origin_driver.0.abort();
     Http2Run {
+        authenticated: false,
         accounting,
         failure: None,
     }
@@ -367,6 +372,23 @@ pub(crate) async fn serve_cleartext_http2<C>(
     capability: SessionCapability,
     policy: DestinationPolicy,
     context: Http2ConnectionContext,
+) -> Http2Run
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut authenticated = false;
+    let mut run =
+        serve_cleartext_http2_inner(client, capability, policy, context, &mut authenticated).await;
+    run.authenticated = authenticated;
+    run
+}
+
+async fn serve_cleartext_http2_inner<C>(
+    client: C,
+    capability: SessionCapability,
+    policy: DestinationPolicy,
+    context: Http2ConnectionContext,
+    authenticated: &mut bool,
 ) -> Http2Run
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -409,17 +431,20 @@ where
         Ok(value) => value,
         Err(error) => {
             return Http2Run {
+                authenticated: false,
                 accounting: ProtocolAccounting::default(),
                 failure: Some(error),
             }
         }
     };
+    *authenticated = true;
     let upstream = match crate::connect_upstream(&authority, &policy, limits.upstream).await {
         Ok(upstream) => upstream,
         Err(error) => {
             let mut failure = ProtocolError::new(error.code, error.detail);
             failure.policy_refused = matches!(error.stage, crate::UpstreamStage::Policy);
             return Http2Run {
+                authenticated: false,
                 accounting: ProtocolAccounting::default(),
                 failure: Some(failure),
             };
@@ -466,6 +491,7 @@ where
                     Ok(value) => value,
                     Err(_) => {
                         return Http2Run {
+                            authenticated: false,
                             accounting,
                             failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
                         };
@@ -490,6 +516,7 @@ where
             Ok(value) => value,
             Err(error) => {
                 return Http2Run {
+                    authenticated: false,
                     accounting,
                     failure: Some(h2_error("http2-accept-failed", error)),
                 }
@@ -537,6 +564,7 @@ where
     }
     origin_driver.0.abort();
     Http2Run {
+        authenticated: false,
         accounting,
         failure: None,
     }
@@ -1359,6 +1387,7 @@ fn request_pseudo_fields(parts: &hyper::http::request::Parts) -> Vec<MetadataFie
 
 fn failed(code: &'static str, detail: impl Into<String>) -> Http2Run {
     Http2Run {
+        authenticated: false,
         accounting: ProtocolAccounting::default(),
         failure: Some(ProtocolError::new(code, detail)),
     }
