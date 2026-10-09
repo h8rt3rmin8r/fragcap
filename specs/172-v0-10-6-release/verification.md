@@ -39,4 +39,10 @@ Receipt-only status and task updates follow the full gate. All 38 changed text f
 
 ## Later Evidence Boundary
 
-Hosted final-package certification, external candidate reviews, owner merge, v0.10.6 tag, public assets and registry publication have not run. The current published release remains v0.10.5. No real game, live capture, operator-session collection, real trust mutation, universal title-compatibility or independent whole-product review is claimed.
+The owner subsequently authorized push and the remaining publication workflow. Official [PR #474](https://github.com/h8rt3rmin8r/fragcap/pull/474) opened at `83172255ff71fdc59aab25cef54815057d9a5120`. Dependency PR #470 was closed as superseded after its exact patch was verified. The automatic first Codex round completed with no findings and a thumbs-up; there were no formal reviews or inline threads on that head.
+
+Two hosted audit attempts failed before running cargo-deny because Docker Hub returned HTTP 429 for the action's pinned Rust image. The correction installs the same governed cargo-deny 0.20.2 from locked source under Rust 1.88.0 and runs every existing all-feature advisory, license, ban and source check. The supply-chain wiring gate requires those exact native commands. A fifteenth dated decision fragment was assembled into the existing candidate release record; the assembled diff adds only that decision and leaves Unreleased empty.
+
+The follow-up full `cargo xtask ci` passed after this correction, including all 222 xtask tests and every repository acceptance gate. Five changed text files passed strict encoding and whitespace checks, and `git diff --check` passed. The final code/security review round and hosted audit must validate the pushed correction.
+
+Final-head hosted acceptance, owner merge, v0.10.6 tag, public assets and registry publication remain subsequent states. The current published release remains v0.10.5. No real game, live capture, operator-session collection, real trust mutation, universal title-compatibility or independent whole-product review is claimed.

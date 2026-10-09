@@ -71,6 +71,8 @@ The documentation site resolves Next.js 16.3.8 and its coordinated packages from
 
 **2026-10-09** S172 prepares v0.10.6 from merged S167-S171 and all remaining fragments since v0.10.5, aligning first-party versions, generated evidence, conformance, audited graph digests and specification applicability. The established release branch and version-only tooling perform no tag, push or publication. Short release highlights and the candidate handoff preserve verified v0.10.5 public markers until later exact-source publication reconciliation. The exact site patch from dependency PR #470 is included; the stale HTTPS fixture failure is already corrected by merged S169 and current-source acceptance remains required.
 
+**2026-10-09** (S172): Both hosted audit attempts failed before cargo-deny ran because Docker Hub refused the action's pinned Rust image with HTTP 429. Replace that container bootstrap with native Rust 1.88.0 and locked source installation of the same governed cargo-deny 0.20.2. Keep every all-feature advisory, license, ban and source check, existing dependency policy and fail-closed acceptance. The supply-chain wiring gate now requires these exact native commands. No exception, dependency version or review expiry changes.
+
 ## [0.10.5] - 2026-10-05
 
 ### Fixed

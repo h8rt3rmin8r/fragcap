@@ -933,10 +933,9 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
         }
     }
     for required in [
-        "EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25",
-        "version: 0.20.2",
-        "rust-version: 1.88.0",
-        "--all-features",
+        "dtolnay/rust-toolchain@1.88.0",
+        "cargo install cargo-deny --version 0.20.2 --locked",
+        "cargo deny --all-features check advisories licenses bans sources",
     ] {
         if !audit.contains(required) {
             findings.push(format!("workflow-tool-pin: audit.yml lacks {required}"));

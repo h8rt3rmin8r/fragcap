@@ -23,14 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # cargo-deny-action v2.1.1, immutable because this is a release-security gate.
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
-        with:
-          # A dependency introducing a license outside the allowlist fails the
-          # build, per specification section 20.4. Copyleft is excluded, with
-          # particular force for packet interception libraries, which
-          # constitution P-1 prohibits on independent grounds.
-          command: check advisories licenses bans sources
-          arguments: --all-features
-          version: 0.20.2
-          rust-version: 1.88.0
+      - uses: dtolnay/rust-toolchain@1.88.0
+      # Install the exact governed tool from its locked source graph, without
+      # a Docker Hub bootstrap that can prevent the audit from running.
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Audit all features
+        run: cargo deny --all-features check advisories licenses bans sources
