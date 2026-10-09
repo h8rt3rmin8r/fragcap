@@ -107,20 +107,6 @@ pub fn compatibility_fact_candidates(
     calibration: Option<CalibrationPhase>,
     selected_protocol: Option<CompatibilityProtocol>,
 ) -> Vec<CompatibilityFactCandidate> {
-    // Late retained traffic is evidence of the release period, never authority
-    // for an earlier calibration observation phase.
-    let eligible_indices: Vec<_> = observations
-        .iter()
-        .enumerate()
-        .filter_map(|(index, observation)| {
-            (observation.evidence_window == EvidenceWindow::Observation).then_some(index)
-        })
-        .collect();
-    let eligible: Vec<_> = eligible_indices
-        .iter()
-        .map(|&index| observations[index].clone())
-        .collect();
-    let observations = eligible.as_slice();
     let mut facts = Vec::new();
     // A cold Steam launch is rooted in the exact platform process fragcap
     // created with the scoped proxy environment. A correlated final client can
@@ -282,9 +268,6 @@ pub fn compatibility_fact_candidates(
             );
         }
     }
-    for fact in &mut facts {
-        fact.final_owner_index = fact.final_owner_index.map(|index| eligible_indices[index]);
-    }
     facts
 }
 
@@ -316,7 +299,6 @@ pub fn observed_protocol_candidates(
 ) -> Vec<CompatibilityProtocol> {
     let mut protocols = observations
         .iter()
-        .filter(|observation| observation.evidence_window == EvidenceWindow::Observation)
         .filter(|observation| observation_is_final_client(observation, controlled))
         .filter(|observation| classification_is_fact_eligible(&observation.classification))
         .filter_map(|observation| compatibility_protocol_family(&observation.classification))
@@ -368,12 +350,94 @@ pub fn calibration_outcome(
     phase: CalibrationPhase,
     observations: &[CompatibilityObservation],
 ) -> CalibrationOutcome {
-    calibration_outcome_from(
-        phase,
-        observations
-            .iter()
-            .filter(|observation| observation.evidence_window == EvidenceWindow::Observation),
-    )
+    calibration_outcome_from(phase, observations.iter())
+}
+
+fn window_indices(
+    observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
+) -> Vec<usize> {
+    (0..observations.len())
+        .filter(|&index| windows.get(index) == Some(&EvidenceWindow::Observation))
+        .collect()
+}
+
+/// Select phase-eligible facts while preserving raw observation owner indices.
+pub fn compatibility_fact_candidates_in_windows(
+    launch_case: &str,
+    observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
+    controlled: bool,
+    calibration: Option<CalibrationPhase>,
+    selected_protocol: Option<CompatibilityProtocol>,
+) -> Vec<CompatibilityFactCandidate> {
+    let indices = window_indices(observations, windows);
+    let eligible = indices
+        .iter()
+        .map(|&index| observations[index].clone())
+        .collect::<Vec<_>>();
+    let mut facts = compatibility_fact_candidates(
+        launch_case,
+        &eligible,
+        controlled,
+        calibration,
+        selected_protocol,
+    );
+    for fact in &mut facts {
+        fact.final_owner_index = fact.final_owner_index.map(|index| indices[index]);
+    }
+    facts
+}
+
+/// Derive protocol candidates only from explicitly observation-qualified records.
+pub fn observed_protocol_candidates_in_windows(
+    observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
+    controlled: bool,
+) -> Vec<CompatibilityProtocol> {
+    let eligible = window_indices(observations, windows)
+        .into_iter()
+        .map(|index| observations[index].clone())
+        .collect::<Vec<_>>();
+    observed_protocol_candidates(&eligible, controlled)
+}
+
+/// Preserve the legacy classifier while qualifying explicit timing metadata.
+pub fn terminal_calibration_outcome_in_windows(
+    phase: CalibrationPhase,
+    selected_protocol: CompatibilityProtocol,
+    observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
+    interrupted: bool,
+    failed: bool,
+) -> CalibrationOutcome {
+    if interrupted {
+        return CalibrationOutcome::Interrupted;
+    }
+    if failed {
+        return CalibrationOutcome::Failed;
+    }
+    let eligible = observations
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| windows.get(*index) == Some(&EvidenceWindow::Observation))
+        .map(|(_, observation)| observation);
+    if phase == CalibrationPhase::Reachability {
+        calibration_outcome_from(phase, eligible)
+    } else if eligible
+        .clone()
+        .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+    {
+        CalibrationOutcome::ProxyNotReached
+    } else {
+        calibration_outcome_from(
+            phase,
+            eligible.filter(|observation| {
+                compatibility_protocol_family(&observation.classification)
+                    == Some(selected_protocol)
+            }),
+        )
+    }
 }
 
 fn calibration_outcome_from<'a>(
@@ -457,8 +521,7 @@ fn calibration_outcome_from<'a>(
 }
 
 fn controlled_harness_client(observation: &CompatibilityObservation) -> bool {
-    observation.evidence_window == EvidenceWindow::Observation
-        && observation.attribution.as_deref() == Some("controlled-harness")
+    observation.attribution.as_deref() == Some("controlled-harness")
         && observation.role.as_deref() == Some("client")
 }
 
@@ -487,8 +550,7 @@ fn classification_proves_tls(classification: &super::ProtocolClassification) -> 
 
 /// Whether the observation is packet-correlated to the final client role.
 pub fn observation_is_correlated_to_final_client(observation: &CompatibilityObservation) -> bool {
-    observation.evidence_window == EvidenceWindow::Observation
-        && observation.flow_id.is_some()
+    observation.flow_id.is_some()
         && observation
             .role
             .as_deref()
@@ -513,9 +575,7 @@ pub fn terminal_calibration_outcome(
     interrupted: bool,
     failed: bool,
 ) -> CalibrationOutcome {
-    let observations = observations
-        .iter()
-        .filter(|observation| observation.evidence_window == EvidenceWindow::Observation);
+    let observations = observations.iter();
     if interrupted {
         CalibrationOutcome::Interrupted
     } else if failed {
@@ -594,7 +654,6 @@ mod launch_case_tests {
 
     fn correlated_client_observation() -> CompatibilityObservation {
         CompatibilityObservation {
-            evidence_window: EvidenceWindow::Observation,
             flow_id: crate::FlowId::new(1),
             proxy_connection_id: "proxy-1".into(),
             client_peer: None,
@@ -627,16 +686,28 @@ mod launch_case_tests {
     #[test]
     fn late_and_unknown_window_records_are_retained_without_calibration_authority() {
         for window in [EvidenceWindow::OwnerRelease, EvidenceWindow::Unavailable] {
-            let mut late = correlated_client_observation();
-            late.evidence_window = window;
+            let late = correlated_client_observation();
             assert_eq!(
-                calibration_outcome(CalibrationPhase::Reachability, &[late.clone()]),
+                terminal_calibration_outcome_in_windows(
+                    CalibrationPhase::Reachability,
+                    CompatibilityProtocol::Routing,
+                    std::slice::from_ref(&late),
+                    &[window],
+                    false,
+                    false
+                ),
                 CalibrationOutcome::Inconclusive
             );
-            assert!(observed_protocol_candidates(&[late.clone()], false).is_empty());
-            let facts = compatibility_fact_candidates(
+            assert!(observed_protocol_candidates_in_windows(
+                std::slice::from_ref(&late),
+                &[window],
+                false
+            )
+            .is_empty());
+            let facts = compatibility_fact_candidates_in_windows(
                 "direct-exe-cold",
-                &[late.clone()],
+                std::slice::from_ref(&late),
+                &[window],
                 false,
                 Some(CalibrationPhase::Reachability),
                 Some(CompatibilityProtocol::Routing),
@@ -645,9 +716,10 @@ mod launch_case_tests {
                 .iter()
                 .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting
                     && fact.value == "reached-client"));
-            let facts = compatibility_fact_candidates(
+            let facts = compatibility_fact_candidates_in_windows(
                 "direct-exe-cold",
                 &[late],
+                &[window],
                 false,
                 Some(CalibrationPhase::Tls),
                 Some(CompatibilityProtocol::Https),
@@ -661,12 +733,12 @@ mod launch_case_tests {
 
     #[test]
     fn eligibility_filter_preserves_original_final_owner_index() {
-        let mut late = correlated_client_observation();
-        late.evidence_window = EvidenceWindow::OwnerRelease;
+        let late = correlated_client_observation();
         let current = correlated_client_observation();
-        let facts = compatibility_fact_candidates(
+        let facts = compatibility_fact_candidates_in_windows(
             "direct-exe-cold",
             &[late, current],
+            &[EvidenceWindow::OwnerRelease, EvidenceWindow::Observation],
             false,
             Some(CalibrationPhase::Reachability),
             Some(CompatibilityProtocol::Routing),
@@ -676,6 +748,39 @@ mod launch_case_tests {
             .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting
                 && fact.value == "reached-client"
                 && fact.final_owner_index == Some(1)));
+    }
+
+    #[test]
+    fn phase_metadata_preserves_legacy_raw_contract_and_refuses_missing_indices() {
+        let raw = [correlated_client_observation()];
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &raw),
+            CalibrationOutcome::ReachedClient
+        );
+        assert_eq!(
+            terminal_calibration_outcome_in_windows(
+                CalibrationPhase::Reachability,
+                CompatibilityProtocol::Routing,
+                &raw,
+                &[],
+                false,
+                false
+            ),
+            CalibrationOutcome::Inconclusive
+        );
+        assert!(observed_protocol_candidates_in_windows(&raw, &[], false).is_empty());
+        let facts = compatibility_fact_candidates_in_windows(
+            "direct-exe-cold",
+            &raw,
+            &[],
+            false,
+            Some(CalibrationPhase::Reachability),
+            Some(CompatibilityProtocol::Routing),
+        );
+        assert!(!facts
+            .iter()
+            .any(|fact| fact.key == CompatibilityFactKey::ProxyRouting
+                && fact.value == "reached-client"));
     }
 
     #[test]

@@ -1847,6 +1847,35 @@ fn measure(out: &str) -> (usize, usize) {
     (widest_line, widest_handle)
 }
 
+/// Reconstruct only one target row's final cell, including its hanging lines.
+/// Machine-wide findings and other targets cannot satisfy its value assertion.
+fn target_row_final_value(out: &str, handle: &str, anchor: usize) -> String {
+    let lines = out.lines().collect::<Vec<_>>();
+    let row = lines
+        .iter()
+        .position(|line| line.split_whitespace().nth(1) == Some(handle))
+        .unwrap_or_else(|| panic!("missing target row {handle}:\n{out}"));
+    let mut value = lines[row]
+        .get(anchor..)
+        .unwrap_or_else(|| panic!("final column starts at cell {anchor}: {}", lines[row]))
+        .trim_end()
+        .to_string();
+    let indentation = " ".repeat(anchor);
+    for line in &lines[row + 1..] {
+        if !line.starts_with(&indentation) || line.trim().is_empty() {
+            break;
+        }
+        let fragment = &line[anchor..];
+        assert!(
+            !fragment.starts_with(' '),
+            "continuation preserves exact column anchor {anchor}: {line}"
+        );
+        value.push(' ');
+        value.push_str(fragment.trim_end());
+    }
+    value
+}
+
 #[test]
 fn table_columns_measure_emitted_values_with_four_space_gaps() {
     // S168 replaces the old fixed-width budget with actual field measurements.
@@ -1858,11 +1887,6 @@ fn table_columns_measure_emitted_values_with_four_space_gaps() {
 
     let (code, out, _err) = run(&["targets", "list", "--db", &store]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("not scanned"), "widest marker in play: {out}");
-    assert!(
-        out.contains("Easy Anti-Cheat"),
-        "widest value in play: {out}"
-    );
 
     let (_, widest_handle) = measure(&out);
     assert!(widest_handle > 0, "handles were measured: {out}");
@@ -1875,6 +1899,17 @@ fn table_columns_measure_emitted_values_with_four_space_gaps() {
     let capture_anchor = handle_anchor + handle.len() + 4;
     let engine_anchor = capture_anchor + "needs a target".len() + 4;
     let final_anchor = engine_anchor + "Unity, Unreal?".len() + 4;
+    assert_eq!(
+        target_row_final_value(&out, &handle, final_anchor),
+        "Easy Anti-Cheat?",
+        "complete selected-row sensitivity: {out}"
+    );
+    let second_handle = format!("{}z", "w".repeat(handle.len() - 1));
+    assert_eq!(
+        target_row_final_value(&out, &second_handle, final_anchor),
+        "not scanned",
+        "complete selected-row coverage marker: {out}"
+    );
     assert_eq!(heading.find("TARGET"), Some(handle_anchor));
     assert_eq!(heading.find("CAPTURE"), Some(capture_anchor));
     assert_eq!(heading.find("ENGINE"), Some(engine_anchor));
@@ -1931,9 +1966,18 @@ fn a_handle_wider_than_the_budget_overflows_rather_than_being_truncated() {
         out.contains(handle),
         "the handle renders whole, never clipped: {out}"
     );
-    assert!(
-        out.contains("Easy Anti-Cheat"),
-        "and so does the last column: {out}"
+    let final_anchor =
+        2 + 1 + 4 + handle.len() + 4 + "needs a target".len() + 4 + "Unity, Unreal?".len() + 4;
+    assert_eq!(
+        target_row_final_value(&out, handle, final_anchor),
+        "Easy Anti-Cheat?",
+        "last-column value survives hanging continuation: {out}"
+    );
+    let second_handle = format!("{}z", &handle[..handle.len() - 1]);
+    assert_eq!(
+        target_row_final_value(&out, &second_handle, final_anchor),
+        "not scanned",
+        "coverage marker survives hanging continuation: {out}"
     );
     assert!(
         !out.contains("..."),

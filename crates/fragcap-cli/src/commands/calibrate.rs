@@ -3868,8 +3868,9 @@ fn run_inner(
                 return Err(error);
             }
         };
-        let newly_observed = deep_capture_api::observed_protocol_candidates(
+        let newly_observed = deep_capture_api::observed_protocol_candidates_in_windows(
             &outcome.observations,
+            &outcome.observation_windows,
             args.controlled_target,
         );
         observed_protocols = merge_protocols(&observed_protocols, &newly_observed);

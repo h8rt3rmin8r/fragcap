@@ -90,10 +90,17 @@ pub trait ProxyLease {
         None
     }
     /// Seal calibration eligibility at the exact end of the observation stage.
-    /// Adapters must explicitly assign each observation's evidence window.
+    /// Phase-aware adapters use this cutoff to qualify their retained observations.
     fn end_observation_window(&mut self, _ended_at: SystemTime) {}
     /// Independently typed native terminal counters, when the adapter owns them.
     fn terminal_diagnostics(&self) -> Option<super::ProxyDiagnostics> {
+        None
+    }
+    /// Optional exact phase evidence. None preserves the version-one raw drain contract.
+    fn drain_phase_observations(
+        &mut self,
+        _budget: Budget,
+    ) -> Option<Result<super::PhaseObservationDrain, StageFailure>> {
         None
     }
     fn stop(&mut self, budget: Budget) -> CleanupResult;

@@ -3,9 +3,9 @@
 //! One pure attempted-case projection, independent from current stored readiness.
 
 use fragcap::deep_capture::api::{
-    terminal_calibration_outcome, ArtifactStatus, CalibrationOutcome, CalibrationPhase,
+    terminal_calibration_outcome_in_windows, ArtifactStatus, CalibrationOutcome, CalibrationPhase,
     CleanupStatus, CompatibilityProtocol, CorrelationState, EvidenceWindow, FactWriteResult,
-    FactWriteStatus, ProxyDiagnostics, SessionOutcome, TerminalReport,
+    FactWriteStatus, ProxyDiagnostics, SessionOutcome, TerminalDiagnostics, TerminalReport,
 };
 use fragcap::deep_capture::{CaptureProcessEvidence, StageTransitionKind};
 use serde_json::{json, Value};
@@ -44,14 +44,17 @@ impl AttemptAssessment {
         protocol: CompatibilityProtocol,
         process: Option<&CaptureProcessEvidence>,
         retained_target_packets: Option<u64>,
+        diagnostics: Option<&TerminalDiagnostics>,
     ) -> Self {
         let snapshot = &report.snapshot;
         let interrupted = snapshot.outcome == SessionOutcome::Interrupted;
         let failed = !snapshot.failures.is_empty();
-        let outcome = terminal_calibration_outcome(
+        let windows = diagnostics.map_or(&[][..], |value| value.observation_windows.as_slice());
+        let outcome = terminal_calibration_outcome_in_windows(
             phase,
             protocol,
             &snapshot.observations,
+            windows,
             interrupted,
             failed,
         );
@@ -104,7 +107,7 @@ impl AttemptAssessment {
             reason: "evidence-inconclusive",
             earliest_boundary: "unavailable",
             outcome,
-            proxy: snapshot.proxy_diagnostics.as_deref().cloned(),
+            proxy: diagnostics.and_then(|value| value.proxy.clone()),
             observation_records: 0,
             owner_release_records: 0,
             unavailable_window_records: 0,
@@ -124,8 +127,12 @@ impl AttemptAssessment {
             fact_failed: 0,
             failed_fact_writes: Vec::new(),
         };
-        for observation in &snapshot.observations {
-            match observation.evidence_window {
+        for (index, observation) in snapshot.observations.iter().enumerate() {
+            let window = windows
+                .get(index)
+                .copied()
+                .unwrap_or(EvidenceWindow::Unavailable);
+            match window {
                 EvidenceWindow::Observation => value.observation_records += 1,
                 EvidenceWindow::OwnerRelease => value.owner_release_records += 1,
                 _ => value.unavailable_window_records += 1,
@@ -136,7 +143,7 @@ impl AttemptAssessment {
                 CorrelationState::Ambiguous => value.ambiguous_records += 1,
                 CorrelationState::Unavailable => value.unavailable_correlation_records += 1,
             }
-            if observation.evidence_window == EvidenceWindow::Observation
+            if window == EvidenceWindow::Observation
                 && (fragcap::deep_capture::observation_is_correlated_to_final_client(observation)
                     || snapshot.controlled
                         && observation.role.as_deref() == Some("client")
@@ -194,38 +201,7 @@ impl AttemptAssessment {
     }
 
     pub(crate) fn json(&self) -> Value {
-        let proxy = self.proxy.as_ref().map(|proxy| json!({
-            "accepted_connections": proxy.accepted_connections,
-            "authenticated_connections": proxy.authenticated_connections,
-            "authentication_refused": proxy.authentication_refused,
-            "saturated_connections": proxy.saturated_connections,
-            "completed_connections": proxy.completed_connections,
-            "failed_connections": proxy.failed_connections,
-            "forced_connections": proxy.forced_connections,
-            "live_connections": proxy.live_connections,
-            "incomplete_connections": proxy.incomplete_connections,
-            "connections_reconcile": proxy.connections_reconcile(),
-            "terminal_details_reconcile": proxy.terminal_details_reconcile(),
-            "causes_reconcile": proxy.causes_reconcile(),
-            "http1_exchanges_completed": proxy.http1_exchanges_completed,
-            "http2_streams_completed": proxy.http2_streams_completed,
-            "http3_streams_completed": proxy.http3_streams_completed,
-            "response_heads": proxy.response_heads,
-            "connection_details_lost": proxy.connection_details_lost,
-            "connection_details_unavailable": proxy.connection_details_unavailable,
-            "failure_details_lost": proxy.failure_details_lost,
-            "observations_lost": proxy.observations_lost,
-            "causes": {
-                "authentication": proxy.causes.authentication, "protocol": proxy.causes.protocol,
-                "transport": proxy.causes.transport, "upstream": proxy.causes.upstream,
-                "timeout": proxy.causes.timeout, "cancelled": proxy.causes.cancelled,
-                "unavailable": proxy.causes.unavailable,
-            },
-            "connections": proxy.connections.iter().map(|record| json!({
-                "connection_id": record.connection_id, "terminal": record.terminal,
-                "category": record.cause.map(|cause| cause.as_str()), "code": record.code,
-            })).collect::<Vec<_>>(),
-        }));
+        let proxy = self.proxy.as_ref().map(proxy_json);
         json!({
             "schema_version": 1, "verdict": self.verdict, "reason": self.reason,
             "outcome": self.outcome.to_string(), "earliest_boundary": self.earliest_boundary,
@@ -251,6 +227,55 @@ impl AttemptAssessment {
             }).collect::<Vec<_>>(),
         })
     }
+}
+
+fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
+    json!({
+        "accepted_connections": proxy.accepted_connections,
+        "authenticated_connections": proxy.authenticated_connections,
+        "authentication_refused": proxy.authentication_refused,
+        "saturated_connections": proxy.saturated_connections,
+        "completed_connections": proxy.completed_connections,
+        "failed_connections": proxy.failed_connections,
+        "forced_connections": proxy.forced_connections,
+        "live_connections": proxy.live_connections,
+        "incomplete_connections": proxy.incomplete_connections,
+        "connections_reconcile": proxy.connections_reconcile(),
+        "terminal_details_reconcile": proxy.terminal_details_reconcile(),
+        "causes_reconcile": proxy.causes_reconcile(),
+        "http1_exchanges_completed": proxy.http1_exchanges_completed,
+        "http2_streams_completed": proxy.http2_streams_completed,
+        "http3_streams_completed": proxy.http3_streams_completed,
+        "response_heads": proxy.response_heads,
+        "connection_details_lost": proxy.connection_details_lost,
+        "connection_details_unavailable": proxy.connection_details_unavailable,
+        "failure_details_lost": proxy.failure_details_lost,
+        "observations_lost": proxy.observations_lost,
+        "causes": {
+            "authentication": proxy.causes.authentication, "protocol": proxy.causes.protocol,
+            "transport": proxy.causes.transport, "upstream": proxy.causes.upstream,
+            "timeout": proxy.causes.timeout, "cancelled": proxy.causes.cancelled,
+            "unavailable": proxy.causes.unavailable,
+        },
+        "connections": proxy.connections.iter().map(|record| json!({
+            "connection_id": record.connection_id, "terminal": record.terminal,
+            "category": record.cause.map(|cause| cause.as_str()), "code": record.code,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+pub(crate) fn diagnostics_json(value: &TerminalDiagnostics) -> Value {
+    let nanos = |time: Option<std::time::SystemTime>| {
+        time.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos().to_string())
+    };
+    json!({
+        "schema_version": 1,
+        "proxy": value.proxy.as_ref().map(proxy_json),
+        "observation_windows": value.observation_windows.iter().map(|window| window.as_str()).collect::<Vec<_>>(),
+        "observation_ended_at_unix_ns": nanos(value.evidence_windows.observation_ended_at),
+        "owner_release_ended_at_unix_ns": nanos(value.evidence_windows.owner_release_ended_at),
+    })
 }
 
 fn earliest_boundary(
@@ -453,21 +478,6 @@ mod tests {
                 observations: Vec::new(),
                 classification_records_lost: 0,
                 application_classification_summary: None,
-                proxy_diagnostics: Some(Box::new(ProxyDiagnostics {
-                    accepted_connections: 6,
-                    authenticated_connections: 1,
-                    failed_connections: 6,
-                    http1_exchanges_completed: 7,
-                    response_heads: 7,
-                    connection_details_unavailable: 6,
-                    causes: ProxyCauseCounts {
-                        protocol: 5,
-                        timeout: 1,
-                        ..ProxyCauseCounts::default()
-                    },
-                    ..ProxyDiagnostics::default()
-                })),
-                evidence_windows: EvidenceWindows::default(),
                 route_verification: None,
                 failures: Vec::new(),
                 fact_writes: Vec::new(),
@@ -484,9 +494,29 @@ mod tests {
         }
     }
 
-    fn observation(window: EvidenceWindow, owner: Option<&str>) -> CompatibilityObservation {
+    fn diagnostics(observation_windows: Vec<EvidenceWindow>) -> TerminalDiagnostics {
+        TerminalDiagnostics {
+            proxy: Some(ProxyDiagnostics {
+                accepted_connections: 6,
+                authenticated_connections: 1,
+                failed_connections: 6,
+                http1_exchanges_completed: 7,
+                response_heads: 7,
+                connection_details_unavailable: 6,
+                causes: ProxyCauseCounts {
+                    protocol: 5,
+                    timeout: 1,
+                    ..ProxyCauseCounts::default()
+                },
+                ..ProxyDiagnostics::default()
+            }),
+            evidence_windows: EvidenceWindows::default(),
+            observation_windows,
+        }
+    }
+
+    fn observation(owner: Option<&str>) -> CompatibilityObservation {
         CompatibilityObservation {
-            evidence_window: window,
             flow_id: None,
             proxy_connection_id: "1".into(),
             client_peer: None,
@@ -519,7 +549,7 @@ mod tests {
     #[test]
     fn exchange_success_missing_ownership_partial_process_and_cleanup_are_separate() {
         let mut report = report();
-        report.snapshot.observations = vec![observation(EvidenceWindow::Observation, None); 7];
+        report.snapshot.observations = vec![observation(None); 7];
         let process = CaptureProcessEvidence {
             events_unretained: 3,
             ..CaptureProcessEvidence::default()
@@ -530,6 +560,7 @@ mod tests {
             CompatibilityProtocol::Routing,
             Some(&process),
             Some(0),
+            Some(&diagnostics(vec![EvidenceWindow::Observation; 7])),
         );
         assert_eq!(assessment.verdict, "inconclusive");
         assert_eq!(assessment.reason, "final-client-correlation-missing");
@@ -550,19 +581,20 @@ mod tests {
     #[test]
     fn late_only_and_mixed_ownership_never_authorize_an_earlier_attempt() {
         let mut report = report();
-        let mut late = observation(EvidenceWindow::OwnerRelease, Some("client"));
+        let mut late = observation(Some("client"));
         late.attribution = Some("controlled-harness".into());
         report.snapshot.controlled = true;
-        report.snapshot.observations = vec![
-            late,
-            observation(EvidenceWindow::Observation, Some("launcher")),
-        ];
+        report.snapshot.observations = vec![late, observation(Some("launcher"))];
         let assessment = AttemptAssessment::from_report(
             &report,
             CalibrationPhase::Reachability,
             CompatibilityProtocol::Routing,
             None,
             None,
+            Some(&diagnostics(vec![
+                EvidenceWindow::OwnerRelease,
+                EvidenceWindow::Observation,
+            ])),
         );
         assert_eq!(assessment.final_client_records, 0);
         assert_eq!(assessment.owner_release_records, 1);
@@ -592,6 +624,7 @@ mod tests {
             CompatibilityProtocol::Routing,
             None,
             None,
+            Some(&diagnostics(Vec::new())),
         );
         assert_eq!(attempt.verdict, "inconclusive");
         assert_eq!(
@@ -620,6 +653,30 @@ mod tests {
             StoredCaseAssessment::from_facts(8, &current, &facts).verdict,
             "calibrated"
         );
+    }
+
+    #[test]
+    fn absent_phase_metadata_cannot_authorize_retained_controlled_success() {
+        let mut report = report();
+        report.snapshot.controlled = true;
+        let mut raw = observation(Some("client"));
+        raw.attribution = Some("controlled-harness".into());
+        report.snapshot.observations = vec![raw];
+        let assessment = AttemptAssessment::from_report(
+            &report,
+            CalibrationPhase::Reachability,
+            CompatibilityProtocol::Routing,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(assessment.final_client_records, 0);
+        assert_eq!(assessment.unavailable_window_records, 1);
+        assert_eq!(assessment.verdict, "inconclusive");
+        let metadata = diagnostics(vec![EvidenceWindow::OwnerRelease]);
+        let json = diagnostics_json(&metadata);
+        assert_eq!(json["observation_windows"], json!(["owner-release"]));
+        assert!(json["observation_ended_at_unix_ns"].is_null());
     }
 
     #[test]
@@ -654,6 +711,7 @@ mod tests {
             CompatibilityProtocol::Routing,
             None,
             None,
+            Some(&diagnostics(Vec::new())),
         );
         assert_eq!(assessment.verdict, "interrupted");
         assert_eq!(assessment.cleanup, "unresolved");
@@ -699,6 +757,7 @@ mod tests {
             CompatibilityProtocol::Routing,
             None,
             None,
+            Some(&diagnostics(Vec::new())),
         );
         let value = assessment.json();
         assert_eq!(

@@ -166,13 +166,17 @@ fn discover_scoped_in(
         }
     }
 
-    // Read the appinfo cache once per call and build an appid lookup, rather than
-    // once per title: a missing cache (no Steam has ever fetched metadata) is not a
+    // Read the appinfo cache once per call, scanning headers but decoding only the
+    // selected app body in exact mode. A missing cache is not a
     // discovery error, matching `read_appinfo`'s own "no cache is not an error"
     // contract. A present-but-unreadable cache is surfaced as a warning (it degrades
     // every title's type resolution to the `common/` fallback, which is worth
     // knowing) but does not fail the whole walk (slice S066).
-    let appinfo_index = match crate::appinfo::read_appinfo(root) {
+    let appinfo = match selected_app {
+        Some(appid) => crate::appinfo::read_appinfo_selected(root, appid),
+        None => crate::appinfo::read_appinfo(root),
+    };
+    let appinfo_index = match appinfo {
         Ok(parse) => {
             // A section that failed to decode is one app whose type could not be
             // read; it is absent from the index (so that one app falls back to
@@ -486,6 +490,59 @@ mod tests {
         let broad = discover_in(root).unwrap();
         assert_eq!(broad.malformed_manifests, 1);
         assert!(!broad.warnings.is_empty());
+    }
+
+    #[test]
+    fn exact_app_lookup_decodes_selected_cache_body_and_keeps_relevant_faults() {
+        use crate::appinfo::fixtures::{
+            appinfo_bytes_with_bad_section, FixtureApp, FixtureLaunch, V28, V29,
+        };
+        for version in [V28, V29] {
+            let tree = TempTree::new();
+            let root = tree.path();
+            for appid in [620, 999] {
+                tree.write(
+                    &root.join(format!("steamapps/appmanifest_{appid}.acf")),
+                    &manifest(&appid.to_string(), "Fixture", "Fixture"),
+                );
+            }
+            let bytes = appinfo_bytes_with_bad_section(
+                version,
+                &[
+                    FixtureApp {
+                        appid: 999,
+                        change_number: 1,
+                        common_type: Some("Music".into()),
+                        launch: Vec::new(),
+                    },
+                    FixtureApp {
+                        appid: 620,
+                        change_number: 1,
+                        common_type: Some("Game".into()),
+                        launch: vec![FixtureLaunch::windows("selected.exe")],
+                    },
+                ],
+                0,
+            );
+            tree.write_bytes(&root.join("appcache/appinfo.vdf"), &bytes);
+            let selected = discover_app_in(root, 620).unwrap();
+            assert!(selected.warnings.is_empty(), "{:?}", selected.warnings);
+            assert_eq!(selected.titles.len(), 1);
+            assert_eq!(selected.titles[0].app_type.as_deref(), Some("Game"));
+            assert_eq!(
+                selected.titles[0].launch_executable.as_deref(),
+                Some("selected.exe")
+            );
+            let malformed_selected = discover_app_in(root, 999).unwrap();
+            assert_eq!(malformed_selected.titles[0].app_type, None);
+            assert_eq!(malformed_selected.warnings.len(), 1);
+            assert!(malformed_selected.warnings[0].contains("section for app 999"));
+            assert!(discover_in(root)
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("section for app 999")));
+        }
     }
 
     #[test]

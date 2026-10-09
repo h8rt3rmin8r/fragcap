@@ -133,6 +133,7 @@ impl PreparedSession {
             observations: Vec::new(),
             proxy_diagnostics: None,
             evidence_windows: EvidenceWindows::default(),
+            observation_windows: Vec::new(),
             classification_records_lost: 0,
             application_classification_summary: None,
             failures: Vec::new(),
@@ -168,6 +169,7 @@ pub struct DeepCaptureSession<'a> {
     observations: Vec<CompatibilityObservation>,
     proxy_diagnostics: Option<ProxyDiagnostics>,
     evidence_windows: EvidenceWindows,
+    observation_windows: Vec<EvidenceWindow>,
     classification_records_lost: u64,
     application_classification_summary: Option<ClassificationSummary>,
     failures: Vec<StageFailure>,
@@ -853,7 +855,27 @@ impl DeepCaptureSession<'_> {
                     .shutdown
                     .saturating_sub(elapsed.saturating_sub(started)),
             );
-            match proxy.drain_observations(budget) {
+            let drain = proxy.drain_phase_observations(budget).unwrap_or_else(|| {
+                proxy.drain_observations(budget).map(|raw| {
+                    let (observations, status) = raw.into_parts();
+                    let observations = observations
+                        .into_iter()
+                        .map(|observation| PhaseQualifiedObservation {
+                            observation,
+                            evidence_window: EvidenceWindow::Observation,
+                        })
+                        .collect();
+                    match status {
+                        ObservationDrainStatus::Complete => {
+                            PhaseObservationDrain::complete(observations)
+                        }
+                        ObservationDrainStatus::Incomplete { code, detail } => {
+                            PhaseObservationDrain::incomplete(observations, code, detail)
+                        }
+                    }
+                })
+            });
+            match drain {
                 Ok(drain) => {
                     self.classification_records_lost = self
                         .classification_records_lost
@@ -861,7 +883,7 @@ impl DeepCaptureSession<'_> {
                     self.application_classification_summary =
                         proxy.application_classification_summary();
                     let (observations, status) = drain.into_parts();
-                    self.extend_observations(observations);
+                    self.extend_phase_observations(observations);
                     if let ObservationDrainStatus::Incomplete { code, detail } = status {
                         self.fail(Stage::Observe, code, detail);
                     }
@@ -884,11 +906,22 @@ impl DeepCaptureSession<'_> {
             let eligible = self
                 .observations
                 .iter()
-                .filter(|observation| observation.evidence_window == EvidenceWindow::Observation)
+                .zip(&self.observation_windows)
+                .filter(|(_, window)| **window == EvidenceWindow::Observation)
+                .map(|(observation, _)| observation)
                 .cloned()
                 .collect::<Vec<_>>();
             self.route_verification = Some(routing.verify(&eligible));
         }
+        self.emit(DeepCaptureEvent::Diagnostics {
+            sequence: 0,
+            session_id: self.plan.session_id.clone(),
+            diagnostics: Box::new(TerminalDiagnostics {
+                proxy: self.proxy_diagnostics.clone(),
+                evidence_windows: self.evidence_windows.clone(),
+                observation_windows: self.observation_windows.clone(),
+            }),
+        });
         self.transition(LifecycleState::Stopped);
         Ok(())
     }
@@ -1085,13 +1118,30 @@ impl DeepCaptureSession<'_> {
     }
 
     fn extend_observations(&mut self, observations: Vec<CompatibilityObservation>) {
-        for observation in observations {
+        self.extend_phase_observations(
+            observations
+                .into_iter()
+                .map(|observation| PhaseQualifiedObservation {
+                    observation,
+                    evidence_window: EvidenceWindow::Observation,
+                })
+                .collect(),
+        );
+    }
+
+    fn extend_phase_observations(&mut self, observations: Vec<PhaseQualifiedObservation>) {
+        for PhaseQualifiedObservation {
+            observation,
+            evidence_window,
+        } in observations
+        {
             self.emit(DeepCaptureEvent::Observation {
                 sequence: 0,
                 session_id: self.plan.session_id.clone(),
                 observation: observation.clone(),
             });
             self.observations.push(observation);
+            self.observation_windows.push(evidence_window);
         }
     }
 
@@ -1100,7 +1150,9 @@ impl DeepCaptureSession<'_> {
             return;
         }
         self.facts_persisted = true;
-        for fact in facts_from_observations(&self.plan, &self.observations) {
+        for fact in
+            facts_from_observations(&self.plan, &self.observations, &self.observation_windows)
+        {
             let status = self.adapters.facts.append(&self.plan.target, &fact);
             if let FactWriteStatus::Failed { code, detail } = &status {
                 self.fail(Stage::Facts, code.clone(), detail.clone());
@@ -1518,8 +1570,6 @@ impl DeepCaptureSession<'_> {
             SessionOutcome::Partial
         };
         TerminalSnapshot {
-            proxy_diagnostics: self.proxy_diagnostics.clone().map(Box::new),
-            evidence_windows: self.evidence_windows.clone(),
             session_id: self.plan.session_id.clone(),
             plan_id: self.plan.id.clone(),
             target: self.plan.target.clone(),
@@ -1676,15 +1726,17 @@ fn cap_deadlines(deadlines: Deadlines) -> Deadlines {
 fn facts_from_observations(
     plan: &SessionPlan,
     observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
 ) -> Vec<CompatibilityFact> {
     let calibration = match plan.mode {
         SessionMode::Capture => None,
         SessionMode::ReachabilityCalibration => Some(CalibrationPhase::Reachability),
         SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
     };
-    compatibility_fact_candidates(
+    compatibility_fact_candidates_in_windows(
         plan.target.launch_case.as_str(),
         observations,
+        windows,
         plan.controlled,
         calibration,
         plan.calibration_protocol,
@@ -1743,5 +1795,14 @@ fn with_sequence(event: DeepCaptureEvent, sequence: u64) -> DeepCaptureEvent {
         DeepCaptureEvent::Terminal { report, .. } => {
             DeepCaptureEvent::Terminal { sequence, report }
         }
+        DeepCaptureEvent::Diagnostics {
+            session_id,
+            diagnostics,
+            ..
+        } => DeepCaptureEvent::Diagnostics {
+            sequence,
+            session_id,
+            diagnostics,
+        },
     }
 }

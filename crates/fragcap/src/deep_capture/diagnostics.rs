@@ -34,6 +34,71 @@ pub struct EvidenceWindows {
     pub owner_release_ended_at: Option<SystemTime>,
 }
 
+/// Additive timing qualification of an unchanged version-one observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhaseQualifiedObservation {
+    pub observation: super::CompatibilityObservation,
+    pub evidence_window: EvidenceWindow,
+}
+
+/// Optional phase-qualified terminal collection, preserving the legacy drain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhaseObservationDrain {
+    observations: Vec<PhaseQualifiedObservation>,
+    status: super::ObservationDrainStatus,
+}
+
+impl PhaseObservationDrain {
+    pub fn complete(observations: Vec<PhaseQualifiedObservation>) -> Self {
+        Self {
+            observations,
+            status: super::ObservationDrainStatus::Complete,
+        }
+    }
+    pub fn incomplete(
+        observations: Vec<PhaseQualifiedObservation>,
+        code: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            observations,
+            status: super::ObservationDrainStatus::Incomplete {
+                code: code.into(),
+                detail: detail.into(),
+            },
+        }
+    }
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<PhaseQualifiedObservation>,
+        super::ObservationDrainStatus,
+    ) {
+        (self.observations, self.status)
+    }
+    pub(crate) fn into_raw(self) -> super::ObservationDrain {
+        let raw = self
+            .observations
+            .into_iter()
+            .map(|value| value.observation)
+            .collect();
+        match self.status {
+            super::ObservationDrainStatus::Complete => super::ObservationDrain::complete(raw),
+            super::ObservationDrainStatus::Incomplete { code, detail } => {
+                super::ObservationDrain::incomplete(raw, code, detail)
+            }
+        }
+    }
+}
+
+/// Additive terminal metadata. Window indices match the retained raw snapshot.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TerminalDiagnostics {
+    pub proxy: Option<ProxyDiagnostics>,
+    pub evidence_windows: EvidenceWindows,
+    pub observation_windows: Vec<EvidenceWindow>,
+}
+
 /// A bounded terminal connection record containing only a stable code and identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyConnectionDiagnostic {

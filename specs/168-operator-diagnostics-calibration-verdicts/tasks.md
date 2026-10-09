@@ -56,7 +56,7 @@
 - [x] T024 Update AGENTS.md, CONVENTIONS.md, CONTRIBUTING.md, docs/fragcap-specification.md, public help/guides/examples, glossary as needed and changelog.d/S168.*.md with operator output/diagnosis contracts (FR-013).
 - [x] T025 Audit every original criterion and complete specs/168-operator-diagnostics-calibration-verdicts/issue-acceptance.md with source and controlled verification evidence; sanity-check UTF-8/no BOM/mojibake and final renderer inventory (FR-001 through FR-014).
 - [x] T026 Run focused owning regressions and full cargo xtask ci plus applicable generated API/documentation gates, watched to completion; record exact results in specs/168-operator-diagnostics-calibration-verdicts/verification.md (FR-014).
-- [ ] T027 Commit only S168 files with changelog fragments, automatically push codex/s168-operator-diagnostics-calibration-verdicts and publish/attach one official PR closing the fully satisfied scoped issues (FR-014).
+- [x] T027 Commit only S168 files with changelog fragments, automatically push codex/s168-operator-diagnostics-calibration-verdicts and publish/attach one official PR closing the fully satisfied scoped issues (FR-014).
 - [ ] T028 Resolve every Codex/security review comment/thread and hosted CI failure, trigger at most one additional Codex round, verify green checks and review satisfaction on the final exact head, then hand off for owner review/merge (FR-014).
 
 ## Dependencies and parallel execution

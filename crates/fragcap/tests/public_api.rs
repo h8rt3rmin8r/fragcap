@@ -23,7 +23,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 #[test]
 fn version_one_inventory_is_curated_and_sorted() {
     assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 148);
+    assert_eq!(STABLE_API_EXPORTS.len(), 154);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
@@ -37,6 +37,9 @@ fn version_one_inventory_is_curated_and_sorted() {
         "DeepCapture",
         "EvidenceWindow",
         "EvidenceWindows",
+        "PhaseQualifiedObservation",
+        "PhaseObservationDrain",
+        "TerminalDiagnostics",
         "NativeProxyAdapter",
         "PreparedNativeAuthority",
         "PreparedSession",
@@ -54,6 +57,9 @@ fn version_one_inventory_is_curated_and_sorted() {
         "TrafficFamily",
         "TrustError",
         "observed_protocol_candidates",
+        "observed_protocol_candidates_in_windows",
+        "compatibility_fact_candidates_in_windows",
+        "terminal_calibration_outcome_in_windows",
         "assess_calibration_evidence",
         "propose_calibration",
     ] {
@@ -189,4 +195,66 @@ fn cli_product_contract_does_not_bypass_the_stable_module() {
             "CLI bypasses the stable API for {stable_name}"
         );
     }
+}
+
+#[test]
+fn version_one_plain_struct_literals_remain_source_compatible() {
+    use fragcap::deep_capture::api::*;
+    let observation = CompatibilityObservation {
+        flow_id: None,
+        proxy_connection_id: "legacy".into(),
+        client_peer: None,
+        proxy_local: None,
+        observed_at: "42".into(),
+        process_id: None,
+        process_image: None,
+        role: None,
+        attribution: None,
+        packet_observations: 0,
+        packet_observations_unretained: 0,
+        correlation_state: CorrelationState::Unavailable,
+        correlation_reason: "not-observed".into(),
+        protocol: "http".into(),
+        inspectability: Inspectability::Full,
+        method: Some("GET".into()),
+        url: None,
+        status: Some(200),
+        reason: None,
+        classification: ProtocolClassification::new(
+            TrafficFamily::Http1,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap(),
+    };
+    let snapshot = TerminalSnapshot {
+        session_id: "legacy".into(),
+        plan_id: PlanId::new("legacy-plan"),
+        target: PreparedTarget {
+            id: 7,
+            handle: "legacy".into(),
+            launch_case: LaunchCase::Controlled,
+        },
+        mode: SessionMode::ReachabilityCalibration,
+        controlled: true,
+        artifacts: ArtifactRequests {
+            har: false,
+            key_log: false,
+            sensitive_retention: SensitiveRetention::Retain,
+        },
+        outcome: SessionOutcome::Complete,
+        lifecycle_transitions: Vec::new(),
+        observations: vec![observation],
+        classification_records_lost: 0,
+        application_classification_summary: None,
+        route_verification: None,
+        failures: Vec::new(),
+        fact_writes: Vec::new(),
+        cleanup: Vec::new(),
+        deadlines: Deadlines::default(),
+        finished_at: std::time::SystemTime::UNIX_EPOCH,
+    };
+    assert_eq!(snapshot.observations[0].proxy_connection_id, "legacy");
+    assert_eq!(snapshot.classification_summary().observations, 1);
 }

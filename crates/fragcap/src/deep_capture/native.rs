@@ -570,7 +570,7 @@ impl NativeProxyLease {
     fn collect_observation_drain(
         &mut self,
         budget: Budget,
-    ) -> Result<ObservationDrain, StageFailure> {
+    ) -> Result<super::PhaseObservationDrain, StageFailure> {
         let observation = self
             .lease
             .observation(budget.remaining())
@@ -605,9 +605,9 @@ impl NativeProxyLease {
         self.diagnostics = Some(super::ProxyDiagnostics::from_runtime(&observation));
         let observations = self.map_observations(observation.application);
         if complete {
-            Ok(ObservationDrain::complete(observations))
+            Ok(super::PhaseObservationDrain::complete(observations))
         } else {
-            Ok(ObservationDrain::incomplete(
+            Ok(super::PhaseObservationDrain::incomplete(
                 observations,
                 "observation-drain-incomplete",
                 incomplete_detail.expect("incomplete detail exists for an incomplete drain"),
@@ -618,7 +618,7 @@ impl NativeProxyLease {
     fn map_observations(
         &self,
         observations: Vec<fragcap_proxy::ProxyObservation>,
-    ) -> Vec<CompatibilityObservation> {
+    ) -> Vec<super::PhaseQualifiedObservation> {
         observations
             .into_iter()
             .map(|value| {
@@ -679,28 +679,30 @@ impl NativeProxyLease {
                     value.inspectability,
                     reason.as_deref(),
                 );
-                CompatibilityObservation {
+                super::PhaseQualifiedObservation {
                     evidence_window,
-                    flow_id,
-                    proxy_connection_id: value.connection_id.to_string(),
-                    client_peer: Some(value.client_peer),
-                    proxy_local: Some(value.proxy_local),
-                    observed_at: value.timestamp_ns.to_string(),
-                    process_id,
-                    process_image,
-                    role,
-                    attribution,
-                    packet_observations,
-                    packet_observations_unretained,
-                    correlation_state,
-                    correlation_reason,
-                    protocol,
-                    inspectability,
-                    method: value.method,
-                    url: value.url,
-                    status: value.status,
-                    reason,
-                    classification,
+                    observation: CompatibilityObservation {
+                        flow_id,
+                        proxy_connection_id: value.connection_id.to_string(),
+                        client_peer: Some(value.client_peer),
+                        proxy_local: Some(value.proxy_local),
+                        observed_at: value.timestamp_ns.to_string(),
+                        process_id,
+                        process_image,
+                        role,
+                        attribution,
+                        packet_observations,
+                        packet_observations_unretained,
+                        correlation_state,
+                        correlation_reason,
+                        protocol,
+                        inspectability,
+                        method: value.method,
+                        url: value.url,
+                        status: value.status,
+                        reason,
+                        classification,
+                    },
                 }
             })
             .collect()
@@ -732,11 +734,19 @@ impl ProxyLease for NativeProxyLease {
         budget: Budget,
     ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
         self.collect_observation_drain(budget)
-            .map(|drain| drain.into_parts().0)
+            .map(|drain| drain.into_raw().into_parts().0)
     }
 
     fn drain_observations(&mut self, budget: Budget) -> Result<ObservationDrain, StageFailure> {
         self.collect_observation_drain(budget)
+            .map(super::PhaseObservationDrain::into_raw)
+    }
+
+    fn drain_phase_observations(
+        &mut self,
+        budget: Budget,
+    ) -> Option<Result<super::PhaseObservationDrain, StageFailure>> {
+        Some(self.collect_observation_drain(budget))
     }
 
     fn observations_lost(&self) -> u64 {

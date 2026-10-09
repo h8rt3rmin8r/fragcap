@@ -314,7 +314,11 @@ pub enum Event {
         family: String,
         detection: String,
         classification_reason: Option<String>,
-        evidence_window: String,
+    },
+    /// Additive terminal diagnostics, with windows indexed to retained observations.
+    DeepCaptureDiagnostics {
+        session_id: String,
+        diagnostics: serde_json::Value,
     },
     /// Deep Capture wrote a bundle artifact.
     DeepCaptureBundle {
@@ -410,6 +414,7 @@ impl Event {
             Event::DeepCaptureTrust { .. } => "deep_capture.trust",
             Event::DeepCaptureLaunch { .. } => "deep_capture.launch",
             Event::DeepCaptureApplication { .. } => "deep_capture.application",
+            Event::DeepCaptureDiagnostics { .. } => "deep_capture.diagnostics",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
             Event::DeepCaptureComplete { .. } => "deep_capture.complete",
@@ -1096,10 +1101,7 @@ impl Event {
                 family,
                 detection,
                 classification_reason,
-                evidence_window,
             } => {
-                line.push_str(",\"evidence_window\":");
-                write_json_string(evidence_window, &mut line);
                 line.push_str(",\"session_id\":");
                 write_json_string(session_id, &mut line);
                 line.push_str(",\"flow_id\":");
@@ -1126,6 +1128,15 @@ impl Event {
                 } else {
                     line.push_str("null");
                 }
+            }
+            Event::DeepCaptureDiagnostics {
+                session_id,
+                diagnostics,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"diagnostics\":");
+                line.push_str(&diagnostics.to_string());
             }
             Event::DeepCaptureBundle {
                 session_id,

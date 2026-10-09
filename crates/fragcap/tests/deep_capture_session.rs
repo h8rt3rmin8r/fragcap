@@ -111,7 +111,6 @@ impl ProxyLease for ProxyRun {
     fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
         self.0.borrow_mut().push("proxy.observe".into());
         Ok(vec![CompatibilityObservation {
-            evidence_window: EvidenceWindow::Observation,
             flow_id: fragcap::FlowId::new(9),
             proxy_connection_id: "proxy-1".into(),
             client_peer: None,
@@ -1673,11 +1672,23 @@ impl ProxyLease for LateObservationProxyRun {
         &mut self,
         budget: Budget,
     ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
-        let mut observations = ProxyRun(self.0.clone()).observations(budget)?;
-        for observation in &mut observations {
-            observation.evidence_window = EvidenceWindow::OwnerRelease;
-        }
-        Ok(observations)
+        ProxyRun(self.0.clone()).observations(budget)
+    }
+    fn drain_phase_observations(
+        &mut self,
+        budget: Budget,
+    ) -> Option<Result<PhaseObservationDrain, StageFailure>> {
+        Some(self.observations(budget).map(|observations| {
+            PhaseObservationDrain::complete(
+                observations
+                    .into_iter()
+                    .map(|observation| PhaseQualifiedObservation {
+                        observation,
+                        evidence_window: EvidenceWindow::OwnerRelease,
+                    })
+                    .collect(),
+            )
+        }))
     }
     fn end_observation_window(&mut self, _: SystemTime) {
         self.0
@@ -1705,26 +1716,23 @@ fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(LateObservationProxy(ledger.clone()));
+    let captured = Rc::new(RefCell::new(None));
+    environment.events = Box::new(DiagnosticEvents(captured.clone(), ledger.clone()));
     let report = run_with(environment);
     assert_eq!(report.snapshot.observations.len(), 1);
+    let diagnostics = captured.borrow().clone().unwrap();
     assert_eq!(
-        report.snapshot.observations[0].evidence_window,
-        EvidenceWindow::OwnerRelease
+        diagnostics.observation_windows,
+        vec![EvidenceWindow::OwnerRelease]
     );
-    assert!(report
-        .snapshot
-        .evidence_windows
-        .observation_ended_at
-        .is_some());
-    assert!(report
-        .snapshot
+    assert!(diagnostics.evidence_windows.observation_ended_at.is_some());
+    assert!(diagnostics
         .evidence_windows
         .owner_release_ended_at
         .is_some());
     assert_eq!(
-        report
-            .snapshot
-            .proxy_diagnostics
+        diagnostics
+            .proxy
             .as_ref()
             .unwrap()
             .http1_exchanges_completed,
@@ -1738,10 +1746,11 @@ fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
             || write.fact.value == "reached-client"
             || write.fact.value == "local-ca-accepted"));
     assert_eq!(
-        terminal_calibration_outcome(
+        terminal_calibration_outcome_in_windows(
             CalibrationPhase::Tls,
             fragcap::targets::CompatibilityProtocol::Https,
             &report.snapshot.observations,
+            &diagnostics.observation_windows,
             false,
             false
         ),
@@ -1757,6 +1766,35 @@ fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
         .position(|event| event == "capture.release_route_owners")
         .unwrap();
     assert!(cutoff < release);
+    let diagnostics_event = events
+        .iter()
+        .position(|event| event == "event.diagnostics")
+        .unwrap();
+    assert!(
+        diagnostics_event
+            < events
+                .iter()
+                .position(|event| event == "fact.append")
+                .unwrap()
+    );
+    assert!(
+        diagnostics_event
+            < events
+                .iter()
+                .position(|event| event == "artifact.compatibility")
+                .unwrap()
+    );
+}
+
+struct DiagnosticEvents(Rc<RefCell<Option<TerminalDiagnostics>>>, Ledger);
+impl EventSink for DiagnosticEvents {
+    fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
+        if let DeepCaptureEvent::Diagnostics { diagnostics, .. } = event {
+            *self.0.borrow_mut() = Some((**diagnostics).clone());
+            self.1.borrow_mut().push("event.diagnostics".into());
+        }
+        Events(self.1.clone()).emit(event)
+    }
 }
 
 #[test]
