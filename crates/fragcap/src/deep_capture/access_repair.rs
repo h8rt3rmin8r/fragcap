@@ -524,6 +524,7 @@ fn auxiliary_paths() -> BTreeSet<PathBuf> {
         MANIFEST_PREFIX,
         RESOURCE_JOURNAL,
         ".sensitive-actions.jsonl",
+        ".session-retention.json",
         "capture.fcapng",
         "application.jsonl",
         "proxy.jsonl",

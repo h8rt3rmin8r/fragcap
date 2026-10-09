@@ -576,6 +576,13 @@ pub struct DeepCaptureArgs {
     #[arg(long, help_heading = "Custom storage")]
     pub bundle: Option<PathBuf>,
 
+    /// Retain generated session evidence until explicit cleanup.
+    ///
+    /// Default generated history uses 30 days, 20 completed sessions and 2 GiB.
+    /// Explicit --bundle destinations are always retained.
+    #[arg(long, help_heading = "Custom storage")]
+    pub retain_bundle: bool,
+
     /// Exact Windows SID receiving retained output in its ordinary user session.
     ///
     /// Requires an explicit bundle destination and a validated ordinary context.
@@ -682,6 +689,10 @@ pub struct CalibrateArgs {
     #[arg(long)]
     pub bundle: Option<PathBuf>,
 
+    /// Retain every generated attempt bundle until explicit cleanup.
+    #[arg(long)]
+    pub retain_bundle: bool,
+
     /// Exact Windows SID receiving all attempt output in its ordinary session.
     #[arg(long, value_name = "SID", requires = "bundle")]
     pub output_recipient: Option<String>,
@@ -738,6 +749,21 @@ pub struct BundleArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BundleCommand {
+    /// Preview or apply session content collection and separately scoped empty purge.
+    Collect {
+        /// Select one exact retained/custom bundle instead of managed root history.
+        #[arg(long)]
+        bundle: Option<PathBuf>,
+        /// Explicitly include retained evidence in the proposed deletion scope.
+        #[arg(long)]
+        include_retained: bool,
+        /// Separately request removal of eligible exact empty containers.
+        #[arg(long)]
+        purge_empty: bool,
+        /// Apply only the unchanged exact proposal from a prior preview.
+        #[arg(long, value_name = "PROPOSAL_ID")]
+        authorize: Option<String>,
+    },
     /// Inspect exact bundle permissions and ordinary-user access without changes.
     AccessInspect {
         /// The retained fragcap bundle to inspect.
@@ -1638,5 +1664,26 @@ mod tests {
         assert!(args.resume.is_none());
         assert!(args.pause_for.is_none());
         assert!(!args.controlled_target);
+    }
+
+    #[test]
+    fn session_collection_requires_explicit_scope_and_accepts_digest_authorization() {
+        assert!(Cli::try_parse_from(["fragcap", "bundle", "collect"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "fragcap",
+            "bundle",
+            "collect",
+            "--include-retained",
+            "--purge-empty",
+            "--authorize",
+            "exact-proposal",
+        ])
+        .is_ok());
+        assert!(
+            Cli::try_parse_from(["fragcap", "deep-capture", "target", "--retain-bundle",]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["fragcap", "calibrate", "target", "--retain-bundle",]).is_ok()
+        );
     }
 }

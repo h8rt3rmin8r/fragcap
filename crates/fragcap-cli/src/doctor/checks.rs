@@ -1385,6 +1385,145 @@ mod tests {
         assert!(!check.detail.contains("native residue"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn undetermined_registered_owner_is_inspection_only_without_cleanup_offer() {
+        use crate::doctor::action::{offered_actions, Capabilities};
+        use crate::doctor::residue::{inventory, ResidueHealth};
+
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("uncertain-owner");
+        let registry = root
+            .path()
+            .join(crate::doctor::residue::SESSION_OWNER_REGISTRY);
+        std::fs::create_dir(&bundle).unwrap();
+        std::fs::create_dir(&registry).unwrap();
+        let record = registry.join("legacy-local.json");
+        // An absent old Local mutex cannot prove inactivity for a still-live PID:
+        // its producer may belong to another Windows session or the PID may be reused.
+        let record_bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "bundle": bundle.canonicalize().unwrap(),
+            "owner_pid": std::process::id(),
+            "lease_id": format!("legacy-doctor-{}-{}", std::process::id(),
+                root.path().file_name().unwrap().to_string_lossy().chars()
+                    .filter(char::is_ascii_alphanumeric).collect::<String>()),
+        }))
+        .unwrap();
+        std::fs::write(&record, &record_bytes).unwrap();
+
+        let observed = inventory(Some(root.path()));
+        let owner = observed
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.resource_id == "session-owner" && finding.state == "generation-unproven"
+            })
+            .expect("unproven exact owner is retained in the inventory");
+        assert_eq!(owner.health, ResidueHealth::Unknown);
+        let report = crate::doctor::Report {
+            checks: native_residue_checks(&observed),
+        };
+        assert!(
+            offered_actions(
+                &report,
+                Capabilities {
+                    net: false,
+                    elevation: true
+                }
+            )
+            .is_empty(),
+            "Doctor must not offer an action that exact recovery cannot perform"
+        );
+        let check = report
+            .checks
+            .iter()
+            .find(|check| {
+                check
+                    .native_resource
+                    .as_ref()
+                    .is_some_and(|context| context.resource_id == "session-owner")
+            })
+            .unwrap();
+        assert!(!check.native_resource.as_ref().unwrap().recovery_eligible);
+        assert!(check
+            .human
+            .as_ref()
+            .unwrap()
+            .remediation
+            .as_ref()
+            .unwrap()
+            .contains("no exact cleanup action is available"));
+        assert_eq!(std::fs::read(record).unwrap(), record_bytes);
+        assert!(bundle.is_dir());
+
+        // Repeat the same operator-facing contract after an outstanding journal
+        // resource exists. Journal authority alone cannot establish owner inactivity.
+        use fragcap::deep_capture::{
+            read_resource_journal, ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+        let mut journal = ResourceJournal::create(&bundle, "uncertain-session", "plan").unwrap();
+        journal
+            .append(ResourceTransition::new(
+                "proxy",
+                ResourceKind::Proxy,
+                "127.0.0.1:1234",
+                "session:uncertain-session",
+                "release",
+                ResourceState::Applied,
+                "outstanding",
+            ))
+            .unwrap();
+        drop(journal);
+        let journal_path = bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL);
+        let journal_bytes = std::fs::read(&journal_path).unwrap();
+        assert!(read_resource_journal(&journal_path)
+            .unwrap()
+            .recovery_plan()
+            .actions
+            .iter()
+            .any(|action| action.resource_id == "proxy"));
+
+        let observed = inventory(Some(root.path()));
+        let resource = observed
+            .findings
+            .iter()
+            .find(|finding| finding.resource_id == "proxy")
+            .expect("outstanding journal resource remains visible");
+        assert_eq!(resource.health, ResidueHealth::Unknown);
+        let report = crate::doctor::Report {
+            checks: native_residue_checks(&observed),
+        };
+        assert!(
+            offered_actions(
+                &report,
+                Capabilities {
+                    net: false,
+                    elevation: true
+                }
+            )
+            .is_empty(),
+            "an outstanding journal does not authorize cleanup of an undetermined owner"
+        );
+        assert!(report
+            .checks
+            .iter()
+            .filter_map(|check| check.native_resource.as_ref())
+            .all(|context| !context.recovery_eligible));
+        let failures =
+            crate::doctor::fix::recover_deep_capture_journals(root.path(), &mut Vec::new())
+                .expect_err("exact recovery must refuse the undetermined generation");
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("could not determine session owner")));
+        assert_eq!(std::fs::read(&journal_path).unwrap(), journal_bytes);
+        assert_eq!(
+            std::fs::read(registry.join("legacy-local.json")).unwrap(),
+            record_bytes
+        );
+        assert!(bundle.is_dir());
+    }
+
     #[test]
     fn human_identity_escapes_whitespace_without_losing_unicode() {
         assert_eq!(human_identity("session name"), "`session\\u{20}name`");

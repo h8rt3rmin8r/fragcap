@@ -213,6 +213,8 @@ the owning category page.
 - [Session bundle](file-and-wire-formats.md#session-bundle)
 - [Session owner lease](capture-and-networking.md#session-owner-lease)
 - [Session progress](command-line-and-diagnostics.md#session-progress)
+- [Session retention](command-line-and-diagnostics.md#session-retention)
+- [Session retirement record](command-line-and-diagnostics.md#session-retirement-record)
 - [Shell wrapper](command-line-and-diagnostics.md#shell-wrapper)
 - [Signature matcher](anti-cheat-and-security.md#signature-matcher)
 - [Sink](process-and-attribution.md#sink)

@@ -1480,6 +1480,13 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             .and_then(|()| {
                 fragcap::deep_capture::write_crash_prefix(&plan.bundle, &plan.session_id)
             })
+            .and_then(|()| {
+                crate::session_gc::declare_retention(
+                    &plan.bundle,
+                    plan.artifacts.sensitive_retention
+                        == deep_capture_api::SensitiveRetention::ManagedHistory,
+                )
+            })
             .map_err(|error| {
                 deep_capture_api::StageFailure::new(
                     deep_capture_api::Stage::Bundle,
@@ -2257,6 +2264,12 @@ fn build_authorization_plan(
             "har": if args.har { Some(bundle.join("http.har").display().to_string()) } else { None },
             "key_log": if args.key_log { Some(bundle.join("tls-keylog.log").display().to_string()) } else { None },
             "sensitivity": "bundle may contain plaintext application traffic and credentials",
+            "retention": selected_retention(args).as_str(),
+            "retention_limits": if selected_retention(args) == deep_capture_api::SensitiveRetention::ManagedHistory {
+                json!({"max_age_seconds":2592000,"max_sessions":20,"max_bytes":2147483648_u64,"ordering":"oldest eligible first","age_origin":"terminal manifest publication"})
+            } else { serde_json::Value::Null },
+            "preserve_empty_container": true,
+            "maintenance_boundary": "after authorized effectful session finalization, excluding this returned bundle",
         },
         "capture": {
             "interfaces": args.interface,
@@ -2698,7 +2711,7 @@ pub(crate) fn run_with_outcome(
         key_log: args.key_log,
         client_identity: args.client_certificate.is_some(),
         proxy_bypass: args.proxy_bypass.clone(),
-        sensitive_retention: deep_capture_api::SensitiveRetention::Retain,
+        sensitive_retention: selected_retention(args),
         deadlines: deep_capture_api::Deadlines {
             launch: deadlines.launch,
             observation: deadlines.observation,
@@ -2962,6 +2975,23 @@ pub(crate) fn run_with_outcome(
         .diagnostics
         .as_ref()
         .map_or_else(Vec::new, |value| value.observation_windows.clone());
+    if let Some(root) = paths::deep_capture_session_dir() {
+        let maintenance = match crate::session_gc::maintenance(&root, Some(&bundle)) {
+            Ok(value) => value,
+            Err(error) => {
+                json!({"schema_version":1,"complete":false,"limitations":[error.to_string()]})
+            }
+        };
+        emitter.borrow_mut().event(&Event::SessionCollection {
+            report: maintenance.clone(),
+        });
+        emitter
+            .borrow_mut()
+            .terminal_human(&session_ux::collection_summary(
+                &maintenance,
+                crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
+            ));
+    }
     if report.is_complete() {
         Ok(RunOutcome {
             observations: report.snapshot.observations,
@@ -2990,6 +3020,14 @@ pub(crate) fn run_with_outcome(
             terminal_error: Some(CliError::failure(detail)),
             assessment,
         })
+    }
+}
+
+fn selected_retention(args: &DeepCaptureArgs) -> deep_capture_api::SensitiveRetention {
+    if args.bundle.is_some() || args.retain_bundle {
+        deep_capture_api::SensitiveRetention::Retain
+    } else {
+        deep_capture_api::SensitiveRetention::ManagedHistory
     }
 }
 
@@ -4728,6 +4766,9 @@ fn manifest_json(
         },
         "sensitive_artifacts": {
             "retention": ctx.sensitive_retention.as_str(),
+            "preserve_empty_container": true,
+            "retention_metadata": ".session-retention.json",
+            "collection_command": "fragcap bundle collect",
             "cleanup_command": "fragcap bundle cleanup <bundle> --yes",
             "journal": ".sensitive-actions.jsonl",
             "tls_key_log": {
@@ -4994,6 +5035,34 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_history_is_finite_and_saved_or_custom_evidence_is_retained() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        for (flags, expected) in [
+            (
+                vec![],
+                super::deep_capture_api::SensitiveRetention::ManagedHistory,
+            ),
+            (
+                vec!["--retain-bundle"],
+                super::deep_capture_api::SensitiveRetention::Retain,
+            ),
+            (
+                vec!["--bundle", "custom-output"],
+                super::deep_capture_api::SensitiveRetention::Retain,
+            ),
+        ] {
+            let mut argv = vec!["fragcap", "deep-capture", "target"];
+            argv.extend(flags);
+            let Some(Command::DeepCapture(args)) = Cli::try_parse_from(argv).unwrap().command
+            else {
+                panic!("expected Deep Capture");
+            };
+            assert_eq!(super::selected_retention(&args), expected);
+        }
+    }
+
     use super::*;
     use crate::emit::{Format, Verbosity};
 

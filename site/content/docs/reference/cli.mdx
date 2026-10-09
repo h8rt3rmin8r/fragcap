@@ -131,6 +131,7 @@ fragcap deep-capture sample-target --launch --har --key-log
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
+| `--retain-bundle` | open | `false` | all | Retain generated evidence until explicit cleanup. Otherwise generated history uses 30 days, 20 completed sessions and 2 GiB. Explicit `--bundle` is always retained. |
 | `--output-recipient` | open | none | all | Exact Windows recipient SID. Requires an explicit `--bundle`; an ordinary-account authenticated helper proves a recipient that default desktop resolution cannot establish. |
 | `--authorize-stdin` | open | `false` | all | Select prompt-free authorization. Read the emitted plan, return its exact `plan-v1` identifier plus one LF on standard input in the same process, and keep the event stream open. Required with `--json`. |
 | `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
@@ -190,6 +191,7 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 | --- | --- | --- | --- | --- |
 | `--authorize-stdin` | open | `false` | all | Read each exact emitted plan identifier from standard input. A discovered target first requires its `target-registration-v1` identifier, an eligible absent Steam client requires its separate `steam-client-setup-v1` identifier, an ambiguous stored non-Steam client requires its `stored-client-selection-v1` identifier, and any later effectful attempt requires its current Deep Capture plan identifier. Conflicts with `--restart-warm`. |
 | `--bundle` | open | none | all | Select the first attempt bundle. Later attempts use deterministic sibling paths containing attempt, phase, and protocol. |
+| `--retain-bundle` | open | `false` | all | Retain every generated attempt until explicit cleanup. Explicit bundle destinations and sibling attempts are always retained. |
 | `--output-recipient` | open | none | all | Exact Windows recipient SID for attempt output. Requires an explicit `--bundle` and the same validated ordinary-context access contract as Deep Capture. |
 | `--candidate` | open | none | all | Fresh workflow only. Select one exact current candidate from a prior ambiguity event. The value must be a `candidate-v1:<digest>` content-derived identity and must be consumed exactly once. |
 | `--client-executable` | open | none | all | Fresh Steam setup only. Supply one Windows `.exe` path to declare the final client explicitly when it is not already authored. This is an operator declaration, not observed socket or proxy evidence. |
@@ -499,6 +501,28 @@ Group explicit lifecycle operations for completed Deep Capture bundles.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
+
+### `bundle collect`
+
+Preview session content collection without changes. Review eligible, retained and unresolved sessions, recoverable logical bytes, exact refusal reasons and inventory limitations. Copy the returned `proposal_id` into `--authorize` with the same scope to apply the unchanged proposal. Mutation requires Windows exact filesystem handles; other platforms report unsupported.
+
+```powershell
+fragcap bundle collect
+fragcap bundle collect --authorize '<PROPOSAL_ID>'
+fragcap bundle collect --include-retained
+fragcap bundle collect --include-retained --authorize '<PROPOSAL_ID>'
+```
+
+Use each identifier only with the exact options that produced it. Generated operational history uses 30 days, 20 completed sessions and 2 GiB, with oldest eligible contents collected first. Saved/custom and historical evidence retain their previous explicit-cleanup promise; `--include-retained` deliberately selects that evidence. Whole-session ownership, inactive generation leases, terminal manifest/journal closure and all recovery obligations must reconcile before deletion. Unknown contents, unreadable or unsupported provenance, reparses, outside aliases and changed objects refuse.
+
+Routine collection leaves session container directories intact. Preview `--purge-empty` separately to request removal of proven eligible exact empty containers, then authorize that exact proposal. Containers with replacement or unknown contents refuse. A synchronized retirement record outside collected contents supports interruption retries and truthful empty-container diagnosis. Actual removed logical bytes differ from planned recoverable bytes and physical disk free space. Read-only Doctor performs no collection.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--bundle` | open | none | all | Select one exact custom or retained bundle instead of the root history population. |
+| `--include-retained` | open | `false` | all | Explicitly include retained evidence in the reviewed deletion scope. |
+| `--purge-empty` | open | `false` | all | Separately request removal of eligible exact empty containers. |
+| `--authorize` | open | none | all | Apply only the unchanged exact proposal returned by preview. |
 
 ### `bundle access-inspect`
 

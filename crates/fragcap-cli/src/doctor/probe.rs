@@ -495,20 +495,33 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
         sensitive_artifacts: &'a mut Vec<PathBuf>,
         manifests: &'a mut Vec<PathBuf>,
         errors: &'a mut Vec<String>,
+        deadline: std::time::Instant,
+        seen_directories: std::collections::BTreeSet<PathBuf>,
     }
 
     fn walk(dir: &std::path::Path, depth: usize, visited: &mut usize, state: &mut ScanState<'_>) {
-        if depth > 3 {
+        if !state.seen_directories.insert(dir.to_path_buf()) {
+            return;
+        }
+        if depth > 8 {
             push_scan_error(
                 state.errors,
                 format!("session scan reached the depth limit at {}", dir.display()),
             );
             return;
         }
-        if *visited >= 200 {
+        if std::time::Instant::now() >= state.deadline {
             push_scan_error(
                 state.errors,
-                "session scan reached the 200-entry limit".to_string(),
+                "session scan reached its five-second deadline; additional sessions are unresolved"
+                    .to_string(),
+            );
+            return;
+        }
+        if let Err(error) = super::residue::reject_reparse_ancestors(dir) {
+            push_scan_error(
+                state.errors,
+                format!("session scan refused {}: {error}", dir.display()),
             );
             return;
         }
@@ -521,11 +534,12 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
                 return;
             }
         };
+        let mut local_files = 0usize;
         for entry in entries {
-            if *visited >= 200 {
+            if std::time::Instant::now() >= state.deadline {
                 push_scan_error(
                     state.errors,
-                    "session scan reached the 200-entry limit".to_string(),
+                    "session scan reached its five-second deadline; additional sessions are unresolved".to_string(),
                 );
                 break;
             }
@@ -539,7 +553,6 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
                     continue;
                 }
             };
-            *visited += 1;
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(err) => {
@@ -551,6 +564,29 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
                 }
             };
             let path = entry.path();
+            if path.file_name().is_some_and(|name| {
+                name == super::residue::SESSION_OWNER_REGISTRY
+                    || name == crate::session_gc::RETIREMENTS
+            }) {
+                continue;
+            }
+            match path.symlink_metadata() {
+                Ok(metadata) if super::residue::is_reparse(&metadata) => {
+                    push_scan_error(
+                        state.errors,
+                        format!("session scan refused reparse entry {}", path.display()),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    push_scan_error(
+                        state.errors,
+                        format!("could not inspect {}: {error}", path.display()),
+                    );
+                    continue;
+                }
+                _ => {}
+            }
             if file_type.is_dir() {
                 walk(&path, depth + 1, visited, state);
                 continue;
@@ -558,6 +594,20 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
             if !file_type.is_file() {
                 continue;
             }
+            local_files += 1;
+            if local_files > 200 {
+                if local_files == 201 {
+                    push_scan_error(
+                        state.errors,
+                        format!(
+                            "session scan reached the 200-entry limit for regular files in {}",
+                            dir.display()
+                        ),
+                    );
+                }
+                continue;
+            }
+            *visited += 1;
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
@@ -623,8 +673,19 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
         sensitive_artifacts: &mut scan.sensitive_artifacts,
         manifests: &mut scan.manifests,
         errors: &mut scan.errors,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        seen_directories: std::collections::BTreeSet::new(),
     };
     let mut visited = 0;
+    let (owners, owner_errors) = super::residue::session_owner_inventory(root);
+    for error in owner_errors {
+        push_scan_error(state.errors, format!("owner registry: {error}"));
+    }
+    for owner in owners {
+        if owner.bundle.exists() {
+            walk(&owner.bundle, 0, &mut visited, &mut state);
+        }
+    }
     walk(root, 0, &mut visited, &mut state);
     scan
 }
@@ -655,9 +716,9 @@ fn normalize_thumbprint(value: &str) -> Option<String> {
 fn manifest_ca_identities(manifests: &[PathBuf]) -> Result<Vec<OwnedCaIdentity>, String> {
     let mut identities = Vec::new();
     for manifest in manifests {
-        let text = std::fs::read_to_string(manifest)
+        let bytes = bounded_manifest_read(manifest)
             .map_err(|err| format!("could not read {}: {err}", manifest.display()))?;
-        let value: serde_json::Value = serde_json::from_str(&text)
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|err| format!("could not parse {}: {err}", manifest.display()))?;
         let Some(raw) = value
             .get("trust")
@@ -899,7 +960,7 @@ pub(crate) fn manifest_cleanup_unfinished(path: &std::path::Path) -> bool {
 }
 
 fn compatible_manifest_value(path: &std::path::Path) -> Option<serde_json::Value> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = bounded_manifest_read(path).ok()?;
     let loose: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     if loose.get("manifest_version").is_some() {
         return fragcap::deep_capture::ManifestDocument::parse(&bytes)
@@ -907,6 +968,28 @@ fn compatible_manifest_value(path: &std::path::Path) -> Option<serde_json::Value
             .map(|document| document.value().clone());
     }
     Some(loose)
+}
+
+fn bounded_manifest_read(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file() || super::residue::is_reparse(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "manifest is not an exact regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "manifest exceeds four-MiB provenance bound",
+        ));
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
@@ -1578,6 +1661,45 @@ mod tests {
         let scan = scan_deep_capture_residue(dir.path());
 
         assert!(scan
+            .errors
+            .iter()
+            .any(|error| error.contains("200-entry limit")));
+    }
+
+    #[test]
+    fn completed_and_empty_history_cannot_hide_current_probe_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..1_000 {
+            let bundle = root.path().join(format!("old-{index:04}"));
+            std::fs::create_dir(&bundle).unwrap();
+            if index % 2 == 0 {
+                std::fs::write(
+                    bundle.join("manifest.json"),
+                    r#"{"cleanup":{"status":"succeeded"}}"#,
+                )
+                .unwrap();
+            }
+        }
+        let current = root.path().join("current");
+        std::fs::create_dir(&current).unwrap();
+        let mut journal =
+            fragcap::deep_capture::ResourceJournal::create(&current, "current", "plan").unwrap();
+        journal
+            .append(fragcap::deep_capture::ResourceTransition::new(
+                "proxy",
+                fragcap::deep_capture::ResourceKind::Proxy,
+                "127.0.0.1:1234",
+                "session:current",
+                "release",
+                fragcap::deep_capture::ResourceState::Applied,
+                "active",
+            ))
+            .unwrap();
+        let scan = scan_deep_capture_residue(root.path());
+        assert!(scan
+            .stale_manifests
+            .contains(&current.join(fragcap::deep_capture::RESOURCE_JOURNAL)));
+        assert!(!scan
             .errors
             .iter()
             .any(|error| error.contains("200-entry limit")));

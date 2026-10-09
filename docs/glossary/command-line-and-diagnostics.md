@@ -1,5 +1,31 @@
 # Command Line and Diagnostics
 
+## Session retention
+
+A declared lifetime and storage budget for completed session contents, independent from the lifetime of external routing, listener or trust resources.
+
+{: .matters }
+> Managed operational history uses finite age, count and logical-byte limits. Saved/custom and historical evidence retains its explicit cleanup promise. Routine collection preserves empty session containers, while empty-container purge requires a separate request.
+
+**See also:** [Authorization plan](command-line-and-diagnostics.md#authorization-plan), [Deep Capture](capture-and-networking.md#deep-capture)
+
+**References:**
+
+- [fragcap session-storage contract](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#263-diagnostics).
+
+## Session retirement record
+
+A durable record outside collected session contents that binds exact container and object identities to authorized deletion progress.
+
+{: .matters }
+> Collection can remove its former manifest and journal, so retry and empty-container ownership require independent authority. A record never authorizes deletion of replacement objects or an active generation.
+
+**See also:** [Session retention](command-line-and-diagnostics.md#session-retention), [Authorization plan](command-line-and-diagnostics.md#authorization-plan)
+
+**References:**
+
+- [Microsoft SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle), the exact Windows object-disposition primitive.
+
 ## Authorization plan
 
 A complete description of the scope and consequences that an operator must review before approving an operation.

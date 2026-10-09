@@ -528,7 +528,9 @@ fn pin_ancestors(path: &Path) -> io::Result<Vec<File>> {
             return Err(bad("access ancestor depth exceeds limit"));
         }
         let file = match std::fs::OpenOptions::new()
-            .access_mode(0)
+            // Windows permits rename past a zero-access directory handle despite
+            // no delete sharing. Real read access makes this an identity guard.
+            .access_mode(GENERIC_READ)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(ancestor)

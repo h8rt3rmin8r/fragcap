@@ -320,6 +320,10 @@ pub enum Event {
         stage: String,
         access: serde_json::Value,
     },
+    /// Actual post-session history maintenance, independent from session completeness.
+    SessionCollection {
+        report: serde_json::Value,
+    },
     /// Additive terminal diagnostics, with windows indexed to retained observations.
     DeepCaptureDiagnostics {
         session_id: String,
@@ -421,6 +425,7 @@ impl Event {
             Event::DeepCaptureApplication { .. } => "deep_capture.application",
             Event::DeepCaptureDiagnostics { .. } => "deep_capture.diagnostics",
             Event::DeepCaptureOutputAccess { .. } => "deep_capture.output_access",
+            Event::SessionCollection { .. } => "session.collection",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
             Event::DeepCaptureComplete { .. } => "deep_capture.complete",
@@ -1149,6 +1154,10 @@ impl Event {
                 write_json_string(stage, &mut line);
                 line.push_str(",\"access\":");
                 line.push_str(&access.to_string());
+            }
+            Event::SessionCollection { report } => {
+                line.push_str(",\"report\":");
+                line.push_str(&report.to_string());
             }
             Event::DeepCaptureBundle {
                 session_id,
