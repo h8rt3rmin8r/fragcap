@@ -5607,6 +5607,11 @@ mod tests {
             let mut fact =
                 CompatibilityFact::new(1, key, value, CompatibilityEvidenceSource::UserConfirmed)
                     .unwrap();
+            fact.id = Some(if key == CompatibilityFactKey::ProxyRouting {
+                1
+            } else {
+                2
+            });
             fact.launch_case = Some(launch_case);
             fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
             fact.proxy_backend = Some("fragcap-native".to_string());
@@ -5654,6 +5659,7 @@ mod tests {
         )
         .unwrap();
         latest.launch_case = Some(selected);
+        latest.id = Some(3);
         latest.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
         latest.proxy_backend = Some("fragcap-native".to_string());
         latest.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());

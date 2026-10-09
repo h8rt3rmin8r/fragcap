@@ -623,7 +623,8 @@ pub enum CalibrationEvidenceAssessment {
     Needs(CalibrationProposalReason),
 }
 
-/// Assess current values using the same applicability and conflict authority as proposals.
+/// Assess the greatest durable applicable row identity for the exact case.
+/// Earlier rows remain history; contradictory values at the greatest identity conflict.
 pub fn assess_calibration_evidence(
     facts: &[CompatibilityFact],
     target_id: Option<i64>,
@@ -635,8 +636,14 @@ pub fn assess_calibration_evidence(
         .iter()
         .filter(|fact| Some(fact.target_id) == target_id && fact.key == key)
         .collect();
+    let latest_id = relevant
+        .iter()
+        .filter(|fact| fact.applicability(case) == CompatibilityApplicability::Applicable)
+        .filter_map(|fact| fact.id)
+        .max();
     let mut current_values: Vec<&str> = relevant
         .iter()
+        .filter(|fact| latest_id.is_some() && fact.id == latest_id)
         .filter(|fact| fact.applicability(case) == CompatibilityApplicability::Applicable)
         .map(|fact| fact.value.as_str())
         .collect();
@@ -665,10 +672,11 @@ pub fn assess_calibration_evidence(
     if stale_exact {
         return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Stale);
     }
-    if relevant
-        .iter()
-        .any(|fact| fact.applicability(case) == CompatibilityApplicability::LegacyIncomplete)
-    {
+    if relevant.iter().any(|fact| {
+        fact.applicability(case) == CompatibilityApplicability::LegacyIncomplete
+            || (fact.id.is_none()
+                && fact.applicability(case) == CompatibilityApplicability::Applicable)
+    }) {
         return CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::LegacyIncomplete);
     }
     if !relevant.is_empty() {
@@ -1118,12 +1126,127 @@ mod tests {
         );
 
         let mut conflict = base.clone();
-        conflict.id = Some(2);
         conflict.value = "no-proxy-traffic".into();
         let proposal = propose_calibration(&request(direct_target()).with_facts([conflict, base]));
         assert_eq!(
             proposal.steps[0].reason,
             CalibrationProposalReason::Conflict
+        );
+    }
+
+    #[test]
+    fn durable_fact_history_uses_latest_exact_row_in_any_input_order() {
+        let key = CompatibilityFactKey::ProxyRouting;
+        let mut older = fact(
+            key,
+            "no-proxy-traffic",
+            CompatibilityProtocol::NotApplicable,
+        );
+        older.id = Some(10);
+        let mut latest = older.clone();
+        latest.id = Some(20);
+        latest.value = "reached-client".into();
+        let case = propose_calibration(&request(direct_target())).steps[0]
+            .case
+            .clone();
+        for facts in [
+            vec![older.clone(), latest.clone()],
+            vec![latest.clone(), older.clone()],
+        ] {
+            assert_eq!(
+                assess_calibration_evidence(&facts, Some(7), key, &case, "reached-client"),
+                CalibrationEvidenceAssessment::Positive
+            );
+            assert!(
+                propose_calibration(&request(direct_target()).with_facts(facts))
+                    .steps
+                    .is_empty()
+            );
+        }
+        older.value = "reached-client".into();
+        latest.value = "no-proxy-traffic".into();
+        for facts in [
+            vec![older.clone(), latest.clone()],
+            vec![latest.clone(), older.clone()],
+        ] {
+            assert_eq!(
+                assess_calibration_evidence(&facts, Some(7), key, &case, "reached-client"),
+                CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Negative)
+            );
+            assert_eq!(
+                propose_calibration(&request(direct_target()).with_facts(facts)).steps[0].reason,
+                CalibrationProposalReason::Negative
+            );
+        }
+        latest.stale = true;
+        assert_eq!(
+            assess_calibration_evidence(
+                std::slice::from_ref(&latest),
+                Some(7),
+                key,
+                &case,
+                "reached-client"
+            ),
+            CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Stale)
+        );
+        assert_eq!(
+            assess_calibration_evidence(
+                &[latest.clone(), older.clone()],
+                Some(7),
+                key,
+                &case,
+                "reached-client"
+            ),
+            CalibrationEvidenceAssessment::Positive
+        );
+        latest.stale = false;
+        latest.address_family = Some(CompatibilityAddressFamily::Ipv6);
+        assert_eq!(
+            assess_calibration_evidence(
+                std::slice::from_ref(&latest),
+                Some(7),
+                key,
+                &case,
+                "reached-client"
+            ),
+            CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::ContextMismatch)
+        );
+        assert_eq!(
+            assess_calibration_evidence(&[latest, older], Some(7), key, &case, "reached-client"),
+            CalibrationEvidenceAssessment::Positive
+        );
+    }
+
+    #[test]
+    fn facts_without_durable_identity_cannot_claim_current_readiness() {
+        let key = CompatibilityFactKey::ProxyRouting;
+        let mut undurable = fact(key, "reached-client", CompatibilityProtocol::NotApplicable);
+        undurable.id = None;
+        let case = propose_calibration(&request(direct_target())).steps[0]
+            .case
+            .clone();
+        assert_eq!(
+            assess_calibration_evidence(
+                std::slice::from_ref(&undurable),
+                Some(7),
+                key,
+                &case,
+                "reached-client"
+            ),
+            CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::LegacyIncomplete)
+        );
+        let mut durable = undurable.clone();
+        durable.id = Some(20);
+        durable.value = "no-proxy-traffic".into();
+        assert_eq!(
+            assess_calibration_evidence(
+                &[undurable, durable],
+                Some(7),
+                key,
+                &case,
+                "reached-client"
+            ),
+            CalibrationEvidenceAssessment::Needs(CalibrationProposalReason::Negative)
         );
     }
 

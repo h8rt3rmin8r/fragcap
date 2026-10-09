@@ -474,15 +474,26 @@ impl CompatibilityFact {
     }
 }
 
-/// Return the latest current fact for one key and exact case.
+/// Return the greatest durable current row for one key and exact case.
+/// Unpersisted rows have no chronological authority. Contradictory values sharing
+/// the greatest durable identity cannot authorize one value over the other.
 pub fn latest_applicable_fact<'a>(
     facts: &'a [CompatibilityFact],
     key: CompatibilityFactKey,
     current: &CompatibilityCase,
 ) -> Option<&'a CompatibilityFact> {
-    facts.iter().rev().find(|fact| {
-        fact.key == key && fact.applicability(current) == CompatibilityApplicability::Applicable
-    })
+    let applicable = || {
+        facts.iter().filter(|fact| {
+            fact.id.is_some()
+                && fact.key == key
+                && fact.applicability(current) == CompatibilityApplicability::Applicable
+        })
+    };
+    let latest = applicable().max_by_key(|fact| fact.id)?;
+    if applicable().any(|fact| fact.id == latest.id && fact.value != latest.value) {
+        return None;
+    }
+    Some(latest)
 }
 
 /// The presentation freshness of compatibility evidence.
@@ -879,25 +890,48 @@ mod tests {
     }
 
     #[test]
-    fn latest_applicable_fact_keeps_conflicts_and_uses_latest_exact_row() {
+    fn latest_applicable_fact_uses_durable_ids_independently_of_input_order() {
         let current = exact_case(CompatibilityProtocol::Https);
         let mut older = exact_fact(
             CompatibilityFactKey::TlsTrustBehavior,
             CompatibilityProtocol::Https,
         );
         older.value = "accepts-local-ca".to_string();
+        older.id = Some(10);
         let mut mismatch = older.clone();
         mismatch.address_family = Some(CompatibilityAddressFamily::Ipv6);
         mismatch.value = "rejects-local-ca".to_string();
+        mismatch.id = Some(30);
         let mut latest = older.clone();
         latest.value = "rejects-local-ca".to_string();
-        let facts = vec![older, mismatch, latest];
-        assert_eq!(
-            latest_applicable_fact(&facts, CompatibilityFactKey::TlsTrustBehavior, &current)
-                .unwrap()
-                .value,
-            "rejects-local-ca"
-        );
+        latest.id = Some(20);
+        for facts in [
+            vec![older.clone(), mismatch.clone(), latest.clone()],
+            vec![latest.clone(), mismatch, older],
+        ] {
+            assert_eq!(
+                latest_applicable_fact(&facts, CompatibilityFactKey::TlsTrustBehavior, &current)
+                    .unwrap()
+                    .id,
+                Some(20)
+            );
+        }
+        let mut undurable = latest.clone();
+        undurable.id = None;
+        assert!(latest_applicable_fact(
+            &[undurable],
+            CompatibilityFactKey::TlsTrustBehavior,
+            &current
+        )
+        .is_none());
+        let mut conflict = latest.clone();
+        conflict.value = "accepts-local-ca".into();
+        assert!(latest_applicable_fact(
+            &[latest, conflict],
+            CompatibilityFactKey::TlsTrustBehavior,
+            &current
+        )
+        .is_none());
     }
 
     fn fact(

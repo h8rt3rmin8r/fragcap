@@ -441,6 +441,11 @@ mod tests {
         let mut fact =
             StoredCompatibilityFact::new(7, key, value, CompatibilityEvidenceSource::ObservedRun)
                 .unwrap();
+        fact.id = Some(if key == CompatibilityFactKey::ProxyRouting {
+            1
+        } else {
+            2
+        });
         fact.launch_case = Some(current.launch_case);
         fact.proxy_backend = Some(current.proxy_backend.clone());
         fact.proxy_backend_version = Some(current.proxy_backend_version.clone());
@@ -698,6 +703,38 @@ mod tests {
         assert_eq!(conflict.verdict, "inconclusive");
         assert_eq!(conflict.reason, "conflict");
         assert!(!conflict.deep_capture_may_proceed);
+    }
+
+    #[test]
+    fn latest_durable_measurement_supersedes_history_for_each_case_key() {
+        let current = case(CompatibilityProtocol::Https);
+        let mut old_routing = fact(CompatibilityFactKey::ProxyRouting, "inconclusive", &current);
+        old_routing.id = Some(1);
+        let mut routing = fact(
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            &current,
+        );
+        routing.id = Some(4);
+        let mut old_protocol = fact(CompatibilityFactKey::Inspectability, "unknown", &current);
+        old_protocol.id = Some(2);
+        let mut protocol = fact(CompatibilityFactKey::Inspectability, "full", &current);
+        protocol.id = Some(5);
+        let mut history = vec![protocol, old_routing, routing, old_protocol];
+        let ready = StoredCaseAssessment::from_facts(7, &current, &history);
+        assert_eq!(ready.verdict, "calibrated");
+        assert!(ready.deep_capture_may_proceed);
+        let mut newer = fact(CompatibilityFactKey::ProxyRouting, "inconclusive", &current);
+        newer.id = Some(6);
+        history.insert(0, newer);
+        let blocked = StoredCaseAssessment::from_facts(7, &current, &history);
+        assert_eq!(blocked.reason, "negative");
+        assert!(!blocked.deep_capture_may_proceed);
+        assert_eq!(
+            history.len(),
+            5,
+            "prior measurements remain retained history"
+        );
     }
 
     #[test]

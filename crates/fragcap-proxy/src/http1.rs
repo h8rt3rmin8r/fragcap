@@ -785,6 +785,12 @@ where
         observation.inspectability = "full";
         if response.upgrade && request.upgrade {
             let websocket = websocket_mode(&request, &response);
+            if websocket.is_ok() {
+                // The validated 101 completes the HTTP exchange. The upgraded
+                // relay owns its subsequent success or failure independently.
+                accounting.http1_exchanges_completed =
+                    accounting.http1_exchanges_completed.saturating_add(1);
+            }
             let result = match websocket {
                 Ok(Some(mode)) => {
                     relay_websocket(&mut client, &mut upstream, limits, &context, ordinal, mode)

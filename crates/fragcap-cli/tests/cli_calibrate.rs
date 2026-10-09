@@ -3174,7 +3174,7 @@ fn every_non_positive_routing_state_preserves_the_proposal_reason() {
         (2, "stale", 2),
         (3, "legacy-incomplete", 3),
         (4, "context-mismatch", 4),
-        (5, "conflict", 5),
+        (5, "negative", 5),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("local.db");
@@ -3280,6 +3280,73 @@ fn every_non_positive_routing_state_preserves_the_proposal_reason() {
     }
 }
 
+#[test]
+#[cfg(windows)]
+fn current_verdict_tracks_latest_durable_routing_without_erasing_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("history.db");
+    let id = seed_target(&local, false);
+    let mut store = Store::open(&local).unwrap();
+    insert_routing_fact(
+        &mut store,
+        id,
+        CompatibilityLaunchCase::DirectExeCold,
+        "no-proxy-traffic",
+        false,
+        CompatibilityAddressFamily::Ipv4,
+        true,
+    );
+    insert_current_routing_fact(&mut store, id);
+    drop(store);
+    let args = [
+        "--json",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ];
+    let (code, _, events) = run(&args);
+    assert_eq!(code, 0, "{events}");
+    let ready = final_verdict(&events);
+    assert_eq!(ready["current_case"]["verdict"], "calibrated");
+    assert_eq!(
+        ready["current_case"]["deep_capture_routing_prerequisite_satisfied"],
+        true
+    );
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    let mut store = Store::open(&local).unwrap();
+    insert_routing_fact(
+        &mut store,
+        id,
+        CompatibilityLaunchCase::DirectExeCold,
+        "no-proxy-traffic",
+        false,
+        CompatibilityAddressFamily::Ipv4,
+        true,
+    );
+    drop(store);
+    let (code, _, events) = run(&args);
+    assert_eq!(
+        code, 2,
+        "a new negative requires fresh authorization: {events}"
+    );
+    let blocked = final_verdict(&events);
+    assert_eq!(blocked["current_case"]["reason"], "negative");
+    assert_eq!(
+        blocked["current_case"]["deep_capture_routing_prerequisite_satisfied"],
+        false
+    );
+    let history = Store::open(&local)
+        .unwrap()
+        .compatibility_facts_for_target(id)
+        .unwrap();
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].value, "no-proxy-traffic");
+    assert_eq!(history[1].value, "reached-client");
+    assert_eq!(history[2].value, "no-proxy-traffic");
+}
 #[test]
 fn declined_and_wrong_authorization_never_claim_completion() {
     let declined_dir = tempfile::tempdir().unwrap();

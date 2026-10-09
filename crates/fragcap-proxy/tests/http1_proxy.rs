@@ -491,6 +491,7 @@ fn accepted_upgrade_relays_bidirectionally_and_observes_half_close() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.failed_connections, 0);
     assert_eq!(report.observation.protocol.responses, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
 }
 
 #[test]
@@ -528,6 +529,7 @@ fn verified_websocket_upgrade_preserves_frames_and_messages() {
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
     assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
     let events = collector.0.lock().unwrap();
     assert_eq!(
         events
@@ -549,6 +551,36 @@ fn verified_websocket_upgrade_preserves_frames_and_messages() {
             .count(),
         2
     );
+}
+
+#[test]
+fn invalid_websocket_upgrade_does_not_count_a_completed_exchange() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let _ = read_head(&mut stream);
+        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: invalid-proof\r\n\r\n").unwrap();
+    });
+    let mut lease = start_proxy(address);
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(client, "GET http://{address}/socket HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", auth.as_str()).unwrap();
+    assert!(read_head(&mut client).starts_with(b"HTTP/1.1 101"));
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.failed_connections, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 0);
+    assert!(report
+        .observation
+        .application
+        .iter()
+        .any(|observation| observation.reason.as_deref() == Some("websocket-accept-invalid")));
 }
 
 #[test]
@@ -596,6 +628,7 @@ fn failed_websocket_relay_finishes_both_directional_observers() {
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.failed_connections, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
     let events = collector.0.lock().unwrap();
     assert_eq!(
         events
