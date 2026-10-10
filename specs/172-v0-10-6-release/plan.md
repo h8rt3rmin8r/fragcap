@@ -60,3 +60,7 @@ All gates pass without exceptions. Candidate and published authorities remain se
 ## Complexity Tracking
 
 No new architecture or constitutional exception.
+
+## Later Authorized Publication Phase
+
+After the local candidate handoff, the owner explicitly authorized push and completion of publication, then merged PR #474 and confirmed continuation. The original candidate decisions above describe the pre-publication boundary. The extended sequence verifies owner merge and exact tree, pushes the annotated tag on that source, waits for final package certification, submits normal protected registry approval, and independently reconciles every public file, report and crate archive. Only then does `codex/s172-v0-10-6-publication-records` advance current markers and the frozen review candidate. The records PR runs repository and site gates, handles every automatic review finding, and returns to the owner for its merge. No third manual S172 review is triggered, and the agent does not merge its own PR.

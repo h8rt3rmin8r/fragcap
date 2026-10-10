@@ -1,0 +1,2 @@
+<!-- spec-impact: 1, 22.7, 25.2, 27.3 -->
+**2026-10-09** Advance published records only after the owner-merged source, exact annotated v0.10.6 tag, all four release jobs, normal protected registry approval, six downloaded public files and ten non-yanked downloaded crate archives reconcile. Retarget the frozen published-review replay label and six closed asset authorities to the verified release; retain the pinned predecessor, unsigned policy, historical evidence and unperformed independent whole-product review.

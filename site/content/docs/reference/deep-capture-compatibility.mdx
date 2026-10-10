@@ -3,10 +3,10 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.5](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.5).
+Published baseline: [v0.10.6](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6).
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.5. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.6. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
@@ -139,7 +139,7 @@ The final verdict separates the attempted case from current applicable stored re
 
 Connection endings and application exchanges count different populations. For example, a controlled session can report six failed connections, with five protocol failures and one idle timeout, while seven HTTP exchanges completed successfully. The timeout does not erase those exchanges. Separate fields show accepted/completed/failed/forced/live connections, retained failure categories, exchange/stream totals, bounded detail loss, record ownership, and unavailable correlation. Records observed during the observation window and later owner release remain distinguishable. Later records are retained but cannot satisfy the earlier calibration case.
 
-A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. S170 source verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.5 predates this correction.
+A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. The S170 correction published in v0.10.6 verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.6 includes this correction.
 
 ### Ordinary desktop access and historical repair
 
@@ -158,7 +158,7 @@ Review the inspection and substitute its exact identifier. Repair requires a rec
 
 ### Session retention and collection
 
-The S171 source correction declares finite retention for newly generated Deep Capture and calibration history: 30 days from terminal manifest publication, 20 completed managed sessions and 2 GiB of eligible logical contents. Oldest eligible contents are collected first after an authorized effectful session finishes, excluding its returned bundle. The exact authorization and terminal presentation show the selected policy. Choose `--retain-bundle` to save generated evidence until explicit cleanup; explicit `--bundle` destinations and their guided attempt siblings are always retained. Historical bundles keep their previous promise. This source correction does not change the published v0.10.5 baseline.
+The S171 correction published in v0.10.6 declares finite retention for newly generated Deep Capture and calibration history: 30 days from terminal manifest publication, 20 completed managed sessions and 2 GiB of eligible logical contents. Oldest eligible contents are collected first after an authorized effectful session finishes, excluding its returned bundle. The exact authorization and terminal presentation show the selected policy. Choose `--retain-bundle` to save generated evidence until explicit cleanup; explicit `--bundle` destinations and their guided attempt siblings are always retained. Historical bundles keep their previous promise. This retention policy ships in v0.10.6.
 
 Use [bundle collect](/docs/reference/cli#bundle-collect) to preview and authorize existing backlog reclamation. Include retained evidence only by selecting `--include-retained`; select custom output with `--bundle`. Collection validates whole-session ownership, inactive generation leases, closed manifest/journal provenance, complete recognized files and every recovery obligation. Active, malformed, unknown, unsupported, unreadable, reparse and replaced populations remain unresolved with their authority preserved. Collection never performs trust recovery.
 
