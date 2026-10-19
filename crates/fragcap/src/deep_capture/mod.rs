@@ -13,7 +13,6 @@
 //! stages retain finite budgets and structured completion evidence.
 
 mod access;
-mod access_repair;
 mod adapters;
 pub mod api;
 mod application;
@@ -37,7 +36,6 @@ mod routing;
 mod session;
 
 pub use access::*;
-pub use access_repair::*;
 pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;

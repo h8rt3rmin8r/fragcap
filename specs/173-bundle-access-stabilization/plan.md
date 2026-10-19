@@ -10,7 +10,7 @@ Deliver #476 and #477 together: automatically retain genuine ordinary same-accou
 
 **Language/Version**: Rust, pinned toolchain, workspace MSRV 1.88.
 
-**Primary Dependencies**: Existing windows-sys 0.36; additive Windows messaging bindings only. No package/version addition.
+**Primary Dependencies**: Existing windows-sys 0.36; additive Windows messaging bindings only. Mandatory #478 remediation patches existing Rustls to 0.23.46 and quinn-proto to 0.11.18 without adding packages; controlled audit/source review validates final feature/provider inventory.
 
 **Storage**: Existing private bundles and journals; no schema migration or owner-data change.
 
@@ -44,6 +44,10 @@ Feature artifacts live in specs/173-bundle-access-stabilization/. Facade changes
 6. Narrow mechanical exceptions validate source location and literal process/token rights; negative regressions cover broadened rights and transplanted calls. Document the exception in AGENTS/specification.
 7. Use synthetic temporary output only. The owner offered Windows Sandbox; its unattended native CLI may prepare a disposable elevated desktop without changing host UAC/accounts/trust or owner bundles. Inspect actual token prerequisites.
 8. Owner authorizes push/official PR and at most a second review round, superseding the default pre-push checkpoint. Stop for human merge after satisfied reviews and final-head green CI. No release publication.
+
+## 2026-10-19 required gate amendment
+
+Fresh audit reports three quinn-proto and four Rustls advisories, independently tracked in #478. Update only the fixed TLS/QUIC patch versions across seven workspace/fuzz/performance/spike lockfiles and exact pins where present. Rebind governance graph digests only after measuring package/edge/feature deltas, scoped upstream/unsafe review and fresh all-feature audit/conformance. Renew expired critical review from concrete evidence, preserving waiver/review expiry. This gate correction is required to complete the original S173 green-CI outcome and adds no product behavior beyond the upstream patch.
 
 ## Implementation Sequence
 

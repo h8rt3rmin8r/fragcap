@@ -764,25 +764,6 @@ pub enum BundleCommand {
         #[arg(long, value_name = "PROPOSAL_ID")]
         authorize: Option<String>,
     },
-    /// Inspect exact bundle permissions and ordinary-user access without changes.
-    AccessInspect {
-        /// The retained fragcap bundle to inspect.
-        bundle: PathBuf,
-        /// Explicit recipient SID; a different account authenticates from its ordinary session.
-        #[arg(long, value_name = "SID")]
-        output_recipient: Option<String>,
-    },
-    /// Repair only the permissions in one exact current inspection.
-    AccessRepair {
-        /// The retained fragcap bundle to repair, preserving every content byte.
-        bundle: PathBuf,
-        /// Exact identifier from access-inspect, revalidated before changes.
-        #[arg(long, value_name = "INSPECTION_ID")]
-        authorize: String,
-        /// Explicit recipient SID; a different account authenticates from its ordinary session.
-        #[arg(long, value_name = "SID")]
-        output_recipient: Option<String>,
-    },
     /// Authenticate an output request from the intended ordinary Windows session.
     AccessAuthorize {
         /// Exact local request emitted by the producer.
@@ -1509,29 +1490,22 @@ mod tests {
     }
 
     #[test]
-    fn bundle_access_repair_requires_exact_inspection_authorization() {
+    fn retired_bundle_access_verbs_are_rejected_and_authorize_remains() {
         use clap::Parser;
+        for verb in ["access-inspect", "access-repair"] {
+            assert!(
+                super::Cli::try_parse_from(["fragcap", "bundle", verb, "C:/output/bundle"])
+                    .is_err()
+            );
+        }
         assert!(super::Cli::try_parse_from([
             "fragcap",
             "bundle",
-            "access-inspect",
+            "access-authorize",
+            "--request",
+            "fixture",
+            "--bundle",
             "C:/output/bundle"
-        ])
-        .is_ok());
-        assert!(super::Cli::try_parse_from([
-            "fragcap",
-            "bundle",
-            "access-repair",
-            "C:/output/bundle"
-        ])
-        .is_err());
-        assert!(super::Cli::try_parse_from([
-            "fragcap",
-            "bundle",
-            "access-repair",
-            "C:/output/bundle",
-            "--authorize",
-            "access-v1:exact"
         ])
         .is_ok());
     }

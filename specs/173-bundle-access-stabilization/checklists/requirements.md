@@ -19,5 +19,5 @@
 
 ## Feature Readiness
 
-- [x] FR-001 through FR-010 cover both issues; SC-001 through SC-004 measure completion.
+- [x] FR-001 through FR-011 cover the two access issues and mandatory advisory remediation; SC-001 through SC-004 measure completion.
 - [x] No owner-data or real-game acceptance gate is introduced.

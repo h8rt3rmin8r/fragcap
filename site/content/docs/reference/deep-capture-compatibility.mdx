@@ -141,20 +141,15 @@ Connection endings and application exchanges count different populations. For ex
 
 A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. The S170 correction published in v0.10.6 verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.6 includes this correction.
 
-### Ordinary desktop access and historical repair
+### Ordinary desktop access
 
 Same-account administrative capture retains the intended user's exact SID and ordinary access context. Private output grants that recipient, any distinct producer and SYSTEM explicitly, covering inherited files, atomic publication and independently protected sidecars. Administrator-group ownership and a successful elevated read do not establish ordinary access. Readable evidence can still be partial or fail to prove final-client reachability.
 
 Elevation under different credentials requires an explicit `--output-recipient <SID>` and exact `--bundle <PATH>`. The waiting command emits a quoted `bundle access-authorize` helper command for the intended ordinary terminal. Run that exact helper within sixty seconds, then review the full session authorization plan. An unknown recipient, elevated helper, changed request or mismatched destination refuses before session output or effects. No arbitrary desktop account is guessed.
 
-For an existing inaccessible bundle, run the [read-only inspection and exact permission repair commands](/docs/reference/cli#bundle-access-inspect) from a console that can read its provenance and apply the proposed permissions:
+The next-source S173 correction establishes the same-account recipient automatically from its proven ordinary desktop shell context when the producer is elevated. No self-SID argument, explicit output destination or second terminal is required for this default. The exact account and Windows session must match, the retained token must be ordinary, and final verification follows writer reconciliation. A matching SID or successful elevated read cannot establish ordinary access. Acquisition failures identify their operation stage.
 
-```powershell
-fragcap bundle access-inspect 'C:\captures\fragcap-session'
-fragcap bundle access-repair 'C:\captures\fragcap-session' --authorize '<INSPECTION_ID>'
-```
-
-Review the inspection and substitute its exact identifier. Repair requires a recognized terminal manifest, matching closed resource journal and inactive ownership where a generation-qualified owner record exists. Active or unknown matched ownership, unreadable authority, unknown files, reparses, outside hard links and changed previews refuse. Independently protected `.sensitive-actions.jsonl`, `cleanup.jsonl`, `proxy.jsonl` and `resource-journal.jsonl` are included. Proven owned output containers receive narrow non-propagating enumeration/traversal grants; arbitrary profile/custom ancestors remain unchanged. Final actual-access results and per-path failures are reported outside retained evidence. Content bytes, retention obligations and empty containers are preserved; no collection, purge or trust/proxy recovery is implied.
+S173 retires the historical permission inspection/repair workflow shipped in v0.10.6. For inaccessible historical output, use normal Windows permission administration, then verify reads from the intended ordinary account. fragcap does not promise automatic historical repair. Different-account output keeps its explicit authenticated helper; collection, sensitive cleanup and Doctor recovery/retention keep their separate contracts.
 
 ### Session retention and collection
 

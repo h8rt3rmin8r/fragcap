@@ -18,6 +18,7 @@
 | FR-008 | T011, T013 |
 | FR-009 | T002, T006, T014 |
 | FR-010 | T003, T013, T014 |
+| FR-011 | T016 |
 | SC-001 | T006, T014 |
 | SC-002 | T008, T011, T014 |
 | SC-003 | T006, T012, T014 |
@@ -25,11 +26,15 @@
 
 ## Constitution and consistency
 
-All 14 requirements/outcomes have task coverage (100 percent); all 15 tasks map to required setup, user stories or delivery. No unanswerable ambiguity, duplicate requirement, unmapped task or constitutional conflict remains. The explicit query-limited shell exception changes a historical implementation choice, not the P-1 memory-right prohibition. Its narrow enforcement and dated documentation are required tasks. Owner authorization supersedes only the pre-push checkpoint; human merge and the two-round review cap remain.
+All 15 requirements/outcomes have task coverage (100 percent); all 16 tasks map to required setup, user stories or delivery. No unanswerable ambiguity, duplicate requirement, unmapped task or constitutional conflict remains. The explicit query-limited shell exception changes a historical implementation choice, not the P-1 memory-right prohibition. Its narrow enforcement and dated documentation are required tasks. Owner authorization supersedes only the pre-push checkpoint; human merge and the two-round review cap remain.
 
 ## Execution risk
 
 Actual elevated same-account desktop evidence needs a suitable Windows context. T002/T006/T014 explicitly require it and prohibit counting restricted equivalents or missing prerequisites as success. The owner offered the installed native Windows Sandbox environment; its CLI is present and no existing sandbox was active during inspection. This is a tracked verification prerequisite rather than a relaxation of acceptance.
+
+## 2026-10-19 gate amendment analysis
+
+FR-011/T016 add complete traceability for #478 after fresh required audit identified seven TLS/QUIC findings. Both minimal patch versions are supported by upstream advisory fixes. No original acceptance criterion is removed or weakened; all 15 requirements/outcomes remain covered. The additional dependency/source/audit/conformance task precedes final delivery. Constitution and scope consistency recheck passes with no critical/high findings.
 
 ## Next action
 

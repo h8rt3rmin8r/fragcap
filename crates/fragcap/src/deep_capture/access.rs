@@ -297,6 +297,7 @@ pub fn authorize_output_recipient(
     }
 }
 
+#[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AccessObjectIdentity {
     pub volume_serial: u64,
@@ -304,14 +305,15 @@ pub(crate) struct AccessObjectIdentity {
     pub links: u32,
     pub directory: bool,
 }
+#[cfg(windows)]
 pub(crate) struct PinnedAccessPath {
-    pub path: PathBuf,
     pub identity: AccessObjectIdentity,
     pub descriptor: String,
     file: File,
     #[cfg(windows)]
     _ancestors: Vec<File>,
 }
+#[cfg(all(test, windows))]
 pub(crate) fn pin_access_path(path: &Path, write_dacl: bool) -> io::Result<PinnedAccessPath> {
     #[cfg(windows)]
     {
@@ -332,6 +334,7 @@ pub(crate) fn pin_access_path(path: &Path, write_dacl: bool) -> io::Result<Pinne
 pub(crate) fn open_producer_private_file(path: &Path) -> io::Result<File> {
     windows::create_producer_file(path)
 }
+#[cfg(windows)]
 impl PinnedAccessPath {
     pub(crate) fn refresh(&self) -> io::Result<(AccessObjectIdentity, String)> {
         #[cfg(windows)]
@@ -361,26 +364,6 @@ impl PinnedAccessPath {
                 self.identity.directory,
                 &windows::contract(recipient),
             )
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = recipient;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Windows pinned permissions are unavailable",
-            ))
-        }
-    }
-    pub(crate) fn apply_traversal(&self, recipient: &OutputRecipient) -> io::Result<()> {
-        if self.refresh()? != (self.identity.clone(), self.descriptor.clone()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "pinned traversal identity or descriptor changed before permission application",
-            ));
-        }
-        #[cfg(windows)]
-        {
-            windows::traversal(&self.file, recipient)
         }
         #[cfg(not(windows))]
         {

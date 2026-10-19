@@ -4,7 +4,7 @@
 
 Decision: use the exact desktop shell's real ordinary token after exact WTS/producer/session, elevation and integrity validation. An identification-only linked token is not impersonation authority.
 
-Evidence: a hidden read-only local probe compared current process pseudo-token, own process token and ImpersonateSelf/OpenThreadToken acquisition. All returned the ordinary split account's linked full token as TokenImpersonation/SecurityIdentification; DuplicateTokenEx(SecurityImpersonation) failed with 1346. This measures the platform failure mechanism, not the owner's elevated-to-ordinary incident. Stage diagnostics and genuine elevated regression remain required.
+Evidence: a hidden read-only local probe compared current process pseudo-token, own process token and ImpersonateSelf/OpenThreadToken acquisition. All returned the ordinary split account's linked full token as TokenImpersonation/SecurityIdentification; DuplicateTokenEx(SecurityImpersonation) failed with 1346. This measures the platform failure mechanism, not the owner's elevated-to-ordinary incident. A subsequent genuine elevated Sandbox regression also reproduced 1346 specifically at DuplicateTokenEx on the linked ordinary token. The fixed exact-shell path passed the same full writer/read fixture with a real unrelated standard principal denied.
 
 Rationale: Microsoft requires SecurityImpersonation for impersonation. TokenLinkedToken promises only a handle. GetShellWindow identifies the exact shell; OpenProcessToken requires PROCESS_QUERY_LIMITED_INFORMATION. Validate account/session and ordinary elevation/integrity, then duplicate actual ordinary authority.
 
@@ -21,3 +21,11 @@ Source: [Windows Sandbox CLI](https://learn.microsoft.com/en-us/windows/security
 ## Retirement
 
 Decision: delete historical inspection/repair and exclusive support; retain access-authorize and shared legacy operation machinery. Maintained docs describe current source while historical release/spec records retain prior behavior. No migration or historical permission changes are needed.
+
+## 2026-10-19 required advisory patch review (#478)
+
+Fresh all-feature cargo-deny identified RUSTSEC-2026-0338, 0340 and 0343 in quinn-proto 0.11.17 plus RUSTSEC-2026-0346 through 0349 in Rustls 0.23.45. The fixed graph passes advisories, bans, licenses and sources without a new waiver. Update all seven affected lockfiles; preserve historical release records and outer Quinn 0.11.11.
+
+Downloaded normalized manifests for Rustls 0.23.45/0.23.46 and quinn-proto 0.11.17/0.11.18 differ only in package version. Dependencies, features, licenses and MSRV declarations remain identical (1.71 and 1.85, both below workspace 1.88). Selected ring/std/tls12 and Quinn runtime/ring feature declarations remain fixed. Upstream patches add or remove no unsafe lines. Existing unchecked VarInt sites in changed Quinn files retain their surrounding logic. This supports scoped source/compatibility review, not an independent security audit.
+
+The [Rustls release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46) removes secret session Debug fields, rejects ECH rejection before application data, bounds Brotli certificate windows and authenticates key-exchange hints. It also tightens record limits, key updates, writer error propagation and handshake validation. The [quinn-proto release](https://github.com/quinn-rs/quinn/releases/tag/quinn-proto-0.11.18) guards empty unordered-read ranges, clamps ACK-delay bounds and fixes datagram eviction accounting, plus send-storage, reset/0-RTT credit and transport-parameter bounds. The package manifests remain compatible with Quinn 0.11.11. Its separate 0.11.12 outer RecvStream::read_to_end hardening is not imported or claimed here.

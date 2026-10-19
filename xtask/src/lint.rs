@@ -372,10 +372,21 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<(
 /// toolhelp enumeration path specifically because it opens no handle against
 /// any target process at all. That removes the thing a reviewer has to check
 /// rather than documenting it, and this list is what keeps it removed: fragcap
-/// opens no process, so there are no access rights to audit.
+/// target attribution opens no process. S173 separately admits only the exact
+/// query-limited desktop shell token lines checked below.
 ///
 /// A slice that genuinely needs a process handle deletes the relevant entry
 /// deliberately and argues for it, which is the point.
+const SHELL_TOKEN_SOURCE: &str = "crates/fragcap/src/deep_capture/access/windows/shell.rs";
+
+fn allowed_shell_token_call(shown: &str, code: &str) -> bool {
+    shown == SHELL_TOKEN_SOURCE && matches!(code.trim(),
+        "openprocess, openprocesstoken, process_query_limited_information," |
+        "let process = unsafe { openprocess(process_query_limited_information, 0, pid) };" |
+        "let ok = unsafe { openprocesstoken(process.0, token_query | token_duplicate, &mut token) };"
+    )
+}
+
 const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     (
         "sendpacket",
@@ -408,7 +419,7 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     // during integration and kept S10's stronger rule instead: fragcap opens no
     // process at all, so there are no rights to audit. These entries exist so
     // that a slice which deletes the `openprocess` line still cannot quietly
-    // ask for memory.
+    // ask for memory. The S173 shell exception retains only literal query rights.
     (
         "process_vm_read",
         "reads another process's memory; P-1 forbids a handle carrying memory rights",
@@ -586,7 +597,7 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
                     // FORBIDDEN_CALLS is therefore written lowercase.
                     let code = line.split("//").next().unwrap_or("").to_ascii_lowercase();
                     for (call, why) in FORBIDDEN_CALLS {
-                        if code.contains(call) {
+                        if code.contains(call) && !allowed_shell_token_call(&shown, &code) {
                             println!("{}:{}: forbidden-call: {call} {why}", shown, line_no + 1);
                             total += 1;
                         }
@@ -601,6 +612,35 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_token_exception_keeps_exact_source_and_literal_rights() {
+        let allowed = [
+            "OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,",
+            "let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };",
+            "let ok = unsafe { OpenProcessToken(process.0, TOKEN_QUERY | TOKEN_DUPLICATE, &mut token) };",
+        ];
+        for line in allowed {
+            let code = line.to_ascii_lowercase();
+            assert!(
+                allowed_shell_token_call(SHELL_TOKEN_SOURCE, &code),
+                "{line}"
+            );
+            assert!(!allowed_shell_token_call(
+                "crates/fragcap/src/other.rs",
+                &code
+            ));
+        }
+        for line in [
+            "let process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };",
+            "let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };",
+            "let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 1, pid) };",
+            "let ok = unsafe { OpenProcessToken(process.0, TOKEN_ALL_ACCESS, &mut token) };",
+            "OpenProcess(0, 0, pid);",
+        ] {
+            assert!(!allowed_shell_token_call(SHELL_TOKEN_SOURCE, &line.to_ascii_lowercase()));
+        }
+    }
 
     fn rules(bytes: &[u8], is_source: bool) -> Vec<&'static str> {
         check_bytes(bytes, is_source)

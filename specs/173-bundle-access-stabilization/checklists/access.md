@@ -19,3 +19,5 @@
 - [x] CHK009 Is genuinely elevated production evidence required with equivalents supplemental? [Measurability, FR-009]
 - [x] CHK010 Are owner-data mutation and real-game acceptance excluded? [Scope, FR-009]
 - [x] CHK011 Are full gates, human layout, structured contracts and hidden child execution retained? [Coverage, FR-010]
+
+- [x] CHK012 Is newly discovered mandatory audit remediation minimal, independently tracked and bounded by concrete audit/conformance evidence? [Coverage, FR-011]

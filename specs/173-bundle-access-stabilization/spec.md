@@ -4,9 +4,9 @@
 
 **Created**: 2026-10-19
 
-**Status**: Specified
+**Status**: Implemented; PR verification in progress
 
-**Input**: Owner-authorized S173 combines #476 automatic same-account elevated output access and #477 historical access inspection/repair retirement, with automatic PR publication and at most two review rounds.
+**Input**: Owner-authorized S173 combines #476 automatic same-account elevated output access and #477 historical access inspection/repair retirement, with automatic PR publication and at most two review rounds. Mandatory full-gate remediation also includes #478, the seven TLS/QUIC advisory findings discovered by fresh audit.
 
 ## Clarifications
 
@@ -81,6 +81,8 @@ Explicit different-account output keeps its authenticated recipient and exact de
 - **FR-009**: Controlled Windows evidence MUST exercise genuine elevated production recipient acquisition and ordinary enumeration/full reads of synthetic new output, plus unrelated-authority denial. Restricted equivalents supplement but do not replace elevated-path evidence. No owner bundle, game, real trust change or manual operator run is a completion gate.
 - **FR-010**: The complete spec-kit analysis and repository-controlled gates MUST pass. Human reports retain shared display layout, structured output retains its existing contracts, and all child console tooling is hidden/noninteractive.
 
+- **FR-011**: Required dependency audit findings MUST be corrected with minimal fixed TLS/QUIC patch versions across every affected workspace and isolated graph, preserving the ring provider, existing features and review exception expiry. Governed identities and review currency MUST follow actual fresh audit, scoped source review and protocol/conformance evidence; no advisory suppression or historical publication rewrite.
+
 ### Key Entities
 
 - **Output recipient**: Exact individual account, session and retained proven ordinary context, distinct from the producer's elevated authority.
@@ -94,7 +96,11 @@ Explicit different-account output keeps its authenticated recipient and exact de
 - **SC-001**: Every required same-account elevated synthetic new-output case completes without self-identification or helper steps and passes full ordinary-context enumeration/read checks.
 - **SC-002**: Both retired verbs are rejected; no maintained guidance instructs their use; all retained legacy operations pass their scoped regressions.
 - **SC-003**: Every required authenticated handoff and access-denial case has the expected outcome with zero unreported verification failures.
-- **SC-004**: Both issues' acceptance matrices and repository gates pass with exact evidence and explicit limits; neither issue depends on future owner testing.
+- **SC-004**: All three issues' acceptance matrices and repository gates pass with exact evidence and explicit limits; no issue depends on future owner testing.
+
+### Gate remediation discovered 2026-10-19
+
+Issue #478 joins the slice only because fresh required audit found quinn-proto 0.11.17 and rustls 0.23.45 advisory failures. The minimal fixed versions are quinn-proto 0.11.18 and rustls 0.23.46. Their all-feature audit and controlled TLS/QUIC gates are required alongside #476/#477. This is source maintenance, not a release.
 
 ## Assumptions
 
