@@ -47,13 +47,13 @@
 
 ## Required Windows package import reconciliation
 
-- [ ] T017 Reconcile integration/windows-package-contract-v1.json with the measured User32 shell-query import; extend xtask/src/package_certification.rs report mutations to reject missing User32 and unexpected imports; run exact package/static and hosted certification gates (FR-010, SC-004).
+- [x] T017 Reconcile integration/windows-package-contract-v1.json with the measured User32 shell-query import; extend xtask/src/package_certification.rs report mutations to reject missing User32 and unexpected imports; run exact package/static and hosted certification gates (FR-010, SC-004).
 
 ## Phase 6: Verification and delivery
 
 - [x] T013 Record the narrow architecture/lint deviation in AGENTS.md, docs/fragcap-specification.md and changelog.d/S173-bundle-access.decisions.md; add user-visible fragment and chronological docs/plans/README.md entry (FR-008, FR-010).
 - [x] T014 Run full gates, genuine elevated regression and issue acceptance mapping; record evidence/limits in specs/173-bundle-access-stabilization/verification.md and issue-acceptance.md (FR-009, FR-010, SC-001, SC-002, SC-003, SC-004).
-- [ ] T015 Commit, push and publish official PR closing #476/#477/#478; reconcile every review and exact final-head CI with at most a second requested review round; record handoff in specs/173-bundle-access-stabilization/verification.md (SC-004).
+- [x] T015 Commit, push and publish official PR closing #476/#477/#478; reconcile every review and exact final-head CI with at most a second requested review round; record handoff in specs/173-bundle-access-stabilization/verification.md (SC-004).
 
 ## Dependencies and execution
 
