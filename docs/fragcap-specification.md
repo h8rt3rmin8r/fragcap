@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.92-draft \
-**Applies-To:** 0.10.6 \
+**Version:** 0.1.93-draft \
+**Applies-To:** 0.10.7 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-10-09 \
+**Date:** 2026-10-19 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -180,6 +180,7 @@ enforcement.
 | 0.1.90-draft | 2026-10-06 | Codex | Reconciles verified v0.10.5 publication under S166. Owner merge and explicitly delegated annotated tag select exact source; all four release jobs pass after normal protected deployment approval. Six certified public files and ten non-yanked crate records reconcile before current markers move. S165 is now published without a universal title-compatibility or independent-review claim. Corrects current completion language to match the closed delivery issues and active-release defect policy. Updates sections 1, 22.7, 25.2, and 27.3. |
 | 0.1.91-draft | 2026-10-09 | Codex | S172 prepares the v0.10.6 candidate from merged S167-S171, remaining publication records and the exact site dependency patch. First-party and generated identities, conformance, graph digests, changelog and highlights move together; published v0.10.5 and historical evidence remain independently bound. Updates sections 1 and 27.3. |
 | 0.1.92-draft | 2026-10-09 | Codex | S172 reconciles verified v0.10.6 publication after owner merge, exact annotated tag, all four release jobs, normal protected registry approval, six certified public files and ten non-yanked downloaded crate archives. Current markers and the frozen review candidate advance together; historical evidence and independent-review status retain their authority. Updates sections 1, 22.7, 25.2 and 27.3. |
+| 0.1.93-draft | 2026-10-19 | Codex | S174 prepares v0.10.7 from accepted S173 and all remaining unreleased changes. Candidate versions, generated evidence, conformance, governed graph digests, chronological changelog and short highlights move together while actual published v0.10.6 remains separately bound. The owner explicitly delegates this release's checked PR integration, immutable tag, normal protected approval and public verification without changing future workflow rules or environment protection. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
