@@ -1,2 +1,0 @@
-<!-- spec-impact: 13.7, 19.5, 26.3 -->
-Same-account elevated Deep Capture and calibration automatically retain the exact ordinary desktop recipient without a self-SID argument or second terminal. Acquisition errors identify their Windows operation stage. Historical bundle permission inspection and repair are retired; use normal Windows permission administration for inaccessible historical output. New-output verification, authenticated different-account output, collection, sensitive cleanup and Doctor recovery/retention remain supported.

@@ -10,6 +10,34 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-10-19
+
+### Fixed
+
+Current documentation and the frozen independent-review candidate now identify verified v0.10.6 packages and all ten published crate archives. Published baseline markers no longer describe the previous release, and recipient access and generated-session retention corrections are marked as shipped.
+
+Same-account elevated Deep Capture and calibration automatically retain the exact ordinary desktop recipient without a self-SID argument or second terminal. Acquisition errors identify their Windows operation stage. Historical bundle permission inspection and repair are retired; use normal Windows permission administration for inaccessible historical output. New-output verification, authenticated different-account output, collection, sensitive cleanup and Doctor recovery/retention remain supported.
+
+### Security
+
+Patch Rustls to 0.23.46 and quinn-proto to 0.11.18 across the product, fuzz, performance and historical spike lockfiles for seven current security advisories (#478). Preserve existing crypto providers, features and the Rust 1.88 floor.
+
+### Decisions
+
+**2026-10-09** Advance published records only after the owner-merged source, exact annotated v0.10.6 tag, all four release jobs, normal protected registry approval, six downloaded public files and ten non-yanked downloaded crate archives reconcile. Retarget the frozen published-review replay label and six closed asset authorities to the verified release; retain the pinned predecessor, unsigned policy, historical evidence and unperformed independent whole-product review.
+
+2026-10-19: Replace unusable linked-token promotion for elevated same-account output with exact desktop shell token acquisition. One process handle requests literal PROCESS_QUERY_LIMITED_INFORMATION; its token requests query/duplicate only. Exact WTS/producer account and session, ordinary elevation/integrity, duplication and shell identity revalidation precede retention. Record a narrow exception to the historical no-process-handle implementation choice and mechanical lint, permitted by P-1's explicitly stated query-right contract. No target memory rights, process scanning or principle amendment is introduced.
+
+2026-10-19: Retire #477's historical inspection/repair API, CLI and exclusive support. Preserve #476's new-output correction, authenticated different-account helper and all shared legacy cleanup/collection/recovery behavior. Historical specs and release records remain; maintained source contracts state the transition without claiming publication.
+
+2026-10-19: Use the owner-offered native Windows Sandbox CLI for genuine elevated/ordinary synthetic evidence. Its disposable guest UAC may be enabled and rebooted without changing host settings. All child console tooling remains hidden/noninteractive. The full required elevated row cannot be replaced by restricted equivalents or future owner testing.
+
+2026-10-19: Required fresh supply-chain verification found seven advisories, so track the minimal coordinated Rustls/quinn-proto patch under #478 within S173. Compare downloaded sources and manifests, preserve providers/features/MSRV, reconcile all seven lockfiles and exact measured graph digests, and keep existing waiver and review expiry unchanged. Retain outer Quinn 0.11.11; no claim includes its separate 0.11.12 read_to_end hardening.
+
+2026-10-19: Reconcile the final Windows package contract with its measured User32.dll import from GetShellWindow/GetWindowThreadProcessId. Microsoft declares both exact shell-query APIs in User32.dll. Add only this existing Windows system DLL to the closed ordinary inventory, preserving exact import comparison, delayed wpcap.dll and every other certification check. Hosted PE measurement found no other import delta. Missing-User32 and unexpected-import report mutations remain blocking; this adds no bundled DLL, third-party package, process memory right or pinned workflow/script change.
+
+2026-10-19: Prepare v0.10.7 from the accepted S173 source and all remaining unreleased fragments. Candidate identities, generated evidence and governed first-party graph digests advance together while current publication markers and frozen replay authority remain at the actually published v0.10.6 until public files and all ten crates independently reconcile. The owner explicitly delegates this release's PR merges, tag push, normal protected registry approval and publication without further input; no future workflow rule or environment protection is changed.
+
 ## [0.10.6] - 2026-10-09
 
 ### Fixed
@@ -2396,6 +2424,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.7]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.7
 [0.10.6]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6
 [0.10.5]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.5
 [0.10.4]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.4

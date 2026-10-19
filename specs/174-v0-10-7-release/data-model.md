@@ -2,7 +2,7 @@
 
 ## Candidate
 
-Version0.10.7, base source b4cb29a, exact accepted head/tree, complete gates and bounded finding ledger. State transitions: specified -> prepared -> locally verified -> published PR -> reviewed and hosted-green -> delegated merge.
+Version 0.10.7, base source b4cb29a, exact accepted head/tree, complete gates and bounded finding ledger. State transitions: specified -> prepared -> locally verified -> published PR -> reviewed and hosted-green -> delegated merge.
 
 ## Published release
 

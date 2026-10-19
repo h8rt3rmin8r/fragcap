@@ -41,7 +41,7 @@ Candidate edits cover Cargo.toml, Cargo.lock, fuzz/Cargo.lock, performance/nativ
 3. Refresh isolated locks offline. Snapshot governed graphs and compare third-party identities/features/counts before rebinding first-party version digests; preserve review dates and exception expiry.
 4. Existing package/report authorities already include S173's exact User32 import. Do not touch SDK URL/pin, workflows or wrappers without a demonstrated required failure and dated decision.
 5. Automatic candidate review is round one. At most one final manual request is round two, with every finding reconciled. Dedicated security report availability is disclosed truthfully; bot review does not imply independent whole-product audit. Records PR automatic review is distinct record-only acceptance and must not retrigger candidate review.
-6. Existing crates-io configuration currently requires owner46768484, permits self-review, retains admin bypass and permits only v* tags. Use its normal pending-deployment approval under owner delegation, never policy weakening or bypass.
+6. Existing crates-io configuration currently requires owner 46768484, permits self-review, retains admin bypass and permits only v* tags. Use its normal pending-deployment approval under owner delegation, never policy weakening or bypass.
 7. After exact-head green checks and actual findings resolved, merge candidate through its PR with expected-head protection, fetch/verify exact accepted tree, then push annotated tag to that exact merged source. No direct main push or tag move.
 8. Download six unauthenticated release files and ten registry archives, verify sizes/digests/sidecars, certification/source and non-yanked state before records markers move. Never install downloaded product locally.
 
