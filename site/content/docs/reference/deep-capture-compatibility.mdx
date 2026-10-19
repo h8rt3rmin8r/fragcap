@@ -3,10 +3,10 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.6](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6).
+Published baseline: [v0.10.7](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.7).
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.6. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.7. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
@@ -147,9 +147,9 @@ Same-account administrative capture retains the intended user's exact SID and or
 
 Elevation under different credentials requires an explicit `--output-recipient <SID>` and exact `--bundle <PATH>`. The waiting command emits a quoted `bundle access-authorize` helper command for the intended ordinary terminal. Run that exact helper within sixty seconds, then review the full session authorization plan. An unknown recipient, elevated helper, changed request or mismatched destination refuses before session output or effects. No arbitrary desktop account is guessed.
 
-The next-source S173 correction establishes the same-account recipient automatically from its proven ordinary desktop shell context when the producer is elevated. No self-SID argument, explicit output destination or second terminal is required for this default. The exact account and Windows session must match, the retained token must be ordinary, and final verification follows writer reconciliation. A matching SID or successful elevated read cannot establish ordinary access. Acquisition failures identify their operation stage.
+The S173 correction published in v0.10.7 establishes the same-account recipient automatically from its proven ordinary desktop shell context when the producer is elevated. No self-SID argument, explicit output destination or second terminal is required for this default. The exact account and Windows session must match, the retained token must be ordinary, and final verification follows writer reconciliation. A matching SID or successful elevated read cannot establish ordinary access. Acquisition failures identify their operation stage.
 
-S173 retires the historical permission inspection/repair workflow shipped in v0.10.6. For inaccessible historical output, use normal Windows permission administration, then verify reads from the intended ordinary account. fragcap does not promise automatic historical repair. Different-account output keeps its explicit authenticated helper; collection, sensitive cleanup and Doctor recovery/retention keep their separate contracts.
+v0.10.7 (S173) retires the historical permission inspection/repair workflow shipped in v0.10.6. For inaccessible historical output, use normal Windows permission administration, then verify reads from the intended ordinary account. fragcap does not promise automatic historical repair. Different-account output keeps its explicit authenticated helper; collection, sensitive cleanup and Doctor recovery/retention keep their separate contracts.
 
 ### Session retention and collection
 

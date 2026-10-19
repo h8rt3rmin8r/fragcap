@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test as base } from '@playwright/test';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditDocument } from '../scripts/audit-export-dom.mjs';
 
 const siteDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(siteDir, 'out');
+const publishedRelease = JSON.parse(readFileSync(join(siteDir, '..', 'docs', 'published-release.json'), 'utf8'));
 const viewports = [320, 768, 1440];
 const expectedDiagramNames = [
   'Capture packet attribution architecture',
@@ -289,7 +290,8 @@ test.describe('production accessibility contract', () => {
     await page.goto('/docs/reference/native-documentation');
     await expect(page.getByRole('heading', { level: 1, name: 'Native product contract' })).toHaveCount(1);
     const main = page.getByRole('main');
-    await expect(main).toContainText('v0.10.6');
+    await expect(main).toContainText(`The downloadable baseline is v${publishedRelease.version}, source ${publishedRelease.source_revision}.`);
+    await expect(main.getByRole('link', { name: `v${publishedRelease.version}`, exact: true })).toHaveAttribute('href', publishedRelease.release_url);
     await expect(main).toContainText('S154');
     await expect(main).toContainText('S158');
     await expect(main).toContainText('independent security audit has been performed');

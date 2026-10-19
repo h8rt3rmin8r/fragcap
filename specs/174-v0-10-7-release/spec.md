@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-19
 
-**Status**: Local candidate verified; hosted acceptance/publication pending
+**Status**: v0.10.7 public files/crates verified; final records/site acceptance pending
 
 **Input**: The owner requests a fresh publishing release end to end without further input, replacing the proposed IGDB slice. Publish every merged change since v0.10.6, including S173, then reconcile actual public state.
 

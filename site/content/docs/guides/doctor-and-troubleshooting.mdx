@@ -3,7 +3,7 @@ title: Doctor and troubleshooting
 description: Read environment readiness, distinguish retained history from recoverable residue, and review exact remediation.
 ---
 
-Published baseline: [v0.10.6](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6).
+Published baseline: [v0.10.7](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.7).
 
 ## Read first, repair separately
 
@@ -14,7 +14,7 @@ fragcap doctor --json
 
 Doctor checks without starting Capture, a proxy, a target, or trust changes. Capture and Deep Capture readiness are separate verdicts. Missing elevation, Npcap, required backend features, or usable interfaces can block packet recording without proving that the native proxy is unavailable. Indeterminate means the check could not establish the fact; it is not a green result. Target compatibility is separate from environment readiness.
 
-Current source (S168, unreleased) summarizes healthy completed history with distinct observed session and resource counts. The inventory remains bounded and explicitly reports incomplete coverage; a terminal resource does not prove its session has no active owner. Active, mixed, stale, cleanup-failed, unknown, unsupported, and actionable findings remain individually visible. Retained evidence is separate from cleanup residue, and ordinary Doctor never deletes it.
+Since v0.10.6 (S168), Doctor summarizes healthy completed history with distinct observed session and resource counts. The inventory remains bounded and explicitly reports incomplete coverage; a terminal resource does not prove its session has no active owner. Active, mixed, stale, cleanup-failed, unknown, unsupported, and actionable findings remain individually visible. Retained evidence is separate from cleanup residue, and ordinary Doctor never deletes it.
 
 ```powershell
 fragcap doctor --history-details
@@ -37,11 +37,11 @@ Published builds offer the official Npcap acquisition page after confirmation. O
 
 ## Proxy traffic without client packet ownership
 
-Current source (S169, unreleased) corrects several loopback acquisition gaps: Deep Capture includes its required loopback adapter even with named physical interfaces, recognizes Npcap loopback descriptions, provides the exact listener IP when adapter addresses are absent, and keeps the exact TCP listener in loopback filters during narrowing. The observed stage-bound client can own either canonical TCP endpoint orientation. Competing owners remain unresolved, and the existing acquisition gate and finite history bounds remain active.
+The corrections shipped in v0.10.6 (S169) address several loopback acquisition gaps: Deep Capture includes its required loopback adapter even with named physical interfaces, recognizes Npcap loopback descriptions, provides the exact listener IP when adapter addresses are absent, and keeps the exact TCP listener in loopback filters during narrowing. The observed stage-bound client can own either canonical TCP endpoint orientation. Competing owners remain unresolved, and the existing acquisition gate and finite history bounds remain active.
 
 If exchanges complete but calibration says missing packet-flow correlation, run `fragcap doctor` to inspect Npcap and loopback readiness. Inspect the retained application correlation reasons and process trace separately. `packet-flow-not-observed` means no matching flow summary; `packet-history-bound-exceeded` means matching evidence was withheld or exceeded its bound; `capture-buffer-history-incomplete` means a global acquisition-buffer gap. A flow outside the connection window, missing owner or conflicting owners has its own reason. Counts describe retained observation-window records and do not include later route-owner release traffic. A readable artifact or successful HTTP response does not prove final-client ownership.
 
-Doctor is read-only and checks prerequisites; it does not repair packet ownership or prove compatibility. Gameplay retry is not an established remedy for a missing evidence path. S170 shipped ordinary-user output access in v0.10.6. The next-source S173 correction fixes automatic same-account elevated recipient acquisition and retires historical permission repair; unresolved historical access uses normal Windows permission administration. Controlled sockets and synthesized packet fixtures prove the source corrections; they do not prove live Npcap acquisition or universal title compatibility.
+Doctor is read-only and checks prerequisites; it does not repair packet ownership or prove compatibility. Gameplay retry is not an established remedy for a missing evidence path. S170 shipped ordinary-user output access in v0.10.6. v0.10.7 (S173) fixes automatic same-account elevated recipient acquisition and retires historical permission repair; unresolved historical access uses normal Windows permission administration. Controlled sockets and synthesized packet fixtures prove the source corrections; they do not prove live Npcap acquisition or universal title compatibility.
 
 ## A stalled check
 
