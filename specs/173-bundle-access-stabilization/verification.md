@@ -41,3 +41,11 @@ Hosted final-head CI and bounded external review follow official PR publication.
 ## Limits
 
 Synthetic disposable Windows evidence proves the scoped acquisition, access and retirement behavior. No real game, live Npcap run, owner bundle, host account/UAC/trust change or different-human field run was used. No universal target compatibility or independent security audit is claimed.
+
+## 2026-10-19 hosted certificate recovery and package correction
+
+At 10:39 EDT (14:39 UTC), the original SDK endpoint passed ordinary Windows TLS validation and returned HTTP 200. A subsequent standard TLS 1.3 handshake observed leaf thumbprint 3BE57E70C25D7167DDC7BC5326F6008A4F29D44A, valid through 2026-12-17T09:03:16Z. The existing URL, certificate validation and exact SDK checksum were unchanged. Only the three failed jobs were rerun. Native integration and platform passed; package certification passed SDK acquisition and build, then exposed the separate S173 import-inventory omission described below.
+
+Final-package PE inspection reported precisely the declared ordinary imports plus user32.dll. T017 records the owning shell-query API contracts and adds only that exact Windows system DLL to the closed inventory. The package-report mutation regression failed before this policy correction because the required User32 fixture was absent. The correction retains strict rejection of missing User32, extra unreviewed imports and all other identity/lifecycle/report mutations. Final corrected gate results follow the PR checks; no package certification success is claimed by this interim paragraph.
+
+The corrected package-authority suite passed all eight tests, with zero failed or ignored. A subsequent full cargo xtask ci completed with exit 0 and all checks passed, including the extended mutation regression. Product runtime source, dependency graph, native recipient logic, SDK URL/checksum and pinned workflows/scripts did not change in this correction. Hosted certification of the corrected candidate remains required before final handoff.

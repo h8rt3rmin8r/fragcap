@@ -1918,6 +1918,32 @@ mod tests {
                 );
             }};
         }
+        rejects_with!(
+            "missing-shell-query-import",
+            "two complete identity-bound unsigned PE inspections",
+            |candidate: &mut Value| {
+                let imports = candidate["pe_inspections"][0]["ordinary_imports"]
+                    .as_array_mut()
+                    .unwrap();
+                let before = imports.len();
+                imports.retain(|name| name != "user32.dll");
+                assert_eq!(
+                    imports.len() + 1,
+                    before,
+                    "fixture must exercise User32 removal"
+                );
+            }
+        );
+        rejects_with!(
+            "unexpected-ordinary-import",
+            "two complete identity-bound unsigned PE inspections",
+            |candidate: &mut Value| {
+                candidate["pe_inspections"][1]["ordinary_imports"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(Value::String("unreviewed-extra.dll".into()));
+            }
+        );
         rejects!("missing", |candidate: &mut Value| {
             candidate["entries"].as_array_mut().unwrap().pop();
         });

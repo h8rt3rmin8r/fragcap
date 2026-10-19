@@ -45,6 +45,10 @@
 
 - [x] T016 Patch only affected TLS/QUIC versions across Cargo.toml, Cargo.lock, fuzz/, performance/native-proxy/ and spikes/; compare source/features/providers/MSRV, run fresh all-feature audit and controlled protocol/isolated checks, then reconcile supply-chain/policy-v1.json and current threat documentation (FR-011, SC-004).
 
+## Required Windows package import reconciliation
+
+- [ ] T017 Reconcile integration/windows-package-contract-v1.json with the measured User32 shell-query import; extend xtask/src/package_certification.rs report mutations to reject missing User32 and unexpected imports; run exact package/static and hosted certification gates (FR-010, SC-004).
+
 ## Phase 6: Verification and delivery
 
 - [x] T013 Record the narrow architecture/lint deviation in AGENTS.md, docs/fragcap-specification.md and changelog.d/S173-bundle-access.decisions.md; add user-visible fragment and chronological docs/plans/README.md entry (FR-008, FR-010).
@@ -53,7 +57,7 @@
 
 ## Dependencies and execution
 
-T001 precedes foundation and US1. T004 precedes T005. T008 precedes T009-T011. US3 uses shared recipient code and is verified after its changes. T016 is mandatory before T014/T015; T013-T015 follow all stories. Shared files are edited serially. Documentation and independent fixture analysis can be considered alongside token diagnostics, but no implementation precedes passing analysis.
+T001 precedes foundation and US1. T004 precedes T005. T008 precedes T009-T011. US3 uses shared recipient code and is verified after its changes. T016 and T017 are mandatory before final T014/T015 completion; T013-T015 follow all stories. Shared files are edited serially. Documentation and independent fixture analysis can be considered alongside token diagnostics, but no implementation precedes passing analysis.
 
 ## Implementation strategy
 

@@ -65,3 +65,7 @@ Design passes without principle amendment. Exact shell token acquisition is a do
 ## Complexity Tracking
 
 One exact desktop shell token adapter replaces unusable linked-token promotion. No service, broker, arbitrary process scan, package dependency or storage shape is added.
+
+## 2026-10-19 hosted package gate reconciliation
+
+After vendor TLS recovery, native integration and platform passed. Final-package certification then measured one additional ordinary system import, user32.dll, introduced by the already specified GetShellWindow/GetWindowThreadProcessId calls. Their Microsoft API contracts require User32.dll. T017 adds only that exact DLL to the closed ordinary inventory, keeps delayed wpcap.dll and all other enforcement unchanged, and extends existing missing/extra-import report mutations. This corrects S173 packaging metadata rather than adding a new product capability or relaxing exact equality. No pinned script/workflow change is needed.
