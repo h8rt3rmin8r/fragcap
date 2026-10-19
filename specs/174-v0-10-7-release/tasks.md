@@ -29,9 +29,9 @@
 
 **Independent test**: All exact-head checks green, actual findings resolved and expected-head merge tree matches reviewed candidate.
 
-- [ ] T011 [US3] Commit/push release/0.10.7, create and attach official candidate PR, and record review ledger in verification.md.
-- [ ] T012 [US3] Reconcile automatic and at most second/final requested review, every actual thread and final-head hosted checks; fix only demonstrated scoped failures with required verification.
-- [ ] T013 [US3] Merge accepted candidate PR under explicit delegation with expected head, fetch and verify exact tree, then push annotated v0.10.7 on exact merged source; record tag/merge identities in release handoff.
+- [x] T011 [US3] Commit/push release/0.10.7, create and attach official candidate PR, and record review ledger in verification.md.
+- [x] T012 [US3] Reconcile automatic and at most second/final requested review, every actual thread and final-head hosted checks; fix only demonstrated scoped failures with required verification.
+- [x] T013 [US3] Merge accepted candidate PR under explicit delegation with expected head, fetch and verify exact tree, then push annotated v0.10.7 on exact merged source; record tag/merge identities in release handoff.
 
 ## Phase 5 - Public delivery (US2)
 
@@ -39,16 +39,16 @@
 
 **Independent test**: Tagged certification succeeds before release creation; normal approval permits ten crates; unauthenticated downloads and archives match their exact authorities.
 
-- [ ] T014 [US2] Follow all four release workflow jobs and submit normal crates-io pending-deployment approval after fresh protection validation, recording actual workflow/approval in verification.md.
-- [ ] T015 [US2] Independently download/reconcile six public files, three sidecars and schema4 certification report through existing report validator; record all identities in docs/maintainers/v0.10.7-release-handoff.md.
-- [ ] T016 [US2] Independently verify ten non-yanked 0.10.7 crate records and downloaded archive checksums; record exact identities in release handoff.
-- [ ] T017 [US2] Prepare separate records branch advancing docs/published-release.json, fourteen current markers, docs/audits/native-documentation-coverage.v2.json, docs/security/native-product-review-candidate.v1.json, literal assets in xtask/src/review_record.rs and replay workflow label with dated decision.
+- [x] T014 [US2] Follow all four release workflow jobs and submit normal crates-io pending-deployment approval after fresh protection validation, recording actual workflow/approval in verification.md.
+- [x] T015 [US2] Independently download/reconcile six public files, three sidecars and schema4 certification report through existing report validator; record all identities in docs/maintainers/v0.10.7-release-handoff.md.
+- [x] T016 [US2] Independently verify ten non-yanked 0.10.7 crate records and downloaded archive checksums; record exact identities in release handoff.
+- [x] T017 [US2] Prepare separate records branch advancing docs/published-release.json, fourteen current markers, docs/audits/native-documentation-coverage.v2.json, docs/security/native-product-review-candidate.v1.json, literal assets in xtask/src/review_record.rs and replay workflow label with dated decision.
 - [ ] T018 [US2] Run repository/site/accessibility and hygiene gates for records changes, publish/attach records PR and reconcile every automatic finding plus final-head checks; record actual evidence in verification.md.
 - [ ] T019 [US2] Merge records PR under delegation after checks, verify site deployment/public links and current release references; update #481 acceptance only from actual results.
 
 ## Phase 6 - Completion
 
-- [ ] T020 Reconcile final verification.md and release handoff/task status without inventing future checks; external exact-head receipts may live in PR comments.
+- [x] T020 Reconcile final verification.md and release handoff/task status without inventing future checks; external exact-head receipts may live in PR comments.
 - [ ] T021 Close #481 after actual acceptance, clean merged branches and local feature state, stop any release timer and report immutable release URL/source and evidence limits.
 
 ## Dependencies and execution
@@ -62,3 +62,5 @@ FR-001:T005,T006,T007,T009; FR-002:T009,T010; FR-003:T006,T017; FR-004:T010,T012
 ## Implementation strategy
 
 Candidate preparation is independently reviewable but not final completion. Deliver candidate, actual publication and records as one release outcome. Reuse existing validators rather than adding tests that mirror version replacements; preserve mandatory security/package tests. Current public state and history remain authoritative throughout partial delivery.
+
+T018 local gates passed. Its PR/hosted portion, T019 and T021 are external to this committed local receipt; the records PR final acceptance comment records their actual exact-head completion after merge/deployment and cleanup. Pending checkboxes here are not a claim that future gates have passed.

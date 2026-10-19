@@ -2,7 +2,7 @@
 
 **Date**: 2026-10-19
 
-**Status**: Local candidate verified; hosted candidate acceptance and publication pending. Public baseline remains v0.10.6.
+**Status**: Candidate accepted; v0.10.7 public files and ten crates independently verified; records/site acceptance pending. Chronological interim receipts below retain their original scope.
 
 ## Specification and candidate preparation
 
@@ -39,3 +39,25 @@ The declared Rust 1.88 MSRV build and neutral core/capture/attribution x86_64-un
 The frozen site install reused 401 packages under pnpm 10.26.0. Four site unit tests passed; the production export passed and emitted 92 pages including the new changelog, .nojekyll and CNAME. All 14 production accessibility tests passed in 3.8 minutes across 320/768/1440 widths, search, headings, diagrams, contrast, links, release/source claims and recovery. No production deployment is claimed by local export evidence.
 
 Receipt-only task/status updates follow the full gate; lint/docs/spec/notes and strict text hygiene are rerun on the resulting candidate before commit. Hosted exact-head acceptance, actual review findings and immutable public publication remain pending, not assumed.
+
+## Candidate hosted acceptance and delegated tag
+
+Official [PR #482](https://github.com/h8rt3rmin8r/fragcap/pull/482) published exact candidate d7bf84d6028c3db359b56d6e3486ad13c0011a00. All eight applicable workflows and all 23 active PR checks, including CodeQL, passed; only manual soak and main-only Pages deployment were skipped. The unchanged published-review replay was not path-triggered by this candidate. Automatic review and the second/final request 6272510520 completed without findings; summary 6272418179 and receipt 6272555872 identify the exact head. Direct final thread and formal-review inventories were empty. No third candidate round was requested. The separately requested security result remains unpublished; no independent security pass is claimed.
+
+Under the owner's explicit full-release delegation, the candidate PR merged as ae2d3a1a0661b705af48ce1ee36786fdd176a0f6 after exact-head checks were verified. Its tree exactly matches the reviewed candidate. Annotated tag object b540aecc9b7c600e62837eef5a03b0605ec568d3 was pushed and independently observed remotely to peel to that exact merge. [Tagged release run 39291004769](https://github.com/h8rt3rmin8r/fragcap/actions/runs/39291004769) now owns final package certification and actual publication. No tag move, direct main push or protection change occurred.
+
+The separate records branch is prepared from exact tagged source. Current publication markers remain v0.10.6 until all actual v0.10.7 files and crates independently reconcile.
+
+## Actual tagged publication and independent verification
+
+All four tagged run 39291004769 jobs passed: identity 118191315687, certification 118191975251, release 118198585092 and registry 118198915114. Normal pending-deployment approval was submitted under explicit owner delegation after fresh protection validation. GitHub approval history records h8rt3rmin8r, approved, crates-io and the delegation comment; deployment 7180149271 succeeded. No protection changed or bypass was used.
+
+The GitHub release became public 2026-10-19T17:20:00Z, neither draft nor prerelease. All six unauthenticated downloads matched API sizes/SHA-256 and all three sidecars. The tagged schema 4 report has zero findings, exact official 0.10.7 source ae2d3a1a0661b705af48ce1ee36786fdd176a0f6 and passes cargo xtask package-certification validate-report against those exact six files. All ten exact registry records report yanked=false and every downloaded archive matches its registry checksum. Full file/archive identities are in the release handoff. No public binary was executed locally.
+
+Only after this independent reconciliation did the records branch advance docs/published-release.json, fourteen markers, coverage identity, frozen candidate/literal assets and replay label. The v0.8.0 predecessor, historical measured evidence, not-started independent review and unsigned policy remain. Required records and site gates follow; actual integration/deployment remains external to this committed local receipt and is recorded by final PR acceptance comments.
+
+## Publication-records local acceptance
+
+Full cargo xtask ci completed with exit 0 and ci: all checks passed after actual publication records and frozen asset authorities changed. All existing repository and controlled product gates passed; no runtime product source or dependency/lock changed in this phase. The production site export passed and all 14 production accessibility tests passed in 3.7 minutes. Twenty-five changed text files passed strict UTF-8 without BOM, LF, single final newline, dash, trailing-whitespace and mojibake checks; git diff --check passed. The sole pinned workflow edit changes its replay job label from0.10.6 to0.10.7 and has a dated decision.
+
+Final receipt/task updates and stable JSON field ordering follow these gates. Focused lint/docs/spec/review-record and strict hygiene govern the resulting local receipt. Records PR publication, its exact-head hosted checks/automatic review, delegated merge, production deployment and cleanup are completed externally after this commit; their actual final acceptance is recorded in the records PR comment rather than assumed here or generating another status-only release tag.
