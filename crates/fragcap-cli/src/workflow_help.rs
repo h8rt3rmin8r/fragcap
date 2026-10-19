@@ -49,8 +49,7 @@ Troubleshooting examples:
   fragcap doctor --fix
 
 Output access:
-  fragcap bundle access-inspect "<retained bundle>"
-  fragcap bundle access-repair "<retained bundle>" --authorize "<inspection id>"
+  For unresolved historical bundle access, use normal Windows permission administration.
   fragcap deep-capture "My Game" --launch --bundle "C:\Captures\new-session" --output-recipient "<exact user SID>"
 
 Default output belongs to the exact ordinary desktop-session user. Different

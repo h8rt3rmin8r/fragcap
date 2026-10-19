@@ -181,16 +181,6 @@ fn security_descriptor(path: &Path) -> Vec<u8> {
     descriptor
 }
 
-fn old_group_only_policy(path: &Path, directory: bool) {
-    // Preserve the owner while reproducing historical group-dependent access.
-    let inheritance = if directory { "OICI" } else { "" };
-    let logon_sid = fragcap::deep_capture::current_fixture_logon_sid().unwrap();
-    let sddl = format!(
-        "D:P(A;{inheritance};FA;;;BA)(A;{inheritance};FA;;;{logon_sid})(A;{inheritance};FA;;;SY)"
-    );
-    fixture_policy(path, &sddl);
-}
-
 fn fixture_policy(path: &Path, sddl: &str) {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -289,152 +279,177 @@ fn missing_nested_containers_have_recipient_access_without_changing_existing_obj
 }
 
 #[test]
-fn historical_group_only_sidecars_are_denied_then_repaired_without_content_changes() {
-    use fragcap::deep_capture::{inspect_bundle_access, repair_bundle_access};
-
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("bundle");
-    let recipient = OutputRecipient::group_denied_fixture().unwrap();
-    assert_eq!(recipient.proof_kind(), "controlled-group-denied-equivalent");
+#[ignore = "requires a genuine elevated same-account UAC desktop; run explicitly in the controlled Windows tier"]
+fn elevated_desktop_production_recipient_reads_every_final_artifact() {
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TokenElevationType, TokenElevationTypeFull,
+    };
+    let query = |class| {
+        let mut value = 0_u32;
+        let mut size = 0;
+        assert_ne!(
+            unsafe {
+                GetTokenInformation(-4, class, (&mut value as *mut u32).cast(), 4, &mut size)
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(size, 4);
+        value
+    };
+    assert_ne!(
+        query(TokenElevation),
+        0,
+        "required row needs a genuinely elevated producer"
+    );
+    assert_eq!(
+        query(TokenElevationType),
+        TokenElevationTypeFull as u32,
+        "required row needs actual UAC split elevation"
+    );
+    let recipient =
+        OutputRecipient::desktop_session().expect("production desktop recipient acquisition");
+    assert_eq!(recipient.proof_kind(), "session-shell");
+    recipient.revalidate().unwrap();
+    let public = std::env::var_os("FRAGCAP_TEST_PUBLIC_ROOT")
+        .expect("dedicated fixture needs a shared synthetic test root");
+    let temp = tempfile::tempdir_in(public).unwrap();
+    let control = temp.path().join("ordinary-control.txt");
+    fs::write(&control, b"synthetic ordinary positive control").unwrap();
+    let root = temp.path().join("first/second/bundle");
     write_bundle(&root, &recipient);
-    let before = contents(&root);
-    let modified_before: BTreeMap<PathBuf, std::time::SystemTime> = before
-        .keys()
-        .map(|name| {
+    for directory in [
+        temp.path().to_path_buf(),
+        temp.path().join("first"),
+        temp.path().join("first/second"),
+        root.clone(),
+    ] {
+        assert!(!recipient.enumerate_fixture(&directory).unwrap().is_empty());
+    }
+    let expected = contents(&root);
+    assert!(expected.contains_key(Path::new(".sensitive-actions.jsonl")));
+    assert!(expected.contains_key(Path::new("resource-journal.jsonl")));
+    assert!(expected.contains_key(Path::new("manifest.json")));
+    assert!(expected.contains_key(Path::new("process-trace.jsonl")));
+    assert!(!root.join("manifest.prefix.json").exists());
+    assert!(!root.join("manifest.json.tmp").exists());
+    assert!(verify_bundle_access(&root, &recipient)
+        .unwrap()
+        .is_verified());
+    let actual: BTreeMap<_, _> = recipient
+        .enumerate_fixture(&root)
+        .unwrap()
+        .into_iter()
+        .map(|file| {
             (
-                name.clone(),
-                fs::metadata(root.join(name)).unwrap().modified().unwrap(),
+                PathBuf::from(file.file_name().unwrap()),
+                recipient.read_fixture(&file).unwrap(),
             )
         })
         .collect();
-    for name in [
-        ".sensitive-actions.jsonl",
-        "cleanup.jsonl",
-        "proxy.jsonl",
-        "resource-journal.jsonl",
-    ] {
-        let path = root.join(name);
-        old_group_only_policy(&path, false);
+    assert_eq!(actual, expected);
+    assert_unrelated_ordinary_access_is_denied(&root, &control);
+    denied_user_equivalent_has_a_readable_sibling_positive_control();
+}
+
+fn assert_unrelated_ordinary_access_is_denied(root: &Path, control: &Path) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, ImpersonateLoggedOnUser, LogonUserW, RevertToSelf,
+        TokenElevation, TokenUser, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, TOKEN_USER,
+    };
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(Some(0)).collect()
+    }
+    fn user(token: isize) -> Vec<usize> {
+        let mut size = 0;
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size) };
+        assert!(size > 0 && size < 65536);
+        let mut bytes = vec![0_usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        assert_ne!(
+            unsafe {
+                GetTokenInformation(token, TokenUser, bytes.as_mut_ptr().cast(), size, &mut size)
+            },
+            0
+        );
+        bytes
+    }
+    let name = std::env::var("FRAGCAP_TEST_UNRELATED_USER")
+        .expect("dedicated fixture needs a disposable unrelated standard user");
+    let password = std::env::var("FRAGCAP_TEST_UNRELATED_PASSWORD")
+        .expect("dedicated fixture needs disposable credentials");
+    let root = root.to_path_buf();
+    let control = control.to_path_buf();
+    std::thread::spawn(move || {
+        let mut token = 0;
+        assert_ne!(
+            unsafe {
+                LogonUserW(
+                    wide(&name).as_ptr(),
+                    wide(".").as_ptr(),
+                    wide(&password).as_ptr(),
+                    LOGON32_LOGON_INTERACTIVE,
+                    LOGON32_PROVIDER_DEFAULT,
+                    &mut token,
+                )
+            },
+            0,
+            "unrelated fixture logon: {}",
+            std::io::Error::last_os_error()
+        );
+        let actual = user(token);
+        let producer = user(-4);
+        let differs = unsafe {
+            EqualSid(
+                (*actual.as_ptr().cast::<TOKEN_USER>()).User.Sid,
+                (*producer.as_ptr().cast::<TOKEN_USER>()).User.Sid,
+            )
+        } == 0;
+        let mut elevation = 1_u32;
+        let mut size = 0;
+        let queried = unsafe {
+            GetTokenInformation(
+                token,
+                TokenElevation,
+                (&mut elevation as *mut u32).cast(),
+                4,
+                &mut size,
+            )
+        } != 0;
+        let files = contents(&root)
+            .keys()
+            .map(|name| root.join(name))
+            .collect::<Vec<_>>();
+        if unsafe { ImpersonateLoggedOnUser(token) } == 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe { CloseHandle(token) };
+            panic!("unrelated ordinary fixture impersonation: {error}");
+        }
+        let positive = fs::read(&control)
+            .map(|v| v == b"synthetic ordinary positive control")
+            .unwrap_or(false);
+        let enumeration_denied =
+            fs::read_dir(&root).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        let all_denied = files.iter().all(|file| {
+            fs::read(file).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        });
+        let restored = unsafe { RevertToSelf() } != 0;
+        unsafe { CloseHandle(token) };
+        assert!(restored, "restore unrelated fixture thread");
         assert!(
-            recipient.read_fixture(&path).is_err(),
-            "old policy unexpectedly readable: {path:?}"
+            differs && queried && elevation == 0,
+            "unrelated fixture must have a distinct genuinely ordinary token"
         );
-    }
-    let denied = verify_bundle_access(&root, &recipient).unwrap();
-    assert!(!denied.is_verified(), "{denied:?}");
-    assert_eq!(denied.state, "unresolved");
-    assert_eq!(
-        denied
-            .paths
-            .iter()
-            .filter(|path| path.state == "unresolved")
-            .count(),
-        4
-    );
-    assert!(denied
-        .paths
-        .iter()
-        .any(|path| path.path == Path::new("manifest.json") && path.state == "verified"));
-    let inspection = inspect_bundle_access(&root, &recipient, None).unwrap();
-    assert!(inspection.repairable, "{inspection:?}");
-    assert_eq!(inspection.session_id, SESSION);
-    assert_eq!(inspection.paths.len(), before.len() + 1);
-    let repaired = repair_bundle_access(&root, &recipient, None, &inspection.id).unwrap();
-    assert!(repaired.verified, "{repaired:?}");
-    assert_eq!(contents(&root), before);
-    for (name, bytes) in &before {
-        assert_eq!(recipient.read_fixture(&root.join(name)).unwrap(), *bytes);
-        assert_eq!(
-            fs::metadata(root.join(name)).unwrap().modified().unwrap(),
-            modified_before[name]
+        assert!(
+            positive,
+            "ordinary principal must read the sibling positive control"
         );
-    }
-    let next = inspect_bundle_access(&root, &recipient, None).unwrap();
-    let retried = repair_bundle_access(&root, &recipient, None, &next.id).unwrap();
-    assert!(retried.verified, "{retried:?}");
-    assert!(
-        retried.paths.iter().all(|path| path.status == "unchanged"),
-        "{retried:?}"
-    );
-    assert_eq!(contents(&root), before);
-}
-
-#[test]
-fn owned_parent_repair_restores_enumeration_without_changing_a_sibling_bundle() {
-    use fragcap::deep_capture::{inspect_bundle_access, repair_bundle_access};
-
-    let temp = tempfile::tempdir().unwrap();
-    let application = temp.path().join("fragcap");
-    let sessions = application.join("sessions");
-    let root = sessions.join("selected");
-    let sibling = sessions.join("sibling");
-    let recipient = OutputRecipient::group_denied_fixture().unwrap();
-    write_bundle(&root, &recipient);
-    write_bundle(&sibling, &recipient);
-    let selected_before = contents(&root);
-    let sibling_before = contents(&sibling);
-    let sibling_descriptors: BTreeMap<PathBuf, Vec<u8>> = std::iter::once(sibling.clone())
-        .chain(sibling_before.keys().map(|name| sibling.join(name)))
-        .map(|path| (path.clone(), security_descriptor(&path)))
-        .collect();
-    old_group_only_policy(&sessions, true);
-    old_group_only_policy(&application, true);
-    assert!(recipient.enumerate_fixture(&sessions).is_err());
-    assert!(recipient.enumerate_fixture(&application).is_err());
-    let inspection = inspect_bundle_access(&root, &recipient, Some(&sessions)).unwrap();
-    assert_eq!(
-        inspection
-            .paths
-            .iter()
-            .filter(|path| path.traversal_only)
-            .count(),
-        2
-    );
-    let repaired =
-        repair_bundle_access(&root, &recipient, Some(&sessions), &inspection.id).unwrap();
-    assert!(repaired.verified, "{repaired:?}");
-    assert!(recipient.enumerate_fixture(&sessions).is_ok());
-    assert!(recipient.enumerate_fixture(&application).is_ok());
-    assert_eq!(contents(&root), selected_before);
-    assert_eq!(contents(&sibling), sibling_before);
-    for (path, descriptor) in sibling_descriptors {
-        assert_eq!(
-            security_descriptor(&path),
-            descriptor,
-            "sibling descriptor changed: {path:?}"
+        assert!(
+            enumeration_denied && all_denied,
+            "unrelated ordinary principal read private retained evidence"
         );
-    }
-}
-
-#[test]
-fn stale_unknown_and_outside_hard_link_populations_change_no_descriptors_or_bytes() {
-    use fragcap::deep_capture::{inspect_bundle_access, repair_bundle_access};
-
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("bundle");
-    let recipient = OutputRecipient::current_account().unwrap();
-    write_bundle(&root, &recipient);
-    let inspection = inspect_bundle_access(&root, &recipient, None).unwrap();
-    let unknown = root.join("unrelated.txt");
-    fs::write(&unknown, b"unrelated-content\n").unwrap();
-    let before = contents(&root);
-    let descriptor_before = security_descriptor(&root);
-    assert!(repair_bundle_access(&root, &recipient, None, &inspection.id).is_err());
-    assert_eq!(contents(&root), before);
-    assert_eq!(security_descriptor(&root), descriptor_before);
-    fs::remove_file(unknown).unwrap();
-
-    let fresh = inspect_bundle_access(&root, &recipient, None).unwrap();
-    old_group_only_policy(&root.join("proxy.jsonl"), false);
-    let changed_before = security_descriptor(&root.join("proxy.jsonl"));
-    assert!(repair_bundle_access(&root, &recipient, None, &fresh.id).is_err());
-    assert_eq!(
-        security_descriptor(&root.join("proxy.jsonl")),
-        changed_before
-    );
-    let outside = temp.path().join("external-alias.jsonl");
-    fs::hard_link(root.join("proxy.jsonl"), &outside).unwrap();
-    assert!(inspect_bundle_access(&root, &recipient, None).is_err());
-    assert_eq!(security_descriptor(&outside), changed_before);
-    assert_eq!(fs::read(outside).unwrap(), before[Path::new("proxy.jsonl")]);
+    })
+    .join()
+    .unwrap();
 }

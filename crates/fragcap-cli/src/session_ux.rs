@@ -358,19 +358,7 @@ pub(crate) fn terminal_summary(
     terminal_summary_with_access(outcome, complete, artifacts, cleanup, None, width)
 }
 
-pub(crate) fn access_inspection_command(bundle: &std::path::Path, sid: Option<&str>) -> String {
-    let mut command = format!(
-        "fragcap bundle access-inspect {}",
-        crate::workflow_help::quote_powershell_argument(&bundle.display().to_string())
-    );
-    if let Some(sid) = sid.filter(|sid| sid.starts_with("S-")) {
-        command.push_str(&format!(
-            " --output-recipient {}",
-            crate::workflow_help::quote_powershell_argument(sid)
-        ));
-    }
-    command
-}
+pub(crate) const UNRESOLVED_ACCESS_GUIDANCE: &str = "Output access remains unresolved. Use normal Windows permission administration for this bundle, then reopen it from the intended ordinary account. fragcap does not repair historical bundle permissions.";
 
 pub(crate) fn terminal_summary_with_access(
     outcome: SessionOutcome,
@@ -428,10 +416,7 @@ pub(crate) fn terminal_summary_with_access(
     if let Some(root) = root.filter(|root| !root.as_os_str().is_empty()) {
         fields.push(("Bundle:".into(), root.display().to_string()));
         if !access.is_some_and(|access| access.is_verified()) {
-            fields.push((
-                "Next command:".into(),
-                access_inspection_command(root, access.map(|access| access.recipient_sid.as_str())),
-            ));
+            fields.push(("Access action:".into(), UNRESOLVED_ACCESS_GUIDANCE.into()));
         }
     }
     let mut retained = false;
@@ -915,8 +900,12 @@ mod tests {
         );
         assert!(unresolved.contains("ordinary-recipient access unresolved"));
         assert!(!unresolved.contains("recipient access verified"));
-        assert!(unresolved.contains("fragcap bundle access-inspect"));
-        assert!(unresolved.contains("--output-recipient"));
+        assert!(unresolved
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("normal Windows permission administration"));
+        assert!(!unresolved.contains("--output-recipient"));
         assert!(unresolved.contains("S-1-5-21-1-2-3-1001"));
         access.state = "verified".into();
         access.paths[0].state = "verified".into();
@@ -973,8 +962,12 @@ mod tests {
         assert!(text.contains("partial"));
         assert!(text.contains("process-trace.jsonl"));
         assert_eq!(text.matches("Bundle:").count(), 1);
-        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 2);
-        assert!(text.contains("fragcap bundle access-inspect"));
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert!(text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("normal Windows permission administration"));
         assert!(!text.contains("http.har"));
         assert!(!text.contains("Deep Capture outcome: complete"));
     }
@@ -1037,8 +1030,12 @@ mod tests {
             assert!(words.contains(expected), "missing {expected}: {text}");
         }
         assert_eq!(text.matches("Bundle:").count(), 1);
-        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 2);
-        assert!(text.contains("fragcap bundle access-inspect"));
+        assert_eq!(text.matches(&dir.path().display().to_string()).count(), 1);
+        assert!(text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("normal Windows permission administration"));
         assert!(!text.contains("private implementation text"));
         assert!(words.contains("missing packet-flow correlation"));
         assert!(words.contains("fragcap doctor"));

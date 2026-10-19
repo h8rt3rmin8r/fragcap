@@ -2951,10 +2951,8 @@ pub(crate) fn run_with_outcome(
     let mut access = runtime.borrow().output_access.as_ref().map(|access| access.as_json())
         .unwrap_or_else(|| json!({"state":"unresolved","recipient_sid":recipient.sid(),"proof_kind":recipient.proof_kind()}));
     if access["state"] != "verified" {
-        access["next_command"] = json!(session_ux::access_inspection_command(
-            &bundle,
-            Some(recipient.sid())
-        ));
+        access["next_command"] = serde_json::Value::Null;
+        access["guidance"] = json!(session_ux::UNRESOLVED_ACCESS_GUIDANCE);
     }
     emitter.borrow_mut().event(&Event::DeepCaptureOutputAccess {
         stage: "final-reconciliation".into(),

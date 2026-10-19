@@ -27,7 +27,7 @@ pub(crate) fn resolve_output_recipient(
     if sid.is_none() {
         return default.map_err(|error| {
             CliError::failure(format!(
-                "cannot establish the ordinary output recipient: {error}; select --output-recipient <SID> with an explicit --bundle and authenticate from that user's normal session"
+                "cannot establish the ordinary output recipient: {error}; same-account elevation is automatic and requires an ordinary Windows desktop session. For a genuinely different account, use --output-recipient <SID> with --bundle and authenticate from that account's ordinary session"
             ))
         });
     }
@@ -64,47 +64,6 @@ pub(crate) fn resolve_output_recipient(
             "ordinary output recipient authentication refused: {error}"
         ))
     })
-}
-
-fn owned_session_container(bundle: &Path) -> Option<std::path::PathBuf> {
-    if std::env::var_os("FRAGCAP_SESSION_DIR").is_some() {
-        return None;
-    }
-    let root = crate::paths::deep_capture_session_dir()?;
-    let root = root.canonicalize().ok()?;
-    let bundle = bundle.canonicalize().ok()?;
-    (bundle.starts_with(&root) && bundle != root).then_some(root)
-}
-
-fn require_inactive_bundle(bundle: &Path) -> Result<(), CliError> {
-    require_inactive_bundle_at(bundle, crate::paths::deep_capture_session_dir().as_deref())
-}
-
-fn require_inactive_bundle_at(bundle: &Path, root: Option<&Path>) -> Result<(), CliError> {
-    let Some(root) = root.filter(|root| root.is_dir()) else {
-        return Ok(());
-    };
-    let bundle = bundle.canonicalize().map_err(|error| {
-        CliError::failure(format!("cannot inspect exact bundle ownership: {error}"))
-    })?;
-    let owners = crate::doctor::residue::registered_session_owners(root).map_err(|error| {
-        CliError::failure(format!("bundle owner registry is unresolved: {error}"))
-    })?;
-    for owner in owners.iter().filter(|owner| owner.bundle == bundle) {
-        if crate::doctor::residue::owner_is_active(owner).map_err(|error| {
-            CliError::failure(format!("bundle owner lease is unresolved: {error}"))
-        })? {
-            return Err(CliError::failure(
-                "bundle access repair refuses an active session; finish the owning session first",
-            ));
-        }
-        if owner.lease_id.is_none() {
-            return Err(CliError::failure(
-                "bundle access repair cannot prove the legacy owner generation is inactive",
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn render_access(
@@ -367,49 +326,6 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             )?;
             Ok(Exit::SUCCESS)
         }
-        BundleCommand::AccessInspect {
-            bundle,
-            output_recipient,
-        }
-        | BundleCommand::AccessRepair {
-            bundle,
-            output_recipient,
-            ..
-        } => {
-            let recipient =
-                resolve_output_recipient(output_recipient.as_deref(), bundle, false, |request| {
-                    render_access(request, json, out)
-                })?;
-            require_inactive_bundle(bundle)?;
-            let container = owned_session_container(bundle);
-            if let BundleCommand::AccessRepair { authorize, .. } = &args.command {
-                require_inactive_bundle(bundle)?;
-                let report = fragcap::deep_capture::repair_bundle_access(
-                    bundle,
-                    &recipient,
-                    container.as_deref(),
-                    authorize,
-                )
-                .map_err(|error| {
-                    CliError::failure(format!("bundle access repair refused: {error}"))
-                })?;
-                render_access(&report.json(), json, out)?;
-                if !report.verified {
-                    return Err(CliError::failure("bundle permission repair remains unresolved; inspect a fresh proposal before retrying"));
-                }
-            } else {
-                let inspection = fragcap::deep_capture::inspect_bundle_access(
-                    bundle,
-                    &recipient,
-                    container.as_deref(),
-                )
-                .map_err(|error| {
-                    CliError::failure(format!("bundle access inspection unresolved: {error}"))
-                })?;
-                render_access(&inspection.json(), json, out)?;
-            }
-            Ok(Exit::SUCCESS)
-        }
         BundleCommand::Cleanup { bundle, yes } => {
             if !yes {
                 let retry = format!(
@@ -483,17 +399,6 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn access_repair_checks_exact_generation_owner_before_effects() {
-        let root = tempfile::tempdir().unwrap();
-        let bundle = root.path().join("bundle");
-        std::fs::create_dir(&bundle).unwrap();
-        let lease = crate::doctor::residue::register_session_owner(root.path(), &bundle).unwrap();
-        let error = super::require_inactive_bundle_at(&bundle, Some(root.path())).unwrap_err();
-        assert!(error.to_string().contains("active session"));
-        drop(lease);
-        super::require_inactive_bundle_at(&bundle, Some(root.path())).unwrap();
-    }
     use super::cleanup_failure;
 
     #[test]

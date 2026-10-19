@@ -4,56 +4,36 @@ mod common;
 
 use common::run;
 
-#[cfg(windows)]
 #[test]
-fn access_cli_inspection_is_read_only_and_repair_binds_the_exact_preview() {
-    use fragcap::deep_capture::{OutputRecipient, ResourceJournal, MANIFEST_SCHEMA};
+fn retired_access_verbs_are_rejected_before_bundle_effects() {
     let root = tempfile::tempdir().unwrap();
-    let bundle = root.path().join("retained");
-    fragcap::deep_capture::prepare_bundle(&bundle).unwrap();
-    let mut journal = ResourceJournal::create(&bundle, "cli-access", "fixture").unwrap();
-    journal.finish().unwrap();
-    drop(journal);
-    let capture = bundle.join("capture.fcapng");
-    std::fs::write(&capture, b"synthetic evidence").unwrap();
-    std::fs::write(bundle.join("manifest.json"), serde_json::json!({"$schema":MANIFEST_SCHEMA,"manifest_version":2,"product":{"name":"fragcap","version":"fixture"},"session_id":"cli-access","state":"complete","artifacts":[],"omissions":[]}).to_string()).unwrap();
-    let path = bundle.to_string_lossy();
-    let before = std::fs::read(&capture).unwrap();
-    let (code, out, err) = run(&["--json", "bundle", "access-inspect", &path]);
-    assert_eq!(std::fs::read(&capture).unwrap(), before);
-    if OutputRecipient::desktop_session().is_err() {
-        assert_eq!(code, 1);
-        assert!(err.contains("cannot establish the ordinary output recipient"));
-        assert!(out.is_empty());
-        return;
+    let evidence = root.path().join("evidence.txt");
+    std::fs::write(&evidence, b"unchanged synthetic evidence").unwrap();
+    let path = root.path().to_string_lossy();
+    for json in [false, true] {
+        for verb in ["access-inspect", "access-repair"] {
+            let mut args = vec!["bundle", verb, &path];
+            if verb == "access-repair" {
+                args.extend(["--authorize", "old-inspection"]);
+            }
+            if json {
+                args.insert(0, "--json");
+            }
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 2, "retired {verb}: {err}");
+            assert!(err.contains("unrecognized subcommand"), "{err}");
+            assert!(out.is_empty(), "retired {verb}: {out}");
+            assert_eq!(
+                std::fs::read(&evidence).unwrap(),
+                b"unchanged synthetic evidence"
+            );
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
     }
+    let (code, out, err) = run(&["bundle", "--help"]);
     assert_eq!(code, 0, "{err}");
-    let inspection: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(inspection["type"], "bundle-access.inspection");
-    let id = inspection["inspection_id"].as_str().unwrap();
-    let (code, _, err) = run(&[
-        "--json",
-        "bundle",
-        "access-repair",
-        &path,
-        "--authorize",
-        "stale",
-    ]);
-    assert_eq!(code, 1);
-    assert!(err.contains("inspection changed"));
-    assert_eq!(std::fs::read(&capture).unwrap(), before);
-    let (code, out, err) = run(&[
-        "--json",
-        "bundle",
-        "access-repair",
-        &path,
-        "--authorize",
-        id,
-    ]);
-    assert_eq!(code, 0, "{err}");
-    let report: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(report["verified"], true);
-    assert_eq!(std::fs::read(&capture).unwrap(), before);
+    assert!(!out.contains("access-inspect") && !out.contains("access-repair"));
+    assert!(out.contains("access-authorize") && out.contains("cleanup") && out.contains("collect"));
 }
 
 fn bundle(root: &std::path::Path) -> std::path::PathBuf {

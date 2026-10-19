@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+
+mod shell;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -29,7 +31,7 @@ const RIGHTS: u32 = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_AD
 
 #[derive(Debug)]
 struct Handle(isize);
-// SAFETY: owned token and pipe handles may be transferred between threads. Their
+// SAFETY: owned token, process and pipe handles may be transferred between threads. Their
 // lifetimes are owned by this wrapper; no process-wide token state is changed.
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
@@ -51,6 +53,35 @@ fn error() -> io::Error {
 fn bad(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
+#[derive(Debug)]
+struct AcquisitionFailure {
+    stage: &'static str,
+    source: io::Error,
+}
+impl std::fmt::Display for AcquisitionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "output recipient {}: {}", self.stage, self.source)
+    }
+}
+impl std::error::Error for AcquisitionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+fn staged<T>(stage: &'static str, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|source| io::Error::new(source.kind(), AcquisitionFailure { stage, source }))
+}
+
+fn validate_recipient_token(token: isize, producer: &str, expected_session: u32) -> io::Result<()> {
+    if staged("token account query", user(token))? != producer {
+        return Err(bad("ordinary output token account differs from producer"));
+    }
+    if staged("token session query", session(token))? != expected_session {
+        return Err(bad("ordinary output token session differs from producer"));
+    }
+    staged("ordinary token validation", ordinary(token))
+}
+
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
 }
@@ -173,17 +204,18 @@ fn isolated<T: Send + 'static>(
 fn current_owned() -> io::Result<Handle> {
     isolated(|| {
         if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
-            return Err(error());
+            return staged("ImpersonateSelf", Err(error()));
         }
         let mut result = 0;
         let ok = unsafe { OpenThreadToken(CURRENT_THREAD, RIGHTS, 1, &mut result) };
         let failure = if ok == 0 { Some(error()) } else { None };
+        let owned = (ok != 0).then(|| Handle(result));
         if unsafe { RevertToSelf() } == 0 {
-            return Err(bad("failed to restore token acquisition thread"));
+            return staged("RevertToSelf after token acquisition", Err(error()));
         }
         match failure {
-            Some(e) => Err(e),
-            None => Ok(Handle(result)),
+            Some(e) => staged("OpenThreadToken", Err(e)),
+            None => Ok(owned.expect("successful token acquisition owns its handle")),
         }
     })
 }
@@ -315,28 +347,32 @@ fn restricted(token: isize) -> io::Result<Handle> {
     Ok(result)
 }
 pub(super) fn recipient(desktop: bool) -> io::Result<OutputRecipient> {
-    let producer = user(CURRENT_TOKEN)?;
-    let session = session(CURRENT_TOKEN)?;
-    if desktop && session_user(session)? != producer {
+    let producer = staged("producer account query", user(CURRENT_TOKEN))?;
+    let session = staged("producer session query", session(CURRENT_TOKEN))?;
+    if desktop && staged("desktop session account query", session_user(session))? != producer {
         return Err(bad("session user differs from elevated producer; provide --output-recipient with --bundle and authenticate from the intended ordinary session"));
     }
-    let owned = current_owned()?;
-    let (token, proof) = if scalar(owned.0, TokenElevation)? == 0 {
-        (owned, "ordinary-current")
-    } else if scalar(owned.0, TokenElevationType)? == TokenElevationTypeFull as u32 {
-        let linked = info(owned.0, TokenLinkedToken)?;
-        let linked = Handle(unsafe { (*linked.as_ptr().cast::<TOKEN_LINKED_TOKEN>()).LinkedToken });
-        if user(linked.0)? != producer || self::session(linked.0)? != session {
-            return Err(bad("linked ordinary token identity mismatch"));
-        }
-        ordinary(linked.0)?;
-        (duplicate(linked.0)?, "session-linked")
-    } else if !desktop {
-        (restricted(owned.0)?, "controlled-restricted-equivalent")
+    let elevated = staged(
+        "producer elevation query",
+        scalar(CURRENT_TOKEN, TokenElevation),
+    )? != 0;
+    let (token, proof) = if !elevated {
+        (
+            staged("current ordinary token acquisition", current_owned())?,
+            "ordinary-current",
+        )
+    } else if desktop {
+        (shell::ordinary_token(&producer, session)?, "session-shell")
     } else {
-        return Err(bad("elevated producer has no provable ordinary linked context; use an authenticated recipient handoff"));
+        // Library-controlled evidence is explicitly an equivalent. Production
+        // desktop acquisition never substitutes this for a real ordinary token.
+        let owned = staged("controlled producer token acquisition", current_owned())?;
+        (
+            staged("controlled restricted token", restricted(owned.0))?,
+            "controlled-restricted-equivalent",
+        )
     };
-    ordinary(token.0)?;
+    validate_recipient_token(token.0, &producer, session)?;
     Ok(OutputRecipient {
         sid: producer.clone(),
         producer_sid: producer,
@@ -348,6 +384,7 @@ pub(super) fn recipient(desktop: bool) -> io::Result<OutputRecipient> {
         }),
     })
 }
+
 pub(super) fn revalidate(recipient: &OutputRecipient) -> io::Result<()> {
     if user(recipient.platform.token.0)? != recipient.sid
         || user(CURRENT_TOKEN)? != recipient.producer_sid
@@ -497,7 +534,6 @@ pub(super) fn pin(path: &Path, write_dacl: bool) -> io::Result<PinnedAccessPath>
         return Err(bad("access refuses ambiguous external hard links"));
     }
     Ok(PinnedAccessPath {
-        path: path.to_path_buf(),
         identity,
         descriptor,
         file,
@@ -619,48 +655,7 @@ pub(super) fn apply(file: &File, directory: bool, principals: &[String]) -> io::
         Err(io::Error::from_raw_os_error(code as i32))
     }
 }
-pub(super) fn traversal(file: &File, recipient: &OutputRecipient) -> io::Result<()> {
-    let (identity, text) = snapshot(file)?;
-    if !identity.directory {
-        return Err(bad("traversal grant requires a directory"));
-    }
-    let descriptor = Descriptor::parse(&text)?;
-    let sid = Sid::parse(&recipient.sid)?;
-    let entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        grfAccessMode: GRANT_ACCESS,
-        grfInheritance: 0,
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: ptr::null_mut(),
-            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_USER,
-            ptstrName: sid.0.cast(),
-        },
-    };
-    let mut acl = ptr::null_mut();
-    let code = unsafe { SetEntriesInAclW(1, &entry, descriptor.dacl()?, &mut acl) };
-    if code != 0 {
-        return Err(io::Error::from_raw_os_error(code as i32));
-    }
-    let code = unsafe {
-        SetSecurityInfo(
-            file.as_raw_handle() as isize,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            acl,
-            ptr::null_mut(),
-        )
-    };
-    unsafe { LocalFree(acl as isize) };
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::from_raw_os_error(code as i32))
-    }
-}
+
 fn parent_contract(path: &Path) -> io::Result<Vec<String>> {
     let parent = path
         .parent()
@@ -674,7 +669,7 @@ fn parent_contract(path: &Path) -> io::Result<Vec<String>> {
         return Ok(principals);
     }
     if protected_directory(parent)? {
-        return Err(bad("protected parent has an unsupported recipient contract; inspect the exact bundle before repair"));
+        return Err(bad("protected parent access is unresolved; use normal Windows permission administration or choose an accessible destination"));
     }
     for ancestor in parent.ancestors().skip(1) {
         if private_contract(ancestor)?.is_some() {
@@ -793,7 +788,7 @@ pub(super) fn preserve_directory(path: &Path) -> io::Result<bool> {
     let selected = private_contract(path)?.is_some();
     if !selected && protected_directory(path)? {
         return Err(bad(
-            "existing protected bundle requires exact access inspection/repair",
+            "existing protected bundle access is unresolved; use normal Windows permission administration before reusing it",
         ));
     }
     Ok(selected)
@@ -848,7 +843,7 @@ pub(super) fn protect_directory(path: &Path, recipient: &OutputRecipient) -> io:
     };
     let verification = recipient.verify_paths(ancestor, &[ancestor.to_path_buf()])?;
     if !verification.is_verified() {
-        return Err(bad("ordinary recipient cannot enumerate the existing output ancestor; inspect/repair the exact owned container or choose an accessible explicit destination"));
+        return Err(bad("ordinary recipient cannot enumerate the existing output ancestor; use normal Windows permission administration or choose an accessible explicit destination"));
     }
     if missing.is_empty() {
         return pin(&path, true)?.apply(recipient);
@@ -1375,6 +1370,25 @@ pub(super) fn fixture_enumerate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acquisition_stage_preserves_original_platform_error() {
+        let error = staged::<()>(
+            "desktop shell token duplication",
+            Err(io::Error::from_raw_os_error(1346)),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("desktop shell token duplication"));
+        assert!(error.to_string().contains("1346"));
+        let detail = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<AcquisitionFailure>()
+            .unwrap();
+        assert_eq!(detail.source.raw_os_error(), Some(1346));
+    }
+
     #[test]
     fn group_denied_fixture_retains_ordinary_identity_and_denies_the_logon_group() {
         let base = recipient(false).unwrap();

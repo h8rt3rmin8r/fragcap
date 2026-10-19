@@ -524,36 +524,13 @@ Routine collection leaves session container directories intact. Preview `--purge
 | `--purge-empty` | open | `false` | all | Separately request removal of eligible exact empty containers. |
 | `--authorize` | open | none | all | Apply only the unchanged exact proposal returned by preview. |
 
-### `bundle access-inspect`
+### Historical bundle access
 
-Inspect positional `BUNDLE` without changing contents or permissions. The bounded report identifies the exact recipient, recognized population, current object identity and permissions, ordinary-context access, proposed changes and an inspection identifier. The current S170 source includes independently protected lifecycle and resource sidecars. Written artifacts, readable artifacts and semantic completeness remain separate.
-
-```powershell
-fragcap bundle access-inspect 'C:\captures\fragcap-session'
-```
-
-| Option | Values | Default | Availability | Meaning |
-| --- | --- | --- | --- | --- |
-| `--output-recipient` | open | none | all | Exact intended Windows recipient SID; default resolution uses the same-account ordinary desktop context, otherwise an authenticated ordinary helper is required. |
-
-### `bundle access-repair`
-
-Repair permissions for positional `BUNDLE` only after reviewing its exact current inspection. Requires a recognized terminal manifest and matching closed resource journal; active or unproven matched owner leases, unknown files, unsupported authority, stale identity, reparses and outside hard links refuse. The caller must already be able to read provenance and apply the confirmed permissions. No elevation is requested automatically.
-
-```powershell
-fragcap bundle access-repair 'C:\captures\fragcap-session' --authorize '<INSPECTION_ID>'
-```
-
-Replace `<INSPECTION_ID>` with the exact identifier from inspection. Every changed object is pinned and reported, and final verification uses the intended ordinary context. Up to 256 objects and eight levels are supported. Proven owned `fragcap\sessions` parent containers receive only non-propagating traversal/enumeration grants; sibling permissions remain unchanged. Arbitrary profile/custom parents are never rewritten. Content bytes, retention state, resource obligations and empty containers remain intact. A partial result requires a fresh inspection before retry; permission repair does not authorize cleanup or garbage collection.
-
-| Option | Values | Default | Availability | Meaning |
-| --- | --- | --- | --- | --- |
-| `--authorize` | open | none | all | Required exact current inspection identifier; a changed proposal refuses before permission changes. |
-| `--output-recipient` | open | none | all | Exact intended Windows recipient SID under the same ordinary-context authentication contract as inspection. |
+The next-source S173 contract retires historical permission inspection and repair. Those operations shipped in v0.10.6 and remain in its historical release/spec records. Current source rejects the retired verbs. For inaccessible historical output, use normal Windows permission administration and verify access from the intended ordinary account. fragcap does not automatically repair historical permissions. Collection, sensitive cleanup and Doctor recovery/retention remain separate supported operations.
 
 ### `bundle access-authorize`
 
-Complete one pending recipient handoff from the intended account's ordinary terminal. Copy the complete quoted command emitted by the waiting producer or inspector, including its exact request and destination, within sixty seconds. The request binds both values; missing, elevated, mismatched or expired helpers refuse. This grants no authority to delete evidence or alter proxy/trust resources. Different-account Deep Capture requires explicit `--output-recipient <SID>` and `--bundle <PATH>` before the producer emits this command.
+Complete one pending recipient handoff from the intended account's ordinary terminal. Copy the complete quoted command emitted by the waiting producer, including its exact request and destination, within sixty seconds. The request binds both values; missing, elevated, mismatched or expired helpers refuse. This grants no authority to delete evidence or alter proxy/trust resources. Different-account Deep Capture requires explicit `--output-recipient <SID>` and `--bundle <PATH>` before the producer emits this command.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
