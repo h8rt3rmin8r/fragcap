@@ -54,6 +54,7 @@ const TSRESOL_MICROS: u8 = 6;
 pub struct PcapngWriter<W: Write> {
     out: W,
     interfaces: Vec<DeclaredInterface>,
+    metadata_only: bool,
     /// Whether any packet block has been written. Once true, no further
     /// interface may be declared.
     wrote_a_packet: bool,
@@ -64,7 +65,12 @@ impl<W: Write> PcapngWriter<W> {
     ///
     /// Written here rather than lazily so it is always the first thing in the
     /// file, including in a capture that never receives a packet.
-    pub fn new(mut out: W) -> Result<Self, WriteError> {
+    pub fn new(out: W) -> Result<Self, WriteError> {
+        Self::with_metadata_only(out, false)
+    }
+
+    /// Begin a capture with packet contents limited to validated headers.
+    pub fn with_metadata_only(mut out: W, metadata_only: bool) -> Result<Self, WriteError> {
         let mut body = Vec::new();
         body.extend_from_slice(&0x1A2B_3C4Du32.to_le_bytes()); // byte-order magic
         body.extend_from_slice(&1u16.to_le_bytes()); // major version
@@ -80,6 +86,7 @@ impl<W: Write> PcapngWriter<W> {
         Ok(PcapngWriter {
             out,
             interfaces: Vec::new(),
+            metadata_only,
             wrote_a_packet: false,
         })
     }
@@ -112,6 +119,7 @@ impl<W: Write> PcapngWriter<W> {
         write_block(&mut self.out, block_type::INTERFACE_DESCRIPTION, &body)?;
         self.interfaces.push(DeclaredInterface {
             name: decl.name.clone(),
+            link_type: decl.link_type,
             ..DeclaredInterface::default()
         });
         Ok((self.interfaces.len() - 1) as u32)
@@ -147,7 +155,14 @@ impl<W: Write> PcapngWriter<W> {
         };
         let annotation = Annotation::from_packet(packet, name).encode();
 
-        let data = packet.data.as_ref();
+        let full_data = packet.data.as_ref();
+        let data = if self.metadata_only {
+            let prefix =
+                fragcap_core::parse::metadata_prefix_len(self.interfaces[idx].link_type, full_data);
+            full_data.get(..prefix).unwrap_or_default()
+        } else {
+            full_data
+        };
         let mut body = Vec::with_capacity(data.len() + 64);
         body.extend_from_slice(&interface_id.to_le_bytes());
         body.extend_from_slice(&((micros >> 32) as u32).to_le_bytes());
@@ -285,6 +300,35 @@ mod tests {
             len as u32,
         );
         CapturedPacket::from_raw(raw, InterfaceId::default())
+    }
+
+    #[test]
+    fn metadata_only_pcapng_retains_headers_and_original_length() {
+        let marker = b"SECRET_APPLICATION_BODY";
+        let mut frame = vec![0u8; 14 + 20 + 20];
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        frame[14] = 0x45;
+        frame[16..18].copy_from_slice(&((40 + marker.len()) as u16).to_be_bytes());
+        frame[23] = 6;
+        frame[14 + 20 + 12] = 0x50;
+        frame.extend_from_slice(marker);
+        let original = frame.len();
+        let packet = CapturedPacket::from_raw(
+            RawPacket::new(
+                Timestamp::from_nanos(1_000),
+                Payload::from(frame),
+                original as u32,
+            ),
+            InterfaceId::default(),
+        );
+        let mut out = Vec::new();
+        let mut writer = PcapngWriter::with_metadata_only(&mut out, true).unwrap();
+        writer.declare_interface(&decl("eth0")).unwrap();
+        writer.write_packet(0, &packet).unwrap();
+        let block = find_block(&out, block_type::ENHANCED_PACKET).unwrap();
+        assert_eq!(le32(&block, 20), 54);
+        assert_eq!(le32(&block, 24), original as u32);
+        assert!(!block.windows(marker.len()).any(|part| part == marker));
     }
 
     fn le16(b: &[u8], at: usize) -> u16 {

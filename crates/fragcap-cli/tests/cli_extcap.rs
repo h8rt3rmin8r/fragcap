@@ -286,6 +286,31 @@ fn the_roles_option_is_applied_through_the_overlay() {
 }
 
 #[test]
+fn invalid_extcap_roles_fail_before_opening_the_fifo() {
+    let (_store, local_db, selector) = registered_target();
+    let dir = tempfile::tempdir().unwrap();
+    for (index, raw) in ["TARGET", "target,missing", "target,,target"]
+        .into_iter()
+        .enumerate()
+    {
+        let fifo = dir.path().join(format!("invalid-{index}.fcapng"));
+        let mut args = vec![
+            "extcap".to_string(),
+            "--capture".to_string(),
+            "--fifo".to_string(),
+            fifo.to_string_lossy().into_owned(),
+        ];
+        args.extend(offline_substrate(&selector, &local_db));
+        args.extend(["--roles".to_string(), raw.to_string()]);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, _out, err) = common::run(&refs);
+        assert_eq!(code, 2, "{raw:?}: {err}");
+        assert!(err.contains("role"), "{raw:?}: {err}");
+        assert!(!fifo.exists(), "invalid role opened the FIFO: {raw:?}");
+    }
+}
+
+#[test]
 fn an_unresolvable_target_is_a_configuration_error_before_capture() {
     // A target selector that matches nothing in the local store is a configuration
     // error (exit 2), reported before any capture starts, exactly as `capture` treats

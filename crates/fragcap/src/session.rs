@@ -26,15 +26,18 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use fragcap_core::attribution::{Attribution, StageId};
-use fragcap_core::error::AttrError;
-use fragcap_core::flow::{Endpoint, FlowKey};
-use fragcap_core::packet::{CapturedPacket, Timestamp};
+use fragcap_core::error::{AttrError, SourceError};
+use fragcap_core::filter::FilterProgram;
+use fragcap_core::flow::{Direction as PacketDirection, Endpoint, FlowKey};
+use fragcap_core::link::LinkType;
+use fragcap_core::packet::{CapturedPacket, RawPacket, Timestamp};
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
-use fragcap_core::traits::{FlowAttributor, WriteGate};
+use fragcap_core::stats::SourceStats;
+use fragcap_core::traits::{FlowAttributor, PacketSource, WriteGate};
 
 use fragcap_profile::matching::{stage_for, stage_identity_holds};
 use fragcap_profile::schema::{Lifecycle, Profile};
@@ -184,6 +187,8 @@ pub struct SessionConfig {
     pub byte_bound: Option<u64>,
     /// What reaches the sinks. Defaults to [`CaptureScope::Target`].
     pub scope: CaptureScope,
+    /// A requested known packet direction, or `None` for both directions.
+    pub direction: Option<PacketDirection>,
     /// The `--roles` set, or `None` when unscoped. Read only under
     /// [`CaptureScope::Target`], where it is what makes the run's `roles ...
     /// (enforced)` line true of packet retention rather than only of which
@@ -1114,6 +1119,8 @@ struct GateShared {
     out_of_window_discarded: AtomicU64,
     /// What reaches the sinks (slice S064).
     scope: CaptureScope,
+    /// The requested known direction, applied after ownership scope.
+    direction: Option<PacketDirection>,
     /// The `--roles` set, read only under [`CaptureScope::Target`].
     allowed_roles: Option<Vec<String>>,
     /// Packets discarded on scope grounds whose attribution named a process this
@@ -1135,6 +1142,15 @@ struct GateShared {
     /// the P-4 failure a scope gate risks introducing. A non-zero value here on
     /// a real capture is a signal to investigate, not an expected outcome.
     scope_unresolved_discarded: AtomicU64,
+    /// Packets with a known direction opposite to the operator's selection.
+    direction_discarded: AtomicU64,
+    /// Packets whose direction could not be proven under an explicit selection.
+    direction_unknown_discarded: AtomicU64,
+    /// Replay alone uses packet-relative time to bound a source that can drain
+    /// faster than its driver consumes admitted packet notifications.
+    replay_duration: Option<Duration>,
+    replay_first: OnceLock<i64>,
+    replay_duration_hit: AtomicBool,
     /// Set the moment a bound is reached. Informational: beyond-bound packets are
     /// already rejected by the admitted-count comparison.
     bound_hit: AtomicBool,
@@ -1152,9 +1168,15 @@ impl GateShared {
             watch_discarded: AtomicU64::new(0),
             out_of_window_discarded: AtomicU64::new(0),
             scope: config.scope,
+            direction: config.direction,
             allowed_roles: config.allowed_roles.clone(),
             scope_discarded: AtomicU64::new(0),
             scope_unresolved_discarded: AtomicU64::new(0),
+            direction_discarded: AtomicU64::new(0),
+            direction_unknown_discarded: AtomicU64::new(0),
+            replay_duration: None,
+            replay_first: OnceLock::new(),
+            replay_duration_hit: AtomicBool::new(false),
             bound_hit: AtomicBool::new(false),
         }
     }
@@ -1210,7 +1232,23 @@ impl SessionGate {
     /// the pipeline, so every replayed frame is in window and the classification
     /// reduces to the bound alone.
     pub fn new(config: &SessionConfig, tee: Sender<(u32, Timestamp)>) -> (Self, GateHandle) {
-        let shared = Arc::new(GateShared::new(config));
+        Self::with_replay_duration(config, tee, None)
+    }
+
+    /// Build a replay gate whose packet-time duration is enforced before sinks.
+    /// Live capture continues to use the driver's monotonic clock.
+    pub fn new_replay(config: &SessionConfig, tee: Sender<(u32, Timestamp)>) -> (Self, GateHandle) {
+        Self::with_replay_duration(config, tee, config.duration)
+    }
+
+    fn with_replay_duration(
+        config: &SessionConfig,
+        tee: Sender<(u32, Timestamp)>,
+        replay_duration: Option<Duration>,
+    ) -> (Self, GateHandle) {
+        let mut state = GateShared::new(config);
+        state.replay_duration = replay_duration;
+        let shared = Arc::new(state);
         let gate = SessionGate {
             shared: Arc::clone(&shared),
             tee,
@@ -1220,6 +1258,26 @@ impl SessionGate {
 }
 
 impl GateHandle {
+    /// Observe the replay origin before packets enter the pipeline's bounded
+    /// drop-oldest queue. The first source packet may be evicted before the
+    /// output gate runs, so deriving the origin there would shift the duration.
+    pub fn wrap_replay_source(&self, source: Box<dyn PacketSource>) -> Box<dyn PacketSource> {
+        Box::new(ReplayOriginSource {
+            inner: source,
+            shared: Arc::clone(&self.shared),
+        })
+    }
+
+    /// Absolute packet instant of a reached replay duration, if any.
+    pub fn replay_deadline_at(&self) -> Option<Timestamp> {
+        if !self.shared.replay_duration_hit.load(Ordering::Relaxed) {
+            return None;
+        }
+        let first = *self.shared.replay_first.get()?;
+        let duration = self.shared.replay_duration?;
+        let nanos = i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX);
+        Some(Timestamp::from_nanos(first.saturating_add(nanos)))
+    }
     /// Open the window from `from`: the session has acquired a target, and a
     /// packet captured at or after `from` is admitted (subject to the bound). A
     /// packet captured before it stays a watch-time discard even if the output
@@ -1278,9 +1336,52 @@ impl GateHandle {
             .load(Ordering::Relaxed)
     }
 
+    /// Packets excluded because their known direction opposed the selection.
+    pub fn direction_discarded(&self) -> u64 {
+        self.shared.direction_discarded.load(Ordering::Relaxed)
+    }
+
+    /// Packets excluded because an explicit direction could not be established.
+    pub fn direction_unknown_discarded(&self) -> u64 {
+        self.shared
+            .direction_unknown_discarded
+            .load(Ordering::Relaxed)
+    }
+
     /// Whether a configured bound has been reached.
     pub fn bound_hit(&self) -> bool {
         self.shared.bound_hit.load(Ordering::Relaxed)
+    }
+}
+
+/// Records the first acquired replay timestamp before the bounded pipeline
+/// queue can evict it. The source's packet and backend behavior are unchanged.
+struct ReplayOriginSource {
+    inner: Box<dyn PacketSource>,
+    shared: Arc<GateShared>,
+}
+
+impl PacketSource for ReplayOriginSource {
+    fn next_packet(&mut self, timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+        let packet = self.inner.next_packet(timeout)?;
+        if let Some(packet) = packet.as_ref() {
+            self.shared
+                .replay_first
+                .get_or_init(|| packet.ts.as_nanos());
+        }
+        Ok(packet)
+    }
+
+    fn set_filter(&mut self, filter: &FilterProgram) -> Result<(), SourceError> {
+        self.inner.set_filter(filter)
+    }
+
+    fn stats(&self) -> SourceStats {
+        self.inner.stats()
+    }
+
+    fn link_type(&self) -> LinkType {
+        self.inner.link_type()
     }
 }
 
@@ -1289,6 +1390,21 @@ impl WriteGate for SessionGate {
         let len = packet.data.as_ref().len() as u64;
         let ts = packet.ts.as_nanos();
         let shared = &self.shared;
+        if let Some(duration) = shared.replay_duration {
+            let first = *shared
+                .replay_first
+                .get()
+                .expect("replay source must establish the duration origin before admission");
+            let elapsed = (i128::from(ts) - i128::from(first)).max(0) as u128;
+            if shared.replay_duration_hit.load(Ordering::Relaxed) || elapsed >= duration.as_nanos()
+            {
+                shared.replay_duration_hit.store(true, Ordering::Relaxed);
+                shared
+                    .out_of_window_discarded
+                    .fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+        }
         // Classify by the packet's own capture instant, not the window state at
         // this moment: a frame captured before acquisition is a watch-time discard
         // even if it was buffered and is only now being processed.
@@ -1330,6 +1446,21 @@ impl WriteGate for SessionGate {
             }
             return false;
         }
+        if let Some(required) = shared.direction {
+            match packet.direction {
+                Some(actual) if actual == required => {}
+                Some(_) => {
+                    shared.direction_discarded.fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+                None => {
+                    shared
+                        .direction_unknown_discarded
+                        .fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+            }
+        }
         // Beyond the bound: the session's `check_volume_bounds` fires
         // `VolumeReached` when `retained >= packet_bound` or `retained_bytes >=
         // byte_bound`, so the gate stops admitting the moment either is met and
@@ -1367,9 +1498,110 @@ impl WriteGate for SessionGate {
 mod gate_tests {
     use super::*;
     use fragcap_core::attribution::{Attribution, Fidelity};
+    use fragcap_core::flow::Direction as PacketDirection;
     use fragcap_core::interface::InterfaceId;
     use fragcap_core::packet::{Payload, RawPacket};
     use std::sync::mpsc;
+
+    struct TestReplaySource {
+        packets: std::vec::IntoIter<RawPacket>,
+    }
+
+    impl PacketSource for TestReplaySource {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            Ok(self.packets.next())
+        }
+
+        fn set_filter(&mut self, _filter: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    fn replay_source(handle: &GateHandle, times: &[i64]) -> Box<dyn PacketSource> {
+        handle.wrap_replay_source(Box::new(TestReplaySource {
+            packets: times
+                .iter()
+                .map(|&ts| {
+                    RawPacket::new(
+                        Timestamp::from_nanos(ts),
+                        Payload::copy_from_slice(&[0u8; 64]),
+                        64,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        }))
+    }
+
+    #[test]
+    fn replay_duration_bounds_output_before_a_fast_source_drains() {
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_replay(
+            &SessionConfig {
+                scope: CaptureScope::All,
+                duration: Some(Duration::from_secs(10)),
+                ..SessionConfig::default()
+            },
+            tx,
+        );
+        handle.open_from(Timestamp::from_nanos(i64::MIN));
+        let epoch = 1_780_000_000_000_000_000i64;
+        let mut source = replay_source(
+            &handle,
+            &[
+                epoch,
+                epoch + 9_000_000_000,
+                epoch + 10_000_000_000,
+                epoch + 5_000_000_000,
+            ],
+        );
+        for expected in [true, true, false, false] {
+            let raw = source.next_packet(Duration::ZERO).unwrap().unwrap();
+            assert_eq!(
+                gate.admit(&CapturedPacket::from_raw(raw, InterfaceId::default())),
+                expected
+            );
+        }
+        assert_eq!(handle.admitted(), 2);
+        assert_eq!(handle.out_of_window_discarded(), 2);
+        assert_eq!(
+            handle.replay_deadline_at(),
+            Some(Timestamp::from_nanos(epoch + 10_000_000_000))
+        );
+    }
+
+    #[test]
+    fn replay_origin_survives_eviction_before_the_output_gate_runs() {
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_replay(
+            &SessionConfig {
+                scope: CaptureScope::All,
+                duration: Some(Duration::from_secs(10)),
+                ..SessionConfig::default()
+            },
+            tx,
+        );
+        handle.open_from(Timestamp::from_nanos(i64::MIN));
+        let epoch = 1_780_000_000_000_000_000i64;
+        let mut source = replay_source(&handle, &[epoch, epoch + 11_000_000_000]);
+        let _evicted_before_output = source.next_packet(Duration::ZERO).unwrap().unwrap();
+        let surviving = source.next_packet(Duration::ZERO).unwrap().unwrap();
+        assert!(!gate.admit(&CapturedPacket::from_raw(surviving, InterfaceId::default())));
+        assert_eq!(handle.admitted(), 0);
+        assert_eq!(handle.out_of_window_discarded(), 1);
+        assert_eq!(
+            handle.replay_deadline_at(),
+            Some(Timestamp::from_nanos(epoch + 10_000_000_000))
+        );
+    }
 
     /// A captured packet whose captured length is `len` bytes, at instant `ts`.
     fn packet(len: usize, ts: i64) -> CapturedPacket {
@@ -1584,6 +1816,36 @@ mod gate_tests {
             "a bound role outside --roles is out of scope"
         );
         assert_eq!(target_handle.scope_discarded(), 1);
+    }
+
+    #[test]
+    fn direction_scope_counts_known_and_unknown_omissions_before_volume() {
+        let (gate, handle, rx) = gate(SessionConfig {
+            packet_bound: Some(1),
+            direction: Some(PacketDirection::Outbound),
+            ..unscoped()
+        });
+        handle.open_from(Timestamp::from_nanos(0));
+        let mut inbound = packet(10, 1);
+        inbound.direction = Some(PacketDirection::Inbound);
+        assert!(!gate.admit(&inbound));
+        assert!(!gate.admit(&packet(10, 2)));
+        assert!(
+            !handle.bound_hit(),
+            "excluded traffic spends no volume budget"
+        );
+        let mut outbound = packet(10, 3);
+        outbound.direction = Some(PacketDirection::Outbound);
+        assert!(gate.admit(&outbound));
+        assert_eq!(handle.admitted(), 1);
+        assert_eq!(handle.direction_discarded(), 1);
+        assert_eq!(handle.direction_unknown_discarded(), 1);
+        assert_eq!(handle.scope_discarded(), 0);
+        assert_eq!(
+            rx.try_iter().count(),
+            1,
+            "only the admitted packet has a receipt"
+        );
     }
 
     // FR-001, placement. An out-of-scope packet must not consume the operator's

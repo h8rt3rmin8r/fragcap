@@ -50,6 +50,10 @@ pub struct CompletionSummary {
     /// socket that would have named them, so a non-zero value here is worth
     /// investigating while a non-zero `scope_discarded` is the feature working.
     pub scope_unresolved_discarded: u64,
+    /// Packets excluded because their known direction opposed the selection.
+    pub direction_discarded: u64,
+    /// Packets excluded because direction could not be established.
+    pub direction_unknown_discarded: u64,
     /// What was written, per process image.
     ///
     /// Counted from gate-admitted packets only, so since slice S064 this is a
@@ -97,6 +101,8 @@ impl CompletionSummary {
             discarded_out_of_window: self.discarded_out_of_window,
             scope_discarded: self.scope_discarded,
             scope_unresolved_discarded: self.scope_unresolved_discarded,
+            direction_discarded: self.direction_discarded,
+            direction_unknown_discarded: self.direction_unknown_discarded,
         }
     }
 
@@ -117,6 +123,8 @@ impl CompletionSummary {
             ("out of window", self.discarded_out_of_window),
             ("out of scope", self.scope_discarded),
             ("scope unresolved", self.scope_unresolved_discarded),
+            ("direction excluded", self.direction_discarded),
+            ("direction unknown", self.direction_unknown_discarded),
             ("buffer dropped", self.buffer_dropped),
             ("sink dropped", self.sink_dropped),
         ] {
@@ -178,6 +186,8 @@ mod tests {
                 discarded_out_of_window: 4,
                 scope_discarded: 0,
                 scope_unresolved_discarded: 0,
+                direction_discarded: 0,
+                direction_unknown_discarded: 0,
             }
         );
     }

@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.94-draft \
+**Version:** 0.1.95-draft \
 **Applies-To:** 0.10.7 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-10-19 \
+**Date:** 2026-10-21 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -182,6 +182,7 @@ enforcement.
 | 0.1.92-draft | 2026-10-09 | Codex | S172 reconciles verified v0.10.6 publication after owner merge, exact annotated tag, all four release jobs, normal protected registry approval, six certified public files and ten non-yanked downloaded crate archives. Current markers and the frozen review candidate advance together; historical evidence and independent-review status retain their authority. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.93-draft | 2026-10-19 | Codex | S174 prepares v0.10.7 from accepted S173 and all remaining unreleased changes. Candidate versions, generated evidence, conformance, governed graph digests, chronological changelog and short highlights move together while actual published v0.10.6 remains separately bound. The owner explicitly delegates this release's checked PR integration, immutable tag, normal protected approval and public verification without changing future workflow rules or environment protection. Updates sections 1 and 27.3. |
 | 0.1.94-draft | 2026-10-19 | Codex | S174 reconciles actual v0.10.7 publication from exact accepted source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status retain their meaning. Updates sections 1, 22.7, 25.2 and 27.3. |
+| 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope including extcap, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, 14.5, and 17.2 without changing the published v0.10.7 record. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1771,6 +1772,11 @@ The interface address set is refreshed on address change notifications
 rather than polled, because a changed address silently inverts
 direction on every subsequent packet.
 
+An explicit `in` or `out` Capture choice is applied once at the shared
+write gate after role scope and before volume bounds. Packets with the
+opposite known direction and packets whose direction is unknown are
+excluded under separate reported counts. The default `both` retains each.
+
 ### 12.7 Timestamping
 
 Packets carry the timestamp supplied by the capture driver, which is
@@ -1786,6 +1792,12 @@ clocks drift relative to the capture clock.
 All timestamps are stored with microsecond resolution in the capture
 file, matching the pcapng interface timestamp resolution declared for
 each interface.
+
+Capture duration and acquisition deadlines use elapsed monotonic time from
+arm. Absolute packet and process instants remain unchanged evidence for
+output, ordering, and correlation. Replay records its first acquired source
+packet before the bounded drop-oldest queue, maps that instant to elapsed zero,
+and bounds surviving packets at the virtual duration before sinks.
 
 ## 13. Output Formats
 
@@ -1856,6 +1868,13 @@ Every pcapng reader displays comments, so attribution is visible in
 Wireshark with no configuration. Comments are defined as text, so no
 reader can misinterpret the payload. Custom options require a Private
 Enterprise Number that this project does not hold.
+
+When payload retention is disabled, a pcapng Enhanced Packet Block keeps only
+validated link, network, and TCP or UDP header bytes. Non-initial fragments
+keep their network and fragment headers. An unsupported or malformed frame
+keeps zero captured bytes rather than an unverified payload prefix. The block
+retains the observed original length, while its captured length states the
+smaller number of bytes actually written. Full-payload output is unchanged.
 
 `flow_id` is assigned by the capture session from the parsed flow key.
 The same canonical flow key receives one id for the whole session,
@@ -2078,6 +2097,13 @@ is otherwise specified explicitly with a format qualifier.
 --sink pipe:fragcap,format=pcapng
 ```
 
+Double a comma in a destination name to keep it literal. A single comma
+starts sink modifiers, for example `--sink file:round,,one.fcapng,payload=false`
+writes `round,one.fcapng` without retained application payload bytes.
+The effective payload setting applies to both pcapng and JSON Lines, including
+file rotation, stream consumers, FIFO output, and ring dumps. A sink-specific
+`payload=` modifier overrides the invocation-wide `--no-payload` choice.
+
 ### 14.2 Transports
 
 **File.** Writes to a path. Supports rotation by size or duration,
@@ -2145,6 +2171,9 @@ implementation, so the analyzer's dialog and the command line select
 capture identically. The analyzer renders these as a native
 configuration dialog from the declaration, so a full graphical interface
 exists without fragcap containing any graphical code.
+An extcap role selection is checked against the resolved profile using the
+same exact, case-sensitive validation as Capture, before opening its source
+or FIFO; an invalid role is a usage error rather than an empty stream.
 
 Installation places the fragcap binary in the analyzer's extcap
 directory. The `fragcap doctor` command reports whether this has been
@@ -3028,14 +3057,14 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
   -o, --out <PATH>           Output path for file and ring modes
       --sink <SPEC>          Sink specification, repeatable
   -d, --duration <DUR>       Capture duration bound
-      --max-bytes <SIZE>     Capture size bound
-      --max-packets <N>      Capture packet-count bound
+      --max-bytes <SIZE>     Retained source-byte bound after filtering
+      --max-packets <N>      Retained packet-count bound after filtering
       --roles <LIST>         Roles to capture   [default: profile roles, else all]
       --scope <SCOPE>        target | all             [default: target]
       --direction <DIR>      in | out | both          [default: both]
   -i, --interface <NAME>     Capture interface, repeatable
       --loopback             Include the loopback adapter
-      --no-payload           Capture headers only
+      --no-payload           Retain verified packet headers only
       --ring <DUR|SIZE>      Ring window for ring mode
       --launch               Start the title through its platform (--target only)
       --wait <DUR>           Acquisition timeout        [default: none]
@@ -3055,6 +3084,9 @@ position past the snapshot, or one taken before any listing has run, is an
 out-of-range usage error (exit 2).
 Every other flag is orthogonal to the target input, so a named process, a
 ring buffer, a wait-for-start, and a launch-under-capture all compose freely.
+Volume limits count packets and captured frame bytes admitted after scope and
+direction filtering. `packets captured` remains the source-observation count;
+ring evictions occur after session retention and reduce only the final dump.
 `--launch` needs the resolved stored target to carry a platform anchor (a
 Steam app id); a `--process` capture, or an anchorless target, cannot be
 launched and is refused (exit 2). A path anchor (`--path`/`--path-regex`)
@@ -3088,8 +3120,8 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --bundle <DIR>         Session bundle directory
   -d, --duration <DURATION>  Capture duration bound
       --wait <DURATION>      Target acquisition timeout
-      --max-packets <COUNT>  Stop after this many captured packets
-      --max-bytes <SIZE>     Stop after this many captured bytes
+      --max-packets <COUNT>  Stop after this many retained packets
+      --max-bytes <SIZE>     Stop after this many retained source bytes
   -i, --interface <NAME>     Capture interface; repeatable
       --no-payload           Write packet metadata without payload bytes
       --authorize-stdin      Read the exact emitted plan identifier from standard input

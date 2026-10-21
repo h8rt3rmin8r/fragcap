@@ -117,23 +117,42 @@ impl SinkSpec {
 }
 
 /// Parse a `--sink` specification: `<destination>[,<key>=<value>]...`.
+/// Double a comma in a destination to keep it literal.
 ///
 /// The destination is `<scheme>:<target>`, with `tcp://` carrying the authority
 /// form. A missing or unknown scheme is a usage error, because guessing one
 /// from the target would route a capture to a destination the operator did not
 /// name.
 pub fn parse_sink(raw: &str) -> Result<SinkSpec, String> {
-    let (destination, options) = match raw.split_once(',') {
-        Some((dest, opts)) => (dest, Some(opts)),
-        None => (raw, None),
-    };
+    let mut destination = String::new();
+    let mut chars = raw.char_indices().peekable();
+    let mut option_start = None;
+    while let Some((index, ch)) = chars.next() {
+        if ch == ',' {
+            if chars.peek().is_some_and(|(_, next)| *next == ',') {
+                chars.next();
+                destination.push(',');
+            } else {
+                option_start = Some(index + 1);
+                break;
+            }
+        } else {
+            destination.push(ch);
+        }
+    }
+    let options = option_start.map(|start| &raw[start..]);
 
-    let transport = parse_destination(destination)?;
+    let transport = parse_destination(&destination)?;
     let mut spec = SinkSpec::new(transport);
 
     if let Some(options) = options {
-        for pair in options.split(',') {
+        for (index, pair) in options.split(',').enumerate() {
             let Some((key, value)) = pair.split_once('=') else {
+                if index == 0 {
+                    return Err(format!(
+                        "unescaped comma in sink destination before `{pair}`; write `,,` for a literal comma or `,key=value` for a modifier"
+                    ));
+                }
                 return Err(format!("sink option `{pair}` is not `key=value`"));
             };
             apply_option(&mut spec, key.trim(), value.trim())?;
@@ -303,6 +322,27 @@ mod tests {
 
         assert!(parse_sink("tcp://x:1,bogus=1").is_err());
         assert!(parse_sink("file:x,format=yaml").is_err());
+    }
+
+    #[test]
+    fn doubled_commas_are_literal_in_sink_destinations() {
+        let file = parse_sink("file:part,,one,,,payload=false").unwrap();
+        assert_eq!(
+            file.transport,
+            SinkTransport::File(PathBuf::from("part,one,"))
+        );
+        assert_eq!(file.payload, Some(false));
+        let json = parse_sink("jsonl:part,,one.jsonl").unwrap();
+        assert_eq!(
+            json.transport,
+            SinkTransport::JsonLines(PathBuf::from("part,one.jsonl"))
+        );
+        let error = parse_sink("file:part,one.fcapng").unwrap_err();
+        assert!(error.contains("unescaped comma") && error.contains("write `,,`"));
+        let error = parse_sink("file:part,,one,format").unwrap_err();
+        assert!(error.contains("unescaped comma"));
+        let error = parse_sink("file:out.fcapng,format=jsonl,broken").unwrap_err();
+        assert!(error.contains("sink option `broken`"));
     }
 
     #[test]

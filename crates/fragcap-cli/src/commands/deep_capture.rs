@@ -5034,6 +5034,29 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 #[cfg(test)]
 mod tests {
     #[test]
+    fn real_deep_capture_packet_artifact_inherits_metadata_only_request() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Some(Command::DeepCapture(args)) =
+            Cli::try_parse_from(["fragcap", "deep-capture", "target", "--no-payload"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected Deep Capture");
+        };
+        let capture = super::real_capture_args(
+            &args,
+            std::path::Path::new("bundle"),
+            super::CalibrationDeadlines::from_args(&args),
+        );
+        assert!(capture.no_payload);
+        assert_eq!(
+            capture.out,
+            Some(std::path::Path::new("bundle").join("capture.fcapng"))
+        );
+    }
+
+    #[test]
     fn generated_history_is_finite_and_saved_or_custom_evidence_is_retained() {
         use crate::cli::{Cli, Command};
         use clap::Parser;

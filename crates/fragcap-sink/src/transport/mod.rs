@@ -60,6 +60,8 @@ use crate::pcapng::PcapngWriter;
 pub enum Format {
     /// pcapng, carrying attribution in packet comments.
     Pcapng,
+    /// pcapng with only verified link, network, and transport headers retained.
+    PcapngMetadataOnly,
     /// JSON Lines, one record per packet.
     JsonLines(PayloadMode),
 }
@@ -115,8 +117,11 @@ impl SinkFactory {
     /// [`Sink::finish`] exactly as any sink.
     pub fn build(&self, conn: Box<dyn Write + Send>) -> Result<Box<dyn Sink>, WriteError> {
         match self.format {
-            Format::Pcapng => {
-                let mut writer = PcapngWriter::new(conn)?;
+            Format::Pcapng | Format::PcapngMetadataOnly => {
+                let mut writer = PcapngWriter::with_metadata_only(
+                    conn,
+                    self.format == Format::PcapngMetadataOnly,
+                )?;
                 for iface in &self.interfaces {
                     writer.declare_interface(&InterfaceDeclaration::new(
                         iface.link_type,
