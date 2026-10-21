@@ -30,11 +30,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use fragcap_core::attribution::{Attribution, StageId};
-use fragcap_core::error::AttrError;
+use fragcap_core::error::{AttrError, SourceError};
+use fragcap_core::filter::FilterProgram;
 use fragcap_core::flow::{Direction as PacketDirection, Endpoint, FlowKey};
-use fragcap_core::packet::{CapturedPacket, Timestamp};
+use fragcap_core::link::LinkType;
+use fragcap_core::packet::{CapturedPacket, RawPacket, Timestamp};
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
-use fragcap_core::traits::{FlowAttributor, WriteGate};
+use fragcap_core::stats::SourceStats;
+use fragcap_core::traits::{FlowAttributor, PacketSource, WriteGate};
 
 use fragcap_profile::matching::{stage_for, stage_identity_holds};
 use fragcap_profile::schema::{Lifecycle, Profile};
@@ -1255,6 +1258,16 @@ impl SessionGate {
 }
 
 impl GateHandle {
+    /// Observe the replay origin before packets enter the pipeline's bounded
+    /// drop-oldest queue. The first source packet may be evicted before the
+    /// output gate runs, so deriving the origin there would shift the duration.
+    pub fn wrap_replay_source(&self, source: Box<dyn PacketSource>) -> Box<dyn PacketSource> {
+        Box::new(ReplayOriginSource {
+            inner: source,
+            shared: Arc::clone(&self.shared),
+        })
+    }
+
     /// Absolute packet instant of a reached replay duration, if any.
     pub fn replay_deadline_at(&self) -> Option<Timestamp> {
         if !self.shared.replay_duration_hit.load(Ordering::Relaxed) {
@@ -1341,13 +1354,47 @@ impl GateHandle {
     }
 }
 
+/// Records the first acquired replay timestamp before the bounded pipeline
+/// queue can evict it. The source's packet and backend behavior are unchanged.
+struct ReplayOriginSource {
+    inner: Box<dyn PacketSource>,
+    shared: Arc<GateShared>,
+}
+
+impl PacketSource for ReplayOriginSource {
+    fn next_packet(&mut self, timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+        let packet = self.inner.next_packet(timeout)?;
+        if let Some(packet) = packet.as_ref() {
+            self.shared
+                .replay_first
+                .get_or_init(|| packet.ts.as_nanos());
+        }
+        Ok(packet)
+    }
+
+    fn set_filter(&mut self, filter: &FilterProgram) -> Result<(), SourceError> {
+        self.inner.set_filter(filter)
+    }
+
+    fn stats(&self) -> SourceStats {
+        self.inner.stats()
+    }
+
+    fn link_type(&self) -> LinkType {
+        self.inner.link_type()
+    }
+}
+
 impl WriteGate for SessionGate {
     fn admit(&self, packet: &CapturedPacket) -> bool {
         let len = packet.data.as_ref().len() as u64;
         let ts = packet.ts.as_nanos();
         let shared = &self.shared;
         if let Some(duration) = shared.replay_duration {
-            let first = *shared.replay_first.get_or_init(|| ts);
+            let first = *shared
+                .replay_first
+                .get()
+                .expect("replay source must establish the duration origin before admission");
             let elapsed = (i128::from(ts) - i128::from(first)).max(0) as u128;
             if shared.replay_duration_hit.load(Ordering::Relaxed) || elapsed >= duration.as_nanos()
             {
@@ -1456,6 +1503,44 @@ mod gate_tests {
     use fragcap_core::packet::{Payload, RawPacket};
     use std::sync::mpsc;
 
+    struct TestReplaySource {
+        packets: std::vec::IntoIter<RawPacket>,
+    }
+
+    impl PacketSource for TestReplaySource {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            Ok(self.packets.next())
+        }
+
+        fn set_filter(&mut self, _filter: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    fn replay_source(handle: &GateHandle, times: &[i64]) -> Box<dyn PacketSource> {
+        handle.wrap_replay_source(Box::new(TestReplaySource {
+            packets: times
+                .iter()
+                .map(|&ts| {
+                    RawPacket::new(
+                        Timestamp::from_nanos(ts),
+                        Payload::copy_from_slice(&[0u8; 64]),
+                        64,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        }))
+    }
+
     #[test]
     fn replay_duration_bounds_output_before_a_fast_source_drains() {
         let (tx, _rx) = mpsc::channel();
@@ -1469,12 +1554,49 @@ mod gate_tests {
         );
         handle.open_from(Timestamp::from_nanos(i64::MIN));
         let epoch = 1_780_000_000_000_000_000i64;
-        assert!(gate.admit(&packet(64, epoch)));
-        assert!(gate.admit(&packet(64, epoch + 9_000_000_000)));
-        assert!(!gate.admit(&packet(64, epoch + 10_000_000_000)));
-        assert!(!gate.admit(&packet(64, epoch + 5_000_000_000)));
+        let mut source = replay_source(
+            &handle,
+            &[
+                epoch,
+                epoch + 9_000_000_000,
+                epoch + 10_000_000_000,
+                epoch + 5_000_000_000,
+            ],
+        );
+        for expected in [true, true, false, false] {
+            let raw = source.next_packet(Duration::ZERO).unwrap().unwrap();
+            assert_eq!(
+                gate.admit(&CapturedPacket::from_raw(raw, InterfaceId::default())),
+                expected
+            );
+        }
         assert_eq!(handle.admitted(), 2);
         assert_eq!(handle.out_of_window_discarded(), 2);
+        assert_eq!(
+            handle.replay_deadline_at(),
+            Some(Timestamp::from_nanos(epoch + 10_000_000_000))
+        );
+    }
+
+    #[test]
+    fn replay_origin_survives_eviction_before_the_output_gate_runs() {
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_replay(
+            &SessionConfig {
+                scope: CaptureScope::All,
+                duration: Some(Duration::from_secs(10)),
+                ..SessionConfig::default()
+            },
+            tx,
+        );
+        handle.open_from(Timestamp::from_nanos(i64::MIN));
+        let epoch = 1_780_000_000_000_000_000i64;
+        let mut source = replay_source(&handle, &[epoch, epoch + 11_000_000_000]);
+        let _evicted_before_output = source.next_packet(Duration::ZERO).unwrap().unwrap();
+        let surviving = source.next_packet(Duration::ZERO).unwrap().unwrap();
+        assert!(!gate.admit(&CapturedPacket::from_raw(surviving, InterfaceId::default())));
+        assert_eq!(handle.admitted(), 0);
+        assert_eq!(handle.out_of_window_discarded(), 1);
         assert_eq!(
             handle.replay_deadline_at(),
             Some(Timestamp::from_nanos(epoch + 10_000_000_000))

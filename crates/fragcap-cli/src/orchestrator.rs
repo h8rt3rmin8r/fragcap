@@ -361,6 +361,16 @@ fn capture_prerecorded(
     // decision D-6).
     let (tx, rx) = mpsc::channel::<(u32, Timestamp)>();
     let (gate, gate_handle) = SessionGate::new_replay(&config.session_config(), tx);
+    components.sources = std::mem::take(&mut components.sources)
+        .into_iter()
+        .map(|binding| {
+            fragcap::core::SourceBinding::new(
+                binding.id,
+                gate_handle.wrap_replay_source(binding.source),
+                binding.addrs,
+            )
+        })
+        .collect();
     // Offline is two-phase: acquisition is already complete, so the window admits
     // every replayed frame from the earliest instant and there is no watch-time
     // frame; the bound alone does the bounding.

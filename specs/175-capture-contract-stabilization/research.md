@@ -2,7 +2,7 @@
 
 ## R1. Deadline time domain
 
-**Decision**: Keep `CaptureSession::on_tick` on the existing zero-based arm-relative domain. In live Capture, both packet and idle notifications supply `Instant::elapsed` mapped onto that domain. In replay, packet timestamps retain ordering authority, while a virtual elapsed clock subtracts the first replay packet timestamp and saturates backward jumps at zero. Process-event timestamps never enter the deadline check.
+**Decision**: Keep `CaptureSession::on_tick` on the existing zero-based arm-relative domain. In live Capture, both packet and idle notifications supply `Instant::elapsed` mapped onto that domain. In replay, packet timestamps retain ordering authority, while a virtual elapsed clock subtracts the first acquired replay packet timestamp recorded before the drop-oldest queue and saturates backward jumps at zero. Process-event timestamps never enter the deadline check.
 
 **Rationale**: Live Npcap and ETW timestamps are absolute, while the session attaches at zero. `SessionGate` must continue comparing absolute packet and process timestamps to classify buffered pre-acquisition and post-terminal packets. Separating the deadline input at the driver keeps this window correct. Replay needs a deterministic virtual interval so duration tests do not depend on machine speed.
 

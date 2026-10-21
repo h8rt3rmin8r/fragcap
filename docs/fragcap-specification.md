@@ -1795,8 +1795,9 @@ each interface.
 
 Capture duration and acquisition deadlines use elapsed monotonic time from
 arm. Absolute packet and process instants remain unchanged evidence for
-output, ordering, and correlation. Replay maps its first source packet to
-elapsed zero and bounds packets at the virtual duration before sinks.
+output, ordering, and correlation. Replay records its first acquired source
+packet before the bounded drop-oldest queue, maps that instant to elapsed zero,
+and bounds surviving packets at the virtual duration before sinks.
 
 ## 13. Output Formats
 
