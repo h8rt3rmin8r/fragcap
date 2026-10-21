@@ -112,32 +112,24 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
             "exact created root event is missing or outside its launch receipt".to_string(),
         );
     }
-    let steam_root = evidence.shutdown_scope.first().is_some_and(|path| {
-        path.file_name()
-            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("steam.exe"))
-    });
-    if steam_root {
-        let unrelated_active = evidence.events.iter().any(|event| {
-            let ProcessEvent::Started { pid, image, at, .. } = event else {
-                return false;
-            };
-            if *pid == root
-                || depth_to_root(*pid, root, &starts).is_none()
-                || exited_after(evidence, *pid, *at)
-            {
-                return false;
-            }
-            let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
-            !evidence.shutdown_scope.iter().any(|path| {
-                path.file_name()
-                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
-            })
-        });
-        if unrelated_active {
-            return Err(
-                "Steam ancestry includes an active process outside the authorized title scope"
-                    .to_string(),
-            );
+    for event in &evidence.events {
+        let ProcessEvent::Started { pid, image, at, .. } = event else {
+            continue;
+        };
+        if *pid == root
+            || depth_to_root(*pid, root, &starts).is_none()
+            || exited_after(evidence, *pid, *at)
+        {
+            continue;
+        }
+        let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+        if !evidence.shutdown_scope.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+        }) {
+            return Err(format!(
+                "undeclared launch descendant pid {pid} ({name}) has no verified exit; inherited route release is unresolved"
+            ));
         }
     }
     let current = ProcessIdentity::current()
@@ -557,6 +549,37 @@ mod tests {
         assert!(outcome
             .result
             .reason
-            .contains("outside the authorized title scope"));
+            .contains("undeclared launch descendant"));
+    }
+
+    #[test]
+    fn undeclared_direct_descendant_cannot_be_silently_released() {
+        let owned = child();
+        let mut evidence = child_evidence(&owned);
+        evidence.events.push(ProcessEvent::started(
+            999_998,
+            owned.0.id(),
+            "helper.exe",
+            "",
+            evidence.launch_at.unwrap(),
+        ));
+        evidence.managed_instances[0]
+            .identity
+            .force_close()
+            .unwrap();
+        let started = Instant::now();
+        while !evidence.managed_instances[0].identity.exited().unwrap()
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(evidence.managed_instances[0].identity.exited().unwrap());
+        evidence.events.push(ProcessEvent::Exited {
+            pid: owned.0.id(),
+            at: evidence.launch_at.unwrap(),
+        });
+        let outcome = release(&evidence, Budget::new(Duration::ZERO));
+        assert_eq!(outcome.result.status, CleanupStatus::Failed);
+        assert!(outcome.result.reason.contains("helper.exe"));
     }
 }

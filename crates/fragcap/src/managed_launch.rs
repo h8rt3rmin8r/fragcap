@@ -64,6 +64,15 @@ impl ManagedLaunch {
 
     /// Issue the exact prepared launch.
     pub fn execute(&self) -> Result<LaunchReceipt, LaunchError> {
+        self.execute_with_shutdown_receipt(false)
+    }
+
+    /// Retain a narrow root process-object receipt only for an authorized
+    /// Deep Capture shutdown scope. Ordinary Capture uses `execute`.
+    pub fn execute_with_shutdown_receipt(
+        &self,
+        retain_shutdown_identity: bool,
+    ) -> Result<LaunchReceipt, LaunchError> {
         match self {
             Self::Steam(request) => {
                 crate::steam::launch(request)
@@ -73,9 +82,9 @@ impl ManagedLaunch {
                     identity: None,
                 })
             }
-            Self::Direct(direct) => direct.execute(),
-            Self::Publisher(publisher) => publisher.root.execute(),
-            Self::Platform(platform) => platform.root.execute(),
+            Self::Direct(direct) => direct.execute(retain_shutdown_identity),
+            Self::Publisher(publisher) => publisher.root.execute(retain_shutdown_identity),
+            Self::Platform(platform) => platform.root.execute(retain_shutdown_identity),
         }
     }
 }
@@ -257,7 +266,7 @@ impl PlatformClientLaunch {
             arguments,
             environment: BTreeMap::new(),
         };
-        dispatch.execute().map_err(|error| match error {
+        dispatch.execute(false).map_err(|error| match error {
             LaunchError::Direct { executable, source } => {
                 LaunchError::Dispatch { executable, source }
             }
@@ -374,7 +383,7 @@ impl DirectExecutableLaunch {
         &self.environment
     }
 
-    fn execute(&self) -> Result<LaunchReceipt, LaunchError> {
+    fn execute(&self, retain_shutdown_identity: bool) -> Result<LaunchReceipt, LaunchError> {
         let mut command = Command::new(&self.executable);
         #[cfg(windows)]
         {
@@ -391,7 +400,9 @@ impl DirectExecutableLaunch {
             source,
         })?;
         let process_id = child.id();
-        let identity = crate::managed_shutdown::ProcessIdentity::observe(process_id).ok();
+        let identity = retain_shutdown_identity
+            .then(|| crate::managed_shutdown::ProcessIdentity::observe(process_id).ok())
+            .flatten();
         drop(child);
         Ok(LaunchReceipt {
             process_id: Some(process_id),
@@ -798,6 +809,38 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned only by managed launch receipt test"]
+    fn receipt_child_waits() {
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_launch_does_not_retain_shutdown_rights() {
+        let executable = std::env::current_exe().unwrap();
+        let directory = executable.parent().unwrap().to_path_buf();
+        let launch = ManagedLaunch::Direct(
+            DirectExecutableLaunch::new(
+                executable,
+                directory,
+                vec!["--ignored".into(), "receipt_child_waits".into()],
+            )
+            .unwrap(),
+        );
+        let ordinary = launch.execute().unwrap();
+        assert!(ordinary.identity().is_none());
+        let ordinary_pid = ordinary.process_id().unwrap();
+        let ordinary_process =
+            crate::managed_shutdown::ProcessIdentity::observe(ordinary_pid).unwrap();
+        ordinary_process.force_close().unwrap();
+        let managed = launch.execute_with_shutdown_receipt(true).unwrap();
+        let identity = managed.identity().expect("Deep Capture root receipt");
+        assert_eq!(managed.process_id(), Some(identity.pid));
+        identity.force_close().unwrap();
+    }
 
     fn target(root: &Path, launch_entries: serde_json::Value) -> TargetEntry {
         TargetEntry {

@@ -1099,7 +1099,7 @@ impl deep_capture_api::LaunchLease for LibraryLaunchLease {
         deep_capture_api::CleanupResult {
             resource: "managed-launch".to_string(),
             status: deep_capture_api::CleanupStatus::NotNeeded,
-            reason: "fragcap does not control the launched process; route-owner release is reported separately".to_string(),
+            reason: "exact owned shutdown and exit verification are reported by the separate route-owner release".to_string(),
         }
     }
 }

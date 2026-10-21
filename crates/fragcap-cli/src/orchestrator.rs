@@ -784,7 +784,7 @@ fn capture_live(
         };
         emitter.progress(&format!("launching {description}"));
         let launch_earliest = wall_timestamp();
-        match request.execute() {
+        match request.execute_with_shutdown_receipt(!config.shutdown_scope.is_empty()) {
             Ok(receipt) => {
                 process_evidence.launch_pid = receipt.process_id();
                 process_evidence.launch_identity = receipt.identity().cloned();
