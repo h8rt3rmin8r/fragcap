@@ -436,10 +436,9 @@ pub struct CaptureArgs {
 
 /// Arguments to `deep-capture`, the explicit inspection mode.
 ///
-/// Deep Capture requires one stored target and a managed launch, because it must
-/// know which target owns the scoped proxy configuration and where compatibility
-/// facts belong. Raw process capture remains available through `capture
-/// --process`.
+/// Deep Capture requires one stored target and a managed launch so only the
+/// selected game started by this session receives its proxy settings. Raw
+/// process capture remains available through `capture --process`.
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
 pub struct DeepCaptureArgs {
@@ -460,11 +459,11 @@ pub struct DeepCaptureArgs {
     #[arg(long, help_heading = "Required inputs")]
     pub id: Option<i64>,
 
-    /// Start the target under scoped proxy configuration.
+    /// Start the selected game so only that launch receives proxy settings.
     ///
     /// Supports cold Steam protocol and cold direct-executable launches when
     /// current same-case compatibility evidence reaches the final client.
-    #[arg(long, help_heading = "Common options")]
+    #[arg(long, required = true, help_heading = "Required inputs")]
     pub launch: bool,
 
     /// The capture duration bound, from arm.
@@ -536,15 +535,15 @@ pub struct DeepCaptureArgs {
     #[arg(long, value_name = "RULE", help_heading = "Networking")]
     pub proxy_bypass: Vec<String>,
 
-    /// Write HAR when HTTP semantics are observable.
+    /// Write an HTTP archive (HAR) of observed requests and responses; it may contain private data.
     #[arg(long, help_heading = "Sensitive outputs")]
     pub har: bool,
 
-    /// Write a proxy-owned analyzer key log.
+    /// Write a TLS key log for analyzer decryption; it contains TLS secrets.
     #[arg(long, help_heading = "Sensitive outputs")]
     pub key_log: bool,
 
-    /// A certificate chain to present to an upstream that requires mutual TLS.
+    /// Client certificate chain sent to a server that requires mutual TLS authentication.
     #[arg(
         long,
         value_name = "FILE",
@@ -553,7 +552,7 @@ pub struct DeepCaptureArgs {
     )]
     pub client_certificate: Option<PathBuf>,
 
-    /// The operator-owned private key matching `--client-certificate`.
+    /// Sensitive private key matching `--client-certificate` for client authentication.
     #[arg(
         long,
         value_name = "FILE",
@@ -1476,16 +1475,17 @@ mod tests {
                 "S-1-5-21-1-2-3-1001"
             ])
             .is_err());
-            assert!(super::Cli::try_parse_from([
-                "fragcap",
-                command,
-                "target",
+            let mut argv = vec!["fragcap", command, "target"];
+            if command == "deep-capture" {
+                argv.push("--launch");
+            }
+            argv.extend([
                 "--output-recipient",
                 "S-1-5-21-1-2-3-1001",
                 "--bundle",
-                "C:/output/bundle"
-            ])
-            .is_ok());
+                "C:/output/bundle",
+            ]);
+            assert!(super::Cli::try_parse_from(argv).is_ok());
         }
     }
 
@@ -1580,11 +1580,13 @@ mod tests {
 
     #[test]
     fn deep_capture_proxy_family_defaults_to_ipv4_and_accepts_ipv6() {
-        let default = Cli::try_parse_from(["fragcap", "deep-capture", "target"]).expect("parse");
+        let default =
+            Cli::try_parse_from(["fragcap", "deep-capture", "target", "--launch"]).expect("parse");
         let selected = Cli::try_parse_from([
             "fragcap",
             "deep-capture",
             "target",
+            "--launch",
             "--proxy-family",
             "ipv6",
         ])
@@ -1604,6 +1606,7 @@ mod tests {
             "fragcap",
             "deep-capture",
             "target",
+            "--launch",
             "--proxy-bypass",
             ".example.com,192.0.2.0/24",
             "--proxy-bypass",
@@ -1653,9 +1656,14 @@ mod tests {
             "exact-proposal",
         ])
         .is_ok());
-        assert!(
-            Cli::try_parse_from(["fragcap", "deep-capture", "target", "--retain-bundle",]).is_ok()
-        );
+        assert!(Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--retain-bundle",
+        ])
+        .is_ok());
         assert!(
             Cli::try_parse_from(["fragcap", "calibrate", "target", "--retain-bundle",]).is_ok()
         );

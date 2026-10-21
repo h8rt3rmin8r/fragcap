@@ -2429,7 +2429,7 @@ pub(crate) fn run_with_outcome(
 ) -> Result<RunOutcome, CliError> {
     if !args.launch {
         return Err(CliError::usage(
-            "Deep Capture requires --launch so scoped proxy configuration is owned by the session",
+            "Deep Capture requires --launch: fragcap must start the selected game so only that launch receives its proxy settings",
         ));
     }
     if args.legacy_trust_ca || args.legacy_yes {
@@ -4969,10 +4969,15 @@ mod tests {
     fn real_deep_capture_packet_artifact_inherits_metadata_only_request() {
         use crate::cli::{Cli, Command};
         use clap::Parser;
-        let Some(Command::DeepCapture(args)) =
-            Cli::try_parse_from(["fragcap", "deep-capture", "target", "--no-payload"])
-                .unwrap()
-                .command
+        let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--no-payload",
+        ])
+        .unwrap()
+        .command
         else {
             panic!("expected Deep Capture");
         };
@@ -5006,7 +5011,7 @@ mod tests {
                 super::deep_capture_api::SensitiveRetention::Retain,
             ),
         ] {
-            let mut argv = vec!["fragcap", "deep-capture", "target"];
+            let mut argv = vec!["fragcap", "deep-capture", "target", "--launch"];
             argv.extend(flags);
             let Some(Command::DeepCapture(args)) = Cli::try_parse_from(argv).unwrap().command
             else {

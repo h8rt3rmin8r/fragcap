@@ -117,11 +117,11 @@ fn subsystem(inputs: &Inputs) -> Check {
 fn privilege(inputs: &Inputs) -> Check {
     match inputs.privilege {
         Privilege::Elevated => Check::ok(PLATFORM, "privilege", "elevated"),
-        Privilege::NotElevated => Check::warn_action(
+        Privilege::NotElevated => Check::fail_action(
             PLATFORM,
             "privilege",
-            "not elevated; some interfaces and process tracing need an elevated session",
-            "relaunch fragcap from an elevated session",
+            "not elevated; this process cannot start live Capture or Deep Capture",
+            "relaunch fragcap as Administrator from an elevated terminal, then run doctor again",
             Action::new(ActionKind::RelaunchElevated),
         ),
     }

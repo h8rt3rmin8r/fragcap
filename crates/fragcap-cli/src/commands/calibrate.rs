@@ -1738,6 +1738,12 @@ fn prepare_steam_client(
     else {
         return Ok(TargetFrontDoor::Ready(Box::new(target)));
     };
+    let next_command = target_command(
+        "calibrate",
+        target.stable_id,
+        &quote_powershell_path(local_store_path)?,
+        "",
+    );
     if emitter.is_json() && !args.authorize_stdin {
         return Err(CliError::usage(
             "JSON Steam client setup requires --authorize-stdin and the exact emitted plan identifier",
@@ -1964,6 +1970,15 @@ fn prepare_steam_client(
         "authored-client-persisted",
         false,
     )?;
+    emitter.calibration_guidance(json!({
+        "schema_version": 1,
+        "target": updated.handle,
+        "target_id": updated.stable_id,
+        "status": "setup-complete",
+        "reason": "steam-client-authored-reachability-not-attempted",
+        "next_command": next_command,
+        "next_command_purpose": "after closing the title and Steam normally, begin a fresh cold reachability calibration; client setup alone is not compatibility evidence",
+    }));
     emitter.progress("Client setup is saved. Close the title and Steam normally, then rerun fragcap calibrate for a fresh cold reachability session. No Deep Capture session started during client setup.");
     Ok(TargetFrontDoor::Declined)
 }
@@ -2797,6 +2812,7 @@ pub fn run(
     let verdict = match status {
         "failed" => "failed",
         "interrupted" => "interrupted",
+        "setup-complete" => "setup-complete",
         "blocked" | "warm" | "refused" | "declined" => "blocked",
         "ready"
         | "completed"

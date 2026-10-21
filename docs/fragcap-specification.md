@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.96-draft \
+**Version:** 0.1.97-draft \
 **Applies-To:** 0.10.7 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -184,6 +184,7 @@ enforcement.
 | 0.1.94-draft | 2026-10-19 | Codex | S174 reconciles actual v0.10.7 publication from exact accepted source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status retain their meaning. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope including extcap, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, 14.5, and 17.2 without changing the published v0.10.7 record. |
 | 0.1.96-draft | 2026-10-21 | Codex | S176 defines pre-authorized exact-owned managed Deep Capture shutdown and preserves failed historical cleanup independently of present readiness under #498 and #499. Constitution 1.6.0 adds only exact process control with named minimal rights. Updates sections 17.2.1 and 19.2 without changing the published v0.10.7 record. |
+| 0.1.97-draft | 2026-10-21 | Codex | S177 reconciles first-use readiness, Steam client setup, and Deep Capture command help under #487, #494, and #495. Current-token elevation blocks a live-ready Doctor verdict; verified Steam client authoring reports setup completion with a same-store next command without claiming reachability; help marks `--launch` required and explains exact input and sensitive outputs. Updates sections 17.2.1, 17.2.2, and 26.3 without changing the published v0.10.7 record. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3162,6 +3163,14 @@ the final client. One complete plan authorization includes any exact current-use
 trust action before mutation. It never silently promotes an unknown launch path
 to system-wide proxy settings.
 
+The CLI parser, short usage, and long help all mark `--launch` as required for
+Deep Capture. The option starts the selected target under the session-scoped
+route; a missing option is a usage error before preparation. Help keeps a
+copyable output-recipient example within an 80-column terminal and explains
+that HAR may retain HTTP content, the client-facing TLS key log can decrypt
+captured traffic, and an operator-supplied client certificate and private key
+are sensitive identity material.
+
 `--proxy-bypass` is the only operator bypass input. Repeated values and
 comma-delimited tokens accept ASCII DNS domains, IP literals, canonical CIDRs,
 and optional ports on DNS or IP authorities. Bare and leading-dot DNS inputs
@@ -3330,6 +3339,16 @@ The controlled packet artifact is synthetic test truth because continuous
 integration has no capture driver; real sessions reuse the ordinary Capture
 pipeline and its packet-side flow registry.
 
+A successfully verified Steam client write reports `setup-complete` in the
+human and structured final calibration verdict, with the durable target
+identifier and a PowerShell-quoted `calibrate --id` continuation against the
+same effective local store. This result creates no workflow or compatibility
+fact and does not claim routing or protocol reachability. Declined, stale,
+failed, and unverified writes retain their existing non-success outcomes. For
+structured authorization in PowerShell, redirected standard input must send
+the exact emitted plan identifier followed by one LF (`[char]10`); CRLF is
+not silently normalized into a valid authorization.
+
 #### 17.2.2 Embedded Workflow Help
 
 The root long-help page and the long-help pages for Doctor, target discovery and
@@ -3346,6 +3365,11 @@ groups. It states that compatibility is observed for an exact case, inspection
 is not universal, and certificate pinning is not bypassed. It also identifies
 HAR, TLS key logs, client identities, and retained plaintext as sensitive where
 their commands are introduced. Short help stays concise.
+
+Examples that an operator should copy as one command remain on one display
+line at 80 columns, including output-recipient selection. Calibration help
+shows a PowerShell standard-input expression that supplies the exact emitted
+plan identifier plus LF without making a CRLF prompt look acceptable.
 
 Every post-parse pre-session refusal in the closed environment, target, launch,
 process, compatibility, recovery, bundle, authorization, and calibration
@@ -4742,6 +4766,14 @@ Every failing check names the specific remediation, including the exact
 installation option when a driver option is missing. Exit code is 0
 when capture is possible and 1 when a blocking problem exists. Warnings
 about optional integration do not block.
+
+The privilege result describes the current process token, rather than the
+machine's ability to open an elevated terminal. A process that is not elevated
+cannot start live Capture or Deep Capture and therefore fails the readiness
+check, marks both modes unready in human and JSON output, and exits 1. Its
+action is to relaunch from an elevated terminal and rerun Doctor. An elevated
+rerun rechecks the current token and all other prerequisites; no cached
+readiness assertion or automatic elevation is inferred.
 
 The report distinguishes the capture capabilities compiled into the
 running binary from the environment around it. A binary built without the

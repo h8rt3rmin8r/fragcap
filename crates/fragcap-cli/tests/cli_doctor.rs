@@ -215,13 +215,56 @@ fn an_absent_live_backend_blocks_and_an_absent_socket_table_only_warns() {
 }
 
 #[test]
-fn not_elevated_and_no_interfaces_warn_without_blocking() {
+fn not_elevated_blocks_current_live_capture_even_when_machine_checks_pass() {
     let mut inputs = ready();
     inputs.privilege = Privilege::NotElevated;
     inputs.interfaces.clear();
     let report = checks::run(&inputs);
-    assert_eq!(report.exit().code(), 0, "warnings do not block");
+    assert_eq!(
+        report.exit().code(),
+        1,
+        "this token cannot start live capture"
+    );
+    assert!(!report.capture_ready());
+    assert!(!report.deep_capture_ready());
+    let privilege = report
+        .checks
+        .iter()
+        .find(|check| check.name == "privilege")
+        .unwrap();
+    assert_eq!(privilege.status, Status::Fail);
+    assert_eq!(
+        privilege.action.as_ref().map(|action| action.kind),
+        Some(ActionKind::RelaunchElevated)
+    );
+    let human = report.render_human();
+    assert!(
+        human.contains("Capture:") && human.contains("not ready"),
+        "{human}"
+    );
+    assert!(human.contains("Administrator"), "{human}");
+    let json = report.render_json();
+    let verdicts = json
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "readiness")
+        .collect::<Vec<_>>();
+    assert_eq!(verdicts.len(), 2);
+    for verdict in verdicts {
+        assert_eq!(verdict["ready"], false);
+        assert!(verdict["blocking_checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check == "Platform/privilege"));
+    }
     assert!(report.checks.iter().any(|c| c.status == Status::Warn));
+
+    inputs.privilege = Privilege::Elevated;
+    inputs.interfaces = ready().interfaces;
+    let rechecked = checks::run(&inputs);
+    assert_eq!(rechecked.exit().code(), 0);
+    assert!(rechecked.capture_ready() && rechecked.deep_capture_ready());
 }
 
 #[test]
