@@ -40,8 +40,10 @@ impl InterfaceDeclaration {
 /// needed. S09 fixes the actual problem by refusing a declaration that arrives
 /// after the first packet, which makes the multi-interface question answerable
 /// once, before anything is written, and holding the name safe again.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct DeclaredInterface {
+    /// Link type used by metadata-only prefix validation.
+    pub(crate) link_type: LinkType,
     /// The interface's name, as declared. Written into the annotation's `iface`
     /// key when the capture holds more than one interface.
     pub(crate) name: std::sync::Arc<str>,
@@ -52,4 +54,14 @@ pub(crate) struct DeclaredInterface {
     /// data rather than from a clock is what keeps the writer a pure function
     /// of its input, which the golden comparison depends on.
     pub(crate) last_ts_micros: Option<u64>,
+}
+
+impl Default for DeclaredInterface {
+    fn default() -> Self {
+        Self {
+            link_type: LinkType::ETHERNET,
+            name: Arc::from(""),
+            last_ts_micros: None,
+        }
+    }
 }

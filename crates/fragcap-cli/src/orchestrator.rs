@@ -41,7 +41,6 @@ use fragcap::{
     StopReason, Timestamp,
 };
 
-use crate::args::Direction;
 use crate::assemble::{self, CaptureComponents, EffectiveConfig, EventStream, ARMED_AT};
 use crate::emit::Emitter;
 #[cfg(all(feature = "etw", windows))]
@@ -167,15 +166,6 @@ pub fn capture(
     });
     emitter.progress(&format!("session armed on {}", interface_names.join(", ")));
 
-    // The effective scope, recorded and surfaced. Directional filtering of
-    // output is deferred (specification FR-011b), so a non-default direction is
-    // carried and warned about rather than silently ignored.
-    if config.direction != Direction::Both {
-        emitter.warn(
-            "--direction is recorded on the effective configuration but directional output \
-             filtering is deferred to a later slice",
-        );
-    }
     // Since slice S064 the roles claim is true of what the file contains, not
     // only of which stages trigger acquisition: under the target scope the write
     // gate consults the same role set. It said `(enforced)` before that was true
@@ -370,7 +360,7 @@ fn capture_prerecorded(
     // pass-through that keeps the committed goldens byte-identical (slice 017,
     // decision D-6).
     let (tx, rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (gate, gate_handle) = SessionGate::new(&config.session_config(), tx);
+    let (gate, gate_handle) = SessionGate::new_replay(&config.session_config(), tx);
     // Offline is two-phase: acquisition is already complete, so the window admits
     // every replayed frame from the earliest instant and there is no watch-time
     // frame; the bound alone does the bounding.
@@ -402,11 +392,28 @@ fn capture_prerecorded(
     emit_stream_reports(&stream_reports, emitter);
     emit_ring_report(&ring_evicted, emitter);
 
-    // Fold the events past the last packet (the exits that decide the stop
-    // reason a script implies).
+    // A replay source can outrun the tee driver. The write gate has already
+    // excluded packets beyond its virtual deadline; fold only earlier process
+    // evidence before deciding the corresponding session stop cause.
+    let replay_deadline = gate_handle.replay_deadline_at();
+    let replay_tick = replay_deadline.and_then(|_| {
+        config.duration.map(|duration| {
+            Timestamp::from_nanos(i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX))
+        })
+    });
     for event in pending {
+        if let Some(tick) = replay_tick
+            .filter(|_| replay_deadline.is_some_and(|at| event.at().as_nanos() > at.as_nanos()))
+        {
+            if is_active(&session) {
+                session.on_tick(tick);
+            }
+        }
         apply_event(event, &mut session, &mut bound, emitter, process_evidence);
         publisher.publish(session.role_bindings());
+    }
+    if let Some(tick) = replay_tick.filter(|_| is_active(&session)) {
+        session.on_tick(tick);
     }
 
     // An interrupt fired for the whole run is a clean stop once everything has
@@ -561,6 +568,7 @@ fn drive(
     process_evidence: &mut CaptureProcessEvidence,
 ) {
     let mut folded = 0usize;
+    let mut replay_clock = ReplayClock::default();
     while let Ok((len, ts)) = rx.recv() {
         while folded < pending.len() && pending[folded].at().as_nanos() <= ts.as_nanos() {
             let event = pending[folded].clone();
@@ -569,7 +577,9 @@ fn drive(
             publisher.publish(session.role_bindings());
         }
         session.on_packet(len);
-        session.on_tick(ts);
+        // Packet and process instants above are absolute evidence. A deadline
+        // tick is elapsed replay time, never a Unix epoch value (#484).
+        session.on_tick(replay_clock.advance(ts));
         // Report the narrowing from the transition, not from a sample taken at
         // acquisition. Rate-limited inside `poll`.
         narration.poll(emitter);
@@ -582,6 +592,27 @@ fn drive(
     }
     // Leave the unfolded events for the post-run drain.
     pending.drain(0..folded);
+}
+
+/// Map replay packet instants onto a nondecreasing arm-relative clock.
+///
+/// Offline acquisition occurs before the replay source runs, so its first
+/// packet is the replay clock's zero. Absolute packet timestamps remain intact
+/// for process ordering, gate windows, pcapng, and correlation.
+#[derive(Default)]
+struct ReplayClock {
+    first: Option<i64>,
+    elapsed: i64,
+}
+
+impl ReplayClock {
+    fn advance(&mut self, packet_at: Timestamp) -> Timestamp {
+        let first = *self.first.get_or_insert(packet_at.as_nanos());
+        let delta = (i128::from(packet_at.as_nanos()) - i128::from(first))
+            .clamp(0, i128::from(i64::MAX)) as i64;
+        self.elapsed = self.elapsed.max(delta);
+        Timestamp::from_nanos(ARMED_AT.as_nanos().saturating_add(self.elapsed))
+    }
 }
 
 /// A message on the live driver's merged channel.
@@ -841,14 +872,17 @@ fn capture_live(
                     acquired_at = Some(event_at);
                 }
             }
-            // No event arrived; advance the session clock so a tick-based
-            // acquisition timeout or duration bound can still fire.
-            Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             // The watcher is gone; no target can now be acquired.
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 session.on_process_watcher_lost();
                 break;
             }
+        }
+        // A busy watcher can keep this loop from timing out. Apply the same
+        // monotonic deadline after both process events and idle wakeups.
+        if session.state() != SessionState::Capturing {
+            advance_live_deadline(&mut session, started);
         }
     }
 
@@ -1074,9 +1108,8 @@ fn drive_live(
         // arrivals would miss the transition it exists to report.
         narration.poll(emitter);
         match rx.recv_timeout(tick) {
-            Ok(DriverMsg::Packet(len, ts)) => {
+            Ok(DriverMsg::Packet(len, _ts)) => {
                 session.on_packet(len);
-                session.on_tick(ts);
             }
             Ok(DriverMsg::Proc(event)) => {
                 // A process event carries its own capture instant. If applying it
@@ -1095,12 +1128,14 @@ fn drive_live(
                 }
             }
             Ok(DriverMsg::WatcherLost) => session.on_process_watcher_lost(),
-            // Nothing arrived. Advance the clock so a duration bound can fire.
-            Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             // Both forwarders ended: the pipeline is done and the watcher is
             // gone. Nothing more can arrive.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        // A busy queue may never time out. Tick after every kind of message,
+        // using the same monotonic clock as a silent capture.
+        advance_live_deadline(session, started);
         let progress_happened = emitter.progress_written() != progress_before;
         if progress_happened {
             // A real progress line (a stage match/exit, a filter-narrowing
@@ -1328,6 +1363,8 @@ fn build_live_snapshot(
         out_of_window_discarded: gate_handle.out_of_window_discarded(),
         scope_discarded: gate_handle.scope_discarded(),
         scope_unresolved_discarded: gate_handle.scope_unresolved_discarded(),
+        direction_discarded: gate_handle.direction_discarded(),
+        direction_unknown_discarded: gate_handle.direction_unknown_discarded(),
         buffer_dropped: live.buffer_dropped(),
         sink_dropped: live.sink_dropped(),
         holder_tally: live.holder_tally_snapshot(),
@@ -1350,13 +1387,23 @@ fn capture_progress_event(snapshot: &live_status::LiveStatusSnapshot) -> Event {
         sink_dropped: snapshot.sink_dropped,
         scope_discarded: snapshot.scope_discarded,
         scope_unresolved_discarded: snapshot.scope_unresolved_discarded,
+        direction_discarded: snapshot.direction_discarded,
+        direction_unknown_discarded: snapshot.direction_unknown_discarded,
     }
 }
 
 /// Real elapsed time as a session [`Timestamp`], measured from the arm instant.
-#[cfg(all(feature = "etw", windows))]
+#[cfg(any(test, all(feature = "etw", windows)))]
 fn elapsed_ts(started: std::time::Instant) -> Timestamp {
-    Timestamp::from_nanos(ARMED_AT.as_nanos() + started.elapsed().as_nanos() as i64)
+    let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
+    Timestamp::from_nanos(ARMED_AT.as_nanos().saturating_add(elapsed))
+}
+
+#[cfg(any(test, all(feature = "etw", windows)))]
+fn advance_live_deadline(session: &mut CaptureSession, started: std::time::Instant) {
+    if is_active(session) {
+        session.on_tick(elapsed_ts(started));
+    }
 }
 
 #[cfg(all(feature = "etw", windows))]
@@ -1594,13 +1641,23 @@ fn build_summary(
     // summary match the produced file. On the target-never-acquired path there is
     // no gate (the pipeline never started), and the session's own counters, which
     // are zero there, are used instead.
-    let (retained, watching, out_of_window, out_of_scope, scope_unresolved) = match gate {
+    let (
+        retained,
+        watching,
+        out_of_window,
+        out_of_scope,
+        scope_unresolved,
+        direction_discarded,
+        direction_unknown_discarded,
+    ) = match gate {
         Some(g) => (
             g.admitted(),
             g.watch_discarded(),
             g.out_of_window_discarded(),
             g.scope_discarded(),
             g.scope_unresolved_discarded(),
+            g.direction_discarded(),
+            g.direction_unknown_discarded(),
         ),
         None => {
             let s = session.stats();
@@ -1608,6 +1665,8 @@ fn build_summary(
                 s.retained,
                 s.watching_discarded,
                 s.discarded_out_of_window,
+                0,
+                0,
                 0,
                 0,
             )
@@ -1636,21 +1695,92 @@ fn build_summary(
         sink_dropped: stats.sink_dropped,
         scope_discarded: out_of_scope,
         scope_unresolved_discarded: scope_unresolved,
+        direction_discarded,
+        direction_unknown_discarded,
         written_by_image,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        advance_live_deadline, final_exit, process_terminal_state, PlatformDispatchGate,
+        ReplayClock,
+    };
     #[cfg(all(feature = "etw", windows))]
     use super::{drain_queued_process_evidence, forward_process_events, DriverMsg};
-    use super::{final_exit, process_terminal_state, PlatformDispatchGate};
     #[cfg(all(feature = "etw", windows))]
     use fragcap::deep_capture::CaptureProcessEvidence;
     #[cfg(all(feature = "etw", windows))]
-    use fragcap::{ProcessEvent, Timestamp};
-    use fragcap::{StageId, StopReason};
+    use fragcap::ProcessEvent;
+    use fragcap::{StageId, StopReason, Timestamp};
     use std::sync::Arc;
+
+    #[test]
+    fn replay_deadline_clock_is_relative_even_with_epoch_and_reordered_packets() {
+        let mut clock = ReplayClock::default();
+        let epoch = 1_780_000_000_000_000_000i64;
+        assert_eq!(clock.advance(Timestamp::from_nanos(epoch)).as_nanos(), 0);
+        assert_eq!(
+            clock
+                .advance(Timestamp::from_nanos(epoch + 20_000_000_000))
+                .as_nanos(),
+            20_000_000_000
+        );
+        assert_eq!(
+            clock
+                .advance(Timestamp::from_nanos(epoch + 10_000_000_000))
+                .as_nanos(),
+            20_000_000_000,
+            "a reordered packet cannot move the deadline backward"
+        );
+    }
+
+    #[test]
+    fn live_deadline_ticks_cover_busy_sparse_silent_and_pending_acquisition() {
+        let epoch = Timestamp::from_nanos(1_780_000_000_000_000_000);
+        for packet_count in [100, 1, 0] {
+            let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#).unwrap();
+            let mut session = fragcap::CaptureSession::new(
+                profile,
+                fragcap::SessionConfig {
+                    duration: Some(std::time::Duration::from_secs(45)),
+                    ..fragcap::SessionConfig::default()
+                },
+            );
+            session.attach(Timestamp::from_nanos(0));
+            session.on_process_event(fragcap::ProcessEvent::started(42, 1, "game.exe", "", epoch));
+            for _ in 0..packet_count {
+                session.on_packet(64);
+            }
+            advance_live_deadline(
+                &mut session,
+                std::time::Instant::now() - std::time::Duration::from_secs(44),
+            );
+            assert_eq!(session.stop_reason(), None, "{packet_count} packets");
+            advance_live_deadline(
+                &mut session,
+                std::time::Instant::now() - std::time::Duration::from_secs(45),
+            );
+            assert_eq!(session.stop_reason(), Some(StopReason::DurationReached));
+        }
+
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"sample_client.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_contains":"steam.exe"}}]}"#).unwrap();
+        let mut session = fragcap::CaptureSession::new(
+            profile,
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(std::time::Duration::from_secs(60)),
+                ..fragcap::SessionConfig::default()
+            },
+        );
+        session.attach(Timestamp::from_nanos(0));
+        advance_live_deadline(
+            &mut session,
+            std::time::Instant::now() - std::time::Duration::from_secs(60),
+        );
+        assert_eq!(session.stop_reason(), Some(StopReason::AcquisitionTimeout));
+    }
 
     #[cfg(all(feature = "etw", windows))]
     #[test]
@@ -1835,6 +1965,8 @@ mod live_status_display_tests {
             out_of_window_discarded: 0,
             scope_discarded: 0,
             scope_unresolved_discarded: 0,
+            direction_discarded: 0,
+            direction_unknown_discarded: 0,
             buffer_dropped: 0,
             sink_dropped: 0,
             holder_tally: Vec::new(),

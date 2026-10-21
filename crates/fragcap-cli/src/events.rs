@@ -68,6 +68,10 @@ pub enum Event {
         /// Packets excluded on scope grounds that carried no attribution, so it
         /// is not known whether they were the capture's.
         scope_unresolved_discarded: u64,
+        /// Known packets excluded by an explicit direction selection.
+        direction_discarded: u64,
+        /// Packets excluded because their direction was unknown.
+        direction_unknown_discarded: u64,
     },
     /// A streaming consumer left, carrying its per-consumer accounting. Distinct
     /// from the capture-wide `dropped` in `session.complete`.
@@ -385,6 +389,8 @@ pub enum Event {
         sink_dropped: u64,
         scope_discarded: u64,
         scope_unresolved_discarded: u64,
+        direction_discarded: u64,
+        direction_unknown_discarded: u64,
     },
 }
 
@@ -502,6 +508,8 @@ impl Event {
                 discarded_out_of_window,
                 scope_discarded,
                 scope_unresolved_discarded,
+                direction_discarded,
+                direction_unknown_discarded,
             } => {
                 line.push_str(",\"packets\":");
                 line.push_str(&packets.to_string());
@@ -517,6 +525,10 @@ impl Event {
                 line.push_str(&scope_discarded.to_string());
                 line.push_str(",\"scope_unresolved_discarded\":");
                 line.push_str(&scope_unresolved_discarded.to_string());
+                line.push_str(",\"direction_discarded\":");
+                line.push_str(&direction_discarded.to_string());
+                line.push_str(",\"direction_unknown_discarded\":");
+                line.push_str(&direction_unknown_discarded.to_string());
             }
             Event::StreamConsumer {
                 transport,
@@ -1257,6 +1269,8 @@ impl Event {
                 sink_dropped,
                 scope_discarded,
                 scope_unresolved_discarded,
+                direction_discarded,
+                direction_unknown_discarded,
             } => {
                 line.push_str(",\"elapsed_secs\":");
                 line.push_str(&elapsed_secs.to_string());
@@ -1278,6 +1292,10 @@ impl Event {
                 line.push_str(&scope_discarded.to_string());
                 line.push_str(",\"scope_unresolved_discarded\":");
                 line.push_str(&scope_unresolved_discarded.to_string());
+                line.push_str(",\"direction_discarded\":");
+                line.push_str(&direction_discarded.to_string());
+                line.push_str(",\"direction_unknown_discarded\":");
+                line.push_str(&direction_unknown_discarded.to_string());
             }
         }
         line.push('}');
@@ -1401,6 +1419,8 @@ mod tests {
             discarded_out_of_window: 1,
             scope_discarded: 0,
             scope_unresolved_discarded: 0,
+            direction_discarded: 0,
+            direction_unknown_discarded: 0,
         }
         .render(now);
         assert!(complete.contains("\"packets\":10"));
@@ -1707,6 +1727,8 @@ mod tests {
             sink_dropped: 0,
             scope_discarded: 0,
             scope_unresolved_discarded: 0,
+            direction_discarded: 0,
+            direction_unknown_discarded: 0,
         }
         .render(now);
         assert!(progress.contains("\"event\":\"capture.progress\""));

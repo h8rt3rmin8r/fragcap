@@ -675,6 +675,28 @@ fn sink_help_names_every_scheme_and_modifier_the_parser_accepts() {
     );
 }
 
+#[test]
+fn capture_help_describes_shipped_modes_and_retained_bounds() {
+    let help = normalize(&render(&["capture".to_string()]));
+    assert!(
+        help.contains("Live output to configured file, TCP, pipe, FIFO, or Unix sinks"),
+        "{help}"
+    );
+    assert!(help.contains("Rolling window dumped to --out"), "{help}");
+    assert!(
+        help.contains("ring evictions follow session retention"),
+        "{help}"
+    );
+    assert!(help.contains("evictions reduce the final dump"), "{help}");
+    assert!(help.contains("retained packets"), "{help}");
+    assert!(help.contains("retained source bytes"), "{help}");
+    assert!(
+        help.contains("Double commas in a destination name"),
+        "{help}"
+    );
+    assert!(!help.contains("not yet implemented"), "{help}");
+}
+
 /// One `///`-commented block in `cli.rs`: consecutive doc-comment lines
 /// (`///` prefix and up to one leading space stripped), plus the 1-based
 /// source line the block starts on.

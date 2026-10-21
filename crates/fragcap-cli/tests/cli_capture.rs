@@ -98,21 +98,35 @@ fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
     );
 }
 
-// The comma-separated form splits into the role list: the synthesized `target`
-// stage is still in the allowed set, so the capture succeeds and stays scoped. This
-// documents the accepted behavior of dropping the empty-role rejection, matching the
-// `extcap` surface.
 #[test]
-fn run_with_a_comma_separated_role_list_splits_and_scopes() {
+fn bad_role_lists_fail_before_creating_output() {
+    let dir = tempfile::tempdir().unwrap();
+    for (index, raw) in ["", " ", ",", "target,,target", "TARGET"]
+        .into_iter()
+        .enumerate()
+    {
+        let path = dir.path().join(format!("invalid-{index}.fcapng"));
+        let (code, _out, err) = run_offline(&[
+            "--roles".into(),
+            raw.into(),
+            "--out".into(),
+            path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(code, 2, "{raw:?}: {err}");
+        assert!(err.contains("role"), "{raw:?}: {err}");
+        assert!(!path.exists(), "invalid role created output: {raw:?}");
+    }
+}
+
+// Comma splitting is still supported, but every member must exist in the
+// resolved profile. The synthetic raw-process profile declares only `target`.
+#[test]
+fn comma_separated_roles_reject_an_undeclared_member() {
     let (code, _out, err) = run_offline(&["--roles".into(), "target,launcher".into()]);
-    assert_eq!(code, 0, "a comma-separated role list parses: {err}");
+    assert_eq!(code, 2, "an undeclared role is a usage error: {err}");
     assert!(
-        err.contains("roles target,launcher"),
-        "both roles are carried into the scope: {err}"
-    );
-    assert!(
-        err.contains("scope: writing target traffic"),
-        "the run states what it writes: {err}"
+        err.contains("launcher"),
+        "the offending role is named: {err}"
     );
 }
 
@@ -207,6 +221,33 @@ fn jsonl_packet_count(text: &str) -> usize {
     text.lines().filter(|l| l.contains("\"ts\":")).count()
 }
 
+#[test]
+fn direction_filters_every_sink_and_reports_declared_omissions() {
+    for (requested, unwanted) in [("out", "\"dir\":\"in\""), ("in", "\"dir\":\"out\"")] {
+        let (code, err, fcapng, jsonl) =
+            run_offline_to_files(&["--direction".into(), requested.into(), "--silent".into()]);
+        assert_eq!(code, 0, "{requested}: {err}");
+        assert_eq!(jsonl_packet_count(&jsonl), 12, "{requested}");
+        assert_eq!(pcapng_epb_count(&fcapng), 12, "{requested}");
+        assert!(!jsonl.contains(unwanted), "{requested}: {jsonl}");
+        let (code, _out, events) =
+            run_offline(&["--direction".into(), requested.into(), "--json".into()]);
+        assert_eq!(code, 0, "{requested}: {events}");
+        let complete = events
+            .lines()
+            .find(|line| line.contains("\"event\":\"session.complete\""))
+            .unwrap();
+        assert!(
+            complete.contains("\"direction_discarded\":12"),
+            "{requested}: {complete}"
+        );
+        assert!(
+            complete.contains("\"direction_unknown_discarded\":0"),
+            "{requested}: {complete}"
+        );
+    }
+}
+
 /// The number of Enhanced Packet Blocks in a pcapng stream, by walking the
 /// length-prefixed block structure and counting the EPB block type (0x00000006).
 /// Robust against block contents, so it counts exactly the packet records on disk.
@@ -227,14 +268,118 @@ fn pcapng_epb_count(bytes: &[u8]) -> usize {
     epbs
 }
 
+fn pcapng_lengths(bytes: &[u8]) -> Vec<(u32, u32)> {
+    let mut i = 0usize;
+    let mut lengths = Vec::new();
+    while i + 12 <= bytes.len() {
+        let kind = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        let block_len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+        assert!(block_len >= 12 && i + block_len <= bytes.len());
+        if kind == 6 {
+            lengths.push((
+                u32::from_le_bytes(bytes[i + 20..i + 24].try_into().unwrap()),
+                u32::from_le_bytes(bytes[i + 24..i + 28].try_into().unwrap()),
+            ));
+        }
+        i += block_len;
+    }
+    assert_eq!(i, bytes.len());
+    lengths
+}
+
 #[test]
-fn each_bound_stops_for_its_named_reason() {
-    // Duration is not a packet or byte count, so it keeps the stop-reason
-    // assertion; the hard packet and byte bounds are asserted by produced count
-    // in the two tests below.
-    let (code, _out, err) = run_offline(&["--duration".into(), "10s".into()]);
+fn metadata_only_applies_to_primary_explicit_and_ring_pcapng() {
+    let marker = [0xa5u8; 8];
+    let (code, err, baseline, _) = run_offline_to_files(&[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(baseline.windows(marker.len()).any(|part| part == marker));
+    let dir = tempfile::tempdir().unwrap();
+    let primary = dir.path().join("primary.fcapng");
+    let explicit = dir.path().join("explicit.fcapng");
+    let (code, _, err) = run_offline(&[
+        "--no-payload".into(),
+        "--out".into(),
+        primary.to_string_lossy().into_owned(),
+        "--sink".into(),
+        format!("file:{},payload=false", explicit.to_string_lossy()),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let primary = fs::read(primary).unwrap();
+    let explicit = fs::read(explicit).unwrap();
+    assert!(is_valid_pcapng(&primary));
+    assert!(!primary.windows(marker.len()).any(|part| part == marker));
+    assert!(!explicit.windows(marker.len()).any(|part| part == marker));
+    assert_eq!(pcapng_lengths(&primary), pcapng_lengths(&explicit));
+    assert_eq!(pcapng_lengths(&primary).len(), 24);
+    assert!(pcapng_lengths(&primary)
+        .iter()
+        .all(|(captured, original)| captured < original));
+
+    let override_path = dir.path().join("override.fcapng");
+    let (code, _, err) = run_offline(&[
+        "--no-payload".into(),
+        "--sink".into(),
+        format!("file:{},payload=true", override_path.to_string_lossy()),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(pcapng_lengths(&fs::read(override_path).unwrap())
+        .iter()
+        .all(|(captured, original)| captured == original));
+
+    let ring = dir.path().join("ring.fcapng");
+    let (code, _, err) = run_offline(&[
+        "--no-payload".into(),
+        "--mode".into(),
+        "ring".into(),
+        "--ring".into(),
+        "1mb".into(),
+        "--out".into(),
+        ring.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        pcapng_lengths(&fs::read(ring).unwrap()),
+        pcapng_lengths(&primary)
+    );
+    let ring = fs::read(dir.path().join("ring.fcapng")).unwrap();
+    assert!(!ring.windows(marker.len()).any(|part| part == marker));
+}
+
+#[test]
+fn comma_in_sink_destination_creates_the_named_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("round,one.fcapng");
+    let spec = format!(
+        "file:{},payload=false",
+        path.to_string_lossy().replace(',', ",,")
+    );
+    let (code, _, err) = run_offline(&["--sink".into(), spec]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(pcapng_lengths(&fs::read(path).unwrap()).len(), 24);
+    let path = dir.path().join("Capture, QA.jsonl");
+    let spec = format!("jsonl:{}", path.to_string_lossy().replace(',', ",,"));
+    let (code, _, err) = run_offline(&["--sink".into(), spec]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(jsonl_packet_count(&fs::read_to_string(path).unwrap()), 24);
+}
+
+#[test]
+fn a_long_duration_does_not_turn_epoch_packet_time_into_elapsed_time() {
+    // The replayed packets use epoch timestamps. The process script exits after
+    // them, so a 45-second bound cannot be the first stop condition.
+    let (code, _out, err) = run_offline(&["--duration".into(), "45s".into()]);
     assert_eq!(code, 0);
+    assert!(err.contains("terminal-stage-exited"), "{err}");
+    assert!(!err.contains("duration-reached"), "{err}");
+}
+
+#[test]
+fn a_short_replay_duration_bounds_the_written_packet_prefix() {
+    let (code, err, fcapng, jsonl) = run_offline_to_files(&["--duration".into(), "100ms".into()]);
+    assert_eq!(code, 0, "{err}");
     assert!(err.contains("duration-reached"), "{err}");
+    assert_eq!(pcapng_epb_count(&fcapng), jsonl_packet_count(&jsonl));
+    assert_eq!(pcapng_epb_count(&fcapng), 7);
 }
 
 // SC-001, SC-002, FR-006, FR-007. A packet bound produces a file with exactly N
@@ -271,6 +416,25 @@ fn a_packet_bound_produces_an_exactly_bounded_file() {
             .any(|l| l.contains("retained") && l.contains('5')),
         "the summary reports 5 retained, matching the file: {err}"
     );
+    assert!(
+        err.lines()
+            .any(|line| line.contains("packets captured") && line.trim_end().ends_with("24")),
+        "the source still reports all 24 observed packets: {err}"
+    );
+}
+
+#[test]
+fn stream_mode_delivers_the_fixture_to_a_configured_file_sink() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("stream.jsonl");
+    let (code, _, err) = run_offline(&[
+        "--mode".into(),
+        "stream".into(),
+        "--sink".into(),
+        format!("jsonl:{}", output.to_string_lossy()),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(jsonl_packet_count(&fs::read_to_string(output).unwrap()), 24);
 }
 
 // Review of PR #26 (Codex P2). A zero packet bound produces an empty but
@@ -404,6 +568,32 @@ fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
     assert!(
         !evicted_line.contains("0 packet(s)"),
         "a window smaller than the capture evicts at least one packet: {evicted_line}"
+    );
+}
+
+#[test]
+fn ring_evictions_are_separate_from_session_retention() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("single.fcapng");
+    let (code, _, err) = run_offline(&[
+        "--mode".into(),
+        "ring".into(),
+        "--ring".into(),
+        "1b".into(),
+        "--out".into(),
+        output.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(pcapng_epb_count(&fs::read(output).unwrap()), 1);
+    assert!(
+        err.lines()
+            .any(|line| line.contains("retained") && line.trim_end().ends_with("24")),
+        "{err}"
+    );
+    assert!(
+        err.lines()
+            .any(|line| line.contains("evicted from the rolling window") && line.contains("23")),
+        "{err}"
     );
 }
 

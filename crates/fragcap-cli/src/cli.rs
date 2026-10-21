@@ -250,9 +250,9 @@ pub enum ScopeArg {
 pub enum ModeArg {
     /// Bounded capture written to a file (implemented).
     File,
-    /// Live streaming to a transport (not yet implemented).
+    /// Live output to configured file, TCP, pipe, FIFO, or Unix sinks.
     Stream,
-    /// Rolling in-memory window (not yet implemented).
+    /// Rolling window dumped to --out; ring evictions follow session retention.
     Ring,
 }
 
@@ -355,7 +355,7 @@ pub struct CaptureArgs {
     /// `file:`), `jsonl:PATH`, `pipe:NAME`, `fifo:PATH`, `unix:PATH`, or
     /// `tcp://HOST:PORT`. Append `,key=value` modifiers: `format=pcapng|jsonl`,
     /// `payload=true|false`, `rotate-size=SIZE`, `rotate-duration=DURATION`,
-    /// `queue=N`, `timeout=DURATION`.
+    /// `queue=N`, `timeout=DURATION`. Double commas in a destination name.
     #[arg(long, value_parser = crate::args::parse_sink)]
     pub sink: Vec<SinkSpec>,
 
@@ -370,11 +370,11 @@ pub struct CaptureArgs {
     #[arg(long, value_parser = parse_duration)]
     pub wait: Option<Duration>,
 
-    /// Stop after this many captured packets.
+    /// Stop after this many retained packets (after scope and direction filtering).
     #[arg(long)]
     pub max_packets: Option<u64>,
 
-    /// Stop after this many captured bytes (integer plus b/kb/mb/gb).
+    /// Stop after this many retained source bytes (integer plus b/kb/mb/gb).
     #[arg(long, value_parser = parse_size)]
     pub max_bytes: Option<u64>,
 
@@ -418,7 +418,7 @@ pub struct CaptureArgs {
     #[arg(long)]
     pub no_payload: bool,
 
-    /// The ring window (not yet implemented).
+    /// Ring dump window (duration or size); evictions reduce the final dump.
     #[arg(long, value_parser = parse_ring)]
     pub ring: Option<RingWindow>,
 
@@ -475,11 +475,11 @@ pub struct DeepCaptureArgs {
     #[arg(long, value_parser = parse_duration, help_heading = "Common options")]
     pub wait: Option<Duration>,
 
-    /// Stop after this many captured packets.
+    /// Stop after this many retained packets.
     #[arg(long, help_heading = "Common options")]
     pub max_packets: Option<u64>,
 
-    /// Stop after this many captured bytes.
+    /// Stop after this many retained source bytes.
     #[arg(long, value_parser = parse_size, help_heading = "Common options")]
     pub max_bytes: Option<u64>,
 
@@ -705,11 +705,11 @@ pub struct CalibrateArgs {
     #[arg(long, value_parser = parse_duration)]
     pub wait: Option<Duration>,
 
-    /// Stop after this many captured packets.
+    /// Stop after this many retained packets.
     #[arg(long)]
     pub max_packets: Option<u64>,
 
-    /// Stop after this many captured bytes.
+    /// Stop after this many retained source bytes.
     #[arg(long, value_parser = parse_size)]
     pub max_bytes: Option<u64>,
 

@@ -56,6 +56,8 @@ pub struct LiveStatusSnapshot {
     pub out_of_window_discarded: u64,
     pub scope_discarded: u64,
     pub scope_unresolved_discarded: u64,
+    pub direction_discarded: u64,
+    pub direction_unknown_discarded: u64,
     pub buffer_dropped: u64,
     pub sink_dropped: u64,
     /// Sorted by count descending then name ascending, matching
@@ -125,6 +127,8 @@ pub fn render_status(
         ("window", snapshot.out_of_window_discarded),
         ("scope", snapshot.scope_discarded),
         ("unresolved", snapshot.scope_unresolved_discarded),
+        ("direction", snapshot.direction_discarded),
+        ("dir unknown", snapshot.direction_unknown_discarded),
         ("buffer", snapshot.buffer_dropped),
         ("sink", snapshot.sink_dropped),
     ]
@@ -213,6 +217,8 @@ mod tests {
             out_of_window_discarded: 0,
             scope_discarded: 0,
             scope_unresolved_discarded: 0,
+            direction_discarded: 0,
+            direction_unknown_discarded: 0,
             buffer_dropped: 0,
             sink_dropped: 0,
             holder_tally: Vec::new(),

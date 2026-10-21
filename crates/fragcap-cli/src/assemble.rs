@@ -196,6 +196,11 @@ impl EffectiveConfig {
             packet_bound: self.max_packets,
             byte_bound: self.max_bytes,
             scope: self.scope,
+            direction: match self.direction {
+                Direction::Both => None,
+                Direction::In => Some(fragcap::core::Direction::Inbound),
+                Direction::Out => Some(fragcap::core::Direction::Outbound),
+            },
             // The role set reaches the write gate here, which is what makes the
             // run's `roles ... (enforced)` line true of what the file contains
             // rather than only of which stages trigger acquisition (issue #184).
@@ -243,6 +248,23 @@ pub fn effective_config_with_target(
         .roles
         .clone()
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
+    if let Some(selected) = roles.as_ref() {
+        if selected.is_empty() {
+            return Err(CliError::usage("--roles needs at least one profile role"));
+        }
+        for role in selected {
+            if role.trim().is_empty() {
+                return Err(CliError::usage(format!(
+                    "--roles contains an empty role (`{role}`); remove empty comma-separated members"
+                )));
+            }
+            if profile.stage(role).is_none() {
+                return Err(CliError::usage(format!(
+                    "--roles value `{role}` is not a role in the selected profile; role names are case-sensitive"
+                )));
+            }
+        }
+    }
     let scope = match args.scope {
         ScopeArg::Target => CaptureScope::Target,
         ScopeArg::All => CaptureScope::All,
@@ -946,7 +968,7 @@ pub fn build_sinks(
     // target: a RingSink retains a rolling window in memory and materializes it
     // to this file at drain, instead of the continuous file sink.
     if let Some(out) = &config.out {
-        let factory = SinkFactory::new(Format::Pcapng, iface_specs.clone());
+        let factory = SinkFactory::new(pcapng_format(config.payload), iface_specs.clone());
         if config.mode == CaptureMode::Ring {
             // Ring mode is validated to carry a window (reject_unsupported); the
             // fallback keeps this total rather than panicking if that ever changes.
@@ -990,7 +1012,7 @@ fn pcapng_or_jsonl(path: &std::path::Path, payload: bool) -> Format {
     if is_jsonl {
         Format::JsonLines(payload_mode(payload))
     } else {
-        Format::Pcapng
+        pcapng_format(payload)
     }
 }
 
@@ -999,6 +1021,14 @@ fn payload_mode(payload: bool) -> PayloadMode {
         PayloadMode::WithPayload
     } else {
         PayloadMode::MetadataOnly
+    }
+}
+
+fn pcapng_format(payload: bool) -> Format {
+    if payload {
+        Format::Pcapng
+    } else {
+        Format::PcapngMetadataOnly
     }
 }
 
@@ -1014,7 +1044,7 @@ fn resolve_format(
 ) -> Result<Format, CliError> {
     let payload = spec.payload.unwrap_or(config.payload);
     match spec.format {
-        Some(SinkFormat::Pcapng) => Ok(Format::Pcapng),
+        Some(SinkFormat::Pcapng) => Ok(pcapng_format(payload)),
         Some(SinkFormat::JsonLines) => Ok(Format::JsonLines(payload_mode(payload))),
         None => match path {
             Some(path) => Ok(pcapng_or_jsonl(path, payload)),
@@ -1104,7 +1134,7 @@ fn build_one_sink(
             no_stream_options(spec)?;
             // The jsonl: scheme fixes the format unless a format= says otherwise.
             let format = match spec.format {
-                Some(SinkFormat::Pcapng) => Format::Pcapng,
+                Some(SinkFormat::Pcapng) => pcapng_format(spec.payload.unwrap_or(config.payload)),
                 _ => Format::JsonLines(payload_mode(spec.payload.unwrap_or(config.payload))),
             };
             let policy = rotation_policy(spec)?;
@@ -1132,7 +1162,7 @@ fn build_one_sink(
             build_pipe_sink(name, spec, config, iface_specs, sinks, stream_reports)?;
         }
         SinkTransport::Fifo(path) => {
-            build_fifo_sink(path, spec, iface_specs, sinks)?;
+            build_fifo_sink(path, spec, config, iface_specs, sinks)?;
         }
         SinkTransport::Unix(path) => {
             no_rotation_options(spec)?;
@@ -1153,6 +1183,7 @@ fn build_one_sink(
 fn build_fifo_sink(
     path: &std::path::Path,
     spec: &SinkSpec,
+    config: &EffectiveConfig,
     iface_specs: &[InterfaceSpec],
     sinks: &mut Vec<Box<dyn Sink>>,
 ) -> Result<(), CliError> {
@@ -1163,7 +1194,10 @@ fn build_fifo_sink(
             "a fifo: sink streams pcapng to an analyzer; format=jsonl does not apply",
         ));
     }
-    let factory = SinkFactory::new(Format::Pcapng, iface_specs.to_vec());
+    let factory = SinkFactory::new(
+        pcapng_format(spec.payload.unwrap_or(config.payload)),
+        iface_specs.to_vec(),
+    );
     let writer = fragcap::open_fifo(path)
         .map_err(|e| CliError::failure(format!("cannot open fifo {}: {e}", path.display())))?;
     let sink = factory
@@ -1472,6 +1506,29 @@ mod tests {
         .expect("the profile parses")
     }
 
+    #[test]
+    fn role_selection_rejects_empty_members_and_unknown_case() {
+        let profile = plain_profile();
+        for raw in ["", " ", ",", "client,,client", "CLIENT"] {
+            let args = run_args(&["--roles", raw]);
+            let error = effective_config(&args, &profile).unwrap_err();
+            assert_eq!(error.exit().code(), 2, "{raw:?}: {error}");
+            assert!(error.to_string().contains("role"), "{raw:?}: {error}");
+        }
+        let valid = effective_config(&run_args(&["--roles", "client"]), &profile).unwrap();
+        assert_eq!(valid.roles, Some(vec!["client".to_string()]));
+    }
+
+    #[test]
+    fn role_selection_uses_the_profiles_custom_vocabulary() {
+        let profile = Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G"},"stage":[{"role":"combat","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#,
+        )
+        .unwrap();
+        let config = effective_config(&run_args(&["--roles", "combat"]), &profile).unwrap();
+        assert_eq!(config.roles, Some(vec!["combat".to_string()]));
+    }
+
     /// A minimal valid profile declaring ring mode in its `[capture]` table.
     fn ring_mode_profile() -> Profile {
         Profile::parse(
@@ -1731,6 +1788,38 @@ mod tests {
         assert_eq!(built.stream_reports.len(), 1);
         assert!(built.stream_reports[0].transport.starts_with("tcp://"));
         finish_all(built);
+    }
+
+    #[test]
+    fn every_pcapng_sink_transport_resolves_the_effective_payload_policy() {
+        let mut config = base_config();
+        config.payload = false;
+        for raw in [
+            "file:out.fcapng",
+            "file:out.fcapng,rotate-size=1mb",
+            "pipe:test,format=pcapng",
+            "tcp://127.0.0.1:0,format=pcapng",
+        ] {
+            let spec = parse_sink(raw).unwrap();
+            assert_eq!(
+                resolve_format(
+                    &spec,
+                    &config,
+                    match &spec.transport {
+                        SinkTransport::File(path) => Some(path.as_path()),
+                        _ => None,
+                    }
+                )
+                .unwrap(),
+                Format::PcapngMetadataOnly,
+                "{raw}"
+            );
+        }
+        let spec = parse_sink("file:out.fcapng,payload=true").unwrap();
+        assert_eq!(
+            resolve_format(&spec, &config, Some(std::path::Path::new("out.fcapng"))).unwrap(),
+            Format::Pcapng
+        );
     }
 
     #[test]

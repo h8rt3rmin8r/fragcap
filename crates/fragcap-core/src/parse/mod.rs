@@ -54,6 +54,52 @@ use ip::FragmentRole as Role;
 
 pub use direction::InterfaceAddrs;
 
+/// Number of captured bytes that can be retained as verified link, network,
+/// and transport headers. Zero means the frame cannot be safely classified;
+/// callers still write a packet block with its original length.
+pub fn metadata_prefix_len(link_type: LinkType, frame: &[u8]) -> usize {
+    let Ok((proto, network_start)) = link::dispatch(link_type, frame) else {
+        return 0;
+    };
+    let Some(network) = frame.get(network_start..) else {
+        return 0;
+    };
+    let Ok(info) = ip::parse(proto, network) else {
+        return 0;
+    };
+    let Some(transport_start) = network_start.checked_add(info.transport_offset) else {
+        return 0;
+    };
+    if matches!(info.fragment, Some((_, Role::Subsequent | Role::Last))) {
+        return transport_start;
+    }
+    let Some(available) = network.get(..info.extent) else {
+        return 0;
+    };
+    let Some(transport) = available.get(info.transport_offset..) else {
+        return 0;
+    };
+    let header_len = match info.proto {
+        transport::IPPROTO_TCP if transport.len() >= 20 => {
+            let len = ((transport[12] >> 4) as usize) * 4;
+            if len < 20 || len > transport.len() {
+                return 0;
+            }
+            len
+        }
+        transport::IPPROTO_UDP if transport.len() >= 8 => {
+            let declared = u16::from_be_bytes([transport[4], transport[5]]) as usize;
+            if declared < 8 {
+                return 0;
+            }
+            8
+        }
+        transport::IPPROTO_TCP | transport::IPPROTO_UDP => return 0,
+        _ => return transport_start,
+    };
+    transport_start.checked_add(header_len).unwrap_or(0)
+}
+
 /// Why a frame produced no flow key.
 ///
 /// Closed rather than `#[non_exhaustive]`, unlike the error enums in
@@ -481,6 +527,59 @@ mod tests {
     const LOCAL_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
     const PEER_V4: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 5);
     const OTHER_V4: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
+
+    #[test]
+    fn metadata_prefix_keeps_only_verified_headers() {
+        let payload = b"SECRET_APPLICATION_BODY";
+        let tcp = f::cat(&[&f::tcp(1234, 443), payload]);
+        let frame = f::ethernet(0x0800, &f::ipv4(f::V4::default(), &tcp));
+        assert_eq!(metadata_prefix_len(LinkType::ETHERNET, &frame), 54);
+        assert!(!frame[..54]
+            .windows(payload.len())
+            .any(|part| part == payload));
+
+        let udp = f::cat(&[&f::udp(1234, 443, (8 + payload.len()) as u16), payload]);
+        let frame = f::ethernet(
+            0x0800,
+            &f::ipv4(
+                f::V4 {
+                    proto: 17,
+                    ..f::V4::default()
+                },
+                &udp,
+            ),
+        );
+        assert_eq!(metadata_prefix_len(LinkType::ETHERNET, &frame), 42);
+
+        let frame = f::ethernet(0x8100, &f::ipv4(f::V4::default(), &tcp));
+        assert_eq!(metadata_prefix_len(LinkType::ETHERNET, &frame), 0);
+        let truncated = f::ethernet(0x0800, &f::ipv4(f::V4::default(), &tcp[..8]));
+        assert_eq!(metadata_prefix_len(LinkType::ETHERNET, &truncated), 0);
+    }
+
+    #[test]
+    fn metadata_prefix_handles_extensions_and_noninitial_fragments() {
+        let payload = b"SECRET_APPLICATION_BODY";
+        let tcp = f::cat(&[&f::tcp(1, 2), payload]);
+        let extended = f::cat(&[&f::extension(6), &tcp]);
+        let frame = f::ipv6(
+            f::V6 {
+                next: 0,
+                ..f::V6::default()
+            },
+            &extended,
+        );
+        assert_eq!(metadata_prefix_len(LinkType::RAW, &frame), 68);
+        let fragment = f::cat(&[&f::fragment_ext(6, 1, false, 7), payload]);
+        let frame = f::ipv6(
+            f::V6 {
+                next: 44,
+                ..f::V6::default()
+            },
+            &fragment,
+        );
+        assert_eq!(metadata_prefix_len(LinkType::RAW, &frame), 48);
+    }
     const ETHERTYPE_IPV4: u16 = 0x0800;
     const ETHERTYPE_IPV6: u16 = 0x86dd;
     const IPPROTO_TCP: u8 = 6;
