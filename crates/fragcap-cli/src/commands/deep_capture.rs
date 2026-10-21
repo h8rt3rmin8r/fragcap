@@ -1104,6 +1104,7 @@ impl deep_capture_api::LaunchLease for LibraryLaunchLease {
     }
 }
 
+#[cfg(windows)]
 fn process_image_name_eq(left: &str, right: &str) -> bool {
     left.to_lowercase() == right.to_lowercase()
 }
