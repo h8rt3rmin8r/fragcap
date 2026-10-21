@@ -760,7 +760,7 @@ fn deep_capture_requires_managed_launch_before_side_effects() {
     ]);
     assert_eq!(code, 2);
     assert!(
-        err.contains("requires --launch"),
+        err.contains("required arguments") && err.contains("--launch"),
         "the refusal names managed launch: {err}"
     );
 }

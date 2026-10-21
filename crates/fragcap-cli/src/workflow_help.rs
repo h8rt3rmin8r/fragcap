@@ -50,10 +50,11 @@ Troubleshooting examples:
 
 Output access:
   For unresolved historical bundle access, use normal Windows permission administration.
-  fragcap deep-capture "My Game" --launch --bundle "C:\Captures\new-session" --output-recipient "<exact user SID>"
+  fragcap deep-capture "My Game" --launch --bundle C:\B --output-recipient SID
 
 Default output belongs to the exact ordinary desktop-session user. Different
 credentials require an explicit bundle and ordinary-recipient authentication.
+Replace SID with the exact intended Windows user SID and C:\B with a new bundle.
 Final recipient access verification is separate from evidence completeness.
 
 Ordinary Deep Capture requires a stored target, a managed cold launch, and
@@ -78,11 +79,18 @@ Wait for an operator-managed warm shutdown:
 After current reachability and requested protocol facts are established:
   fragcap deep-capture "<installed game>" --launch
 
+Structured authorization in PowerShell:
+  Start fragcap with redirected stdin and copy its exact emitted plan identifier
+  into $planId. For the resulting Process object $process, send one LF:
+  $process.StandardInput.Write($planId + [char]10)
+  WriteLine sends CRLF on Windows and is refused as a different plan response.
+
 Use --candidate only with an exact identity printed by the current refusal.
 Launch-case, routing-strategy, proxy-family, and protocol are advanced exact-case
 controls. A request is not compatibility evidence until the target is observed."#;
 
-pub(crate) const DOCTOR_LONG_HELP: &str = r#"Doctor checks Capture and Deep Capture environment readiness independently.
+pub(crate) const DOCTOR_LONG_HELP: &str = r#"Doctor checks whether this process can start live Capture or Deep Capture,
+alongside independent machine prerequisites. Run it elevated for a ready verdict.
 A ready environment does not register a game or establish compatibility.
 
 Next commands:

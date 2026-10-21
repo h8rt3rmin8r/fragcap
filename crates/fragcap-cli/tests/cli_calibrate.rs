@@ -94,6 +94,8 @@ struct EchoAuthorization {
     calls: usize,
 }
 
+struct CrLfAuthorization;
+
 struct RecordingEchoAuthorization {
     plan_ids: Vec<String>,
 }
@@ -154,6 +156,17 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for EchoAuthorization {
         );
         self.calls += 1;
         Ok(format!("{plan_id}\n").into_bytes())
+    }
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for CrLfAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        assert!(exact);
+        Ok(format!("{plan_id}\r\n").into_bytes())
     }
 }
 
@@ -2049,6 +2062,160 @@ fn steam_client_decline_and_invalid_structured_input_preserve_the_target() {
         assert_eq!(target.launch_entries, None);
         assert_eq!(target.fidelity, FidelityTier::Observed);
     }
+}
+
+#[test]
+fn steam_client_setup_reports_completion_then_reaches_fresh_calibration() {
+    let _environment = controlled_environment().lock();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("store with spaces.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let mut authorization = EchoAuthorization { calls: 0 };
+    let args = [
+        "--json",
+        "calibrate",
+        "--id",
+        &id,
+        "--client-executable",
+        "client.exe",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ];
+    let (code, _, events) = run_with_authorization(&args, &mut authorization);
+    assert_eq!(code, 0, "{events}");
+    assert_eq!(authorization.calls, 1);
+    let verdict = final_verdict(&events);
+    assert_eq!(verdict["status"], "setup-complete");
+    assert_eq!(verdict["verdict"], "setup-complete");
+    assert_eq!(verdict["target_id"], stable_id);
+    assert!(verdict["reason"]
+        .as_str()
+        .unwrap()
+        .contains("reachability-not-attempted"));
+    let next = verdict["next_command"].as_str().unwrap();
+    assert!(
+        next.contains(&format!("calibrate --id {stable_id}")),
+        "{next}"
+    );
+    assert!(next.contains("--local-db \""), "{next}");
+    assert!(next.contains("store with spaces.db\""), "{next}");
+    assert!(verdict["workflow_id"].is_null());
+    assert!(verdict["attempted_case"].is_null());
+    assert!(!events.contains("deep_capture.authorization_plan"));
+    let store = Store::open(&local).unwrap();
+    let target = store.target_by_stable_id(stable_id).unwrap().unwrap();
+    assert_eq!(
+        target.launch_entries,
+        Some(resolved_client_launch("client.exe"))
+    );
+    assert!(store.calibration_workflow(1).unwrap().is_none());
+    drop(store);
+
+    let (code, _, followup) = run(&[
+        "--json",
+        "calibrate",
+        "--id",
+        &id,
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--wait",
+        "1s",
+        "--duration",
+        "1s",
+    ]);
+    assert_eq!(code, 0, "{followup}");
+    assert!(
+        followup.contains("deep_capture.authorization_plan"),
+        "{followup}"
+    );
+    assert!(
+        !followup.contains("calibration.steam_client_plan"),
+        "{followup}"
+    );
+    assert_ne!(final_verdict(&followup)["verdict"], "setup-complete");
+    assert!(final_verdict(&followup)["workflow_id"].is_u64());
+}
+
+#[test]
+fn steam_client_setup_human_verdict_names_next_calibration() {
+    let _environment = controlled_environment().lock();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let (code, _, human) = run_with_authorization(
+        &[
+            "calibrate",
+            "--id",
+            &id,
+            "--client-executable",
+            "client.exe",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut EchoAuthorization { calls: 0 },
+    );
+    assert_eq!(code, 0, "{human}");
+    assert!(
+        human.contains("Verdict:") && human.contains("setup-complete"),
+        "{human}"
+    );
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("Target id:") && line.contains(&id)),
+        "{human}"
+    );
+    assert!(
+        human.contains("Next action:") && human.contains("calibrate --id"),
+        "{human}"
+    );
+    assert!(
+        !human.contains("none supported by the current evidence"),
+        "{human}"
+    );
+}
+
+#[test]
+fn steam_client_setup_refuses_exact_plan_with_crlf() {
+    let _environment = controlled_environment().lock();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let stable_id = seed_missing_steam_target(&local);
+    let id = stable_id.to_string();
+    let (code, _, events) = run_with_authorization(
+        &[
+            "--json",
+            "calibrate",
+            "--id",
+            &id,
+            "--client-executable",
+            "client.exe",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+        ],
+        &mut CrLfAuthorization,
+    );
+    assert_eq!(code, 2, "{events}");
+    assert_ne!(final_verdict(&events)["verdict"], "setup-complete");
+    assert_eq!(
+        Store::open(&local)
+            .unwrap()
+            .target_by_stable_id(stable_id)
+            .unwrap()
+            .unwrap()
+            .launch_entries,
+        None
+    );
 }
 
 #[test]

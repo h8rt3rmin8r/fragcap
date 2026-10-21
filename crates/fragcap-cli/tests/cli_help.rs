@@ -225,6 +225,60 @@ fn audited_long_help_preserves_meaning_at_supported_narrow_widths() {
     }
 }
 
+#[test]
+fn deep_capture_help_requires_launch_and_keeps_powershell_examples_copyable() {
+    let mut command = fragcap_cli::command()
+        .find_subcommand("deep-capture")
+        .unwrap()
+        .clone()
+        .term_width(80);
+    let help = command.render_long_help().to_string();
+    let usage = help
+        .lines()
+        .find(|line| line.starts_with("Usage:"))
+        .unwrap();
+    assert!(usage.contains("--launch"), "{help}");
+    let required = help
+        .split("Required inputs")
+        .nth(1)
+        .unwrap()
+        .split("Common options")
+        .next()
+        .unwrap();
+    assert!(required.contains("--launch"), "{help}");
+    assert!(
+        help.contains("only that launch receives proxy settings"),
+        "{help}"
+    );
+    let recipient = help
+        .lines()
+        .find(|line| line.contains("--output-recipient") && line.contains("fragcap deep-capture"))
+        .unwrap_or_else(|| panic!("no complete recipient example: {help}"));
+    assert!(
+        recipient.len() <= 80,
+        "recipient example wraps: {recipient}"
+    );
+    for consequence in ["http archive", "tls secrets", "client certificate"] {
+        assert!(
+            help.to_lowercase().contains(consequence),
+            "missing {consequence}: {help}"
+        );
+    }
+    let (code, _, error) = run(&["deep-capture", "sample_target"]);
+    assert_eq!(code, 2);
+    assert!(error.contains("--launch"), "{error}");
+
+    let calibration = render_with(&["calibrate"], "--help");
+    assert!(
+        calibration.contains("StandardInput.Write($planId + [char]10)"),
+        "{calibration}"
+    );
+    assert!(
+        calibration.contains("exact emitted plan identifier"),
+        "{calibration}"
+    );
+}
+
 /// A page's label for a failure message.
 fn label(page: &[String]) -> String {
     if page.is_empty() {
