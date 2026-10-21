@@ -182,7 +182,7 @@ enforcement.
 | 0.1.92-draft | 2026-10-09 | Codex | S172 reconciles verified v0.10.6 publication after owner merge, exact annotated tag, all four release jobs, normal protected registry approval, six certified public files and ten non-yanked downloaded crate archives. Current markers and the frozen review candidate advance together; historical evidence and independent-review status retain their authority. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.93-draft | 2026-10-19 | Codex | S174 prepares v0.10.7 from accepted S173 and all remaining unreleased changes. Candidate versions, generated evidence, conformance, governed graph digests, chronological changelog and short highlights move together while actual published v0.10.6 remains separately bound. The owner explicitly delegates this release's checked PR integration, immutable tag, normal protected approval and public verification without changing future workflow rules or environment protection. Updates sections 1 and 27.3. |
 | 0.1.94-draft | 2026-10-19 | Codex | S174 reconciles actual v0.10.7 publication from exact accepted source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status retain their meaning. Updates sections 1, 22.7, 25.2 and 27.3. |
-| 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, and 17.2 without changing the published v0.10.7 record. |
+| 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope including extcap, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, 14.5, and 17.2 without changing the published v0.10.7 record. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2171,6 +2171,9 @@ implementation, so the analyzer's dialog and the command line select
 capture identically. The analyzer renders these as a native
 configuration dialog from the declaration, so a full graphical interface
 exists without fragcap containing any graphical code.
+An extcap role selection is checked against the resolved profile using the
+same exact, case-sensitive validation as Capture, before opening its source
+or FIFO; an invalid role is a usage error rather than an empty stream.
 
 Installation places the fragcap binary in the analyzer's extcap
 directory. The `fragcap doctor` command reports whether this has been

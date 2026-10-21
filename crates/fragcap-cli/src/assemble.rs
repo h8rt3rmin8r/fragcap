@@ -248,23 +248,7 @@ pub fn effective_config_with_target(
         .roles
         .clone()
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
-    if let Some(selected) = roles.as_ref() {
-        if selected.is_empty() {
-            return Err(CliError::usage("--roles needs at least one profile role"));
-        }
-        for role in selected {
-            if role.trim().is_empty() {
-                return Err(CliError::usage(format!(
-                    "--roles contains an empty role (`{role}`); remove empty comma-separated members"
-                )));
-            }
-            if profile.stage(role).is_none() {
-                return Err(CliError::usage(format!(
-                    "--roles value `{role}` is not a role in the selected profile; role names are case-sensitive"
-                )));
-            }
-        }
-    }
+    validate_roles(roles.as_deref(), profile)?;
     let scope = match args.scope {
         ScopeArg::Target => CaptureScope::Target,
         ScopeArg::All => CaptureScope::All,
@@ -304,6 +288,30 @@ pub fn effective_config_with_target(
         launch,
         exact_stage_ownership,
     })
+}
+
+/// Apply the same exact role contract before either Capture or extcap opens a
+/// packet source or output destination.
+fn validate_roles(roles: Option<&[String]>, profile: &Profile) -> Result<(), CliError> {
+    let Some(selected) = roles else {
+        return Ok(());
+    };
+    if selected.is_empty() {
+        return Err(CliError::usage("--roles needs at least one profile role"));
+    }
+    for role in selected {
+        if role.trim().is_empty() {
+            return Err(CliError::usage(format!(
+                "--roles contains an empty role (`{role}`); remove empty comma-separated members"
+            )));
+        }
+        if profile.stage(role).is_none() {
+            return Err(CliError::usage(format!(
+                "--roles value `{role}` is not a role in the selected profile; role names are case-sensitive"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Build the managed-launch request from `--launch` and the profile.
@@ -357,20 +365,21 @@ fn build_launch(
 pub fn effective_config_for_extcap(
     args: &crate::cli::ExtcapArgs,
     profile: &Profile,
-) -> EffectiveConfig {
+) -> Result<EffectiveConfig, CliError> {
     let defaults = profile.capture();
     let payload = defaults.payload().unwrap_or(true);
     let roles = args
         .roles
         .clone()
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
+    validate_roles(roles.as_deref(), profile)?;
     let loopback = args.loopback || defaults.loopback().unwrap_or(false);
     let fifo = SinkSpec::for_fifo(
         args.fifo
             .clone()
             .expect("an extcap capture requires --fifo, validated by the command"),
     );
-    EffectiveConfig {
+    Ok(EffectiveConfig {
         mode: CaptureMode::File,
         ring: None,
         out: None,
@@ -391,7 +400,7 @@ pub fn effective_config_for_extcap(
         payload,
         launch: None,
         exact_stage_ownership: false,
-    }
+    })
 }
 
 /// The effective capture mode: the command line over the profile's `[capture]`

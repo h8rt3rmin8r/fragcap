@@ -31,8 +31,8 @@
 
 **Independent Test**: The bidirectional fixture and known payload marker produce exact role errors, selected-direction records, accounting, and payload-free pcapng and JSON Lines artifacts.
 
-- [x] T009 [US2] Add empty, interior-empty, case-mismatch, and custom-role regressions in `crates/fragcap-cli/tests/cli_capture.rs` and `crates/fragcap-cli/src/assemble.rs`.
-- [x] T010 [US2] Validate exact profile roles before source and sink setup in `crates/fragcap-cli/src/assemble.rs`.
+- [x] T009 [US2] Add empty, interior-empty, case-mismatch, custom-role, and extcap preflight regressions in `crates/fragcap-cli/tests/cli_capture.rs`, `crates/fragcap-cli/tests/cli_extcap.rs`, and `crates/fragcap-cli/src/assemble.rs`.
+- [x] T010 [US2] Validate exact profile roles in the shared Capture and extcap configuration path before source and sink setup in `crates/fragcap-cli/src/assemble.rs`.
 - [x] T011 [US2] Add bidirectional direction and conservation regressions in `crates/fragcap/src/session.rs` and `crates/fragcap-cli/tests/cli_capture.rs`.
 - [x] T012 [US2] Apply requested direction in `crates/fragcap/src/session.rs`, and surface separate known-opposite and unknown counts in `crates/fragcap-cli/src/orchestrator.rs`, `crates/fragcap-cli/src/events.rs`, `crates/fragcap-cli/src/output.rs`, and `crates/fragcap-cli/src/live_status/mod.rs`.
 - [x] T013 [US2] Add conservative header-boundary tests in `crates/fragcap-core/src/parse/mod.rs` and pcapng length and marker regressions in `crates/fragcap-sink/src/pcapng/mod.rs`.

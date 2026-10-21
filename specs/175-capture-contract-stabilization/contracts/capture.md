@@ -5,7 +5,7 @@
 | Input | Accepted result |
 | --- | --- |
 | `--duration 45s` | Stop no earlier than 45 seconds of arm-relative elapsed time unless another stop condition wins. Packet timestamps stay absolute. |
-| `--roles target,launcher` | Exact names must be present in the resolved profile. Empty members and unknown case exit 2 before output. |
+| `--roles target,launcher` | Capture and extcap require exact names in the resolved profile. Empty members and unknown case exit 2 before output. |
 | `--direction both` | Existing bidirectional behavior. |
 | `--direction in` or `out` | Admit only the selected known direction; count known opposite and unknown direction omissions separately. |
 | `--no-payload` | Apply metadata-only retention to each sink unless an explicit sink payload modifier overrides it. |

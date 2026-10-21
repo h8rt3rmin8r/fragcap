@@ -299,7 +299,7 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let profile =
         target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?.profile;
 
-    let config = assemble::effective_config_for_extcap(args, &profile);
+    let config = assemble::effective_config_for_extcap(args, &profile)?;
     let components = assemble::components(&args.offline, &config)?;
 
     orchestrator::install_interrupt_handler();

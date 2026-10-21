@@ -43,7 +43,7 @@ An operator can select roles, direction, and payload retention knowing the outpu
 
 **Acceptance Scenarios**:
 
-1. **Given** a role list with empty members or a role absent from the resolved profile, **when** Capture is requested, **then** it exits as invalid input before a source or sink is opened and names the offending value.
+1. **Given** a role list with empty members or a role absent from the resolved profile, **when** Capture or extcap capture is requested, **then** it exits as invalid input before a source or sink is opened and names the offending value.
 2. **Given** `--direction in` or `--direction out`, **when** bidirectional packets arrive, **then** only packets of the selected direction enter retained output and excluded packets are counted as a declared scope decision.
 3. **Given** metadata-only output, **when** a packet with a known application marker arrives, **then** no pcapng or JSON Lines artifact retains that marker, while ordinary payload-enabled output retains it.
 4. **Given** a pcapng metadata-only packet, **when** an unmodified pcapng reader opens the artifact, **then** its captured length and original length truthfully describe retained bytes and observed wire length, with parseable headers retained where they can be identified without ambiguity.
