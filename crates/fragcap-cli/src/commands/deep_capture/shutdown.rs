@@ -215,7 +215,7 @@ pub(super) fn release(
     release_monitored(evidence, budget, Duration::from_secs(60), Some(watch))
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn release_with_grace(
     evidence: &CaptureProcessEvidence,
     budget: Budget,
