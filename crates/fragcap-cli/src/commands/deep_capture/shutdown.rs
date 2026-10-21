@@ -78,6 +78,7 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
     if evidence.events_unretained > 0
         || evidence.unparseable_events > 0
         || evidence.managed_instance_limit_reached
+        || evidence.watcher_ended
         || evidence
             .watcher_report
             .is_none_or(|report| report.lost_anything())
@@ -206,52 +207,65 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
     Ok(owners)
 }
 
-pub(super) fn release(evidence: &CaptureProcessEvidence, budget: Budget) -> ShutdownOutcome {
-    release_with_grace(evidence, budget, Duration::from_secs(60))
+pub(super) fn release(
+    evidence: &mut CaptureProcessEvidence,
+    budget: Budget,
+    watch: &mut crate::orchestrator::ProcessReleaseWatch,
+) -> ShutdownOutcome {
+    release_monitored(evidence, budget, Duration::from_secs(60), Some(watch))
 }
 
+#[cfg(test)]
 fn release_with_grace(
     evidence: &CaptureProcessEvidence,
     budget: Budget,
     requested_grace: Duration,
 ) -> ShutdownOutcome {
+    release_monitored(&mut evidence.clone(), budget, requested_grace, None)
+}
+
+fn release_monitored(
+    evidence: &mut CaptureProcessEvidence,
+    budget: Budget,
+    requested_grace: Duration,
+    mut watch: Option<&mut crate::orchestrator::ProcessReleaseWatch>,
+) -> ShutdownOutcome {
     let mut steps = Vec::new();
-    let mut owners = match select_owners(evidence) {
-        Ok(owners) => owners,
-        Err(reason) => {
-            steps.push(json!({"action":"identity-refusal","reason":reason}));
-            return failed(reason, steps);
-        }
-    };
-    if owners.is_empty() {
-        return ShutdownOutcome {
-            result: CleanupResult {
-                resource: "route-owner".to_string(),
-                status: CleanupStatus::Released,
-                reason: "all observed exact managed route owners exited before release".to_string(),
-            },
-            steps,
-        };
-    }
+    let mut owners: Vec<Owner> = Vec::new();
     let started = Instant::now();
     let ceiling = budget.remaining();
     let grace = requested_grace.min(ceiling);
-    for owner in &mut owners {
-        match owner.identity.exited() {
-            Ok(true) => {
-                steps.push(json!({"action":"exit-verified","pid":owner.identity.pid,"phase":"before-grace"}));
-            }
-            Ok(false) => match owner.identity.request_graceful_close() {
-                Ok(windows) => steps.push(json!({"action":"graceful-request","pid":owner.identity.pid,"windows":windows})),
-                Err(error) => steps.push(json!({"action":"graceful-failed","pid":owner.identity.pid,"reason":error.to_string()})),
-            },
-            Err(error) => {
-                owner.control_refused = true;
-                steps.push(json!({"action":"identity-refusal","pid":owner.identity.pid,"reason":error.to_string()}));
-            }
-        }
-    }
     loop {
+        if let Some(watch) = watch.as_deref_mut() {
+            watch.drain_into(evidence);
+        }
+        let fresh = match select_owners(evidence) {
+            Ok(owners) => owners,
+            Err(reason) => {
+                steps.push(json!({"action":"identity-refusal","reason":reason}));
+                return failed(reason, steps);
+            }
+        };
+        for mut owner in fresh {
+            if owners.iter().any(|known| {
+                known.identity.pid == owner.identity.pid
+                    && known.identity.created == owner.identity.created
+            }) {
+                continue;
+            }
+            match owner.identity.exited() {
+                Ok(true) => steps.push(json!({"action":"exit-verified","pid":owner.identity.pid,"phase":"before-grace"})),
+                Ok(false) => match owner.identity.request_graceful_close() {
+                    Ok(windows) => steps.push(json!({"action":"graceful-request","pid":owner.identity.pid,"windows":windows})),
+                    Err(error) => steps.push(json!({"action":"graceful-failed","pid":owner.identity.pid,"reason":error.to_string()})),
+                },
+                Err(error) => {
+                    owner.control_refused = true;
+                    steps.push(json!({"action":"identity-refusal","pid":owner.identity.pid,"reason":error.to_string()}));
+                }
+            }
+            owners.push(owner);
+        }
         let mut remaining = Vec::new();
         for owner in &owners {
             match owner.identity.exited() {
@@ -264,6 +278,30 @@ fn release_with_grace(
             }
         }
         if remaining.is_empty() {
+            // A graceful-close handler can launch a child after Capture has
+            // stopped. Keep ETW running through this decision, close it only
+            // after known owners exit, then reconcile every queued start/exit.
+            if let Some(watch) = watch.take() {
+                watch.finish_into(evidence);
+                let final_owners = match select_owners(evidence) {
+                    Ok(owners) => owners,
+                    Err(reason) => {
+                        steps.push(json!({"action":"identity-refusal","reason":reason}));
+                        return failed(reason, steps);
+                    }
+                };
+                for owner in final_owners {
+                    if !owner.identity.exited().unwrap_or(false) {
+                        steps.push(
+                            json!({"action":"late-owner-unresolved","pid":owner.identity.pid}),
+                        );
+                        return failed(
+                            format!("route owner pid {} started before watcher closure and remains live", owner.identity.pid),
+                            steps,
+                        );
+                    }
+                }
+            }
             for owner in &owners {
                 steps.push(json!({"action":"exit-verified","pid":owner.identity.pid,"phase":"route-release"}));
             }
@@ -422,7 +460,7 @@ mod tests {
         let mut owned = child();
         let mut evidence = child_evidence(&owned);
         evidence.managed_instances[0].event_at = fragcap::Timestamp::from_nanos(0);
-        let outcome = release(&evidence, Budget::new(Duration::ZERO));
+        let outcome = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
         assert!(owned.0.try_wait().unwrap().is_none());
         assert_eq!(outcome.steps[0]["action"], "identity-refusal");
@@ -543,7 +581,7 @@ mod tests {
             "",
             evidence.launch_at.unwrap(),
         ));
-        let outcome = release(&evidence, Budget::new(Duration::ZERO));
+        let outcome = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
         assert!(owned.0.try_wait().unwrap().is_none());
         assert!(outcome
@@ -578,8 +616,42 @@ mod tests {
             pid: owned.0.id(),
             at: evidence.launch_at.unwrap(),
         });
-        let outcome = release(&evidence, Budget::new(Duration::ZERO));
+        let outcome = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
         assert!(outcome.result.reason.contains("helper.exe"));
+    }
+
+    #[cfg(feature = "etw")]
+    #[test]
+    fn late_helper_during_grace_blocks_route_release() {
+        let mut owned = child();
+        let mut evidence = child_evidence(&owned);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watch = crate::orchestrator::ProcessReleaseWatch::test_receiver(rx);
+        let root = owned.0.id();
+        let at = evidence.launch_at.unwrap();
+        let late_tx = tx.clone();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            late_tx
+                .send(ProcessEvent::started(999_997, root, "helper.exe", "", at))
+                .expect("watch remains alive through release");
+        });
+
+        let outcome = release_monitored(
+            &mut evidence,
+            Budget::new(Duration::from_secs(2)),
+            Duration::from_millis(250),
+            Some(&mut watch),
+        );
+        sender.join().unwrap();
+        drop(tx);
+        assert_eq!(outcome.result.status, CleanupStatus::Failed);
+        assert!(
+            outcome.result.reason.contains("helper.exe"),
+            "{:?}",
+            outcome.steps
+        );
+        assert!(owned.0.try_wait().unwrap().is_none());
     }
 }

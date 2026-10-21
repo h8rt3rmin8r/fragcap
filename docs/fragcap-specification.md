@@ -3241,6 +3241,13 @@ previous failed session does not rewrite that session's failed manifest:
 Doctor reports historical outcome from terminal manifest and cleanup evidence
 separately from present resource-journal readiness.
 
+The managed session's original process watcher remains active after packet Capture
+ends and throughout route-owner release. Shutdown folds late process starts and
+exits, including children launched by a graceful-close handler. After all known
+route-capable processes exit, watcher closure drains the final queued events and
+requires a fresh complete descendant check before claiming release. A live late
+descendant, watcher loss, or missing ownership evidence leaves cleanup partial.
+
 The supported real-target managed paths are an exact owned Steam launch from a
 cold Steam state, a cold direct-executable launch, and an exact cold publisher chain
 whose current facts prove routing reaches its terminal client. A publisher chain

@@ -999,6 +999,7 @@ struct LibraryRuntime {
     diagnostics: Option<deep_capture_api::TerminalDiagnostics>,
     managed_launch_attempted: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
+    process_release_watch: Option<crate::orchestrator::ProcessReleaseWatch>,
     retained_target_packets: Option<u64>,
     flow_summaries: Vec<fragcap::FlowSummary>,
     globally_unretained_flow_observations: u64,
@@ -1209,15 +1210,17 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             })?;
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
-        let (result, process_evidence, interrupted, retained_target_packets) = run_real_capture(
-            &capture_args,
-            prepared,
-            Arc::clone(&registry),
-            &mut self.emitter.borrow_mut(),
-        );
+        let (result, process_evidence, process_release_watch, interrupted, retained_target_packets) =
+            run_real_capture(
+                &capture_args,
+                prepared,
+                Arc::clone(&registry),
+                &mut self.emitter.borrow_mut(),
+            );
         {
             let mut runtime = self.runtime.borrow_mut();
             runtime.process_evidence = Some(process_evidence);
+            runtime.process_release_watch = process_release_watch;
             runtime.retained_target_packets = retained_target_packets;
             runtime.flow_summaries = registry.summaries();
             runtime.globally_unretained_flow_observations = registry.globally_unretained();
@@ -1243,13 +1246,21 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 reason: "no routed managed launch was attempted".to_string(),
             };
         }
-        let evidence = self.runtime.borrow();
-        let outcome = if let Some(process) = evidence.process_evidence.as_ref() {
-            shutdown::release(process, budget)
+        let mut runtime = self.runtime.borrow_mut();
+        let outcome = if let LibraryRuntime {
+            process_evidence: Some(process),
+            process_release_watch: Some(watch),
+            ..
+        } = &mut *runtime
+        {
+            let outcome = shutdown::release(process, budget, watch);
+            watch.finish_into(process);
+            outcome
         } else {
             shutdown::missing_evidence()
         };
-        drop(evidence);
+        runtime.process_release_watch.take();
+        drop(runtime);
         self.route_owner_steps = outcome.steps;
         if outcome.result.status == deep_capture_api::CleanupStatus::Failed {
             self.emitter.borrow_mut().error(&format!(
@@ -3623,15 +3634,20 @@ fn run_real_capture(
 ) -> (
     Result<(), CliError>,
     fragcap::deep_capture::CaptureProcessEvidence,
+    Option<crate::orchestrator::ProcessReleaseWatch>,
     bool,
     Option<u64>,
 ) {
-    let result = capture::run_prepared_with_flow_registry(
+    let mut result = capture::run_prepared_with_flow_registry(
         capture_args,
         emitter,
         prepared,
         Arc::clone(&flow_registry),
     );
+    let process_release_watch = result
+        .as_mut()
+        .ok()
+        .and_then(|outcome| outcome.process_release_watch.take());
     let interrupted = result
         .as_ref()
         .is_ok_and(|outcome| outcome.stop_reason == Some(StopReason::Interrupt));
@@ -3653,6 +3669,7 @@ fn run_real_capture(
     (
         result,
         process_evidence,
+        process_release_watch,
         interrupted,
         retained_target_packets,
     )

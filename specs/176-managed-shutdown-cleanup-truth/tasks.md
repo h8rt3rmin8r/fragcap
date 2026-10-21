@@ -21,6 +21,7 @@
 - [x] T009 [US1] Bind automatic shutdown scope, deadlines, and unsaved-progress warning into the pre-effect plan in `crates/fragcap-cli/src/commands/deep_capture.rs`.
 - [x] T010 [US1] Implement bounded process-bound graceful, force, and verified-exit route release in `crates/fragcap-cli/src/commands/deep_capture/shutdown.rs` with explicit refusal and partial-cleanup outcomes.
 - [x] T011 [US1] Record attempted close, grace, force, refusal, exit, and proxy order in existing lifecycle evidence and controlled tests.
+- [x] T011a [US1] Retain the original ETW watcher through route-owner release, reconcile shutdown-time descendants and the final queued events, and cover a helper started during graceful close.
 - [x] T012 [US2] Cover direct, Steam, publisher, unrelated Steam title, PID reuse, identity mismatch, ancestry loss, no window, force failure, and interruption in controlled Windows and existing session-order tests.
 
 ## Phase 4: Polish and verification

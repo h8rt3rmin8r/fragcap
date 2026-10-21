@@ -90,6 +90,8 @@ pub struct CaptureOutcome {
     pub stop_reason: Option<StopReason>,
     /// Bounded process authority observed by this run.
     pub process_evidence: CaptureProcessEvidence,
+    /// Retained ETW authority for Deep Capture route-owner release.
+    pub process_release_watch: Option<ProcessReleaseWatch>,
     /// Packets retained by the target window, separate from packets merely read.
     pub retained_packets: u64,
 }
@@ -103,8 +105,91 @@ impl CaptureOutcome {
             observed_holder: None,
             stop_reason: None,
             process_evidence: CaptureProcessEvidence::default(),
+            process_release_watch: None,
             retained_packets: 0,
         }
+    }
+}
+
+/// Keeps the capture's ETW session and event receiver alive until the managed
+/// route is released. Ordinary Capture never retains this lease.
+pub struct ProcessReleaseWatch {
+    #[cfg(all(feature = "etw", windows))]
+    watcher: Option<fragcap::EtwWatcher>,
+    #[cfg(all(feature = "etw", windows))]
+    receiver: Receiver<DriverMsg>,
+    #[cfg(all(feature = "etw", windows))]
+    forwarder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProcessReleaseWatch {
+    #[cfg(all(feature = "etw", windows))]
+    fn from_process_receiver(watcher: fragcap::EtwWatcher, rx: Receiver<ProcessEvent>) -> Self {
+        let (tx, receiver) = mpsc::channel();
+        let forwarder = std::thread::spawn(move || forward_process_events(rx, tx));
+        Self {
+            watcher: Some(watcher),
+            receiver,
+            forwarder: Some(forwarder),
+        }
+    }
+
+    #[cfg(all(test, feature = "etw", windows))]
+    pub(crate) fn test_receiver(rx: Receiver<ProcessEvent>) -> Self {
+        let (tx, receiver) = mpsc::channel();
+        let forwarder = std::thread::spawn(move || forward_process_events(rx, tx));
+        Self {
+            watcher: None,
+            receiver,
+            forwarder: Some(forwarder),
+        }
+    }
+
+    pub fn drain_into(&mut self, evidence: &mut CaptureProcessEvidence) {
+        #[cfg(all(feature = "etw", windows))]
+        {
+            while let Ok(message) = self.receiver.try_recv() {
+                match message {
+                    DriverMsg::Proc(event) => {
+                        evidence.observe(&event);
+                    }
+                    DriverMsg::WatcherLost => evidence.watcher_ended = true,
+                    DriverMsg::Packet(_, _) => {}
+                }
+            }
+            if let Some(watcher) = &self.watcher {
+                evidence.unparseable_events = watcher.unparsed_events();
+                evidence.watcher_report = Some(watcher.report());
+                evidence.rundown_ignored = watcher.rundown_ignored();
+            }
+        }
+        #[cfg(not(all(feature = "etw", windows)))]
+        let _ = evidence;
+    }
+
+    /// Stop observation only after every known route-capable descendant has
+    /// exited, then consume queued ETW events before the final release proof.
+    pub fn finish_into(&mut self, evidence: &mut CaptureProcessEvidence) {
+        #[cfg(all(feature = "etw", windows))]
+        {
+            self.drain_into(evidence);
+            if let Some(watcher) = self.watcher.take() {
+                evidence.unparseable_events = watcher.unparsed_events();
+                evidence.rundown_ignored = watcher.rundown_ignored();
+                evidence.watcher_report = Some(watcher.stop());
+            }
+            if let Some(forwarder) = self.forwarder.take() {
+                let _ = forwarder.join();
+            }
+            // WatcherLost is expected after our deliberate stop.
+            while let Ok(message) = self.receiver.try_recv() {
+                if let DriverMsg::Proc(event) = message {
+                    evidence.observe(&event);
+                }
+            }
+        }
+        #[cfg(not(all(feature = "etw", windows)))]
+        let _ = evidence;
     }
 }
 
@@ -455,6 +540,7 @@ fn capture_prerecorded(
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
         process_evidence: process_evidence.clone(),
+        process_release_watch: None,
         retained_packets: summary.retained,
     })
 }
@@ -902,13 +988,24 @@ fn capture_live(
     if session.state() != SessionState::Capturing {
         // No target was acquired. The pipeline has been running from arm, so it
         // is stopped and joined before reporting; its watch-time frames are in
-        // the gate's tallies and surface in the summary. Dropping the watcher
-        // ends the live receiver.
+        // the gate's tallies and surface in the summary. A managed Deep Capture
+        // retains its watcher for route-owner release even without acquisition.
         stop.stop();
-        if let Some(watcher) = components.watcher.take() {
-            process_evidence.unparseable_events = watcher.unparsed_events();
-            process_evidence.watcher_report = Some(watcher.report());
-            process_evidence.rundown_ignored = watcher.rundown_ignored();
+        let mut release_watch = if !config.shutdown_scope.is_empty() {
+            components
+                .watcher
+                .take()
+                .map(|watcher| ProcessReleaseWatch::from_process_receiver(watcher, rx))
+        } else {
+            if let Some(watcher) = components.watcher.take() {
+                process_evidence.unparseable_events = watcher.unparsed_events();
+                process_evidence.watcher_report = Some(watcher.report());
+                process_evidence.rundown_ignored = watcher.rundown_ignored();
+            }
+            None
+        };
+        if let Some(watch) = &mut release_watch {
+            watch.drain_into(process_evidence);
         }
         let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
         emit_stream_reports(&stream_reports, emitter);
@@ -945,6 +1042,7 @@ fn capture_live(
                 Exit::FAILURE
             });
         outcome.process_evidence = process_evidence.clone();
+        outcome.process_release_watch = release_watch;
         return Ok(outcome);
     }
 
@@ -1046,17 +1144,28 @@ fn capture_live(
     // section 8.6 control thread and ends with the pipeline, so there is no
     // separate refresh thread to stop here.
 
-    // Dropping the watcher stops its ETW session, which disconnects the live
-    // receiver and ends the event forwarder. Done before joining so the join
-    // cannot block on a watcher that is still alive.
-    if let Some(watcher) = components.watcher.take() {
-        process_evidence.unparseable_events = watcher.unparsed_events();
-        process_evidence.watcher_report = Some(watcher.report());
-        process_evidence.rundown_ignored = watcher.rundown_ignored();
-    }
     let _ = packet_forward.join();
-    let _ = event_forward.join();
-    drain_queued_process_evidence(&merged_rx, process_evidence);
+    let process_release_watch = if !config.shutdown_scope.is_empty() {
+        components.watcher.take().map(|watcher| {
+            let mut release_watch = ProcessReleaseWatch {
+                watcher: Some(watcher),
+                receiver: merged_rx,
+                forwarder: Some(event_forward),
+            };
+            release_watch.drain_into(process_evidence);
+            release_watch
+        })
+    } else {
+        // Ordinary Capture ends its process watcher with the capture run.
+        if let Some(watcher) = components.watcher.take() {
+            process_evidence.unparseable_events = watcher.unparsed_events();
+            process_evidence.watcher_report = Some(watcher.report());
+            process_evidence.rundown_ignored = watcher.rundown_ignored();
+        }
+        let _ = event_forward.join();
+        drain_queued_process_evidence(&merged_rx, process_evidence);
+        None
+    };
 
     if (fire_interrupt || interrupt.load(Ordering::Relaxed)) && is_active(&session) {
         session.on_interrupt();
@@ -1080,6 +1189,7 @@ fn capture_live(
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
         process_evidence: process_evidence.clone(),
+        process_release_watch,
         retained_packets: summary.retained,
     })
 }
