@@ -198,6 +198,7 @@ pub mod deep_capture;
 /// Managed launch preparation and execution shared by Capture and Deep Capture.
 #[cfg(feature = "targets")]
 pub mod managed_launch;
+pub mod managed_shutdown;
 
 /// Flow attribution.
 pub mod attr {

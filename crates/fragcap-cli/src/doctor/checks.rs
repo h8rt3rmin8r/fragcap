@@ -595,7 +595,9 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                 finding.detail
             );
             let check = match finding.health {
-                super::residue::ResidueHealth::Healthy | super::residue::ResidueHealth::Active => {
+                super::residue::ResidueHealth::Healthy
+                | super::residue::ResidueHealth::HistoricalFailure
+                | super::residue::ResidueHealth::Active => {
                     Check::ok(DEEP_CAPTURE, name, detail)
                 }
                 super::residue::ResidueHealth::Stale
@@ -662,6 +664,10 @@ fn native_residue_diagnosis(
         super::residue::ResidueHealth::Healthy => format!(
             "Completed Deep Capture history is retained for the {} record. This terminal resource state does not determine whether the session still has an active owner. No cleanup is needed, and this record does not block Deep Capture.",
             finding.kind
+        ),
+        super::residue::ResidueHealth::HistoricalFailure => format!(
+            "A prior Deep Capture session ended with failed cleanup for the {} record: {}. The historical failure remains recorded. No exact cleanup action is available from this record, and it does not by itself block a new session.",
+            finding.kind, finding.detail
         ),
         super::residue::ResidueHealth::Active => format!(
             "An active Deep Capture session is proven to own the {} record. Cleanup is not available, and this record does not block Deep Capture.",

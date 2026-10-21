@@ -8,6 +8,15 @@ use fragcap_core::{
     CommandLine, FlowSummary, ProcessEvent, ProcessRecord, Timestamp, WatcherReport,
 };
 use serde_json::{json, Value};
+use std::path::PathBuf;
+
+use crate::managed_shutdown::ProcessIdentity;
+
+#[derive(Clone, Debug)]
+pub struct ManagedProcessInstance {
+    pub event_at: Timestamp,
+    pub identity: ProcessIdentity,
+}
 
 /// Maximum raw process events retained by one capture run.
 pub const PROCESS_EVENT_LIMIT: usize = 65_536;
@@ -45,7 +54,9 @@ pub struct CaptureProcessEvidence {
     pub events: Vec<ProcessEvent>,
     pub events_unretained: u64,
     pub launch_pid: Option<u32>,
+    pub launch_earliest_at: Option<Timestamp>,
     pub launch_at: Option<Timestamp>,
+    pub launch_identity: Option<ProcessIdentity>,
     pub stage_transitions: Vec<StageTransition>,
     pub stage_transitions_unretained: u64,
     pub watcher_report: Option<WatcherReport>,
@@ -54,6 +65,11 @@ pub struct CaptureProcessEvidence {
     pub watcher_ended: bool,
     pub terminal_state: String,
     pub stop_reason: Option<String>,
+    /// Exact authorized Deep Capture images, retained only in memory.
+    pub shutdown_scope: Vec<PathBuf>,
+    /// Query/synchronize process-object receipts captured at start events.
+    pub managed_instances: Vec<ManagedProcessInstance>,
+    pub managed_instance_limit_reached: bool,
 }
 
 impl Default for CaptureProcessEvidence {
@@ -65,7 +81,9 @@ impl Default for CaptureProcessEvidence {
             events: Vec::new(),
             events_unretained: 0,
             launch_pid: None,
+            launch_earliest_at: None,
             launch_at: None,
+            launch_identity: None,
             stage_transitions: Vec::new(),
             stage_transitions_unretained: 0,
             watcher_report: None,
@@ -74,12 +92,42 @@ impl Default for CaptureProcessEvidence {
             watcher_ended: false,
             terminal_state: "unavailable".to_string(),
             stop_reason: None,
+            shutdown_scope: Vec::new(),
+            managed_instances: Vec::new(),
+            managed_instance_limit_reached: false,
         }
     }
 }
 
 impl CaptureProcessEvidence {
     pub fn observe(&mut self, event: &ProcessEvent) -> bool {
+        if let ProcessEvent::Started { pid, image, at, .. } = event {
+            let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+            let declared = self.shutdown_scope.iter().any(|path| {
+                path.file_name().is_some_and(|expected| {
+                    expected.to_string_lossy().to_lowercase() == name.to_lowercase()
+                })
+            });
+            if declared {
+                if self.managed_instances.len() >= 64 {
+                    self.managed_instance_limit_reached = true;
+                } else if let Ok(identity) = ProcessIdentity::observe(*pid) {
+                    let same_path = self.shutdown_scope.iter().any(|path| {
+                        path.to_string_lossy().to_lowercase()
+                            == identity.path.to_string_lossy().to_lowercase()
+                    });
+                    let event_nanos = i128::from(at.nanos_since(Timestamp::from_nanos(0)));
+                    let close_to_event =
+                        (identity.created_unix_nanos() - event_nanos).abs() <= 5_000_000_000;
+                    if same_path && close_to_event {
+                        self.managed_instances.push(ManagedProcessInstance {
+                            event_at: *at,
+                            identity,
+                        });
+                    }
+                }
+            }
+        }
         if self.events.len() < self.event_limit {
             self.events.push(event.clone());
             true

@@ -1,4 +1,21 @@
 <!--
+Sync Impact Report (1.6.0, 2026-10-21)
+- Version change: 1.5.0 -> 1.6.0 (MINOR: P-1 materially expands the exact
+  Deep Capture managed-launch lifecycle technique allowlist)
+- Amended section: P-1. No Covert Target Instrumentation
+- Added rule: a pre-authorized Deep Capture session may request only named
+  query, synchronize, and terminate rights for an exact process it created or
+  a causally proven owned descendant. It must verify identity and exit, prefer
+  a bounded graceful close, and refuse ambiguous ownership. Capture remains
+  passive and memory rights remain prohibited.
+- Reason: issue #498 requests automatic release of exactly owned route owners
+  after observation. The prior allowlist did not name process control.
+- Templates: no changes required; the Constitution Check reads this principle.
+- Runtime guidance: `docs/fragcap-specification.md` section 19.2 and managed
+  route-owner lifecycle updated before S176 specification; `AGENTS.md` updated
+  to describe the scoped exception.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.5.0, 2026-09-21)
 - Version change: 1.4.0 -> 1.5.0 (MINOR: Development Workflow And Quality Gates materially expands the issue-completion policy)
 - Amended section: Development Workflow And Quality Gates
@@ -167,6 +184,18 @@ Capture explicitly: a local inspection proxy, launch-time proxy environment or
 equivalent target-scoped proxy configuration, a local development certificate
 authority lifecycle, explicit user-confirmed trust changes, and proxy-owned TLS
 key-log export for analyzer correlation.
+
+For a managed launch created by that exact Deep Capture session, a pre-effect
+authorization may also name bounded application shutdown at observation end.
+Process control MUST be limited to the session-created process object or a
+descendant whose creation-time ancestry, executable path, account, session,
+and launch receipt prove exact ownership. Each call site MUST request only
+the named query, synchronize, or terminate rights it needs and MUST never
+request memory rights. A graceful request MUST target that verified process;
+force termination MUST be bounded and followed by verified exit. Warm,
+escaped, reused-ID, unrelated, and ambiguous processes MUST NOT be controlled.
+Refusal or failed exit verification leaves route release and cleanup incomplete
+in session evidence. Capture mode does not acquire process-control rights.
 
 Capture mode remains passive. Deep Capture is active by design, but it is not a
 license to interpose invisibly. It MUST be selected explicitly, scoped to the
@@ -460,4 +489,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 1.5.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-09-21
+**Version**: 1.6.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-10-21

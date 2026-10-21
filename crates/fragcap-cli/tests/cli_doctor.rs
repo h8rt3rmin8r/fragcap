@@ -558,3 +558,46 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     assert!(!human.contains("session=s1"));
     assert!(!human.contains("recovery authority"));
 }
+
+#[test]
+fn failed_history_remains_visible_without_inventing_a_current_blocker() {
+    let mut inputs = ready();
+    inputs.deep_capture.native_residue.findings.push(
+        fragcap_cli::doctor::residue::ResourceFinding {
+            session_id: "partial-session".to_string(),
+            bundle: std::path::PathBuf::from("C:\\sessions\\partial-session"),
+            resource_id: "artifact:manifest.json".to_string(),
+            kind: "artifact".to_string(),
+            state: "partial".to_string(),
+            health: fragcap_cli::doctor::residue::ResidueHealth::HistoricalFailure,
+            recoverable: false,
+            ownership_authority: "manifest+cleanup+resource-journal".to_string(),
+            detail: "historical session partial; cleanup failed; resource route-owner failed: Steam still running".to_string(),
+        },
+    );
+    let report = checks::run(&inputs);
+    assert!(report.deep_capture_ready());
+    let json = report.render_json();
+    let record: serde_json::Value = json
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|record: &serde_json::Value| {
+            record["name"] == "native resource partial-session/artifact:manifest.json"
+        })
+        .expect("historical finding");
+    assert_eq!(record["status"], "ok");
+    assert_eq!(record["native_resource"]["state"], "partial");
+    assert_eq!(
+        record["native_resource"]["health"],
+        "historical-cleanup-failed"
+    );
+    assert_eq!(record["native_resource"]["recovery_eligible"], false);
+    assert!(record["detail"].as_str().unwrap().contains("route-owner"));
+    let human = report.render_human();
+    let human_words = human.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(human_words.contains("prior Deep Capture session ended with failed cleanup"));
+    assert!(human_words.contains("route-owner"));
+    assert!(
+        !human_words.contains("Completed Deep Capture history is retained for the artifact record")
+    );
+}

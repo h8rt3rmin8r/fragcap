@@ -959,6 +959,73 @@ pub(crate) fn manifest_cleanup_unfinished(path: &std::path::Path) -> bool {
     !matches!(status, Some("succeeded" | "not-needed"))
 }
 
+#[derive(Debug)]
+pub(crate) struct ManifestCleanupHistory {
+    pub state: String,
+    pub status: String,
+    pub detail: String,
+}
+
+pub(crate) fn manifest_cleanup_history(path: &std::path::Path) -> Option<ManifestCleanupHistory> {
+    let manifest = compatible_manifest_value(path)?;
+    let status = manifest
+        .get("cleanup")?
+        .get("status")?
+        .as_str()?
+        .to_string();
+    let state = manifest
+        .get("state")
+        .and_then(|value| value.as_str())
+        .unwrap_or(if matches!(status.as_str(), "succeeded" | "not-needed") {
+            "complete"
+        } else {
+            "partial"
+        })
+        .to_string();
+    let mut detail = format!("historical session {state}; cleanup {status}");
+    if !matches!(status.as_str(), "succeeded" | "not-needed") {
+        let report = path.parent()?.join("cleanup.json");
+        if let Ok(bytes) = bounded_manifest_read(&report) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(resources) = value.get("resources").and_then(|v| v.as_array()) {
+                    for resource in resources
+                        .iter()
+                        .filter(|resource| {
+                            resource.get("status").and_then(|v| v.as_str()) == Some("failed")
+                        })
+                        .take(8)
+                    {
+                        let name = resource
+                            .get("resource")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let reason = resource
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("reason unavailable");
+                        let name = bounded_history_text(name);
+                        let reason = bounded_history_text(reason);
+                        detail.push_str(&format!("; resource {name} failed: {reason}"));
+                    }
+                }
+            }
+        }
+    }
+    Some(ManifestCleanupHistory {
+        state,
+        status,
+        detail,
+    })
+}
+
+fn bounded_history_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect()
+}
+
 fn compatible_manifest_value(path: &std::path::Path) -> Option<serde_json::Value> {
     let bytes = bounded_manifest_read(path).ok()?;
     let loose: serde_json::Value = serde_json::from_slice(&bytes).ok()?;

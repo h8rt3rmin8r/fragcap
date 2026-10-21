@@ -68,12 +68,45 @@ impl ManagedLaunch {
             Self::Steam(request) => {
                 crate::steam::launch(request)
                     .map_err(|error| LaunchError::Steam(error.to_string()))?;
-                Ok(LaunchReceipt { process_id: None })
+                Ok(LaunchReceipt {
+                    process_id: None,
+                    identity: None,
+                })
             }
             Self::Direct(direct) => direct.execute(),
             Self::Publisher(publisher) => publisher.root.execute(),
             Self::Platform(platform) => platform.root.execute(),
         }
+    }
+}
+
+/// Canonical executable paths that one exact cold Deep Capture plan may own.
+/// The platform client's selected title path is derived from the stored target,
+/// not guessed from a process name observed after launch.
+pub fn shutdown_paths(
+    target: &TargetEntry,
+    launch: &ManagedLaunch,
+) -> Result<Vec<PathBuf>, LaunchConfigError> {
+    match launch {
+        ManagedLaunch::Direct(direct) => Ok(vec![direct.executable().to_path_buf()]),
+        ManagedLaunch::Publisher(publisher) => Ok(publisher
+            .stages()
+            .iter()
+            .map(|stage| stage.executable().to_path_buf())
+            .collect()),
+        ManagedLaunch::Platform(platform) => {
+            let clients: Vec<_> = entry_windows_launch_entries(target)
+                .into_iter()
+                .filter(|entry| entry.role().is_none_or(|role| role == "client"))
+                .collect();
+            let [client] = clients.as_slice() else {
+                return Err(LaunchConfigError::MissingClient);
+            };
+            let root = install_root(target, client.executable())?;
+            let client = resolve_executable(&root, client.executable())?;
+            Ok(vec![platform.root().executable().to_path_buf(), client])
+        }
+        ManagedLaunch::Steam(_) => Err(LaunchConfigError::EnvironmentUnsupported),
     }
 }
 
@@ -343,6 +376,12 @@ impl DirectExecutableLaunch {
 
     fn execute(&self) -> Result<LaunchReceipt, LaunchError> {
         let mut command = Command::new(&self.executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command
             .current_dir(&self.working_directory)
             .args(&self.arguments)
@@ -352,9 +391,11 @@ impl DirectExecutableLaunch {
             source,
         })?;
         let process_id = child.id();
+        let identity = crate::managed_shutdown::ProcessIdentity::observe(process_id).ok();
         drop(child);
         Ok(LaunchReceipt {
             process_id: Some(process_id),
+            identity,
         })
     }
 }
@@ -730,14 +771,19 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 /// Observable result of issuing a managed launch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LaunchReceipt {
     process_id: Option<u32>,
+    identity: Option<crate::managed_shutdown::ProcessIdentity>,
 }
 
 impl LaunchReceipt {
-    pub fn process_id(self) -> Option<u32> {
+    pub fn process_id(&self) -> Option<u32> {
         self.process_id
+    }
+
+    pub fn identity(&self) -> Option<&crate::managed_shutdown::ProcessIdentity> {
+        self.identity.as_ref()
     }
 }
 

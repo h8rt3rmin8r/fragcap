@@ -218,6 +218,11 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
                 .to_string(),
         ),
         ("Launch case:".into(), label("/launch/observed_case")),
+        ("Auto shutdown:".into(), label("/launch/process_control")),
+        (
+            "Unsaved progress:".into(),
+            label("/launch/unsaved_progress"),
+        ),
         ("Routing:".into(), label("/proxy/routing_scope")),
         ("CA trust:".into(), label("/trust/action")),
         (

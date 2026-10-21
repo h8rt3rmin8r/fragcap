@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.95-draft \
+**Version:** 0.1.96-draft \
 **Applies-To:** 0.10.7 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -183,6 +183,7 @@ enforcement.
 | 0.1.93-draft | 2026-10-19 | Codex | S174 prepares v0.10.7 from accepted S173 and all remaining unreleased changes. Candidate versions, generated evidence, conformance, governed graph digests, chronological changelog and short highlights move together while actual published v0.10.6 remains separately bound. The owner explicitly delegates this release's checked PR integration, immutable tag, normal protected approval and public verification without changing future workflow rules or environment protection. Updates sections 1 and 27.3. |
 | 0.1.94-draft | 2026-10-19 | Codex | S174 reconciles actual v0.10.7 publication from exact accepted source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status retain their meaning. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope including extcap, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, 14.5, and 17.2 without changing the published v0.10.7 record. |
+| 0.1.96-draft | 2026-10-21 | Codex | S176 defines pre-authorized exact-owned managed Deep Capture shutdown and preserves failed historical cleanup independently of present readiness under #498 and #499. Constitution 1.6.0 adds only exact process control with named minimal rights. Updates sections 17.2.1 and 19.2 without changing the published v0.10.7 record. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3222,7 +3223,23 @@ Each phase has finite launch, observation, route-owner release, proxy-shutdown, 
 
 Observation duration governs ordinary Capture execution. Capture stop, proxy stop and terminal proxy observation drain consume the one displayed shutdown ceiling from a shared shutdown origin. The drain returns explicit complete or incomplete structured authority and retains any partial evidence. Complete cached terminal evidence remains complete even when collection occurs after the earlier Capture duration; incomplete, failed or over-budget terminal work remains a distinct failure. No hidden grace period or restarted shutdown budget is permitted.
 
-After Capture ends or fails following a managed launch attempt, the proxy and session trust remain active while fragcap checks a query-only process image inventory for the exact declared route-owner set. The active proxy may continue retaining application observations during this interval after packet Capture has ended; missing packet correlation remains unavailable rather than inferred. The owner set includes the Steam root for a cold Steam launch, the direct client for a direct launch, and every declared stage in an ordered publisher chain. Declared and observed image names use the same Unicode-aware lowercase fold as target selection, including the preflight warm-process check. The operator is told to close remaining applications normally. A complete inventory showing all those images absent records route release before the proxy shutdown clock begins. A read failure does not establish absence. If a route owner remains or cannot be checked at the two-minute deadline, the session reports partial cleanup and tells the operator to close the application normally and relaunch outside the ended session before using its networked features. Fragcap does not control or change a target process environment. Abrupt termination of fragcap cannot perform this in-process release sequence, so recovery requires the same normal application exit and fresh launch.
+After Capture ends or fails following a managed launch attempt, the proxy and session trust remain active through the finite route-owner release interval. The active proxy may continue retaining application observations during this interval after packet Capture has ended; missing packet correlation remains unavailable rather than inferred. The intended owner set includes the Steam root for a cold Steam launch, the direct client for a direct launch, and every declared stage in an ordered publisher chain. A failed or unverified release remains partial at the two-minute deadline and names normal application exit and a fresh launch outside the ended session as recovery. Abrupt termination of fragcap cannot perform this in-process release sequence.
+
+For a cold managed Deep Capture launch created by the session, the pre-effect
+authorization names automatic application shutdown, the exact intended owner
+chain, bounded graceful and force intervals, and the possibility of losing
+unsaved progress. At the actual observation end, retained process-object and
+launch-receipt identity supersede image-name inventory for control decisions.
+Only a process with verified creation instant, canonical image path, account,
+session, and causal ancestry from the exact created root may receive a
+process-bound graceful request or minimal-rights termination. An unowned,
+warm, escaped, reused-identifier, or ambiguous process is never controlled.
+The proxy and trust remain live until verified route-owner exit or the finite
+release deadline. Failure or uncertainty records partial cleanup, the exact
+unresolved owner, and normal-exit recovery guidance. Process absence after a
+previous failed session does not rewrite that session's failed manifest:
+Doctor reports historical outcome from terminal manifest and cleanup evidence
+separately from present resource-journal readiness.
 
 The supported real-target managed paths are an exact owned Steam launch from a
 cold Steam state, a cold direct-executable launch, and an exact cold publisher chain
@@ -3690,6 +3707,7 @@ The following techniques are permitted and used.
 | Process enumeration | Startup snapshot | Query-only access rights, no memory rights |
 | Platform protocol handler | Managed launch | Ordinary application launch |
 | Explicit direct child creation | Managed launch | Operator-selected stored executable, explicit argv and working directory, child-only environment, no shell or target inspection |
+| Exact session-owned child shutdown | Deep Capture route release | Pre-authorized bounded graceful request and minimal-rights termination only after process-object identity, launch receipt, account, path, session, creation time, and causal ancestry agree; verified exit is required |
 | Local inspection proxy | Deep Capture | Operator-selected local process, scoped to the target session |
 | Target-scoped proxy configuration | Deep Capture routing | Launch-time environment or equivalent explicit configuration, not silent system-wide interception |
 | Local development certificate authority lifecycle | Deep Capture TLS inspection | User-confirmed trust changes with cleanup and audit trail |

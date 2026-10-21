@@ -788,6 +788,20 @@ impl DeepCaptureSession<'_> {
             let started = self.adapters.clock.monotonic_elapsed();
             let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
             let result = self.adapters.capture.release_route_owners(budget);
+            let steps = self.adapters.capture.take_route_owner_steps();
+            for step in steps {
+                let write = self
+                    .cleanup_lifecycle
+                    .as_mut()
+                    .map(|writer| writer.append("cleanup.route-owner-step", step));
+                if let Some(Err(error)) = write {
+                    self.fail(
+                        Stage::Bundle,
+                        "route-owner-lifecycle-write-failed",
+                        error.to_string(),
+                    );
+                }
+            }
             self.evidence_windows.owner_release_ended_at = Some(self.adapters.clock.wall_now());
             self.record_cleanup(result);
             if self.deadline_expired(started, self.plan.deadlines.route_owner_release) {

@@ -134,7 +134,15 @@ the operating system. Its feature is `socket-table` and deliberately not
 `live`, and folding the two together would make attribution unavailable to
 anyone without an npcap software development kit it never calls.
 
-**Target attribution opens no process handle.** Image names still come from toolhelp enumeration. S173 introduces one documented exception to the historical blanket no-process-handle implementation choice: ordinary output-recipient acquisition may query the exact desktop shell using literal PROCESS_QUERY_LIMITED_INFORMATION and token query/duplicate rights. It validates the exact WTS account/session and actual ordinary token, then closes the source process/token handles. The linter admits only the exact reviewed lines in access/windows/shell.rs and continues rejecting other process opens and every memory-right operation. Constitution P-1 permits explicitly stated query rights; no target memory access or instrumentation is introduced.
+**Target attribution opens no process handle.** Image names still come from toolhelp enumeration. S173 introduces one documented exception to the historical blanket no-process-handle implementation choice: ordinary output-recipient acquisition may query the exact desktop shell using literal PROCESS_QUERY_LIMITED_INFORMATION and token query/duplicate rights. It validates the exact WTS account/session and actual ordinary token, then closes the source process/token handles. The linter admits only exact reviewed process-open call sites and continues rejecting every memory-right operation. Constitution P-1 permits explicitly stated query rights; no target memory access or instrumentation is introduced.
+
+Constitution 1.6.0 adds a separate Deep Capture lifecycle exception for
+session-created managed launches. After one pre-effect authorization naming
+bounded shutdown, only an exact process object or causally proven owned
+descendant may receive a process-bound graceful request or minimal query,
+synchronize, and terminate rights. Creation time, canonical path, account,
+session, launch receipt, and ancestry must all agree. This never applies to
+ordinary Capture, warm or ambiguous processes, or target memory access.
 
 **The section 25.1 claim is now demonstrated rather than asserted.**
 `crates/fragcap/tests/pipeline.rs` reads a fixture, parses every packet, and

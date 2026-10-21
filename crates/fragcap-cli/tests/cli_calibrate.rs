@@ -2921,10 +2921,7 @@ fn missing_routing_runs_reachability_then_observed_protocol() {
     assert_eq!(plan["plan"]["target"]["stable_id"], STABLE_ID);
     assert_eq!(plan["plan"]["target"]["handle"], "sample-target");
     assert_eq!(plan["plan"]["launch"]["observed_case"], "direct-exe-cold");
-    assert_eq!(
-        plan["plan"]["launch"]["process_control"],
-        "managed launch only; no process handle or forced termination"
-    );
+    assert_eq!(plan["plan"]["launch"]["process_control"], "none");
     assert_eq!(
         plan["plan"]["proxy"]["routing_scope"],
         "managed child environment only"

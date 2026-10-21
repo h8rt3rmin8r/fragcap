@@ -134,6 +134,7 @@ pub fn capture(
     let mut process_evidence = CaptureProcessEvidence {
         startup_snapshot: components.startup_snapshot.clone(),
         snapshot_at: components.snapshot_at,
+        shutdown_scope: config.shutdown_scope.clone(),
         ..CaptureProcessEvidence::default()
     };
 
@@ -786,6 +787,8 @@ fn capture_live(
         match request.execute() {
             Ok(receipt) => {
                 process_evidence.launch_pid = receipt.process_id();
+                process_evidence.launch_identity = receipt.identity().cloned();
+                process_evidence.launch_earliest_at = launch_earliest;
                 let launch_latest = wall_timestamp();
                 process_evidence.launch_at = launch_latest;
                 if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
