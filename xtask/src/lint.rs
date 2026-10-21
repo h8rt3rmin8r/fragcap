@@ -372,12 +372,14 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<(
 /// toolhelp enumeration path specifically because it opens no handle against
 /// any target process at all. That removes the thing a reviewer has to check
 /// rather than documenting it, and this list is what keeps it removed: fragcap
-/// target attribution opens no process. S173 separately admits only the exact
-/// query-limited desktop shell token lines checked below.
+/// target attribution opens no process. S173 separately admits the exact
+/// query-limited desktop shell token lines checked below. S176 admits only the
+/// managed Deep Capture adapter's reviewed query and token acquisition calls.
 ///
 /// A slice that genuinely needs a process handle deletes the relevant entry
 /// deliberately and argues for it, which is the point.
 const SHELL_TOKEN_SOURCE: &str = "crates/fragcap/src/deep_capture/access/windows/shell.rs";
+const MANAGED_SHUTDOWN_SOURCE: &str = "crates/fragcap/src/managed_shutdown.rs";
 
 fn allowed_shell_token_call(shown: &str, code: &str) -> bool {
     shown == SHELL_TOKEN_SOURCE && matches!(code.trim(),
@@ -385,6 +387,16 @@ fn allowed_shell_token_call(shown: &str, code: &str) -> bool {
         "let process = unsafe { openprocess(process_query_limited_information, 0, pid) };" |
         "let ok = unsafe { openprocesstoken(process.0, token_query | token_duplicate, &mut token) };"
     )
+}
+
+fn allowed_managed_shutdown_call(shown: &str, code: &str) -> bool {
+    shown == MANAGED_SHUTDOWN_SOURCE
+        && matches!(
+            code.trim(),
+            "getcurrentprocessid, getprocesstimes, openprocess, openprocesstoken,"
+                | "let value = unsafe { openprocess(rights, 0, pid) };"
+                | "if unsafe { openprocesstoken(handle, token_query, &mut token) } == 0 {"
+        )
 }
 
 const FORBIDDEN_CALLS: &[(&str, &str)] = &[
@@ -398,7 +410,7 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     ),
     (
         "openprocess",
-        "opens a handle against a target process; fragcap names processes by query-only enumeration (P-1)",
+        "opens a process handle outside the reviewed exact-rights exceptions (P-1)",
     ),
     (
         "readprocessmemory",
@@ -597,7 +609,10 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
                     // FORBIDDEN_CALLS is therefore written lowercase.
                     let code = line.split("//").next().unwrap_or("").to_ascii_lowercase();
                     for (call, why) in FORBIDDEN_CALLS {
-                        if code.contains(call) && !allowed_shell_token_call(&shown, &code) {
+                        if code.contains(call)
+                            && !allowed_shell_token_call(&shown, &code)
+                            && !allowed_managed_shutdown_call(&shown, &code)
+                        {
                             println!("{}:{}: forbidden-call: {call} {why}", shown, line_no + 1);
                             total += 1;
                         }
@@ -639,6 +654,32 @@ mod tests {
             "OpenProcess(0, 0, pid);",
         ] {
             assert!(!allowed_shell_token_call(SHELL_TOKEN_SOURCE, &line.to_ascii_lowercase()));
+        }
+    }
+
+    #[test]
+    fn managed_shutdown_exception_is_exact_to_the_adapter() {
+        for line in [
+            "GetCurrentProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,",
+            "let value = unsafe { OpenProcess(rights, 0, pid) };",
+            "if unsafe { OpenProcessToken(handle, TOKEN_QUERY, &mut token) } == 0 {",
+        ] {
+            let code = line.to_ascii_lowercase();
+            assert!(allowed_managed_shutdown_call(
+                MANAGED_SHUTDOWN_SOURCE,
+                &code
+            ));
+            assert!(!allowed_managed_shutdown_call(SHELL_TOKEN_SOURCE, &code));
+        }
+        for line in [
+            "let value = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };",
+            "let value = unsafe { OpenProcess(rights, 1, pid) };",
+            "if unsafe { OpenProcessToken(handle, TOKEN_ALL_ACCESS, &mut token) } == 0 {",
+        ] {
+            assert!(!allowed_managed_shutdown_call(
+                MANAGED_SHUTDOWN_SOURCE,
+                &line.to_ascii_lowercase()
+            ));
         }
     }
 

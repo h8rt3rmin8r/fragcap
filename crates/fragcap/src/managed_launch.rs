@@ -64,16 +64,58 @@ impl ManagedLaunch {
 
     /// Issue the exact prepared launch.
     pub fn execute(&self) -> Result<LaunchReceipt, LaunchError> {
+        self.execute_with_shutdown_receipt(false)
+    }
+
+    /// Retain a narrow root process-object receipt only for an authorized
+    /// Deep Capture shutdown scope. Ordinary Capture uses `execute`.
+    pub fn execute_with_shutdown_receipt(
+        &self,
+        retain_shutdown_identity: bool,
+    ) -> Result<LaunchReceipt, LaunchError> {
         match self {
             Self::Steam(request) => {
                 crate::steam::launch(request)
                     .map_err(|error| LaunchError::Steam(error.to_string()))?;
-                Ok(LaunchReceipt { process_id: None })
+                Ok(LaunchReceipt {
+                    process_id: None,
+                    identity: None,
+                })
             }
-            Self::Direct(direct) => direct.execute(),
-            Self::Publisher(publisher) => publisher.root.execute(),
-            Self::Platform(platform) => platform.root.execute(),
+            Self::Direct(direct) => direct.execute(retain_shutdown_identity),
+            Self::Publisher(publisher) => publisher.root.execute(retain_shutdown_identity),
+            Self::Platform(platform) => platform.root.execute(retain_shutdown_identity),
         }
+    }
+}
+
+/// Canonical executable paths that one exact cold Deep Capture plan may own.
+/// The platform client's selected title path is derived from the stored target,
+/// not guessed from a process name observed after launch.
+pub fn shutdown_paths(
+    target: &TargetEntry,
+    launch: &ManagedLaunch,
+) -> Result<Vec<PathBuf>, LaunchConfigError> {
+    match launch {
+        ManagedLaunch::Direct(direct) => Ok(vec![direct.executable().to_path_buf()]),
+        ManagedLaunch::Publisher(publisher) => Ok(publisher
+            .stages()
+            .iter()
+            .map(|stage| stage.executable().to_path_buf())
+            .collect()),
+        ManagedLaunch::Platform(platform) => {
+            let clients: Vec<_> = entry_windows_launch_entries(target)
+                .into_iter()
+                .filter(|entry| entry.role().is_none_or(|role| role == "client"))
+                .collect();
+            let [client] = clients.as_slice() else {
+                return Err(LaunchConfigError::MissingClient);
+            };
+            let root = install_root(target, client.executable())?;
+            let client = resolve_executable(&root, client.executable())?;
+            Ok(vec![platform.root().executable().to_path_buf(), client])
+        }
+        ManagedLaunch::Steam(_) => Err(LaunchConfigError::EnvironmentUnsupported),
     }
 }
 
@@ -224,7 +266,7 @@ impl PlatformClientLaunch {
             arguments,
             environment: BTreeMap::new(),
         };
-        dispatch.execute().map_err(|error| match error {
+        dispatch.execute(false).map_err(|error| match error {
             LaunchError::Direct { executable, source } => {
                 LaunchError::Dispatch { executable, source }
             }
@@ -341,8 +383,14 @@ impl DirectExecutableLaunch {
         &self.environment
     }
 
-    fn execute(&self) -> Result<LaunchReceipt, LaunchError> {
+    fn execute(&self, retain_shutdown_identity: bool) -> Result<LaunchReceipt, LaunchError> {
         let mut command = Command::new(&self.executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command
             .current_dir(&self.working_directory)
             .args(&self.arguments)
@@ -352,9 +400,13 @@ impl DirectExecutableLaunch {
             source,
         })?;
         let process_id = child.id();
+        let identity = retain_shutdown_identity
+            .then(|| crate::managed_shutdown::ProcessIdentity::observe(process_id).ok())
+            .flatten();
         drop(child);
         Ok(LaunchReceipt {
             process_id: Some(process_id),
+            identity,
         })
     }
 }
@@ -730,14 +782,19 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 /// Observable result of issuing a managed launch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LaunchReceipt {
     process_id: Option<u32>,
+    identity: Option<crate::managed_shutdown::ProcessIdentity>,
 }
 
 impl LaunchReceipt {
-    pub fn process_id(self) -> Option<u32> {
+    pub fn process_id(&self) -> Option<u32> {
         self.process_id
+    }
+
+    pub fn identity(&self) -> Option<&crate::managed_shutdown::ProcessIdentity> {
+        self.identity.as_ref()
     }
 }
 
@@ -752,6 +809,38 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned only by managed launch receipt test"]
+    fn receipt_child_waits() {
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_launch_does_not_retain_shutdown_rights() {
+        let executable = std::env::current_exe().unwrap();
+        let directory = executable.parent().unwrap().to_path_buf();
+        let launch = ManagedLaunch::Direct(
+            DirectExecutableLaunch::new(
+                executable,
+                directory,
+                vec!["--ignored".into(), "receipt_child_waits".into()],
+            )
+            .unwrap(),
+        );
+        let ordinary = launch.execute().unwrap();
+        assert!(ordinary.identity().is_none());
+        let ordinary_pid = ordinary.process_id().unwrap();
+        let ordinary_process =
+            crate::managed_shutdown::ProcessIdentity::observe(ordinary_pid).unwrap();
+        ordinary_process.force_close().unwrap();
+        let managed = launch.execute_with_shutdown_receipt(true).unwrap();
+        let identity = managed.identity().expect("Deep Capture root receipt");
+        assert_eq!(managed.process_id(), Some(identity.pid));
+        identity.force_close().unwrap();
+    }
 
     fn target(root: &Path, launch_entries: serde_json::Value) -> TargetEntry {
         TargetEntry {

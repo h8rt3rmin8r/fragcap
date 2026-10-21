@@ -23,6 +23,8 @@ static LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub enum ResidueHealth {
     /// Completed terminal history.
     Healthy,
+    /// Failed terminal history, with no present journal obligation inferred.
+    HistoricalFailure,
     /// A matching generation lease proves the session is live.
     Active,
     /// The owning generation ended with a nonterminal obligation.
@@ -40,6 +42,7 @@ impl ResidueHealth {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
+            Self::HistoricalFailure => "historical-cleanup-failed",
             Self::Active => "active",
             Self::Stale => "stale",
             Self::CleanupFailed => "cleanup-failed",
@@ -699,17 +702,40 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
             .and_then(|name| name.to_str())
             .unwrap_or("unknown");
         let has_journal = journal_bundles.contains(&bundle);
-        let (health, state, detail) = if owner_activity == OwnerActivity::Active {
+        let manifest_history = (name == "manifest.json")
+            .then(|| super::probe::manifest_cleanup_history(&path))
+            .flatten();
+        let (health, state, detail) = if let Some(history) = manifest_history.as_ref() {
+            if matches!(history.status.as_str(), "succeeded" | "not-needed") {
+                (
+                    ResidueHealth::Healthy,
+                    history.state.as_str(),
+                    "completed manifest is retained historical evidence",
+                )
+            } else if has_journal {
+                (
+                    ResidueHealth::HistoricalFailure,
+                    history.state.as_str(),
+                    history.detail.as_str(),
+                )
+            } else {
+                (
+                    ResidueHealth::CleanupFailed,
+                    history.state.as_str(),
+                    history.detail.as_str(),
+                )
+            }
+        } else if name == "manifest.json" {
+            (
+                ResidueHealth::Unknown,
+                "unreadable-history",
+                "manifest terminal cleanup outcome is unavailable",
+            )
+        } else if owner_activity == OwnerActivity::Active {
             (
                 ResidueHealth::Active,
                 "present",
                 "artifact belongs to a generation-proven active session",
-            )
-        } else if name == "manifest.json" && !super::probe::manifest_cleanup_unfinished(&path) {
-            (
-                ResidueHealth::Healthy,
-                "complete",
-                "completed manifest is retained historical evidence",
             )
         } else if matches!(
             owner_activity,
@@ -725,12 +751,6 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                 ResidueHealth::Healthy,
                 "retained",
                 "artifact presence is governed by the session resource journal",
-            )
-        } else if name == "manifest.json" {
-            (
-                ResidueHealth::CleanupFailed,
-                "cleanup-incomplete",
-                "manifest reports incomplete cleanup without a readable resource journal",
             )
         } else {
             (
@@ -753,7 +773,13 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                 state: state.to_string(),
                 health,
                 recoverable: false,
-                ownership_authority: if has_journal {
+                ownership_authority: if name == "manifest.json" && manifest_history.is_some() {
+                    if has_journal {
+                        "manifest+cleanup+resource-journal"
+                    } else {
+                        "manifest+cleanup"
+                    }
+                } else if has_journal {
                     "resource-journal"
                 } else {
                     "manifest-or-path"
@@ -838,11 +864,19 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
 }
 
 fn push_finding(inventory: &mut NativeResidueInventory, finding: ResourceFinding) {
-    let historical = finding.health == ResidueHealth::Healthy;
+    let historical = matches!(
+        finding.health,
+        ResidueHealth::Healthy | ResidueHealth::HistoricalFailure
+    );
     let population = inventory
         .findings
         .iter()
-        .filter(|item| (item.health == ResidueHealth::Healthy) == historical)
+        .filter(|item| {
+            matches!(
+                item.health,
+                ResidueHealth::Healthy | ResidueHealth::HistoricalFailure
+            ) == historical
+        })
         .count();
     let limit = if historical {
         "history-finding-limit"
@@ -858,7 +892,11 @@ fn push_finding(inventory: &mut NativeResidueInventory, finding: ResourceFinding
     {
         inventory.limitations.push(format!(
             "{limit}: additional {} resource findings omitted",
-            if historical { "healthy" } else { "actionable" }
+            if historical {
+                "historical"
+            } else {
+                "actionable"
+            }
         ));
     }
 }
@@ -1405,6 +1443,39 @@ mod tests {
             finding.resource_id == "artifact:tls-keylog.log"
                 && finding.health == ResidueHealth::Unknown
         }));
+    }
+
+    #[test]
+    fn readable_journal_does_not_erase_failed_manifest_cleanup() {
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("partial-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let mut journal =
+            ResourceJournal::create(&bundle, "partial-session", "plan").expect("journal");
+        journal.finish().expect("finish journal");
+        drop(journal);
+        std::fs::write(
+            bundle.join("manifest.json"),
+            r#"{"state":"partial","cleanup":{"status":"failed","report":"cleanup.json"}}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            bundle.join("cleanup.json"),
+            r#"{"status":"failed","resources":[{"resource":"route-owner","status":"failed","reason":"Steam still running"}]}"#,
+        )
+        .expect("cleanup");
+
+        let observed = inventory(Some(root.path()));
+        let manifest = observed
+            .findings
+            .iter()
+            .find(|finding| finding.resource_id == "artifact:manifest.json")
+            .expect("manifest finding");
+        assert_eq!(manifest.state, "partial");
+        assert_eq!(manifest.health.as_str(), "historical-cleanup-failed");
+        assert!(manifest.detail.contains("route-owner"));
+        assert!(manifest.detail.contains("Steam still running"));
+        assert!(!manifest.recoverable);
     }
 
     #[test]

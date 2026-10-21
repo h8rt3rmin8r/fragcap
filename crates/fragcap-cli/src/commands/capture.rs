@@ -56,6 +56,17 @@ pub(crate) struct PreparedCapture {
 }
 
 impl PreparedCapture {
+    pub(crate) fn prepare_shutdown_scope(
+        &mut self,
+        target: &fragcap::targets::TargetEntry,
+    ) -> Result<(), CliError> {
+        let launch = self.config.launch.as_ref().ok_or_else(|| {
+            CliError::usage("the prepared Deep Capture configuration has no managed launch")
+        })?;
+        self.config.shutdown_scope = fragcap::managed_launch::shutdown_paths(target, launch)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        Ok(())
+    }
     /// Retain exact session infrastructure for required loopback acquisition.
     pub(crate) fn with_proxy_acquisition(
         &mut self,
@@ -72,6 +83,7 @@ impl PreparedCapture {
         json!({
             "managed_launch": managed_launch_authority(self.config.launch.as_ref()),
             "profile": profile_authority(&self.profile),
+            "shutdown_scope": self.config.shutdown_scope.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
         })
     }
 

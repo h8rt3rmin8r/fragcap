@@ -183,6 +183,8 @@ pub struct EffectiveConfig {
     /// the profile declares a Steam platform and app_id (specification 16.4).
     #[allow(dead_code)]
     pub launch: Option<fragcap::managed_launch::ManagedLaunch>,
+    /// Exact pre-authorized Deep Capture images eligible for ownership receipts.
+    pub shutdown_scope: Vec<PathBuf>,
     /// Whether the selected stored target is an exact S111 publisher chain.
     pub exact_stage_ownership: bool,
 }
@@ -286,6 +288,7 @@ pub fn effective_config_with_target(
         loopback,
         payload,
         launch,
+        shutdown_scope: Vec::new(),
         exact_stage_ownership,
     })
 }
@@ -399,6 +402,7 @@ pub fn effective_config_for_extcap(
         loopback,
         payload,
         launch: None,
+        shutdown_scope: Vec::new(),
         exact_stage_ownership: false,
     })
 }
@@ -1453,6 +1457,7 @@ mod tests {
             payload: true,
             exact_stage_ownership: false,
             launch: None,
+            shutdown_scope: Vec::new(),
         }
     }
 
