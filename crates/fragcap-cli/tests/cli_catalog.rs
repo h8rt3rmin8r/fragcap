@@ -73,6 +73,27 @@ fn explicit_unsupported_launch_tier_has_no_store_effect() {
     assert!(!db.exists());
 }
 
+#[cfg(feature = "net")]
+#[test]
+fn live_sources_require_the_tier_they_can_fill_before_store_creation() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = dir.path().join("catalog.db");
+    for (tier, source) in [("engine", "--steam"), ("catalog", "--pcgamingwiki")] {
+        let (code, out, err) = run(&[
+            "catalog",
+            "seed",
+            "--tier",
+            tier,
+            source,
+            "--db",
+            &db.to_string_lossy(),
+        ]);
+        assert_eq!(code, 2, "{tier} {source}: {out} {err}");
+        assert!(err.contains(source), "{err}");
+        assert!(!db.exists(), "mismatched source must not create the store");
+    }
+}
+
 #[test]
 fn repeated_tier_counts_only_one_attempt() {
     let dir = TempDir::new().expect("tempdir");

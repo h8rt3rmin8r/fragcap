@@ -277,6 +277,19 @@ fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError>
             "launch tier has no seeder; launch data accumulates from captures",
         ));
     }
+    #[cfg(feature = "net")]
+    {
+        if args.steam && !requested.contains(&SeedTierArg::Catalog) {
+            return Err(CliError::usage(
+                "--steam fills the catalog tier; include --tier catalog or omit --tier",
+            ));
+        }
+        if args.pcgamingwiki && !requested.contains(&SeedTierArg::Engine) {
+            return Err(CliError::usage(
+                "--pcgamingwiki fills the engine tier; include --tier engine or omit --tier",
+            ));
+        }
+    }
     Ok(requested)
 }
 

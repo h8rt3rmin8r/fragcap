@@ -82,6 +82,7 @@ A user reading targets help can distinguish target registration from local-store
 - Export conflict refusal does not print a partial JSON document, even if output is redirected.
 - Human and structured reasons need equivalent facts, but S178 does not redesign the global `--json` and `--silent` contract in issue #488.
 - All destructive tests use disposable synthetic roots; no owner bundle is collected.
+- Linux may render the same read-only collection preview, but it must not recommend a Windows-only Apply operation.
 
 ## Requirements *(mandatory)*
 
@@ -94,7 +95,7 @@ A user reading targets help can distinguish target registration from local-store
 - **FR-005**: Export MUST reject simultaneous positional and `--id` selectors at argument validation with exit 2 and zero target JSON bytes.
 - **FR-006**: Export MUST preserve one-selector resolution and no-selector export-all behavior.
 - **FR-007**: Show, remove, and export missing-selector messages MUST offer action-specific inspection or retry guidance.
-- **FR-008**: Catalog seed MUST validate explicit tier/source compatibility and named source readability before creating a new destination store.
+- **FR-008**: Catalog seed MUST validate explicit tier/source compatibility, including feature-gated live sources, and named source readability before creating a new destination store.
 - **FR-009**: Catalog seed MUST count each distinct tier actually filled once; skipped and unsupported tiers MUST never increment that count.
 - **FR-010**: Explicitly requested unsupported tiers MUST return a non-success result that names the unsupported choice; default multi-tier selection MAY skip unsupported tiers with an explicit reason.
 - **FR-011**: Catalog seed help and runtime guidance MUST name only available flags and MUST distinguish accepted bare JSON arrays from catalog export envelopes for document-backed tiers.

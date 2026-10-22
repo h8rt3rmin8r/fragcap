@@ -168,8 +168,16 @@ fn exact_retained_preview_offers_only_its_authorized_collection() {
 
     let (code, human, err) = run(&["bundle", "collect", "--bundle", &path, "--include-retained"]);
     assert_eq!(code, 0, "{err}");
-    assert!(human.contains("Apply reviewed proposal:"), "{human}");
-    assert!(human.contains("--include-retained"), "{human}");
+    if cfg!(windows) {
+        assert!(human.contains("Apply reviewed proposal:"), "{human}");
+        assert!(human.contains("--include-retained"), "{human}");
+    } else {
+        assert!(!human.contains("Apply reviewed proposal:"), "{human}");
+        assert!(
+            human.contains("Collection applies only on Windows"),
+            "{human}"
+        );
+    }
     let (code, json, err) = run(&[
         "--json",
         "bundle",
@@ -183,6 +191,10 @@ fn exact_retained_preview_offers_only_its_authorized_collection() {
     assert_eq!(preview["complete"], true, "{json}");
     assert_eq!(preview["eligible_sessions"], 1, "{json}");
     let id = preview["proposal_id"].as_str().unwrap();
+    if !cfg!(windows) {
+        assert!(bundle.join("capture.fcapng").exists());
+        return;
+    }
     assert!(human.contains(id), "{human}");
     let (code, applied, err) = run(&[
         "--json",

@@ -134,7 +134,8 @@ fn require_existing_bundle(bundle: &std::path::Path) -> Result<(), CliError> {
 }
 
 fn actionable_collection_preview(value: &serde_json::Value) -> bool {
-    value["mode"] == "preview"
+    cfg!(windows)
+        && value["mode"] == "preview"
         && value["complete"] == true
         && value["eligible_sessions"]
             .as_u64()
@@ -351,7 +352,9 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
                     out.flush()
                         .map_err(|error| CliError::failure(error.to_string()))?;
                 } else {
-                    let next = if result["unresolved_sessions"].as_u64().unwrap_or(0) > 0
+                    let next = if !cfg!(windows) {
+                        "Collection applies only on Windows; inspect this preview on a supported Windows host"
+                    } else if result["unresolved_sessions"].as_u64().unwrap_or(0) > 0
                         || result["complete"] == false
                     {
                         "Check the bundle path and unresolved authority, then rerun this read-only preview"
@@ -499,7 +502,7 @@ mod tests {
             "eligible_sessions":1,
             "unresolved_sessions":0
         });
-        assert!(actionable_collection_preview(&complete));
+        assert_eq!(actionable_collection_preview(&complete), cfg!(windows));
         for changed in [
             serde_json::json!({"mode":"preview","complete":false,"eligible_sessions":1,"unresolved_sessions":1}),
             serde_json::json!({"mode":"preview","complete":true,"eligible_sessions":0,"unresolved_sessions":0}),
