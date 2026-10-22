@@ -168,6 +168,11 @@ fn the_json_event_sequence_matches_the_golden() {
     assert_eq!(code, 0);
     let normalized = common::normalize_timestamps(&err);
     common::assert_golden("capture-events.ndjson", normalized.as_bytes());
+
+    let (code, out, err) = run_offline(&["--json".into(), "--silent".into()]);
+    assert_eq!(code, 0);
+    assert!(out.is_empty(), "capture results stay on stderr");
+    assert_eq!(common::normalize_timestamps(&err), normalized);
 }
 
 #[test]

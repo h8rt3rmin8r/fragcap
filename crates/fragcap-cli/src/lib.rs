@@ -61,6 +61,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use clap::Parser;
 
 use cli::{Cli, Command};
+use commands::result::ResultMode;
 use commands::stub::Stub;
 use emit::{Emitter, Format, Verbosity};
 
@@ -215,13 +216,17 @@ where
     };
     let verbosity = Verbosity::from_flags(cli.quiet, cli.silent);
     let json = cli.json;
+    let mode = ResultMode {
+        json,
+        silent: cli.silent,
+    };
 
     let mut emitter = Emitter::new(err, format, verbosity);
     let result = match cli.command {
-        Some(command) => dispatch(command, json, authorization, out, &mut emitter),
+        Some(command) => dispatch(command, mode, authorization, out, &mut emitter),
         // A bare invocation lists registered targets and points at `--help`
         // (section 17.4). The footer distinguishes it from an explicit `targets`.
-        None => commands::targets::list_default(out, true, &mut emitter),
+        None => commands::targets::list_default_mode(out, true, &mut emitter, mode),
     };
 
     match result {
@@ -245,7 +250,11 @@ where
 /// implementation. An operator's explicit `fragcap extcap ...` is unaffected.
 fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
     // args[0] is the program name; the first real token decides.
-    let first = args.get(1).map(|s| s.to_string_lossy());
+    let first = args
+        .iter()
+        .skip(1)
+        .map(|s| s.to_string_lossy())
+        .find(|s| !matches!(s.as_ref(), "--json" | "--quiet" | "--silent"));
     let is_subcommand = matches!(
         first.as_deref(),
         Some(
@@ -286,7 +295,7 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
 /// Dispatch a parsed command to its implementation.
 fn dispatch(
     command: Command,
-    json: bool,
+    mode: ResultMode,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     out: &mut dyn Write,
     emitter: &mut Emitter,
@@ -295,18 +304,18 @@ fn dispatch(
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::DeepCapture(args) => commands::deep_capture::run(&args, authorization, emitter),
         Command::Calibrate(args) => commands::calibrate::run(&args, authorization, emitter),
-        Command::Bundle(args) => commands::bundle::run(&args, json, out),
+        Command::Bundle(args) => commands::bundle::run_mode(&args, out, mode),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),
-        Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),
-        Command::FreshStart(args) => commands::fresh_start::run(&args, json, out),
+        Command::Doctor(args) => commands::doctor::run(&args, mode.json, out, emitter),
+        Command::FreshStart(args) => commands::fresh_start::run(&args, mode.json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
-        Command::Steam(args) => commands::steam::run(&args, json, out, emitter),
-        Command::Schema(args) => commands::schema::run(&args, out),
-        Command::Technologies(args) => commands::technologies::run(&args, out),
-        Command::Targets(args) => commands::targets::run(&args, out, emitter),
-        Command::Catalog(args) => commands::catalog::run(&args, out),
-        Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
+        Command::Steam(args) => commands::steam::run(&args, mode.json, out, emitter),
+        Command::Schema(args) => commands::schema::run_mode(&args, out, mode),
+        Command::Technologies(args) => commands::technologies::run_mode(&args, out, mode),
+        Command::Targets(args) => commands::targets::run_mode(&args, out, emitter, mode),
+        Command::Catalog(args) => commands::catalog::run_mode(&args, out, mode),
+        Command::Extcap(args) => commands::extcap::run_mode(&args, out, emitter, mode),
     }
 }
 

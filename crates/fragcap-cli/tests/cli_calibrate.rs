@@ -3023,6 +3023,23 @@ fn guidance_obeys_human_suppression_and_json_remains_machine_readable() {
     assert!(event["next_command"].is_string());
     assert_next_command_selects_store(&events, "deep-capture", STABLE_ID, &local);
 
+    let (code, out, silent_events) = run(&[
+        "--json",
+        "--silent",
+        "calibrate",
+        "--id",
+        "75000",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "events:\n{silent_events}");
+    assert!(out.is_empty());
+    let silent_event: serde_json::Value =
+        serde_json::from_str(silent_events.lines().next().unwrap()).unwrap();
+    assert_eq!(silent_event["event"], "calibration.guidance");
+    assert!(silent_event["next_command"].is_string());
+
     let (code, out, human) = run(&[
         "calibrate",
         "--id",

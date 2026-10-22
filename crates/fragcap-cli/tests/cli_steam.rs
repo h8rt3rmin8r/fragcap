@@ -113,4 +113,21 @@ fn steam_list_json_exit_code_matches_human_mode() {
         human_code, json_code,
         "steam list's exit code must not depend on --json"
     );
+
+    let (silent_code, silent_out, silent_err) = run(&["--silent", "steam", "list"]);
+    assert_eq!(human_code, silent_code);
+    assert!(silent_out.is_empty(), "{silent_out}");
+    if silent_code != 0 {
+        assert!(!silent_err.is_empty());
+    }
+
+    let (silent_json_code, silent_json_out, silent_json_err) =
+        run(&["--json", "--silent", "steam", "list"]);
+    assert_eq!(json_code, silent_json_code);
+    for line in silent_json_out.lines() {
+        let _: serde_json::Value = serde_json::from_str(line).expect("Steam JSON line");
+    }
+    if silent_json_code != 0 {
+        assert!(!silent_json_err.is_empty());
+    }
 }

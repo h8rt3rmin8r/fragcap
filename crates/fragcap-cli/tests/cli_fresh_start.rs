@@ -81,6 +81,15 @@ fn preview_is_read_only_and_names_exact_roots_and_categories() {
     assert!(rendered.contains("logs"));
     assert!(PathLike::new(&roaming).exists());
     assert!(PathLike::new(&local).exists());
+
+    let (code, silent_json, err) = run(&["--json", "--silent", "fresh-start", "--preview"]);
+    assert_eq!(code, 0, "{err}");
+    let silent_value: serde_json::Value = serde_json::from_str(silent_json.trim()).unwrap();
+    assert_eq!(silent_value["type"], "fresh-start.inventory");
+    assert_eq!(silent_value["inventory_id"], value["inventory_id"]);
+    let (code, silent_human, err) = run(&["--silent", "fresh-start", "--preview"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(silent_human.contains(value["inventory_id"].as_str().unwrap()));
 }
 
 #[test]

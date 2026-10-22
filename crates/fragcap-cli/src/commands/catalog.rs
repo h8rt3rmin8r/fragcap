@@ -20,16 +20,29 @@ use fragcap::targets::{
     export, import, seed_catalog, seed_engine, CorpusGate, FixtureCatalog, FixtureEngineFeed,
     SeedSummary, Store,
 };
+use serde_json::json;
 
 use crate::cli::{CatalogArgs, CatalogCommand, SeedTierArg, TargetsSeedArgs};
+use crate::commands::result::{write_json, ResultMode};
 use crate::exit::{CliError, Exit};
 
 /// Run the `catalog` command, writing results to `out`.
+#[cfg(test)]
 pub fn run(args: &CatalogArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    run_mode(args, out, ResultMode::default())
+}
+
+pub(crate) fn run_mode(
+    args: &CatalogArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     match &args.command {
-        CatalogCommand::Import { seed, db } => import_cmd(seed, &resolve_store(db.as_ref())?, out),
+        CatalogCommand::Import { seed, db } => {
+            import_cmd(seed, &resolve_store(db.as_ref())?, out, mode)
+        }
         CatalogCommand::Export { db } => export_cmd(&resolve_store(db.as_ref())?, out),
-        CatalogCommand::Seed(args) => seed(args, out),
+        CatalogCommand::Seed(args) => seed_mode(args, out, mode),
     }
 }
 
@@ -59,7 +72,12 @@ fn resolve_store(flag: Option<&PathBuf>) -> Result<PathBuf, CliError> {
 
 /// Run `catalog import`: load a JSON seed document into the store, creating it if
 /// needed. A malformed seed leaves no store behind (the import is transactional).
-fn import_cmd(seed: &Path, db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn import_cmd(
+    seed: &Path,
+    db: &Path,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let text = std::fs::read_to_string(seed)
         .map_err(|e| CliError::failure(format!("cannot read seed {}: {e}", seed.display())))?;
 
@@ -68,12 +86,20 @@ fn import_cmd(seed: &Path, db: &Path, out: &mut dyn Write) -> Result<Exit, CliEr
 
     match import(&mut store, &text) {
         Ok(summary) => {
-            let _ = writeln!(
-                out,
-                "imported {} games into {}",
-                summary.imported,
-                db.display()
-            );
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"catalog.import","store":db.display().to_string(),"imported":summary.imported}),
+                )?;
+            } else if mode.human_result() {
+                writeln!(
+                    out,
+                    "imported {} games into {}",
+                    summary.imported,
+                    db.display()
+                )
+                .map_err(|e| CliError::failure(format!("cannot write catalog result: {e}")))?;
+            }
             Ok(Exit::SUCCESS)
         }
         Err(e) => {
@@ -98,7 +124,8 @@ fn export_cmd(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
     }
     let store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
     let text = export(&store).map_err(|e| CliError::failure(e.to_string()))?;
-    let _ = write!(out, "{text}");
+    out.write_all(text.as_bytes())
+        .map_err(|e| CliError::failure(format!("cannot write catalog export: {e}")))?;
     Ok(Exit::SUCCESS)
 }
 
@@ -122,7 +149,11 @@ fn now_string() -> Option<String> {
 /// Every skipped tier is reported by name with its reason. A merged verb that
 /// quietly filled fewer tiers than the operator expected would be the
 /// configuration-side form of an uncounted discard (P-4).
-fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn seed_mode(
+    args: &TargetsSeedArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let requested = requested_tiers(args)?;
     let document = seed_document(args, &requested)?;
     let db = resolve_store(args.db.as_ref())?;
@@ -134,32 +165,51 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             SeedTierArg::Signature => {
                 let count = fragcap::targets::seed_bundled(&mut store)
                     .map_err(|e| CliError::failure(e.to_string()))?;
-                let _ = writeln!(out, "signature tier: seeded {count} detection signature(s)");
+                if mode.json {
+                    write_json(
+                        out,
+                        &json!({"event":"catalog.seed.tier","tier":"signature","status":"filled","fetched":count,"written":count,"excluded":0,"duplicates":0,"failed":0}),
+                    )?;
+                } else if mode.human_result() {
+                    writeln!(out, "signature tier: seeded {count} detection signature(s)")
+                        .map_err(|e| {
+                            CliError::failure(format!("cannot write catalog result: {e}"))
+                        })?;
+                }
                 filled += 1;
             }
             SeedTierArg::Catalog => match catalog_summary(args, document.as_ref(), &mut store)? {
                 Some(summary) => {
-                    report(out, "title tier", &summary);
+                    report_mode(out, "title", &summary, mode)?;
                     filled += 1;
                 }
-                None => skipped(out, "title tier", catalog_source_guidance()),
+                None => skipped_mode(out, "title", catalog_source_guidance(), mode)?,
             },
             SeedTierArg::Engine => match engine_summary(args, document.as_ref(), &mut store)? {
                 Some(summary) => {
-                    report(out, "engine tier", &summary);
+                    report_mode(out, "engine", &summary, mode)?;
                     filled += 1;
                 }
-                None => skipped(out, "engine tier", engine_source_guidance()),
+                None => skipped_mode(out, "engine", engine_source_guidance(), mode)?,
             },
-            SeedTierArg::Launch => skipped(
+            SeedTierArg::Launch => skipped_mode(
                 out,
-                "launch tier",
+                "launch",
                 "no seeder exists; launch data accumulates from captures",
-            ),
+                mode,
+            )?,
         }
     }
 
-    let _ = writeln!(out, "seeded {} ({filled} tier(s) filled)", db.display());
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"catalog.seed.summary","store":db.display().to_string(),"tiers_filled":filled}),
+        )?;
+    } else if mode.human_result() {
+        writeln!(out, "seeded {} ({filled} tier(s) filled)", db.display())
+            .map_err(|e| CliError::failure(format!("cannot write catalog result: {e}")))?;
+    }
     Ok(Exit::SUCCESS)
 }
 
@@ -351,9 +401,47 @@ fn report(out: &mut dyn Write, tier: &str, summary: &SeedSummary) {
     );
 }
 
+fn report_mode(
+    out: &mut dyn Write,
+    tier: &str,
+    summary: &SeedSummary,
+    mode: ResultMode,
+) -> Result<(), CliError> {
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"catalog.seed.tier","tier":tier,"status":"filled","fetched":summary.fetched,"written":summary.written,"excluded":summary.excluded,"duplicates":summary.duplicates,"failed":summary.failed}),
+        )
+    } else {
+        if mode.human_result() {
+            report(out, &format!("{tier} tier"), summary);
+        }
+        Ok(())
+    }
+}
+
 /// A tier that was not filled, named with the reason. Never silent (P-4).
 fn skipped(out: &mut dyn Write, tier: &str, why: &str) {
     let _ = writeln!(out, "{tier}: skipped, {why}");
+}
+
+fn skipped_mode(
+    out: &mut dyn Write,
+    tier: &str,
+    why: &str,
+    mode: ResultMode,
+) -> Result<(), CliError> {
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"catalog.seed.tier","tier":tier,"status":"skipped","reason":why}),
+        )
+    } else {
+        if mode.human_result() {
+            skipped(out, &format!("{tier} tier"), why);
+        }
+        Ok(())
+    }
 }
 
 /// Create the default catalog store and fill its signature table, for the

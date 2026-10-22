@@ -98,15 +98,16 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1000)]
     pub quiet: bool,
 
-    /// Suppress everything except errors.
+    /// Suppress optional human results and warnings; keep required actions and errors.
     #[arg(long, global = true, display_order = 1000)]
     pub silent: bool,
 
     /// Emit machine-readable output instead of human text.
     ///
-    /// `capture`, `steam`, and `extcap` emit the newline-delimited capture event
-    /// stream on standard error; `doctor` emits its results as newline-delimited
-    /// records on standard output.
+    /// Capture, Deep Capture, and calibration emit lifecycle records on standard
+    /// error; ordinary command results use standard output. Export documents and
+    /// extcap protocol output keep their own formats. With `--silent`, the selected
+    /// machine stream remains visible.
     #[arg(long, global = true, display_order = 1000)]
     pub json: bool,
 

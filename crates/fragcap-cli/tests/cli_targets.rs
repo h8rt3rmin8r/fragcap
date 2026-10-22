@@ -143,11 +143,11 @@ fn targets_warning_honors_quiet_and_silent() {
         silent_err.is_empty(),
         "silent suppresses warning diagnostics: {silent_err}"
     );
-    assert_eq!(
-        normalize_missing_scan_path(&quiet_out, &quiet_dir),
-        normalize_missing_scan_path(&silent_out, &silent_dir),
-        "verbosity must not change targets command results"
+    assert!(
+        !quiet_out.is_empty(),
+        "quiet retains the final human result"
     );
+    assert!(silent_out.is_empty(), "silent hides optional human results");
     assert!(!quiet_out.contains("warning:"));
     assert!(!silent_out.contains("warning:"));
 }

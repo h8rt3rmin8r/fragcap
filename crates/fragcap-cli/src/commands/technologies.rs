@@ -24,13 +24,24 @@ use std::io::Write;
 use fragcap::profile::signature::SignatureSet;
 use fragcap::profile::SignatureCategory;
 use fragcap::targets::Store;
+use serde_json::json;
 
 use crate::cli::TechnologiesArgs;
+use crate::commands::result::{write_json, ResultMode};
 use crate::display::{human_display_value, ColumnLayout};
 use crate::exit::{CliError, Exit};
 
 /// Run the `technologies` command, writing the report to `out`.
+#[cfg(test)]
 pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    run_mode(args, out, ResultMode::default())
+}
+
+pub(crate) fn run_mode(
+    args: &TechnologiesArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     // The catalog store is an override, never a requirement (issue #179).
     let catalog_db =
         crate::commands::target_resolve::ensure_catalog_store(args.catalog_db.as_deref())
@@ -51,6 +62,30 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
     let outcome = set
         .detect(&args.path)
         .map_err(|e| CliError::failure(e.to_string()))?;
+
+    if mode.json {
+        write_json(
+            out,
+            &json!({
+                "event":"technologies.detect",
+                "path":args.path.display().to_string(),
+                "catalog_store":catalog_db.display().to_string(),
+                "findings":outcome.findings.iter().map(|finding| json!({
+                    "category":finding.category.as_str(),
+                    "product":finding.product,
+                    "fidelity":finding.fidelity.as_str(),
+                    "evidence":finding.evidence,
+                })).collect::<Vec<_>>(),
+                "coverage_warnings":outcome.coverage_warnings(),
+                "inert_signatures":set.inert_count(),
+                "skipped_signatures":set.skipped().iter().map(|skip| json!({"product":skip.product,"error":skip.error})).collect::<Vec<_>>(),
+            }),
+        )?;
+        return Ok(Exit::SUCCESS);
+    }
+    if mode.silent {
+        return Ok(Exit::SUCCESS);
+    }
 
     // Name the store the findings came from. With `--catalog-db` optional since
     // slice S063, the signature table can be an explicit path, an environment

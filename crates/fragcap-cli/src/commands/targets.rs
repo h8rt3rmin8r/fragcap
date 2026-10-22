@@ -24,12 +24,14 @@ use fragcap::targets::{
     SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetSource,
     INSTALL_MISSING_NOTE,
 };
+use serde_json::json;
 
 use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
     TargetsReconcileArgs, TargetsShowArgs,
 };
 use crate::color::{use_color, Stream, RESET, WARN};
+use crate::commands::result::{write_json, ResultMode};
 use crate::commands::target_resolve;
 use crate::display::{human_display_value, render_fields, selected_stdout_width, ColumnLayout};
 use crate::emit::Emitter;
@@ -39,40 +41,52 @@ use crate::paths;
 
 /// Run the `targets` command, writing results to `out`. With no subcommand, list
 /// the registered targets from the default local store (no footer).
-pub fn run(
+pub(crate) fn run_mode(
     args: &TargetsArgs,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
     let Some(command) = &args.command else {
-        return list_default(out, false, emitter);
+        return list_default_mode(out, false, emitter, mode);
     };
     match command {
-        TargetsCommand::Add(args) => add(args, out, emitter),
+        TargetsCommand::Add(args) => add(args, out, emitter, mode),
         // `list` mirrors the bare `fragcap targets`: an omitted `--db` resolves the
         // default store, and an unresolvable location degrades to the empty listing
         // rather than erroring, since there is nothing to list either way.
         TargetsCommand::List { db } => {
             let path = db.clone().or_else(default_local_store);
             match path {
-                Some(path) => hero_listing(&path, false, out, emitter),
+                Some(path) => hero_listing_mode(&path, false, out, emitter, mode),
                 None => {
-                    empty_listing(out);
+                    if mode.json {
+                        write_json(out, &json!({"event":"targets.list","count":0,"targets":[]}))?;
+                    } else if mode.human_result() {
+                        empty_listing(out);
+                    }
                     Ok(Exit::SUCCESS)
                 }
             }
         }
-        TargetsCommand::Show(args) => show(args, out),
-        TargetsCommand::Discover(args) => discover(args, out, emitter),
-        TargetsCommand::Reconcile(args) => reconcile(args, out),
+        TargetsCommand::Show(args) => show(args, out, mode),
+        TargetsCommand::Discover(args) => discover(args, out, emitter, mode),
+        TargetsCommand::Reconcile(args) => reconcile_mode(args, out, mode),
         TargetsCommand::Scan {
             dir,
             catalog_db,
             db,
-        } => scan(dir, catalog_db.as_deref(), db.as_deref(), out, emitter),
-        TargetsCommand::Remove(args) => remove(args, out),
-        TargetsCommand::Export(args) => export(args, out),
-        TargetsCommand::Import { file, db } => import(file, db.as_deref(), out),
+        } => scan(
+            dir,
+            catalog_db.as_deref(),
+            db.as_deref(),
+            out,
+            emitter,
+            mode,
+        ),
+        TargetsCommand::Remove(args) => remove(args, out, mode),
+        TargetsCommand::Export(args) => export(args, out, mode),
+        TargetsCommand::Import { file, db } => import(file, db.as_deref(), out, mode),
     }
 }
 
@@ -81,18 +95,23 @@ pub fn run(
 /// `--help`, which is what distinguishes a bare `fragcap` (footer) from an explicit
 /// `fragcap targets` (no footer). A store that does not exist yet is an empty
 /// listing, not an error.
-pub fn list_default(
+pub(crate) fn list_default_mode(
     out: &mut dyn Write,
     footer: bool,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
     // Resolve like the rest of the surface: the FRAGCAP_LOCAL_DB override, else the
     // per-user default (whose parent is created for first use).
     let exit = match default_local_store() {
-        Some(path) => hero_listing(&path, footer, out, emitter)?,
+        Some(path) => hero_listing_mode(&path, footer, out, emitter, mode)?,
         None => {
-            empty_listing(out);
-            print_footer(out, footer);
+            if mode.json {
+                write_json(out, &json!({"event":"targets.list","count":0,"targets":[]}))?;
+            } else if mode.human_result() {
+                empty_listing(out);
+                print_footer(out, footer);
+            }
             Exit::SUCCESS
         }
     };
@@ -154,13 +173,21 @@ fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
 /// and name the next command. An empty result prints the commands that populate the
 /// store. Registration is additive and idempotent; no existing entry is modified
 /// (FR-001, FR-007).
-fn hero_listing(
+fn hero_listing_mode(
     db: &Path,
     footer: bool,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
-    hero_listing_with_machine_probe(db, footer, out, emitter, real_machine_probe().as_ref())
+    hero_listing_with_machine_probe_mode(
+        db,
+        footer,
+        out,
+        emitter,
+        real_machine_probe().as_ref(),
+        mode,
+    )
 }
 
 /// The real machine-wide anti-cheat probe `hero_listing` uses in production: the
@@ -185,6 +212,7 @@ fn real_machine_probe() -> Box<dyn fragcap::targets::MachineAntiCheatProbe> {
 /// `hero_listing`'s body, taking the machine-wide probe as a parameter so a test
 /// can substitute a fixture result for it (FR-009) while the public entry point
 /// above always uses the real one.
+#[cfg(test)]
 fn hero_listing_with_machine_probe(
     db: &Path,
     footer: bool,
@@ -192,12 +220,30 @@ fn hero_listing_with_machine_probe(
     emitter: &mut Emitter,
     machine_probe: &dyn fragcap::targets::MachineAntiCheatProbe,
 ) -> Result<Exit, CliError> {
+    hero_listing_with_machine_probe_mode(
+        db,
+        footer,
+        out,
+        emitter,
+        machine_probe,
+        ResultMode::default(),
+    )
+}
+
+fn hero_listing_with_machine_probe_mode(
+    db: &Path,
+    footer: bool,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+    machine_probe: &dyn fragcap::targets::MachineAntiCheatProbe,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
 
     // Discovery is a best-effort bootstrap: a missing catalog, an absent Steam, or a
     // platform without the known-roots walk registers nothing and lists whatever is
     // already registered. A discovery failure never sinks the listing.
-    register_from_discovery(&mut store, out, emitter);
+    register_from_discovery(&mut store, out, emitter, mode);
 
     let mut targets = store
         .targets()
@@ -214,30 +260,39 @@ fn hero_listing_with_machine_probe(
         store
             .write_listing_snapshot(&[])
             .map_err(|e| CliError::failure(e.to_string()))?;
-        empty_listing(out);
-        // The machine-wide check is unrelated to whether any target is registered
-        // (slice S068, issue #170, review of PR #195): an EAC service installed by
-        // a title fragcap has not registered, or has not discovered at all, is
-        // still worth reporting. Run it here too, not only on the non-empty path
-        // below.
-        render_machine_section(&machine_probe.detect(), out);
-        // The footer is always the very last thing printed, in both this path and
-        // the non-empty one below: a bare `fragcap` and an explicit `fragcap
-        // targets` must differ by exactly the footer line and nothing else,
-        // whatever the machine-scope section adds (Codex review of PR #195 caught
-        // this breaking when the section was printed before a conditional footer).
-        print_footer(out, footer);
+        if mode.json {
+            write_json(
+                out,
+                &json!({"event":"targets.list","count":0,"targets":[],"machine_findings":machine_probe.detect().iter().map(|f| json!({"product":f.product,"evidence":f.evidence})).collect::<Vec<_>>()}),
+            )?;
+        } else if mode.human_result() {
+            empty_listing(out);
+            // The machine-wide check is unrelated to whether any target is registered
+            // (slice S068, issue #170, review of PR #195): an EAC service installed by
+            // a title fragcap has not registered, or has not discovered at all, is
+            // still worth reporting. Run it here too, not only on the non-empty path
+            // below.
+            render_machine_section(&machine_probe.detect(), out);
+            // The footer is always the very last thing printed, in both this path and
+            // the non-empty one below: a bare `fragcap` and an explicit `fragcap
+            // targets` must differ by exactly the footer line and nothing else,
+            // whatever the machine-scope section adds (Codex review of PR #195 caught
+            // this breaking when the section was printed before a conditional footer).
+            print_footer(out, footer);
+        }
         return Ok(Exit::SUCCESS);
     }
 
-    render_target_groups(&targets, ready_count, out);
+    if mode.human_result() {
+        render_target_groups(&targets, ready_count, out);
 
-    // A machine-wide anti-cheat fact (slice S068, issue #170) is never a title's
-    // evidence: it is rendered separately, once, and only when the probe actually
-    // found something, so it can never be mistaken for a claim about any row above
-    // it, and a probe that found nothing never prints a false "confirmed clean"
-    // section (FR-007, FR-008).
-    render_machine_section(&machine_probe.detect(), out);
+        // A machine-wide anti-cheat fact (slice S068, issue #170) is never a title's
+        // evidence: it is rendered separately, once, and only when the probe actually
+        // found something, so it can never be mistaken for a claim about any row above
+        // it, and a probe that found nothing never prints a false "confirmed clean"
+        // section (FR-007, FR-008).
+        render_machine_section(&machine_probe.detect(), out);
+    }
 
     // Pin what was shown so `capture <n>` names the row the user saw (FR-004).
     let rows: Vec<(i64, &str)> = targets
@@ -247,6 +302,12 @@ fn hero_listing_with_machine_probe(
     store
         .write_listing_snapshot(&rows)
         .map_err(|e| CliError::failure(e.to_string()))?;
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"targets.list","count":targets.len(),"ready_count":ready_count,"targets":targets.iter().map(target_json).collect::<Vec<_>>(),"machine_findings":machine_probe.detect().iter().map(|f| json!({"product":f.product,"evidence":f.evidence})).collect::<Vec<_>>()}),
+        )?;
+    }
 
     // End by naming the next command from exactly one readiness group. Ready is
     // the immediate-action class and therefore owns the footer whenever it exists;
@@ -254,29 +315,48 @@ fn hero_listing_with_machine_probe(
     // row, the same preference applies to the setup-needed group. Falling back to
     // the group's first row preserves the populated-listing footer even when every
     // recorded install root is missing (FR-010, FR-011; issue #376).
-    let candidates = if ready_count > 0 {
-        &targets[..ready_count]
-    } else {
-        &targets[ready_count..]
-    };
-    let next = candidates
-        .iter()
-        .position(|t| install_presence(t) != InstallPresence::Missing)
-        .unwrap_or(0)
-        + 1;
-    let _ = writeln!(out);
-    let _ = write!(
-        out,
-        "{}",
-        render_fields(
-            0,
-            &[("Next command:".into(), format!("fragcap capture {next}"))],
-            80
-        )
-    );
+    if mode.human_result() {
+        let candidates = if ready_count > 0 {
+            &targets[..ready_count]
+        } else {
+            &targets[ready_count..]
+        };
+        let next = candidates
+            .iter()
+            .position(|t| install_presence(t) != InstallPresence::Missing)
+            .unwrap_or(0)
+            + 1;
+        let _ = writeln!(out);
+        let _ = write!(
+            out,
+            "{}",
+            render_fields(
+                0,
+                &[("Next command:".into(), format!("fragcap capture {next}"))],
+                80
+            )
+        );
 
-    print_footer(out, footer);
+        print_footer(out, footer);
+    }
     Ok(Exit::SUCCESS)
+}
+
+fn target_json(target: &TargetEntry) -> serde_json::Value {
+    json!({
+        "stable_id": target.stable_id,
+        "handle": target.handle,
+        "name": target.name,
+        "classification": target.classification.as_str(),
+        "fidelity": target.fidelity.as_str(),
+        "anchor": target.anchor,
+        "install_root": target.install_root,
+        "executable_hint": target.executable_hint,
+        "detection_scan": target.detection_scan.map(DetectionScan::as_str),
+        "evidence": target.evidence,
+        "launch_entries": target.launch_entries,
+        "provenance": target.provenance,
+    })
 }
 
 /// Append the `--help` pointer line a bare `fragcap` invocation carries and an
@@ -479,14 +559,21 @@ fn discover_and_register(
 /// The hero listing's best-effort bootstrap: discover and register, but never let a
 /// discovery failure sink the listing. A failure is reported as a warning and the
 /// listing continues with whatever is already registered.
-fn register_from_discovery(store: &mut Store, out: &mut dyn Write, emitter: &mut Emitter) {
+fn register_from_discovery(
+    store: &mut Store,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+    mode: ResultMode,
+) {
     match discover_and_register(store, emitter) {
         Ok(result) if result.registered > 0 || result.refused > 0 => {
-            let _ = writeln!(
-                out,
-                "  discovery: {} registered, {} already present, {} withheld.\n",
-                result.registered, result.already_present, result.refused
-            );
+            if mode.human_result() {
+                let _ = writeln!(
+                    out,
+                    "  discovery: {} registered, {} already present, {} withheld.\n",
+                    result.registered, result.already_present, result.refused
+                );
+            }
         }
         Ok(_) => {}
         Err(e) => {
@@ -530,6 +617,7 @@ fn scan(
     db: Option<&Path>,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
     let path = dir.to_string_lossy().into_owned();
     let source = match catalog_db {
@@ -546,7 +634,11 @@ fn scan(
     let discovery = source
         .discover()
         .map_err(|e| CliError::failure(e.to_string()))?;
-    print_discovery(&discovery, out, emitter);
+    if mode.human_result() {
+        print_discovery(&discovery, out, emitter);
+    } else if mode.json {
+        emit_discovery_diagnostics(&discovery, emitter);
+    }
 
     // Register the discovered titles (FR-016). The `--db` flag wins, else the local
     // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
@@ -557,11 +649,23 @@ fn scan(
         let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
         let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
             .map_err(|e| CliError::failure(e.to_string()))?;
-        let _ = writeln!(
+        if mode.json {
+            write_json(
+                out,
+                &json!({"event":"targets.scan","candidates":discovery.candidates.len(),"registered":outcome.registered,"already_present":outcome.already_present,"store":db.display().to_string(),"warnings":discovery.warnings}),
+            )?;
+        } else if mode.human_result() {
+            let _ = writeln!(
+                out,
+                "registered {} target(s), {} already present",
+                outcome.registered, outcome.already_present
+            );
+        }
+    } else if mode.json {
+        write_json(
             out,
-            "registered {} target(s), {} already present",
-            outcome.registered, outcome.already_present
-        );
+            &json!({"event":"targets.scan","candidates":discovery.candidates.len(),"registered":null,"already_present":null,"store":null,"warnings":discovery.warnings}),
+        )?;
     }
     Ok(Exit::SUCCESS)
 }
@@ -569,7 +673,7 @@ fn scan(
 /// Run `targets remove <selector>`: remove exactly the resolved target. An ambiguous
 /// name lists its matches and refuses (exit 2, P-9); a clean handle/name miss reports
 /// it and exits 0; an out-of-range row index or unknown `--id` exits 2 (FR-017).
-fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn remove(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result<Exit, CliError> {
     let db = resolve_store(args.db.as_deref())?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let (selection, miss_exit) = match (args.id, &args.selector) {
@@ -587,23 +691,60 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
             store
                 .delete_target(id)
                 .map_err(|e| CliError::failure(e.to_string()))?;
-            let _ = writeln!(out, "removed {} (id {})", t.handle, t.stable_id);
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.remove","status":"removed","target":target_json(&t)}),
+                )?;
+            } else if mode.human_result() {
+                let _ = writeln!(out, "removed {} (id {})", t.handle, t.stable_id);
+            }
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(
-                out,
-                "{}",
-                target_resolve::no_match_message_for_action(
-                    &store,
-                    args.selector.as_deref(),
-                    args.id,
-                    target_resolve::TargetAction::Remove,
-                )
-            );
+            if mode.silent && miss_exit == Exit::USAGE && !mode.json {
+                return Err(CliError::usage(
+                    target_resolve::no_match_message_for_action(
+                        &store,
+                        args.selector.as_deref(),
+                        args.id,
+                        target_resolve::TargetAction::Remove,
+                    ),
+                ));
+            }
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.remove","status":"no_match","selector":args.selector,"stable_id":args.id}),
+                )?;
+            } else if mode.human_result() {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    target_resolve::no_match_message_for_action(
+                        &store,
+                        args.selector.as_deref(),
+                        args.id,
+                        target_resolve::TargetAction::Remove,
+                    )
+                );
+            }
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.remove","status":"ambiguous","matches":matches.iter().map(target_json).collect::<Vec<_>>()}),
+                )?;
+                return Ok(Exit::USAGE);
+            }
+            if mode.silent {
+                return Err(CliError::usage(format!(
+                    "ambiguous: {} targets match; select by handle or --id",
+                    matches.len()
+                )));
+            }
             let _ = writeln!(
                 out,
                 "ambiguous: {} targets match; select by handle or --id:",
@@ -642,7 +783,11 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
 /// and `remove` do): an unmatched handle or name is a clean miss that emits `[]` and
 /// exits 0, while an out-of-range row index or an unknown `--id` is an invalid
 /// machine reference (exit 2). An ambiguous name refuses (exit 2) (FR-018).
-fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn export(
+    args: &TargetsExportArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     if args.id.is_some() && args.selector.is_some() {
         return Err(CliError::usage(
             "a positional target selector and --id conflict; choose one",
@@ -667,6 +812,16 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                 Selection::Resolved(t) => vec![*t],
                 Selection::NoMatch if miss_exit == Exit::SUCCESS => Vec::new(),
                 Selection::NoMatch => {
+                    if mode.json || mode.silent {
+                        return Err(CliError::usage(
+                            target_resolve::no_match_message_for_action(
+                                &store,
+                                selector.as_deref(),
+                                id,
+                                target_resolve::TargetAction::Export,
+                            ),
+                        ));
+                    }
                     let _ = writeln!(
                         out,
                         "{}",
@@ -680,6 +835,12 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                     return Ok(miss_exit);
                 }
                 Selection::Ambiguous(matches) => {
+                    if mode.json || mode.silent {
+                        return Err(CliError::usage(format!(
+                            "ambiguous: {} targets match; select by handle or --id",
+                            matches.len()
+                        )));
+                    }
                     let _ = writeln!(
                         out,
                         "ambiguous: {} targets match; select by handle or --id",
@@ -690,14 +851,20 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
             }
         }
     };
-    let _ = write!(out, "{}", fragcap::targets::export_targets(&entries));
+    out.write_all(fragcap::targets::export_targets(&entries).as_bytes())
+        .map_err(|e| CliError::failure(format!("cannot write target export: {e}")))?;
     Ok(Exit::SUCCESS)
 }
 
 /// Run `targets import <file>`: parse the target-entry array and merge each element
 /// on its stable identifier (update in place, or insert). A nonconforming file is
 /// rejected whole, applying nothing (FR-019).
-fn import(file: &Path, db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn import(
+    file: &Path,
+    db: Option<&Path>,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let json = std::fs::read_to_string(file)
         .map_err(|e| CliError::failure(format!("cannot read {}: {e}", file.display())))?;
     let entries =
@@ -709,7 +876,14 @@ fn import(file: &Path, db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, C
     let (inserted, updated) = store
         .merge_targets(&entries)
         .map_err(|e| CliError::usage(e.to_string()))?;
-    let _ = writeln!(out, "imported {inserted} new, {updated} updated");
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"targets.import","store":db.display().to_string(),"inserted":inserted,"updated":updated}),
+        )?;
+    } else if mode.human_result() {
+        let _ = writeln!(out, "imported {inserted} new, {updated} updated");
+    }
     Ok(Exit::SUCCESS)
 }
 
@@ -721,6 +895,7 @@ fn discover(
     args: &TargetsDiscoverArgs,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
     // Both stores are overrides, never requirements (issue #179). The local one
     // resolves through the same precedence the hero listing uses; the catalog
@@ -750,7 +925,7 @@ fn discover(
     // while writing volume eligibility to the other, so an operator who cannot
     // see which is which cannot tell what was consulted or what was touched
     // (FR-005, raised in review of PR #190).
-    if !args.summary {
+    if !args.summary && mode.human_result() {
         let _ = writeln!(out, "Discovery stores:");
         let _ = write!(
             out,
@@ -767,7 +942,32 @@ fn discover(
     }
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
-    if args.summary {
+    if mode.json {
+        emit_discovery_diagnostics(&discovery, emitter);
+        write_json(
+            out,
+            &json!({
+                "event":"targets.discover",
+                "catalog_store":catalog_db.display().to_string(),
+                "local_store":local_db.display().to_string(),
+                "candidates":discovery.candidates.iter().map(candidate_json).collect::<Vec<_>>(),
+                "considered":discovery.account.considered,
+                "produced":discovery.account.produced,
+                "parse_failed":discovery.account.parse_failed,
+            "declined_by_user":discovery.account.declined_by_user,
+            "considered_not_a_game":discovery.account.considered_not_a_game,
+            "container_descended":discovery.account.container_descended,
+            "container_descent_truncated":discovery.account.container_descent_truncated,
+            "volume_skipped":discovery.account.volume_skipped,
+                "access_error":discovery.account.access_error,
+                "warnings":discovery.warnings,
+            }),
+        )?;
+    } else if !mode.human_result() {
+        for warning in &discovery.warnings {
+            emitter.warn(warning);
+        }
+    } else if args.summary {
         print_discovery_summary(&discovery, out);
     } else {
         print_discovery(&discovery, out, emitter);
@@ -779,7 +979,16 @@ fn discover(
 /// residue. The preview is a pure plan; `--yes` rebuilds both platform inventory
 /// and the plan, then the store compares complete rows and deletes them in one
 /// transaction.
+#[cfg(test)]
 fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    reconcile_mode(args, out, ResultMode::default())
+}
+
+fn reconcile_mode(
+    args: &TargetsReconcileArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let db = resolve_store(args.db.as_deref())?;
     let steam_root = match &args.steam_root {
         Some(root) => root.clone(),
@@ -794,13 +1003,27 @@ fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, C
         .map_err(|e| CliError::failure(e.to_string()))?;
     let preview = fragcap::targets::plan_reconciliation(&rows, &inventory);
     debug_assert!(preview.is_conserved(rows.len()));
-    render_reconciliation_plan(&preview, out);
+    if mode.json {
+        write_json(
+            out,
+            &json!({
+                "event":"targets.reconcile.preview",
+                "removable":preview.removable.iter().map(|item| json!({"target":target_json(&item.entry),"reason":item.reason.as_str()})).collect::<Vec<_>>(),
+                "preserved_count":preview.preserved.len(),
+                "inventory_truncated":preview.inventory_truncated,
+            }),
+        )?;
+    } else if mode.human_result() {
+        render_reconciliation_plan(&preview, out);
+    }
 
     if !args.yes {
-        let _ = writeln!(
-            out,
-            "preview only; re-run with --yes to remove these exact rows"
-        );
+        if mode.human_result() {
+            let _ = writeln!(
+                out,
+                "preview only; re-run with --yes to remove these exact rows"
+            );
+        }
         return Ok(Exit::SUCCESS);
     }
     if preview.inventory_truncated > 0 {
@@ -829,8 +1052,34 @@ fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, C
     let removed = store
         .delete_targets_if_unchanged(&expected)
         .map_err(|e| CliError::failure(e.to_string()))?;
-    let _ = writeln!(out, "removed {removed} historical target row(s)");
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"targets.reconcile.apply","removed":removed}),
+        )?;
+    } else if mode.human_result() {
+        let _ = writeln!(out, "removed {removed} historical target row(s)");
+    }
     Ok(Exit::SUCCESS)
+}
+
+fn candidate_json(candidate: &fragcap::targets::CandidateTarget) -> serde_json::Value {
+    json!({
+        "identity":discovery_identity(candidate),
+        "name":candidate.display_name,
+        "source":candidate.source_name,
+        "classification":candidate.classification.as_str(),
+        "fidelity":candidate.fidelity.as_str(),
+        "install_root":candidate.install_root,
+        "executable_hint":candidate.executable_hint,
+        "detection_scan":candidate.detection_scan.map(DetectionScan::as_str),
+        "evidence":candidate.evidence.iter().map(|finding| json!({
+            "category":finding.category.as_str(),
+            "product":finding.product,
+            "fidelity":finding.fidelity.as_str(),
+            "evidence":finding.evidence,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn render_reconciliation_plan(plan: &fragcap::targets::ReconciliationPlan, out: &mut dyn Write) {
@@ -1039,6 +1288,10 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emi
     }
     render_discovery_account(&discovery.account, out);
     render_automatic_registration_account(discovery, out);
+    emit_discovery_diagnostics(discovery, emitter);
+}
+
+fn emit_discovery_diagnostics(discovery: &Discovery, emitter: &mut Emitter) {
     // Surface the named diagnostics so a loss the account counts (an unreadable
     // root, a malformed manifest) is recoverable to which one failed (P-4).
     for warning in &discovery.warnings {
@@ -1278,7 +1531,17 @@ fn add(
     args: &TargetsAddArgs,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
+    if mode.json
+        && args.exe.is_some()
+        && args.socket_holder.is_none()
+        && std::io::stdin().is_terminal()
+    {
+        return Err(CliError::usage(
+            "targets add --json needs --socket-holder when --exe would prompt interactively",
+        ));
+    }
     // Resolve `--steam` first: it can supply both the name and the anchor. The
     // enumeration warnings go through the emitter rather than being dropped (P-4).
     // A `--steam` app id that is not installed is a usage error.
@@ -1341,11 +1604,18 @@ fn add(
             .target_by_anchor(a)
             .map_err(|e| CliError::failure(e.to_string()))?
         {
-            let _ = writeln!(
-                out,
-                "already registered as {} (id {})",
-                existing.handle, existing.stable_id
-            );
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.add","status":"already_registered","target":target_json(&existing)}),
+                )?;
+            } else if mode.human_result() {
+                let _ = writeln!(
+                    out,
+                    "already registered as {} (id {})",
+                    existing.handle, existing.stable_id
+                );
+            }
             return Ok(Exit::SUCCESS);
         }
     }
@@ -1432,7 +1702,14 @@ fn add(
         .insert_target(&entry)
         .map_err(|e| CliError::failure(e.to_string()))?;
 
-    let _ = writeln!(out, "registered {handle_value} (id {stable_id})");
+    if mode.json {
+        write_json(
+            out,
+            &json!({"event":"targets.add","status":"registered","target":target_json(&entry)}),
+        )?;
+    } else if mode.human_result() {
+        let _ = writeln!(out, "registered {handle_value} (id {stable_id})");
+    }
     Ok(Exit::SUCCESS)
 }
 
@@ -1638,7 +1915,7 @@ fn run_exe_scan(exe: &str) -> ExeScan {
 /// handle or name that matches nothing is a clean miss (exit 0), while an unknown
 /// `--id` or an out-of-range row index is a bad machine reference (exit 2). An
 /// ambiguous name lists its matches and exits 2 rather than guessing (P-9).
-fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result<Exit, CliError> {
     let db = resolve_store(args.db.as_deref())?;
     let store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let (selection, miss_exit) = match (args.id, &args.selector) {
@@ -1663,33 +1940,84 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
                 .compatibility_facts_for_target(target_id)
                 .map_err(|e| CliError::failure(e.to_string()))?;
             let compatibility = CompatibilityMatrix::from_facts(&facts);
-            let mut fields = target_fields(&t);
-            fields.extend(compatibility_fields(&compatibility));
-            let _ = write!(
-                out,
-                "{}",
-                render_fields(
-                    0,
-                    &fields,
-                    selected_stdout_width(std::io::stdout().is_terminal())
-                )
-            );
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({
+                        "event":"targets.show",
+                        "status":"resolved",
+                        "target":target_json(&t),
+                        "compatibility":compatibility.rows().iter().map(|row| json!({
+                            "key":row.key.as_str(),
+                            "value":row.value,
+                            "source":row.evidence_source.as_str(),
+                            "freshness":row.freshness.as_str(),
+                        "launch_case":row.launch_case.map(|value| value.as_str()),
+                        "routing_strategy":row.routing_strategy.map(|value| value.as_str()),
+                        "address_family":row.address_family.map(|value| value.as_str()),
+                        "protocol":row.protocol.map(|value| value.as_str()),
+                        })).collect::<Vec<_>>(),
+                    }),
+                )?;
+            } else if mode.human_result() {
+                let mut fields = target_fields(&t);
+                fields.extend(compatibility_fields(&compatibility));
+                let _ = write!(
+                    out,
+                    "{}",
+                    render_fields(
+                        0,
+                        &fields,
+                        selected_stdout_width(std::io::stdout().is_terminal())
+                    )
+                );
+            }
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(
-                out,
-                "{}",
-                target_resolve::no_match_message_for_action(
-                    &store,
-                    args.selector.as_deref(),
-                    args.id,
-                    target_resolve::TargetAction::Show,
-                )
-            );
+            if mode.silent && miss_exit == Exit::USAGE && !mode.json {
+                return Err(CliError::usage(
+                    target_resolve::no_match_message_for_action(
+                        &store,
+                        args.selector.as_deref(),
+                        args.id,
+                        target_resolve::TargetAction::Show,
+                    ),
+                ));
+            }
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.show","status":"no_match","selector":args.selector,"stable_id":args.id}),
+                )?;
+            } else if mode.human_result() {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    target_resolve::no_match_message_for_action(
+                        &store,
+                        args.selector.as_deref(),
+                        args.id,
+                        target_resolve::TargetAction::Show,
+                    )
+                );
+            }
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
+            if mode.json {
+                write_json(
+                    out,
+                    &json!({"event":"targets.show","status":"ambiguous","matches":matches.iter().map(target_json).collect::<Vec<_>>()}),
+                )?;
+                return Ok(Exit::USAGE);
+            }
+            if mode.silent {
+                return Err(CliError::usage(format!(
+                    "ambiguous: {} targets match; select by handle or --id",
+                    matches.len()
+                )));
+            }
             let _ = writeln!(
                 out,
                 "ambiguous: {} targets match; select by handle or --id:",

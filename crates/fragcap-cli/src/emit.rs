@@ -172,6 +172,11 @@ impl<'w> Emitter<'w> {
         self.format == Format::Human && self.verbosity == Verbosity::Normal
     }
 
+    /// Ordinary human command results survive quiet but not silent.
+    pub fn allows_human_result(&self) -> bool {
+        self.format == Format::Human && self.verbosity != Verbosity::Silent
+    }
+
     /// A human progress line, suppressed by quiet and silent and by JSON mode.
     pub fn progress(&mut self, line: &str) {
         if self.allows_progress() {
