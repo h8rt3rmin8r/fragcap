@@ -1222,7 +1222,7 @@ fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
         "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
         env!("CARGO_BIN_EXE_fragcap"),
     );
-    for mode in ["normal", "quiet", "silent", "json"] {
+    for mode in ["normal", "quiet", "silent", "json", "json-silent"] {
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("local.db");
         seed_target(&local, false);
@@ -1232,6 +1232,7 @@ fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
             "quiet" => args.push("--quiet"),
             "silent" => args.push("--silent"),
             "json" => args.push("--json"),
+            "json-silent" => args.extend(["--json", "--silent"]),
             _ => {}
         }
         args.extend([
@@ -1244,12 +1245,12 @@ fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
             "--bundle",
             bundle.to_str().unwrap(),
         ]);
-        if mode == "json" {
+        if mode.starts_with("json") {
             args.push("--authorize-stdin");
         }
         let (code, _out, err) = run(&args);
         assert_eq!(code, 0, "{mode}:\n{err}");
-        if mode == "json" {
+        if mode.starts_with("json") {
             assert!(err
                 .lines()
                 .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()));

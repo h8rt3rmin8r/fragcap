@@ -3073,7 +3073,7 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
       --launch               Start the title through its platform (--target only)
       --wait <DUR>           Acquisition timeout        [default: none]
       --quiet                Suppress progress output
-      --silent               Suppress all non-error output
+      --silent               Suppress optional human results and warnings
       --json                 Emit structured events on stderr
   -h, --help                 Print help
 ```
@@ -3139,7 +3139,7 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --proxy-bypass <RULE>  Add an explicit target bypass rule; repeatable
       --proxy-family <FAMILY> Exact loopback family: ipv4 (default) or ipv6
       --quiet                Suppress progress output
-      --silent               Suppress all non-error output
+      --silent               Suppress optional human results and warnings
       --json                 Emit structured events on stderr
   -h, --help                 Print help
 ```
@@ -3449,14 +3449,9 @@ This stream is what makes the shell wrappers thin. A wrapper reacts to
 capture lifecycle without parsing human-readable output, and section 18
 depends on it.
 
-The non-capture commands emit their results as structured records too,
-so automation never scrapes human text. `schema validate --json` emits
-one `diagnostic` record per problem, each carrying the diagnostic's code,
-key path, line, column, and message as distinct fields, followed by a
-terminal `summary`; and `doctor --json` emits one record per readiness
-check. Because these are command results rather than capture lifecycle,
-they are written to standard output, where the command's human output
-would otherwise go.
+S179 current source closes #488 at the command-result boundary. With `--json`, non-capture commands emit typed newline-delimited results on standard output. Targets report stable identity and selection status; catalog import and seed report observed counts and skipped-tier reasons; technologies report findings and incomplete coverage. `schema validate` emits one `schema.diagnostic` record per defect with code, JSON pointer path, message, and nullable line and column, followed by `schema.summary` with validity and count. A malformed JSON source carries the parser's observed position; structural defects have null positions. Invalid validation keeps usage exit 2. Doctor keeps its existing per-check JSON records.
+
+Commands whose output is itself the artifact keep that grammar under `--json`: target and catalog export, schema print, build identity, and extcap analyzer declarations do not receive a result envelope. Capture, Deep Capture, and calibration keep lifecycle events on standard error, isolated from capture sinks. An unsupported interactive combination is refused before effects with usage exit 2; `doctor --fix --json` remains refused, and an interactive `targets add --exe --json` requires an explicit socket-holder answer. JSON errors and warnings use structured standard-error diagnostics.
 
 ### 17.6 Output Conventions
 
@@ -3468,10 +3463,7 @@ Progress output goes to standard error. Capture data goes to sinks.
 When a sink writes to standard output, all diagnostic output moves to
 standard error without exception, so the data stream stays clean.
 
-Color is used when standard error is a terminal and `NO_COLOR` is
-unset. `--quiet` suppresses progress and retains warnings and errors.
-`--silent` suppresses everything except errors, and errors are never
-suppressed.
+Color is used when standard error is a terminal and `NO_COLOR` is unset. `--quiet` suppresses optional progress while retaining final human results, warnings, required actions, and errors. Human `--silent` suppresses ordinary success results and optional warnings while retaining required consent or cleanup action text and errors; a failing Doctor report retains only blocking checks and the readiness verdict. `--json --silent` retains the explicitly selected machine result, artifact, or lifecycle stream; optional human text stays suppressed. Errors are never suppressed.
 
 ### 17.7 The Targets Command
 

@@ -17,6 +17,7 @@ pub mod deep_capture;
 pub mod doctor;
 pub mod extcap;
 pub mod fresh_start;
+pub(crate) mod result;
 pub mod schema;
 pub mod steam;
 pub mod stub;

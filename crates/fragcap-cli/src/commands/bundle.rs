@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::cli::{BundleArgs, BundleCommand};
+use crate::commands::result::{write_json, ResultMode};
 use crate::exit::{CliError, Exit};
 
 pub(crate) fn resolve_output_recipient(
@@ -290,7 +291,12 @@ fn render_collection(
         .map_err(|error| CliError::failure(error.to_string()))
 }
 
-pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
+pub(crate) fn run_mode(
+    args: &BundleArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
+    let json = mode.json;
     match &args.command {
         BundleCommand::Collect {
             bundle,
@@ -442,18 +448,20 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             let layout = crate::display::ColumnLayout::new(0, &rows);
             for (result, row) in results.iter().zip(&rows) {
                 if json {
-                    writeln!(
+                    write_json(
                         out,
-                        "{}\t{}\t{}",
-                        result.status,
-                        result.path.display(),
-                        result.reason
-                    )
-                    .map_err(|error| CliError::failure(error.to_string()))?;
-                } else {
+                        &serde_json::json!({"event":"bundle.cleanup.artifact","status":result.status,"path":result.path.display().to_string(),"reason":result.reason}),
+                    )?;
+                } else if mode.human_result() || result.status == "failed" {
                     writeln!(out, "{}", layout.render_wrapped_row(row, 80))
                         .map_err(|error| CliError::failure(error.to_string()))?;
                 }
+            }
+            if json {
+                write_json(
+                    out,
+                    &serde_json::json!({"event":"bundle.cleanup.summary","artifacts":results.len(),"complete":!failed}),
+                )?;
             }
             if failed {
                 return Err(cleanup_failure(
@@ -470,8 +478,15 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             require_existing_bundle(bundle)?;
             let manifest = fragcap::deep_capture::export_share_copy(bundle, destination)
                 .map_err(|error| CliError::failure(format!("bundle export failed: {error}")))?;
-            writeln!(out, "{}", manifest.display())
-                .map_err(|error| CliError::failure(error.to_string()))?;
+            if json {
+                write_json(
+                    out,
+                    &serde_json::json!({"event":"bundle.export","manifest":manifest.display().to_string()}),
+                )?;
+            } else if mode.human_result() {
+                writeln!(out, "{}", manifest.display())
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+            }
             Ok(Exit::SUCCESS)
         }
     }

@@ -107,6 +107,7 @@ fn run_read_only(
     gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
 ) -> Exit {
     let enabled = !json && stdout_terminal && emitter.allows_progress();
+    let silent_human = !json && !emitter.allows_human_result();
     let width = selected_stdout_width(stdout_terminal);
     let color = !json && use_color(Stream::Stdout);
     let work = move |observer: &mut dyn ProbeObserver| {
@@ -114,6 +115,24 @@ fn run_read_only(
         let text = probe::observe(observer, ProbeName::ReportRendering, || {
             if json {
                 report.render_json()
+            } else if silent_human {
+                if report.exit() == Exit::SUCCESS {
+                    String::new()
+                } else {
+                    crate::doctor::Report {
+                        checks: report
+                            .checks
+                            .iter()
+                            .filter(|check| check.status == crate::doctor::Status::Fail)
+                            .cloned()
+                            .collect(),
+                    }
+                    .render_human_with_history(
+                        color,
+                        width,
+                        args.history_details,
+                    )
+                }
             } else {
                 report.render_human_with_history(color, width, args.history_details)
             }
@@ -125,7 +144,9 @@ fn run_read_only(
     } else {
         work(&mut probe::NoopObserver)
     };
-    let _ = write!(out, "{text}");
+    if !text.is_empty() {
+        let _ = write!(out, "{text}");
+    }
     exit
 }
 
@@ -286,7 +307,12 @@ mod tests {
                     });
                 assert_eq!(exit, expected.exit());
                 let text = String::from_utf8(stdout).unwrap();
-                assert!(text.contains("retained-resource"));
+                if !json && verbosity == Verbosity::Silent {
+                    assert!(!text.contains("retained-resource"));
+                    assert!(text.contains("fail"));
+                } else {
+                    assert!(text.contains("retained-resource"));
+                }
                 if json {
                     assert_eq!(text, expected.render_json());
                 }
@@ -364,7 +390,20 @@ mod tests {
                         fake_gather,
                     );
                     drop(emitter);
-                    let expected = if json {
+                    let expected = if !json && verbosity == Verbosity::Silent {
+                        crate::doctor::Report {
+                            checks: report
+                                .checks
+                                .iter()
+                                .filter(|check| check.status == crate::doctor::Status::Fail)
+                                .cloned()
+                                .collect(),
+                        }
+                        .render_human_with_width(
+                            use_color(Stream::Stdout),
+                            selected_stdout_width(terminal),
+                        )
+                    } else if json {
                         report.render_json()
                     } else {
                         report.render_human_with_width(

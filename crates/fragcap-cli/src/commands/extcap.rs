@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use crate::assemble;
 use crate::cli::{ExtcapAction, ExtcapArgs, ExtcapInstallArgs};
+use crate::commands::result::{write_json, ResultMode};
 use crate::commands::target_resolve::{self, StoredRef, TargetInputs};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
@@ -40,29 +41,33 @@ const INTERFACE: &str = "fragcap";
 /// The declaration queries write their grammar to `out` (command results go to
 /// standard output, specification FR-019); a capture streams to the FIFO and its
 /// diagnostics go through `emitter` to standard error.
-pub fn run(
+pub(crate) fn run_mode(
     args: &ExtcapArgs,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    mode: ResultMode,
 ) -> Result<Exit, CliError> {
     // The register/unregister subcommands are handled first; when absent, the
     // analyzer protocol dispatch below runs exactly as before.
     if let Some(action) = &args.action {
         return match action {
-            ExtcapAction::Install(a) => install(a, out),
-            ExtcapAction::Uninstall(a) => uninstall(a, out),
+            ExtcapAction::Install(a) => install_mode(a, out, mode),
+            ExtcapAction::Uninstall(a) => uninstall_mode(a, out, mode),
         };
     }
     if args.extcap_interfaces {
-        let _ = write!(out, "{}", interfaces_block());
+        out.write_all(interfaces_block().as_bytes())
+            .map_err(|e| CliError::failure(format!("cannot write extcap interfaces: {e}")))?;
         Ok(Exit::SUCCESS)
     } else if args.extcap_dlts {
         require_selected_interface(args)?;
-        let _ = write!(out, "{}", dlts_block());
+        out.write_all(dlts_block().as_bytes())
+            .map_err(|e| CliError::failure(format!("cannot write extcap DLTs: {e}")))?;
         Ok(Exit::SUCCESS)
     } else if args.extcap_config {
         require_selected_interface(args)?;
-        let _ = write!(out, "{}", config_block());
+        out.write_all(config_block().as_bytes())
+            .map_err(|e| CliError::failure(format!("cannot write extcap config: {e}")))?;
         Ok(Exit::SUCCESS)
     } else if args.capture {
         capture(args, emitter)
@@ -102,6 +107,14 @@ fn resolve_dir(args: &ExtcapInstallArgs) -> Result<PathBuf, CliError> {
 /// overwrites any existing registration so the registered copy matches the
 /// running fragcap.
 fn install(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    install_mode(args, out, ResultMode::default())
+}
+
+fn install_mode(
+    args: &ExtcapInstallArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let dir = resolve_dir(args)?;
     let source = std::env::current_exe().map_err(|e| {
         CliError::failure(format!(
@@ -121,20 +134,12 @@ fn install(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliErr
     // treat it as an unchanged success rather than rewriting it. This is the
     // idempotent case that the running binary already satisfies.
     if is_same_existing_file(&source, &dest) {
-        let _ = writeln!(
-            out,
-            "fragcap is already registered as a Wireshark extcap source: {}",
-            dest.display()
-        );
+        extcap_action_result(out, mode, "install", "already_registered", &dest)?;
         return Ok(Exit::SUCCESS);
     }
     fs::copy(&source, &dest)
         .map_err(|e| CliError::failure(format!("could not write {}: {e}", dest.display())))?;
-    let _ = writeln!(
-        out,
-        "registered fragcap as a Wireshark extcap source: {}",
-        dest.display()
-    );
+    extcap_action_result(out, mode, "install", "registered", &dest)?;
     Ok(Exit::SUCCESS)
 }
 
@@ -163,7 +168,11 @@ fn is_same_existing_file(a: &Path, b: &Path) -> bool {
 
 /// Remove fragcap's Wireshark extcap registration. Idempotent: removing an
 /// absent registration is a success reported as a no-op.
-fn uninstall(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn uninstall_mode(
+    args: &ExtcapInstallArgs,
+    out: &mut dyn Write,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
     let dir = resolve_dir(args)?;
     let dest = dir.join(paths::EXTCAP_BINARY);
     // `try_exists` distinguishes "absent" from "could not be checked": a
@@ -176,19 +185,49 @@ fn uninstall(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliE
     if present {
         fs::remove_file(&dest)
             .map_err(|e| CliError::failure(format!("could not remove {}: {e}", dest.display())))?;
-        let _ = writeln!(
-            out,
-            "removed the fragcap Wireshark extcap registration: {}",
-            dest.display()
-        );
+        extcap_action_result(out, mode, "uninstall", "removed", &dest)?;
     } else {
-        let _ = writeln!(
-            out,
-            "fragcap is not registered as a Wireshark extcap source ({}); nothing to do",
-            dest.display()
-        );
+        extcap_action_result(out, mode, "uninstall", "absent", &dest)?;
     }
     Ok(Exit::SUCCESS)
+}
+
+fn extcap_action_result(
+    out: &mut dyn Write,
+    mode: ResultMode,
+    action: &str,
+    status: &str,
+    path: &Path,
+) -> Result<(), CliError> {
+    if mode.json {
+        return write_json(
+            out,
+            &serde_json::json!({"event":format!("extcap.{action}"),"status":status,"path":path.display().to_string()}),
+        );
+    }
+    if mode.human_result() {
+        let message = match (action, status) {
+            ("install", "registered") => format!(
+                "registered fragcap as a Wireshark extcap source: {}",
+                path.display()
+            ),
+            ("install", _) => format!(
+                "fragcap is already registered as a Wireshark extcap source: {}",
+                path.display()
+            ),
+            ("uninstall", "removed") => format!(
+                "removed the fragcap Wireshark extcap registration: {}",
+                path.display()
+            ),
+            _ => format!(
+                "fragcap is not registered as a Wireshark extcap source ({}); nothing to do",
+                path.display()
+            ),
+        };
+        writeln!(out, "{message}")
+            .map_err(|e| CliError::failure(format!("cannot write extcap result: {e}")))?;
+    }
+    Ok(())
 }
 
 /// The `--extcap-interfaces` block: the version line and the one interface.

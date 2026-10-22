@@ -187,7 +187,7 @@ fn list(json: bool, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, 
 
     if json {
         render_json(&rows, out);
-    } else {
+    } else if emitter.allows_human_result() {
         let width = selected_stdout_width(std::io::stdout().is_terminal());
         render_human(&rows, width, out);
     }

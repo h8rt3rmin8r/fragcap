@@ -36,7 +36,7 @@ fn retired_access_verbs_are_rejected_before_bundle_effects() {
     assert!(out.contains("access-authorize") && out.contains("cleanup") && out.contains("collect"));
 }
 
-fn bundle(root: &std::path::Path) -> std::path::PathBuf {
+fn make_bundle(root: &std::path::Path) -> std::path::PathBuf {
     let bundle = root.join("bundle");
     fragcap::deep_capture::prepare_bundle(&bundle).unwrap();
     std::fs::write(bundle.join("capture.fcapng"), b"ordinary").unwrap();
@@ -52,7 +52,7 @@ fn bundle(root: &std::path::Path) -> std::path::PathBuf {
 #[test]
 fn cleanup_requires_confirmation_and_removes_only_sensitive_evidence() {
     let root = tempfile::tempdir().unwrap();
-    let bundle = bundle(root.path());
+    let bundle = make_bundle(root.path());
     let path = bundle.to_string_lossy();
     let (code, _, err) = run(&["bundle", "cleanup", &path]);
     assert_eq!(code, 2);
@@ -75,12 +75,52 @@ fn cleanup_requires_confirmation_and_removes_only_sensitive_evidence() {
     assert!(out.contains("removed"));
     assert!(!bundle.join("tls-keylog.log").exists());
     assert!(bundle.join("capture.fcapng").exists());
+
+    std::fs::create_dir(root.path().join("silent-case")).unwrap();
+    let silent = make_bundle(&root.path().join("silent-case"));
+    let (code, out, err) = run(&[
+        "--silent",
+        "bundle",
+        "cleanup",
+        &silent.to_string_lossy(),
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.is_empty(),
+        "successful cleanup rows must be silent: {out}"
+    );
+    assert!(!silent.join("tls-keylog.log").exists());
+
+    std::fs::create_dir(root.path().join("json-case")).unwrap();
+    let second = make_bundle(&root.path().join("json-case"));
+    let (code, out, err) = run(&[
+        "--json",
+        "--silent",
+        "bundle",
+        "cleanup",
+        &second.to_string_lossy(),
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let records: Vec<serde_json::Value> = out
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("JSON cleanup record"))
+        .collect();
+    assert_eq!(records.last().unwrap()["event"], "bundle.cleanup.summary");
+    assert_eq!(records.last().unwrap()["artifacts"], records.len() - 1);
+    assert_eq!(records.last().unwrap()["complete"], true);
+    for record in &records[..records.len() - 1] {
+        assert_eq!(record["event"], "bundle.cleanup.artifact");
+        assert!(record["path"].is_string());
+    }
+    assert!(!second.join("tls-keylog.log").exists());
 }
 
 #[test]
 fn export_is_a_separate_copy_with_an_exhaustive_manifest() {
     let root = tempfile::tempdir().unwrap();
-    let bundle = bundle(root.path());
+    let bundle = make_bundle(root.path());
     let share = root.path().join("share");
     let source = bundle.to_string_lossy();
     let destination = share.to_string_lossy();
@@ -100,6 +140,23 @@ fn export_is_a_separate_copy_with_an_exhaustive_manifest() {
             .unwrap();
     assert_eq!(manifest["status"], "complete");
     assert_eq!(manifest["omitted"][0]["path"], "tls-keylog.log");
+
+    let json_share = root.path().join("json-share");
+    let (code, out, err) = run(&[
+        "--json",
+        "bundle",
+        "export",
+        &source,
+        "--out",
+        &json_share.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let record: serde_json::Value = serde_json::from_str(&out).expect("JSON export result");
+    assert_eq!(record["event"], "bundle.export");
+    assert!(record["manifest"]
+        .as_str()
+        .unwrap()
+        .ends_with("sharing-manifest.json"));
 }
 
 #[test]
