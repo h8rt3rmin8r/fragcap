@@ -76,10 +76,27 @@ fn cleanup_requires_confirmation_and_removes_only_sensitive_evidence() {
     assert!(!bundle.join("tls-keylog.log").exists());
     assert!(bundle.join("capture.fcapng").exists());
 
+    std::fs::create_dir(root.path().join("silent-case")).unwrap();
+    let silent = make_bundle(&root.path().join("silent-case"));
+    let (code, out, err) = run(&[
+        "--silent",
+        "bundle",
+        "cleanup",
+        &silent.to_string_lossy(),
+        "--yes",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.is_empty(),
+        "successful cleanup rows must be silent: {out}"
+    );
+    assert!(!silent.join("tls-keylog.log").exists());
+
     std::fs::create_dir(root.path().join("json-case")).unwrap();
     let second = make_bundle(&root.path().join("json-case"));
     let (code, out, err) = run(&[
         "--json",
+        "--silent",
         "bundle",
         "cleanup",
         &second.to_string_lossy(),

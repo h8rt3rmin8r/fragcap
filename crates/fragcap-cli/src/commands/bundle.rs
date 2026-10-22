@@ -452,7 +452,7 @@ pub(crate) fn run_mode(
                         out,
                         &serde_json::json!({"event":"bundle.cleanup.artifact","status":result.status,"path":result.path.display().to_string(),"reason":result.reason}),
                     )?;
-                } else {
+                } else if mode.human_result() || result.status == "failed" {
                     writeln!(out, "{}", layout.render_wrapped_row(row, 80))
                         .map_err(|error| CliError::failure(error.to_string()))?;
                 }
