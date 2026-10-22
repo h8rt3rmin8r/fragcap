@@ -352,14 +352,16 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
                     out.flush()
                         .map_err(|error| CliError::failure(error.to_string()))?;
                 } else {
-                    let next = if !cfg!(windows) {
-                        "Collection applies only on Windows; inspect this preview on a supported Windows host"
-                    } else if result["unresolved_sessions"].as_u64().unwrap_or(0) > 0
+                    let next = if result["unresolved_sessions"].as_u64().unwrap_or(0) > 0
                         || result["complete"] == false
                     {
                         "Check the bundle path and unresolved authority, then rerun this read-only preview"
-                    } else {
+                    } else if result["eligible_sessions"] == 0 {
                         "No eligible contents were selected; review the scope before another read-only preview"
+                    } else if !cfg!(windows) {
+                        "Collection applies only on Windows; inspect this preview on a supported Windows host"
+                    } else {
+                        "Review the exact collection scope before another read-only preview"
                     };
                     write!(
                         out,
