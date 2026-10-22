@@ -18,6 +18,23 @@ mod common;
 use common::run;
 use regex::Regex;
 
+#[test]
+fn discovery_and_scan_help_name_their_local_store_effects() {
+    for flag in ["-h", "--help"] {
+        let discover = render_with(&["targets", "discover"], flag);
+        assert!(!discover.contains("read-only"), "{discover}");
+        assert!(discover.contains("local store"), "{discover}");
+        assert!(discover.contains("eligibility"), "{discover}");
+        assert!(discover.contains("register"), "{discover}");
+
+        let scan = render_with(&["targets", "scan"], flag);
+        assert!(scan.contains("register"), "{scan}");
+
+        let targets = render_with(&["targets"], flag);
+        assert!(targets.contains("register"), "{targets}");
+    }
+}
+
 /// The hard wrap limit, matching `max_term_width` on the root command.
 const MAX_WIDTH: usize = 100;
 

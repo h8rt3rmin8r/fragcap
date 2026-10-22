@@ -748,7 +748,8 @@ pub struct BundleArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BundleCommand {
-    /// Preview or apply session content collection and separately scoped empty purge.
+    /// Preview or apply a reviewed proposal that deletes eligible bundle contents.
+    #[command(after_long_help = crate::workflow_help::BUNDLE_COLLECT_LONG_HELP)]
     Collect {
         /// Select one exact retained/custom bundle instead of managed root history.
         #[arg(long)]
@@ -1006,17 +1007,17 @@ pub enum TargetsCommand {
     /// Show one target resolved by a selector (handle, name, row index, or `--id`).
     #[command(after_long_help = crate::workflow_help::TARGETS_SHOW_LONG_HELP)]
     Show(TargetsShowArgs),
-    /// Discover installed games: walk Steam and the known game-install roots.
+    /// Discover candidates; may update local store eligibility, but registers no targets.
     ///
-    /// Reads only; a candidate becomes a stored target when acted on
-    /// (`targets add`).
+    /// May create or update the local store for volume eligibility. A candidate
+    /// becomes a stored target through registration (`targets add` or `scan`).
     #[command(after_long_help = crate::workflow_help::TARGETS_DISCOVER_LONG_HELP)]
     Discover(TargetsDiscoverArgs),
     /// Preview or confirm conservative cleanup of historical discovery residue.
     Reconcile(TargetsReconcileArgs),
-    /// Scan one directory and list it as a single candidate.
+    /// Scan one directory and register or update its target in the local store.
     ///
-    /// Backs pointing discovery straight at a known game folder. With
+    /// Treats the pointed directory as one candidate. With
     /// `--catalog-db`, detects the engine, anti-cheat, and DRM technologies in
     /// the directory and carries them as evidence.
     Scan {
@@ -1068,7 +1069,8 @@ pub struct TargetsDiscoverArgs {
     /// The catalog store (`catalog.db`) whose appids classify Steam titles.
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
-    /// The user store (`local.db`) holding the volume eligibility allowlist.
+    /// The user store (`local.db`), which discovery may create or update for
+    /// volume eligibility; discovered candidates are not registered here.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
     /// The Steam installation root.
@@ -1169,10 +1171,11 @@ pub enum CatalogCommand {
         #[arg(long)]
         db: Option<PathBuf>,
     },
-    /// Fill the catalog store, one tier or all of them.
+    /// Fill supported catalog tiers from bundled or selected sources.
     ///
-    /// With no `--tier`, fills every tier that has a source available without
-    /// one being named, and reports every tier it skipped with the reason.
+    /// With no `--tier`, fills signatures and reports each tier without a source.
+    /// `--from` accepts a bare JSON array for exactly one catalog or engine tier;
+    /// the `catalog export` envelope is not a seed document. Launch has no seeder.
     Seed(TargetsSeedArgs),
 }
 
@@ -1198,6 +1201,7 @@ pub struct TargetsShowArgs {
 /// Arguments to `targets export`. The selector is optional: with none, every
 /// registered target is exported; with one, only the target it resolves.
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("target_selector").args(["selector", "id"])))]
 pub struct TargetsExportArgs {
     /// A selector: an exact handle, a case-insensitive exact name, or a 1-based row
     /// index.
@@ -1264,12 +1268,13 @@ pub enum SeedTierArg {
 pub struct TargetsSeedArgs {
     /// The tier to fill, repeatable.
     ///
-    /// Omit to fill every tier with a source.
+    /// Omit to fill signatures and report unfilled tiers. Launch has no seeder.
     #[arg(long, value_enum)]
     pub tier: Vec<SeedTierArg>,
-    /// Seed from a local document (offline).
+    /// Seed from a bare JSON array of title or engine records (offline).
     ///
-    /// Requires exactly one `--tier`.
+    /// Requires exactly one `--tier catalog` or `--tier engine`. A `catalog
+    /// export` envelope is not accepted here; use `catalog import` for that.
     #[arg(long)]
     pub from: Option<PathBuf>,
     /// Seed the title tier from the live Steam catalog over the network.

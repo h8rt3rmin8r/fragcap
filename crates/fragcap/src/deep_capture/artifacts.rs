@@ -102,13 +102,9 @@ pub fn open_sensitive_file(path: &Path) -> io::Result<File> {
 }
 
 pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>> {
-    let manifest = read_cleanup_manifest(bundle)?;
-    let paths = sensitive_paths(&manifest)?;
+    let paths = validated_sensitive_cleanup_paths(bundle)?;
     // Explicit deletion does not adopt a historical bundle into a new output
     // contract. Validate every selected path before creating its action journal.
-    for relative in &paths {
-        contained(bundle, relative)?;
-    }
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -148,6 +144,24 @@ pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>>
         });
     }
     Ok(results)
+}
+
+/// Validate the sensitive-cleanup authority without creating a journal or
+/// deleting an artifact. Accepts the same completed or crash-prefix manifest
+/// forms that the effectful cleanup path accepts.
+pub fn preflight_sensitive_cleanup(bundle: &Path) -> io::Result<()> {
+    validated_sensitive_cleanup_paths(bundle).map(|_| ())
+}
+
+fn validated_sensitive_cleanup_paths(
+    bundle: &Path,
+) -> io::Result<std::collections::BTreeSet<PathBuf>> {
+    let manifest = read_cleanup_manifest(bundle)?;
+    let paths = sensitive_paths(&manifest)?;
+    for relative in &paths {
+        contained(bundle, relative)?;
+    }
+    Ok(paths)
 }
 
 fn prepare_cleanup_journal(bundle: &Path) -> io::Result<()> {
@@ -744,6 +758,7 @@ mod tests {
                 prepare_bundle(&root).is_err(),
                 "new-output preparation must not adopt legacy ACLs"
             );
+            preflight_sensitive_cleanup(&root).unwrap();
             let pinned = super::super::access::pin_access_path(&root, false).unwrap();
             let root_descriptor = pinned.descriptor.clone();
             drop(pinned);

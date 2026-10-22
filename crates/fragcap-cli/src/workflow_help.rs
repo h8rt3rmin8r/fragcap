@@ -114,7 +114,7 @@ pub(crate) const TARGETS_LONG_HELP: &str = r#"Deep Capture target path:
 Registration identifies one installed target. Calibration separately measures
 whether its exact managed launch and protocols are currently compatible."#;
 
-pub(crate) const TARGETS_DISCOVER_LONG_HELP: &str = r#"Discovery is read-only and does not claim that a candidate is a game or compatible.
+pub(crate) const TARGETS_DISCOVER_LONG_HELP: &str = r#"Discovery may create or update the local store for volume eligibility. It does not register candidate targets or claim that a candidate is a game or compatible.
 
 Results use source chapters separated by an 80-underscore rule, target headings,
 and aligned child fields. Every distinct technology finding stays under its
@@ -144,6 +144,10 @@ Next command when setup is incomplete:
 
 Next command after current compatibility is established:
   fragcap deep-capture "<installed game>" --launch"#;
+
+pub(crate) const BUNDLE_COLLECT_LONG_HELP: &str = r#"A preview changes nothing. Applying its exact reviewed proposal deletes eligible bundle contents while preserving the container. --include-retained explicitly expands deletion to retained or custom evidence selected by --bundle. --purge-empty separately selects eligible exact empty containers.
+
+Review the eligible, retained, unresolved, and empty counts before applying. An incomplete or zero-work preview offers no Apply command. A changed proposal must be previewed again."#;
 
 pub(crate) const BUNDLE_CLEANUP_LONG_HELP: &str = r#"This destructive operation removes only sensitive artifacts declared by a completed bundle.
 Review the bundle before passing --yes. If cleanup fails, retain manifest.json,

@@ -2674,6 +2674,15 @@ compiled into the binary, authored for depot manifests rather than on-disk
 installs, and never validated against a real game; the seeded set is authored for
 on-disk install layouts instead.
 
+S178 validates an explicit seed tier and parses a named offline source before
+opening the catalog store. Document-backed title and engine tiers accept bare
+JSON arrays, not a `catalog export` envelope; signature uses bundled data, and
+launch has no seeder. Repeated tier names are attempted once. An explicit launch
+tier request fails without creating a store, while a default request seeds the
+available bundled signature tier and reports other tiers skipped with the
+reason. Help and skipped-tier guidance name network flags only when the build
+actually exposes them. The filled count names distinct tiers actually run.
+
 The matcher reads directory entries, for a PE version string the version resource
 in a binary's own on-disk bytes, and for a binary marker the section table in a
 bounded prefix of a candidate executable's own bytes. It opens no process handle,
@@ -3592,6 +3601,10 @@ target need no store path unless one is named explicitly.
   detection coverage state, so a machine reader can make the same partition, mark
   the same uncertain products, and draw the same coverage conclusion the listing
   does. An out-of-set coverage value is rejected at import and nothing is applied.
+  Export accepts either one positional selector or one stable `--id`, or neither
+  to export all. Supplying both selector forms refuses with a usage error before
+  any target JSON is emitted. Show, remove, and export misses point to an
+  action-specific listing or retry rather than a capture action.
 - `targets reconcile [--steam-root <PATH>] [--yes]` previews historical rows that
   exact provenance and platform inventory prove are legacy tool-owned residue. The
   preview names each removable row's stable identifier, handle, and reason and
@@ -3599,8 +3612,10 @@ target need no store path unless one is named explicitly.
   With `--yes` it rebuilds the preview, requires a complete platform inventory, and
   atomically deletes only complete rows that remain byte-for-value unchanged.
   Folder names, display names, and location alone never establish ownership.
-- `targets show <SELECTOR>` and `targets discover` are read-only inspections;
-  `discover`, unlike the listing, registers nothing. Human `targets discover`
+- `targets show <SELECTOR>` is a read-only inspection. `targets discover` may
+  create or update the local store for volume eligibility, but unlike the
+  listing it registers no candidate target. `targets scan` can register or
+  update its candidate. Human `targets discover`
   output names the catalog and local stores, then prints deterministic source
   chapters, each flush-left after an 80-character underscore rule. Target headings
   use four spaces and child field keys use eight. One report-wide field anchor
@@ -4709,7 +4724,7 @@ in the final drop count.
 
 S171 source adds whole-session retention and garbage collection under issue #458. Newly generated Deep Capture and calibration output declares managed history limits of 30 days, 20 completed sessions and 2 GiB of logical contents, oldest eligible first. Terminal manifest publication is the age origin. Explicit `--retain-bundle` or `--bundle` destinations, including guided sibling attempts, retain evidence until explicit cleanup. Historical evidence keeps its previous promise. Authorization, retained metadata and terminal output expose policy; no release of this source correction is implied.
 
-`fragcap bundle collect` previews the configured root with eligible, retained, unresolved and empty sessions, recoverable logical bytes, refusal reasons and scan limits. `--include-retained` explicitly selects historical retained evidence; `--bundle <PATH>` selects a custom destination. `--authorize <PROPOSAL_ID>` applies only the unchanged exact preview. Automatic maintenance runs after an authorized effectful shared session, excludes its returned bundle and never runs from plan-only or read-only Doctor. It preserves saved/custom output, active generations and recovery-required authority.
+`fragcap bundle collect` previews the configured root with eligible, retained, unresolved and empty sessions, recoverable logical bytes, refusal reasons and scan limits. `--include-retained` explicitly selects historical retained evidence; `--bundle <PATH>` selects a custom destination. `--authorize <PROPOSAL_ID>` applies only the unchanged exact preview. Applying deletes eligible bundle contents while preserving the container; retained or custom evidence requires explicit wider selection, and empty-container removal requires separate `--purge-empty`. S178 recommends Apply only for a complete preview with eligible work and no unresolved authority, and retains concrete refusal detail in human and structured reports. Missing or unowned paths get a read-only next step. Cleanup and export reject missing bundle paths before suggesting any destructive retry. Automatic maintenance runs after an authorized effectful shared session, excludes its returned bundle and never runs from plan-only or read-only Doctor. It preserves saved/custom output, active generations and recovery-required authority.
 
 Whole-session collection requires a terminal recognized manifest, exact closed journal identity/version/count, every latest external obligation settled, a complete recognized bounded population and inactive matching generation leases. Unknown, malformed, unreadable, unsupported, substituted, reparse or outside-hard-link state refuses. Windows removes exact pinned objects by deletion-capable handles. A synchronized versioned transaction outside disposable contents records exact container identity, population and progress before the first deletion, supporting retries after former manifests or journals have been removed. Reports count logical bytes actually removed, independently from physical disk allocation and planned totals. Exact destructive collection on other platforms is explicitly unsupported.
 

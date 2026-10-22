@@ -594,7 +594,12 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
             let _ = writeln!(
                 out,
                 "{}",
-                target_resolve::no_match_message(&store, args.selector.as_deref())
+                target_resolve::no_match_message_for_action(
+                    &store,
+                    args.selector.as_deref(),
+                    args.id,
+                    target_resolve::TargetAction::Remove,
+                )
             );
             Ok(miss_exit)
         }
@@ -638,6 +643,11 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
 /// exits 0, while an out-of-range row index or an unknown `--id` is an invalid
 /// machine reference (exit 2). An ambiguous name refuses (exit 2) (FR-018).
 fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    if args.id.is_some() && args.selector.is_some() {
+        return Err(CliError::usage(
+            "a positional target selector and --id conflict; choose one",
+        ));
+    }
     let db = resolve_store(args.db.as_deref())?;
     let store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let entries = match (args.id, &args.selector) {
@@ -660,7 +670,12 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                     let _ = writeln!(
                         out,
                         "{}",
-                        target_resolve::no_match_message(&store, selector.as_deref())
+                        target_resolve::no_match_message_for_action(
+                            &store,
+                            selector.as_deref(),
+                            id,
+                            target_resolve::TargetAction::Export,
+                        )
                     );
                     return Ok(miss_exit);
                 }
@@ -1665,7 +1680,12 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             let _ = writeln!(
                 out,
                 "{}",
-                target_resolve::no_match_message(&store, args.selector.as_deref())
+                target_resolve::no_match_message_for_action(
+                    &store,
+                    args.selector.as_deref(),
+                    args.id,
+                    target_resolve::TargetAction::Show,
+                )
             );
             Ok(miss_exit)
         }
