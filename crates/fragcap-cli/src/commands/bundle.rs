@@ -117,6 +117,32 @@ fn cleanup_failure(message: impl Into<String>, json: bool) -> CliError {
     }
 }
 
+fn require_existing_bundle(bundle: &std::path::Path) -> Result<(), CliError> {
+    let metadata = bundle.symlink_metadata().map_err(|error| {
+        CliError::usage(format!(
+            "bundle path {} is unavailable: {error}. Check the bundle path and inspect the completed bundle before retrying",
+            bundle.display()
+        ))
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(CliError::usage(format!(
+            "bundle path {} is not an exact directory. Check the bundle path before retrying",
+            bundle.display()
+        )));
+    }
+    Ok(())
+}
+
+fn actionable_collection_preview(value: &serde_json::Value) -> bool {
+    cfg!(windows)
+        && value["mode"] == "preview"
+        && value["complete"] == true
+        && value["eligible_sessions"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+        && value["unresolved_sessions"] == 0
+}
+
 fn render_collection(
     value: &serde_json::Value,
     json: bool,
@@ -134,6 +160,22 @@ fn render_collection(
         (
             "Session root:".into(),
             value["root"].as_str().unwrap_or("unavailable").into(),
+        ),
+        (
+            "Apply scope:".into(),
+            format!(
+                "delete eligible bundle contents{}{}",
+                if value["include_retained"] == true {
+                    ", including explicitly selected retained evidence"
+                } else {
+                    ""
+                },
+                if value["purge_empty"] == true {
+                    ", and eligible exact empty containers"
+                } else {
+                    ""
+                }
+            ),
         ),
     ];
     for (label, key) in [
@@ -157,7 +199,7 @@ fn render_collection(
         .map_err(|error| CliError::failure(error.to_string()))?;
     if let Some(rows) = value["results"].as_array() {
         for row in rows {
-            let fields = [
+            let mut fields = vec![
                 (
                     "Bundle:".into(),
                     row["bundle"].as_str().unwrap_or("unavailable").into(),
@@ -179,6 +221,9 @@ fn render_collection(
                         .map_or_else(|| "unavailable".into(), ToString::to_string),
                 ),
             ];
+            if let Some(detail) = row["detail"].as_str() {
+                fields.push(("Detail:".into(), detail.into()));
+            }
             write!(
                 out,
                 "\n{}",
@@ -275,7 +320,10 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             })?;
             render_collection(&result, json, out)?;
             if !json && authorize.is_none() {
-                if let Some(id) = result["proposal_id"].as_str() {
+                if actionable_collection_preview(&result) {
+                    let id = result["proposal_id"].as_str().ok_or_else(|| {
+                        CliError::failure("complete collection preview has no proposal identifier")
+                    })?;
                     let mut command = String::from("fragcap bundle collect");
                     if let Some(bundle) = bundle {
                         command.push_str(" --bundle ");
@@ -297,6 +345,30 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
                         crate::display::render_fields(
                             0,
                             &[("Apply reviewed proposal:".into(), command)],
+                            crate::display::selected_stdout_width(std::io::stdout().is_terminal()),
+                        )
+                    )
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                    out.flush()
+                        .map_err(|error| CliError::failure(error.to_string()))?;
+                } else {
+                    let next = if result["unresolved_sessions"].as_u64().unwrap_or(0) > 0
+                        || result["complete"] == false
+                    {
+                        "Check the bundle path and unresolved authority, then rerun this read-only preview"
+                    } else if result["eligible_sessions"] == 0 {
+                        "No eligible contents were selected; review the scope before another read-only preview"
+                    } else if !cfg!(windows) {
+                        "Collection applies only on Windows; inspect this preview on a supported Windows host"
+                    } else {
+                        "Review the exact collection scope before another read-only preview"
+                    };
+                    write!(
+                        out,
+                        "{}",
+                        crate::display::render_fields(
+                            0,
+                            &[("Next step:".into(), next.into())],
                             crate::display::selected_stdout_width(std::io::stdout().is_terminal()),
                         )
                     )
@@ -327,6 +399,13 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             Ok(Exit::SUCCESS)
         }
         BundleCommand::Cleanup { bundle, yes } => {
+            require_existing_bundle(bundle)?;
+            fragcap::deep_capture::preflight_sensitive_cleanup(bundle).map_err(|error| {
+                CliError::usage(format!(
+                    "bundle path {} is not ready for sensitive cleanup: {error}. Inspect the bundle status before retrying",
+                    bundle.display()
+                ))
+            })?;
             if !yes {
                 let retry = format!(
                     "fragcap bundle cleanup {} --yes",
@@ -388,6 +467,7 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
             bundle,
             out: destination,
         } => {
+            require_existing_bundle(bundle)?;
             let manifest = fragcap::deep_capture::export_share_copy(bundle, destination)
                 .map_err(|error| CliError::failure(format!("bundle export failed: {error}")))?;
             writeln!(out, "{}", manifest.display())
@@ -399,7 +479,7 @@ pub fn run(args: &BundleArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
 
 #[cfg(test)]
 mod tests {
-    use super::cleanup_failure;
+    use super::{actionable_collection_preview, cleanup_failure};
 
     #[test]
     fn human_cleanup_failure_retains_recovery_authority_and_json_stays_stable() {
@@ -414,5 +494,23 @@ mod tests {
 
         let json = cleanup_failure("sensitive cleanup failed: denied", true);
         assert_eq!(json.message(), "sensitive cleanup failed: denied");
+    }
+
+    #[test]
+    fn apply_advice_requires_complete_positive_eligible_preview() {
+        let complete = serde_json::json!({
+            "mode":"preview",
+            "complete":true,
+            "eligible_sessions":1,
+            "unresolved_sessions":0
+        });
+        assert_eq!(actionable_collection_preview(&complete), cfg!(windows));
+        for changed in [
+            serde_json::json!({"mode":"preview","complete":false,"eligible_sessions":1,"unresolved_sessions":1}),
+            serde_json::json!({"mode":"preview","complete":true,"eligible_sessions":0,"unresolved_sessions":0}),
+            serde_json::json!({"mode":"apply","complete":true,"eligible_sessions":1,"unresolved_sessions":0}),
+        ] {
+            assert!(!actionable_collection_preview(&changed), "{changed}");
+        }
     }
 }

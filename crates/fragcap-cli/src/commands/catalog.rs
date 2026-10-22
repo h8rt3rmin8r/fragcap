@@ -124,6 +124,7 @@ fn now_string() -> Option<String> {
 /// configuration-side form of an uncounted discard (P-4).
 fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     let requested = requested_tiers(args)?;
+    let document = seed_document(args, &requested)?;
     let db = resolve_store(args.db.as_ref())?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
 
@@ -136,23 +137,19 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
                 let _ = writeln!(out, "signature tier: seeded {count} detection signature(s)");
                 filled += 1;
             }
-            SeedTierArg::Catalog => match catalog_summary(args, &mut store)? {
+            SeedTierArg::Catalog => match catalog_summary(args, document.as_ref(), &mut store)? {
                 Some(summary) => {
                     report(out, "title tier", &summary);
                     filled += 1;
                 }
-                None => skipped(out, "title tier", "no source; pass --from or --steam"),
+                None => skipped(out, "title tier", catalog_source_guidance()),
             },
-            SeedTierArg::Engine => match engine_summary(args, &mut store)? {
+            SeedTierArg::Engine => match engine_summary(args, document.as_ref(), &mut store)? {
                 Some(summary) => {
                     report(out, "engine tier", &summary);
                     filled += 1;
                 }
-                None => skipped(
-                    out,
-                    "engine tier",
-                    "no source; pass --from or --pcgamingwiki",
-                ),
+                None => skipped(out, "engine tier", engine_source_guidance()),
             },
             SeedTierArg::Launch => skipped(
                 out,
@@ -164,6 +161,59 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 
     let _ = writeln!(out, "seeded {} ({filled} tier(s) filled)", db.display());
     Ok(Exit::SUCCESS)
+}
+
+enum SeedDocument {
+    Catalog(FixtureCatalog),
+    Engine(FixtureEngineFeed),
+}
+
+/// Parse the one named offline source before opening or creating a store. The
+/// parsed value is retained so the file cannot change between validation and
+/// seeding.
+fn seed_document(
+    args: &TargetsSeedArgs,
+    requested: &[SeedTierArg],
+) -> Result<Option<SeedDocument>, CliError> {
+    let Some(from) = &args.from else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(from).map_err(|e| {
+        CliError::failure(format!("cannot read seed document {}: {e}", from.display()))
+    })?;
+    match requested.first() {
+        Some(SeedTierArg::Catalog) => FixtureCatalog::from_json(&text)
+            .map(SeedDocument::Catalog)
+            .map(Some)
+            .map_err(|e| CliError::failure(e.to_string())),
+        Some(SeedTierArg::Engine) => FixtureEngineFeed::from_json(&text)
+            .map(SeedDocument::Engine)
+            .map(Some)
+            .map_err(|e| CliError::failure(e.to_string())),
+        _ => Err(CliError::usage(
+            "--from requires --tier catalog or --tier engine",
+        )),
+    }
+}
+
+#[cfg(feature = "net")]
+fn catalog_source_guidance() -> &'static str {
+    "no source; pass --from or --steam"
+}
+
+#[cfg(not(feature = "net"))]
+fn catalog_source_guidance() -> &'static str {
+    "no source; pass --tier catalog --from <bare-array.json>"
+}
+
+#[cfg(feature = "net")]
+fn engine_source_guidance() -> &'static str {
+    "no source; pass --from or --pcgamingwiki"
+}
+
+#[cfg(not(feature = "net"))]
+fn engine_source_guidance() -> &'static str {
+    "no source; pass --tier engine --from <bare-array.json>"
 }
 
 /// The tiers this invocation should attempt.
@@ -178,10 +228,16 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 /// a guess that picks the wrong tier writes the wrong columns with no error
 /// (P-9). Refusing is the only honest answer.
 fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError> {
-    if args.from.is_some() && args.tier.len() != 1 {
+    let mut requested = Vec::new();
+    for tier in &args.tier {
+        if !requested.contains(tier) {
+            requested.push(*tier);
+        }
+    }
+    if args.from.is_some() && requested.len() != 1 {
         return Err(CliError::usage(
             "--from fills one tier and the document does not say which; pass exactly one \
-             --tier (catalog, launch, engine, or signature)",
+             --tier (catalog or engine)",
         ));
     }
     // A tier that reads no document must refuse one. The signature tier seeds
@@ -191,7 +247,7 @@ fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError>
     // PR #190). Discarding a named input silently is the configuration-side form
     // of the loss P-4 forbids.
     if args.from.is_some() {
-        let unreadable = match args.tier.first() {
+        let unreadable = match requested.first() {
             Some(SeedTierArg::Signature) => Some((
                 "signature",
                 "it seeds from the bundled document; drop --from",
@@ -208,7 +264,7 @@ fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError>
             )));
         }
     }
-    if args.tier.is_empty() {
+    if requested.is_empty() {
         return Ok(vec![
             SeedTierArg::Signature,
             SeedTierArg::Catalog,
@@ -216,24 +272,38 @@ fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError>
             SeedTierArg::Launch,
         ]);
     }
-    Ok(args.tier.clone())
+    if requested.contains(&SeedTierArg::Launch) {
+        return Err(CliError::usage(
+            "launch tier has no seeder; launch data accumulates from captures",
+        ));
+    }
+    #[cfg(feature = "net")]
+    {
+        if args.steam && !requested.contains(&SeedTierArg::Catalog) {
+            return Err(CliError::usage(
+                "--steam fills the catalog tier; include --tier catalog or omit --tier",
+            ));
+        }
+        if args.pcgamingwiki && !requested.contains(&SeedTierArg::Engine) {
+            return Err(CliError::usage(
+                "--pcgamingwiki fills the engine tier; include --tier engine or omit --tier",
+            ));
+        }
+    }
+    Ok(requested)
 }
 
 /// Seed the title tier, or `None` when no source names it.
 fn catalog_summary(
     args: &TargetsSeedArgs,
+    document: Option<&SeedDocument>,
     store: &mut Store,
 ) -> Result<Option<SeedSummary>, CliError> {
     let gate = CorpusGate::new(args.min_reviews);
     let now = now_string();
-    if let Some(from) = &args.from {
-        let text = std::fs::read_to_string(from).map_err(|e| {
-            CliError::failure(format!("cannot read catalog {}: {e}", from.display()))
-        })?;
-        let source =
-            FixtureCatalog::from_json(&text).map_err(|e| CliError::failure(e.to_string()))?;
+    if let Some(SeedDocument::Catalog(source)) = document {
         return Ok(Some(
-            seed_catalog(store, &source, &gate, now)
+            seed_catalog(store, source, &gate, now)
                 .map_err(|e| CliError::failure(e.to_string()))?,
         ));
     }
@@ -250,25 +320,18 @@ fn catalog_summary(
 
 /// Seed the engine tier, or `None` when no source names it.
 fn engine_summary(
-    args: &TargetsSeedArgs,
+    _args: &TargetsSeedArgs,
+    document: Option<&SeedDocument>,
     store: &mut Store,
 ) -> Result<Option<SeedSummary>, CliError> {
     let now = now_string();
-    if let Some(from) = &args.from {
-        let text = std::fs::read_to_string(from).map_err(|e| {
-            CliError::failure(format!(
-                "cannot read engine document {}: {e}",
-                from.display()
-            ))
-        })?;
-        let source =
-            FixtureEngineFeed::from_json(&text).map_err(|e| CliError::failure(e.to_string()))?;
+    if let Some(SeedDocument::Engine(source)) = document {
         return Ok(Some(
-            seed_engine(store, &source, now).map_err(|e| CliError::failure(e.to_string()))?,
+            seed_engine(store, source, now).map_err(|e| CliError::failure(e.to_string()))?,
         ));
     }
     #[cfg(feature = "net")]
-    if args.pcgamingwiki {
+    if _args.pcgamingwiki {
         let source = fragcap::targets::HttpEngineFeed::new();
         return Ok(Some(
             seed_engine(store, &source, now).map_err(|e| CliError::failure(e.to_string()))?,

@@ -885,6 +885,73 @@ fn export_preserves_the_selector_kind_on_a_miss() {
 }
 
 #[test]
+fn export_rejects_conflicting_name_and_stable_id_without_target_bytes() {
+    let dir = TempDir::new().unwrap();
+    let store = db(&dir);
+    for (name, anchor) in [("QA Alpha", "steam:101"), ("QA Beta", "steam:202")] {
+        let (code, out, err) = run(&["targets", "add", name, "--anchor", anchor, "--db", &store]);
+        assert_eq!(code, 0, "{out}\n{err}");
+    }
+    let (code, all, err) = run(&["targets", "export", "--db", &store]);
+    assert_eq!(code, 0, "{err}");
+    let values: serde_json::Value = serde_json::from_str(&all).unwrap();
+    assert_eq!(values.as_array().unwrap().len(), 2);
+    let beta_id = values
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["name"] == "QA Beta")
+        .unwrap()["stable_id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    let (code, out, err) = run(&[
+        "targets", "export", "QA Alpha", "--id", &beta_id, "--db", &store,
+    ]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.is_empty(), "conflict emitted target bytes: {out}");
+    assert!(
+        err.contains("cannot be used with") || err.contains("conflict"),
+        "{err}"
+    );
+    let (code, one, err) = run(&["targets", "export", "--id", &beta_id, "--db", &store]);
+    assert_eq!(code, 0, "{err}");
+    let one: serde_json::Value = serde_json::from_str(&one).unwrap();
+    assert_eq!(one.as_array().unwrap().len(), 1);
+    assert_eq!(one[0]["name"], "QA Beta");
+}
+
+#[test]
+fn missing_target_references_give_action_specific_retry() {
+    let dir = TempDir::new().unwrap();
+    let store = db(&dir);
+    let (code, out, err) = run(&[
+        "targets",
+        "add",
+        "QA Alpha",
+        "--anchor",
+        "steam:101",
+        "--db",
+        &store,
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    run(&["targets", "list", "--db", &store]);
+    for action in ["show", "remove", "export"] {
+        for selector in ["999", "--id"] {
+            let args = if selector == "--id" {
+                vec!["targets", action, "--id", "999999", "--db", &store]
+            } else {
+                vec!["targets", action, "999", "--db", &store]
+            };
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 2, "{out}\n{err}");
+            assert!(out.contains(&format!("fragcap targets {action}")), "{out}");
+            assert!(!out.contains("Then capture it"), "{out}");
+        }
+    }
+}
+
+#[test]
 fn zero_and_out_of_range_row_indexes_are_usage_errors() {
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);
@@ -1174,6 +1241,12 @@ fn scan_lists_a_directory_as_one_candidate() {
         out.contains("account:"),
         "the conserved account is surfaced: {out}"
     );
+    let (code, exported, err) = run(&["targets", "export", "--db", &local]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        exported.contains("Celeste"),
+        "scan registers its candidate: {exported}"
+    );
 }
 
 #[test]
@@ -1253,6 +1326,40 @@ fn discover_lists_steam_titles_through_the_cli() {
         out.lines()
             .any(|line| line.starts_with("  zero:") && line.contains("parse failed")),
         "zero-valued account outcomes are grouped: {out}"
+    );
+}
+
+#[test]
+fn first_run_discover_creates_eligibility_store_without_registering_candidates() {
+    let dir = TempDir::new().expect("tempdir");
+    let steam_root = dir.path().join("steam");
+    write_steam_fixture(&steam_root);
+    let local = dir.path().join("local.db");
+    let catalog = dir.path().join("catalog.db");
+    assert!(!local.exists());
+
+    let (code, out, err) = run(&[
+        "targets",
+        "discover",
+        "--summary",
+        "--local-db",
+        &local.to_string_lossy(),
+        "--catalog-db",
+        &catalog.to_string_lossy(),
+        "--steam-root",
+        &steam_root.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "{out} {err}");
+    assert!(
+        local.exists(),
+        "discovery initializes the local eligibility store"
+    );
+    let (code, exported, err) = run(&["targets", "export", "--db", &local.to_string_lossy()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        exported.trim(),
+        "[]",
+        "discover does not register a candidate"
     );
 }
 

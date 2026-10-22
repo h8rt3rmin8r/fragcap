@@ -101,3 +101,163 @@ fn export_is_a_separate_copy_with_an_exhaustive_manifest() {
     assert_eq!(manifest["status"], "complete");
     assert_eq!(manifest["omitted"][0]["path"], "tls-keylog.log");
 }
+
+#[test]
+fn collection_preview_never_offers_apply_for_missing_or_unowned_bundle() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing bundle");
+    let empty = root.path().join("empty bundle");
+    std::fs::create_dir(&empty).unwrap();
+    for bundle in [&missing, &empty] {
+        let path = bundle.to_string_lossy();
+        let (code, human, err) = run(&["bundle", "collect", "--bundle", &path]);
+        assert_eq!(code, 0, "{err}");
+        let (json_code, json, json_err) = run(&["--json", "bundle", "collect", "--bundle", &path]);
+        assert_eq!(json_code, 0, "{json_err}");
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["eligible_sessions"], 0, "{json}");
+        if bundle == &missing {
+            assert_eq!(value["complete"], false, "{json}");
+            assert_eq!(value["unresolved_sessions"], 1, "{json}");
+        } else {
+            assert_eq!(value["retained_sessions"], 1, "{json}");
+        }
+        assert!(!human.contains("Apply reviewed proposal:"), "{human}");
+        let row = &value["results"][0];
+        let reason = row["reason"].as_str().unwrap();
+        assert!(human.contains(reason), "{human}");
+        if let Some(detail) = row["detail"].as_str() {
+            let normalized = human.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                normalized.contains(detail),
+                "missing detail {detail:?}: {human}"
+            );
+        }
+        assert!(human.contains("Next step:"), "{human}");
+        if bundle == &missing {
+            assert!(human.contains("Check the bundle path"), "{human}");
+        } else {
+            assert!(human.contains("No eligible contents"), "{human}");
+        }
+        assert_eq!(bundle.exists(), bundle == &empty);
+    }
+}
+
+#[test]
+fn exact_retained_preview_offers_only_its_authorized_collection() {
+    let root = tempfile::tempdir().unwrap();
+    let bundle = root.path().join("completed");
+    fragcap::deep_capture::prepare_bundle(&bundle).unwrap();
+    let mut journal =
+        fragcap::deep_capture::ResourceJournal::create(&bundle, "s178-fixture", "plan").unwrap();
+    journal.finish().unwrap();
+    drop(journal);
+    std::fs::write(bundle.join("capture.fcapng"), b"synthetic packet bytes\n").unwrap();
+    std::fs::write(
+        bundle.join("manifest.json"),
+        br#"{"manifest_version":1,"session_id":"s178-fixture","state":"complete","artifacts":[{"path":"capture.fcapng","sensitivity":"ordinary"}]}"#,
+    )
+    .unwrap();
+    let path = bundle.to_string_lossy();
+
+    let (code, ordinary, err) = run(&["bundle", "collect", "--bundle", &path]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!ordinary.contains("Apply reviewed proposal:"), "{ordinary}");
+    assert!(bundle.join("capture.fcapng").exists());
+    std::fs::create_dir_all(std::env::var_os("FRAGCAP_SESSION_DIR").unwrap()).unwrap();
+
+    let (code, human, err) = run(&["bundle", "collect", "--bundle", &path, "--include-retained"]);
+    assert_eq!(code, 0, "{err}");
+    if cfg!(windows) {
+        assert!(human.contains("Apply reviewed proposal:"), "{human}");
+        assert!(human.contains("--include-retained"), "{human}");
+    } else {
+        assert!(!human.contains("Apply reviewed proposal:"), "{human}");
+        assert!(
+            human.contains("Collection applies only on Windows"),
+            "{human}"
+        );
+    }
+    let (code, json, err) = run(&[
+        "--json",
+        "bundle",
+        "collect",
+        "--bundle",
+        &path,
+        "--include-retained",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let preview: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(preview["complete"], true, "{json}");
+    assert_eq!(preview["eligible_sessions"], 1, "{json}");
+    let id = preview["proposal_id"].as_str().unwrap();
+    if !cfg!(windows) {
+        assert!(bundle.join("capture.fcapng").exists());
+        return;
+    }
+    assert!(human.contains(id), "{human}");
+    let (code, applied, err) = run(&[
+        "--json",
+        "bundle",
+        "collect",
+        "--bundle",
+        &path,
+        "--include-retained",
+        "--authorize",
+        id,
+    ]);
+    assert_eq!(code, 0, "{applied} {err}");
+    let result: serde_json::Value = serde_json::from_str(&applied).unwrap();
+    assert_eq!(result["complete"], true, "{applied}");
+    assert!(!bundle.join("capture.fcapng").exists());
+    assert!(
+        bundle.exists(),
+        "routine collection preserves its container"
+    );
+}
+
+#[test]
+fn missing_bundle_cleanup_and_export_name_the_path_before_guiding_action() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing bundle");
+    let share = root.path().join("share");
+    let path = missing.to_string_lossy();
+    let destination = share.to_string_lossy();
+    let (code, out, err) = run(&["bundle", "cleanup", &path]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(err.contains(path.as_ref()), "{err}");
+    assert!(!err.contains(" --yes"), "{err}");
+    let (code, out, err) = run(&["bundle", "export", &path, "--out", &destination]);
+    assert_ne!(code, 0, "{out}");
+    assert!(err.contains(path.as_ref()), "{err}");
+    assert!(err.contains("Check the bundle path"), "{err}");
+    assert!(!share.exists());
+}
+
+#[test]
+fn invalid_cleanup_manifest_never_recommends_confirmation() {
+    let root = tempfile::tempdir().unwrap();
+    let bundle = root.path().join("invalid");
+    std::fs::create_dir(&bundle).unwrap();
+    std::fs::write(bundle.join("manifest.json"), b"not json").unwrap();
+    let path = bundle.to_string_lossy();
+    let (code, out, err) = run(&["bundle", "cleanup", &path]);
+    assert_eq!(code, 2, "{out} {err}");
+    assert!(err.contains(path.as_ref()), "{err}");
+    assert!(!err.contains("--yes"), "{err}");
+    assert_eq!(
+        std::fs::read(bundle.join("manifest.json")).unwrap(),
+        b"not json"
+    );
+}
+
+#[test]
+fn collection_help_names_deletion_and_retained_scope() {
+    for flag in ["-h", "--help"] {
+        let (code, out, err) = run(&["bundle", "collect", flag]);
+        assert_eq!(code, 0, "{err}");
+        assert!(out.contains("deletes eligible bundle contents"), "{out}");
+        assert!(out.contains("--include-retained"), "{out}");
+        assert!(out.contains("retained"), "{out}");
+    }
+}

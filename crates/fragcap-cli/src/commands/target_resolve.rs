@@ -98,9 +98,55 @@ pub(crate) struct Promotion {
 ///
 /// A non-numeric selector keeps the short message: there is no second namespace
 /// to disambiguate, and a handle or name miss means what it says.
+pub(crate) enum TargetAction {
+    Show,
+    Remove,
+    Export,
+}
+
+impl TargetAction {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Remove => "remove",
+            Self::Export => "export",
+        }
+    }
+}
+
 pub(crate) fn no_match_message(store: &Store, selector: Option<&str>) -> String {
+    no_match_message_with_action(store, selector, None, None)
+}
+
+pub(crate) fn no_match_message_for_action(
+    store: &Store,
+    selector: Option<&str>,
+    id: Option<i64>,
+    action: TargetAction,
+) -> String {
+    no_match_message_with_action(store, selector, id, Some(action))
+}
+
+fn no_match_message_with_action(
+    store: &Store,
+    selector: Option<&str>,
+    id: Option<i64>,
+    action: Option<TargetAction>,
+) -> String {
     let Some(token) = selector.filter(|t| is_row_index(t)) else {
-        return "no target matches; list targets with `fragcap targets`".to_string();
+        let mut message = match id {
+            Some(id) => {
+                format!("no target matches stable id {id}; list targets with `fragcap targets`")
+            }
+            None => "no target matches; list targets with `fragcap targets`".to_string(),
+        };
+        if let Some(action) = action {
+            message.push_str(&format!(
+                "; then retry `fragcap targets {}` with a listed handle or --id",
+                action.verb()
+            ));
+        }
+        return message;
     };
     // A snapshot read that fails reports an unknown size rather than replacing
     // the whole message with a store error: the caller is already on a failure
@@ -109,14 +155,19 @@ pub(crate) fn no_match_message(store: &Store, selector: Option<&str>) -> String 
         Ok(n) => format!("the listing has {n} row(s)"),
         Err(_) => "the listing size could not be read".to_string(),
     };
+    let next = match action {
+        Some(action) => format!(
+            "Then retry `fragcap targets {}` with a current row or --id from `fragcap targets export`",
+            action.verb()
+        ),
+        None => "Then capture it by handle or row number:\n      fragcap targets".to_string(),
+    };
     format!(
         "no target matches\n  \
          `{token}` was read as a listing row number; {rows}.\n  \
          A bare number is always a row number here, never a handle, a name, or a\n  \
          platform app id. If {token} is a Steam app id, register the title first:\n      \
-         fragcap targets add --steam {token}\n  \
-         Then capture it by handle or row number:\n      \
-         fragcap targets"
+         fragcap targets add --steam {token}\n  {next}"
     )
 }
 
