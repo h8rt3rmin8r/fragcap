@@ -15,6 +15,10 @@ name: docs
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - AI_CONTEXT.md
+      - CLAUDE.md
+      - fragcap.code-workspace
   pull_request:
   workflow_dispatch:
 
@@ -55,6 +59,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      # Root content can bypass the full CI workflow on main. Keep the release
+      # marker check here when higher-level release automation rotates README
+      # and CONTRIBUTING, alongside the documentation and license contracts.
+      - name: Validate root content contracts
+        if: github.event_name == 'push'
+        run: |
+          cargo run --package xtask -- lint
+          cargo run --package xtask -- license
+          cargo run --package xtask -- spec
+          cargo run --package xtask -- docs check
 
       - name: Install dependencies
         working-directory: site

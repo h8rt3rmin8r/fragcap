@@ -9,10 +9,20 @@ name: ci
 # Triggers are scoped deliberately. `on: push` unqualified plus `on:
 # pull_request` fires BOTH for any branch with an open pull request, so every
 # workflow ran twice and burned double the minutes. Scoping push to the default
-# branch means a pull request gets exactly one run, and a merge gets one more.
+# branch means a pull request gets exactly one run, and a merge gets one more
+# unless that main push changes only the root content files below.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - AI_CONTEXT.md
+      - CHANGELOG.md
+      - CLAUDE.md
+      - CONTRIBUTING.md
+      - LICENSE
+      - NOTICE
+      - README.md
+      - fragcap.code-workspace
   pull_request:
 
 permissions:

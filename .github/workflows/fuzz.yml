@@ -4,6 +4,15 @@ name: fuzz
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - AI_CONTEXT.md
+      - CHANGELOG.md
+      - CLAUDE.md
+      - CONTRIBUTING.md
+      - LICENSE
+      - NOTICE
+      - README.md
+      - fragcap.code-workspace
   pull_request:
 
 permissions:
