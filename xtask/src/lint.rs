@@ -496,11 +496,16 @@ fn external_proxy_violation(path: &str, text: &str) -> Option<&'static str> {
 
 fn platform_trigger_violation(text: &str) -> Option<&'static str> {
     let trigger = text.split("\nconcurrency:").next().unwrap_or(text);
-    if trigger
+    // The sole allowed filter skips exact root content on main pushes. Keep
+    // whole-workspace coverage for pull requests and every source change.
+    let allowed_main_filter = "  push:\n    branches: [main]\n    paths-ignore:\n      - AI_CONTEXT.md\n      - CHANGELOG.md\n      - CLAUDE.md\n      - CONTRIBUTING.md\n      - LICENSE\n      - NOTICE\n      - README.md\n      - fragcap.code-workspace\n";
+    let without_allowed_main_filter =
+        trigger.replacen(allowed_main_filter, "  push:\n    branches: [main]\n", 1);
+    if without_allowed_main_filter
         .lines()
         .any(|line| matches!(line.trim(), "paths:" | "paths-ignore:"))
     {
-        return Some("whole-workspace platform workflow must not use path filters");
+        return Some("platform workflow permits only exact root-content exclusions on main pushes");
     }
     if !trigger.contains("workflow_dispatch:")
         || !trigger.contains("push:")
@@ -805,17 +810,28 @@ mod tests {
     fn platform_trigger_gate_rejects_filters_and_missing_events() {
         let clean = "on:\n  workflow_dispatch:\n  push:\n    branches: [main]\n  pull_request:\n\nconcurrency:\n";
         assert_eq!(platform_trigger_violation(clean), None);
+        let allowed = clean.replace(
+            "  push:\n    branches: [main]\n",
+            "  push:\n    branches: [main]\n    paths-ignore:\n      - AI_CONTEXT.md\n      - CHANGELOG.md\n      - CLAUDE.md\n      - CONTRIBUTING.md\n      - LICENSE\n      - NOTICE\n      - README.md\n      - fragcap.code-workspace\n",
+        );
+        assert_eq!(platform_trigger_violation(&allowed), None);
         assert_eq!(
             platform_trigger_violation(
                 &clean.replace("  pull_request:\n", "  pull_request:\n    paths:\n")
             ),
-            Some("whole-workspace platform workflow must not use path filters")
+            Some("platform workflow permits only exact root-content exclusions on main pushes")
         );
         assert_eq!(
             platform_trigger_violation(
                 &clean.replace("  pull_request:\n", "  pull_request:\n    paths-ignore:\n")
             ),
-            Some("whole-workspace platform workflow must not use path filters")
+            Some("platform workflow permits only exact root-content exclusions on main pushes")
+        );
+        assert_eq!(
+            platform_trigger_violation(
+                &allowed.replace("      - README.md\n", "      - docs/**\n")
+            ),
+            Some("platform workflow permits only exact root-content exclusions on main pushes")
         );
         assert_eq!(
             platform_trigger_violation(&clean.replace("  pull_request:\n", "")),

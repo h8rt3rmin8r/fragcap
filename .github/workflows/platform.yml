@@ -19,13 +19,23 @@ name: platform
 # S09 gave this real triggers, replacing dispatch-only. A dated decision is
 # recorded in changelog.d, per the pinned-artifact rule.
 #
-# This workflow tests the whole workspace, so every pull request and every
-# main-branch change can change its answer. A narrower path list drifted from
-# the job during S106 and skipped the follow-up that fixed a Windows-only test.
+# This workflow tests the whole workspace. Only exact root content files are
+# ignored on main; all pull requests and every other main change still run it.
+# A narrower source-path list drifted from the job during S106 and skipped the
+# follow-up that fixed a Windows-only test.
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths-ignore:
+      - AI_CONTEXT.md
+      - CHANGELOG.md
+      - CLAUDE.md
+      - CONTRIBUTING.md
+      - LICENSE
+      - NOTICE
+      - README.md
+      - fragcap.code-workspace
   pull_request:
 
 permissions:
