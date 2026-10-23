@@ -13,11 +13,11 @@
 
 **Independent test**: Existing version, generated-evidence, supply-chain, notes, changelog, CI and package gates agree while actual public markers remain at v0.10.7.
 
-- [ ] T005 Preview and execute patch-only version preparation; update root and isolated lockfiles without altering third-party resolution.
-- [ ] T006 Update all explicit first-party version assertions and regenerate fixture, CLI, conformance and review-record evidence using existing generators.
-- [ ] T007 Snapshot governed graphs, compare third-party identities and features, and rebind measured first-party graph digests only.
-- [ ] T008 Add a dated S180 release decision, assemble all unreleased fragments exactly once, write short v0.10.8 highlights and validate notes.
-- [ ] T009 Update chronological release plan and release handoff. Run full local CI, MSRV, neutral, fresh audit, site export/accessibility and encoding/whitespace checks; record exact results.
+- [x] T005 Preview and execute patch-only version preparation; update root and isolated lockfiles without altering third-party resolution.
+- [x] T006 Update all explicit first-party version assertions and regenerate fixture, CLI, conformance and review-record evidence using existing generators.
+- [x] T007 Snapshot governed graphs, compare third-party identities and features, and rebind measured first-party graph digests only.
+- [x] T008 Add a dated S180 release decision, assemble all unreleased fragments exactly once, write short v0.10.8 highlights and validate notes.
+- [x] T009 Update chronological release plan and release handoff. Run full local CI, MSRV, neutral, fresh audit, site export/accessibility and encoding/whitespace checks; record exact results.
 
 ## Phase 3 - Accepted integration
 

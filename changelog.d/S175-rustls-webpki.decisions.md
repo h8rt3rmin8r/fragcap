@@ -1,2 +1,0 @@
-<!-- spec-impact: none -->
-2026-10-21: Resolve the new RUSTSEC-2026-0382 release blocker with the smallest patched rustls-webpki update, 0.103.15 to 0.103.16. Rebind all three reviewed dependency graphs and the scoped unsafe-review digest after comparing downloaded source, preserving graph counts, resolved features, Rust floor, crypto provider, exception expiry, and the existing unsafe-review expiry. The transitive package remains governed by the exact lockfile and graph authority; critical-dependency records require a direct runtime edge.

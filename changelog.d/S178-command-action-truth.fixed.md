@@ -1,2 +1,0 @@
-<!-- spec-impact: 15.7.1, 17.7, 26.2 -->
-Bundle collection now offers Apply only when a complete preview has eligible work and no unresolved authority. Cleanup and export identify missing bundle paths before suggesting a retry. Target export rejects conflicting selectors; catalog seed validates sources before opening the store, counts distinct filled tiers, and gives build-available guidance. Target discovery and scan help now describe their actual local-store effects.
