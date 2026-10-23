@@ -1,6 +1,6 @@
 # Feature Specification: S180 v0.10.8 publication
 
-**Feature Branch**: `release/0.10.8` | **Created**: 2026-10-23 | **Status**: In progress
+**Feature Branch**: `release/0.10.8` | **Created**: 2026-10-23 | **Status**: Public files and crates verified; records and site acceptance pending
 
 **Input**: Publish every merged update since v0.10.7 as a fully live formal release under the established autopilot protocol, without another human handoff.
 

@@ -25,9 +25,9 @@
 
 **Independent test**: Every required exact-head check is green and every actual review thread resolved before a PR merge whose resulting tree matches the reviewed candidate.
 
-- [ ] T010 Commit/push the release branch, open and attach the official candidate PR.
-- [ ] T011 Reconcile automatic and at most one requested second Codex review round, security feedback and exact-head hosted checks; fix scoped failures and respond to every finding.
-- [ ] T012 Merge the accepted candidate under owner delegation, verify the exact merged tree, create and push one annotated v0.10.8 tag on that commit.
+- [x] T010 Commit/push the release branch, open and attach the official candidate PR.
+- [x] T011 Reconcile automatic and at most one requested second Codex review round, security feedback and exact-head hosted checks; fix scoped failures and respond to every finding.
+- [x] T012 Merge the accepted candidate under owner delegation, verify the exact merged tree, create and push one annotated v0.10.8 tag on that commit.
 
 ## Phase 4 - Public delivery
 
@@ -35,13 +35,13 @@
 
 **Independent test**: Tagged certification and normal protected approval finish, public bytes match their authority, and registry archives match their recorded checksums.
 
-- [ ] T013 Follow every tagged release job; submit normal crates.io protected approval without changing protection or bypassing it.
-- [ ] T014 Independently reconcile six public files, three checksum sidecars and final certification report against the exact tagged source.
-- [ ] T015 Independently reconcile ten non-yanked v0.10.8 crates and downloaded archive digests.
+- [x] T013 Follow every tagged release job; submit normal crates.io protected approval without changing protection or bypassing it.
+- [x] T014 Independently reconcile six public files, three checksum sidecars and final certification report against the exact tagged source.
+- [x] T015 Independently reconcile ten non-yanked v0.10.8 crates and downloaded archive digests.
 
 ## Phase 5 - Current public records and completion
 
-- [ ] T016 Prepare separate records branch updating only verified current markers, published-release JSON, review-candidate authority and dated decision.
+- [x] T016 Prepare separate records branch updating only verified current markers, published-release JSON, review-candidate authority and dated decision.
 - [ ] T017 Run local records/site gates, open and attach records PR, resolve actual reviews and exact-head checks, then merge under delegation.
 - [ ] T018 Verify production site deployment and public links, clean merged release branches/selector/worktrees, and report exact immutable identities plus unverified field/audit limits.
 
