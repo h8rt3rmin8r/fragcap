@@ -1,6 +1,12 @@
-# fragcap
-
-![fragcap wordmark](brand/logos/svg/fragcap-wordmark-cyan.svg)
+<h1 align="center">
+  <a href="https://fragcap.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="brand/logos/png/fragcap-horizontal-dark-2400.png">
+      <source media="(prefers-color-scheme: light)" srcset="brand/logos/png/fragcap-horizontal-light-2400.png">
+      <img alt="fragcap" src="brand/logos/png/fragcap-horizontal-dark-2400.png" width="620">
+    </picture>
+  </a>
+</h1>
 
 [![CI](https://github.com/h8rt3rmin8r/fragcap/actions/workflows/ci.yml/badge.svg)](https://github.com/h8rt3rmin8r/fragcap/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/h8rt3rmin8r/fragcap)](https://github.com/h8rt3rmin8r/fragcap/releases/latest) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
