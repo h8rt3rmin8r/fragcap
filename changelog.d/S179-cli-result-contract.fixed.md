@@ -1,2 +1,0 @@
-<!-- spec-impact: 17.5, 17.6 -->
-Global CLI `--json` now emits typed target, catalog, schema, technology, extcap administration, and bundle action results instead of mixing human prose with machine output. `--silent` suppresses optional human results and warnings while preserving required actions and errors; `--json --silent` retains the selected machine stream. Existing Capture events, Doctor records, export documents, and extcap analyzer output keep their channels and formats.

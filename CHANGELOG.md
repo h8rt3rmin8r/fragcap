@@ -10,6 +10,36 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-10-23
+
+### Fixed
+
+Current documentation and frozen replay authority identify independently verified v0.10.7 files and all ten published crates. Elevated ordinary output access and historical permission repair retirement are marked as shipped, while prior release records and independent-review non-claims retain their meaning.
+
+Capture duration now uses elapsed time instead of packet epoch timestamps, and role and direction choices govern retained output with named omission counts. Metadata-only pcapng retains validated headers without application payload, sink paths can contain escaped commas, and help describes available modes and retained-volume limits.
+
+An authorized cold Deep Capture session now requests graceful close of its exact launched applications, applies bounded force only to verified session-owned processes, and waits for observed exit before reporting route release. Doctor preserves failed historical cleanup and its reason even when a later resource journal is readable and no current blocker remains.
+
+Doctor now reports an unelevated session as unready for live Capture and Deep Capture. Successful Steam client setup reports completion and the next same-store calibration command without claiming reachability; Deep Capture help marks `--launch` required and gives copyable first-use guidance for authorization and sensitive outputs.
+
+Bundle collection now offers Apply only when a complete preview has eligible work and no unresolved authority. Cleanup and export identify missing bundle paths before suggesting a retry. Target export rejects conflicting selectors; catalog seed validates sources before opening the store, counts distinct filled tiers, and gives build-available guidance. Target discovery and scan help now describe their actual local-store effects.
+
+Global CLI `--json` now emits typed target, catalog, schema, technology, extcap administration, and bundle action results instead of mixing human prose with machine output. `--silent` suppresses optional human results and warnings while preserving required actions and errors; `--json --silent` retains the selected machine stream. Existing Capture events, Doctor records, export documents, and extcap analyzer output keep their channels and formats.
+
+### Security
+
+Update the locked rustls-webpki dependency to 0.103.16 so certificate verification rejects the distrusted intermediate keys covered by RUSTSEC-2026-0382.
+
+### Decisions
+
+2026-10-19: Advance current v0.10.7 publication markers, coverage identity, frozen review candidate and six closed asset authorities only after the accepted merged source, exact annotated tag, all four tagged jobs, normal protected approval, six independently downloaded files and ten non-yanked registry archives reconcile. Retarget only the published replay job label in the pinned workflow to these verified bytes; preserve the v0.8.0 predecessor, unsigned policy, historical evidence and unperformed independent-review status. The owner delegates this release-specific records PR integration and production deployment without changing future workflow policy or protection settings.
+
+2026-10-21: Resolve the new RUSTSEC-2026-0382 release blocker with the smallest patched rustls-webpki update, 0.103.15 to 0.103.16. Rebind all three reviewed dependency graphs and the scoped unsafe-review digest after comparing downloaded source, preserving graph counts, resolved features, Rust floor, crypto provider, exception expiry, and the existing unsafe-review expiry. The transitive package remains governed by the exact lockfile and graph authority; critical-dependency records require a direct runtime edge.
+
+2026-10-21: Constitution 1.6.0 permits pre-authorized managed Deep Capture process control with narrow query, wait, and terminate rights for exact session-created objects; target memory rights remain forbidden. A retained root process-object receipt and start-event lineage replace image-name inventory as route-release authority, and incomplete ownership produces partial cleanup rather than a false release claim.
+
+2026-10-23: Prepare v0.10.8 from accepted S179 and all ten remaining fragments since v0.10.7. Candidate first-party identities, generated evidence and measured graph digests move together while current public markers remain on v0.10.7. The owner explicitly delegates this release's checked PR integration, exact annotated tag, normal protected approval and publication without changing the repository's future merge, tag or environment policy. Public records advance only after final certified files and all ten crate archives independently reconcile; IGDB #155 and unperformed live-title or independent-review claims remain outside the release.
+
 ## [0.10.7] - 2026-10-19
 
 ### Fixed
@@ -2424,6 +2454,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.8]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.8
 [0.10.7]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.7
 [0.10.6]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6
 [0.10.5]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.5

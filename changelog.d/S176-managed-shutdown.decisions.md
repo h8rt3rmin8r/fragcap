@@ -1,2 +1,0 @@
-<!-- spec-impact: 17.2.1, 19.2 -->
-2026-10-21: Constitution 1.6.0 permits pre-authorized managed Deep Capture process control with narrow query, wait, and terminate rights for exact session-created objects; target memory rights remain forbidden. A retained root process-object receipt and start-event lineage replace image-name inventory as route-release authority, and incomplete ownership produces partial cleanup rather than a false release claim.

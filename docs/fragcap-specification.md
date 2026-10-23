@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.97-draft \
-**Applies-To:** 0.10.7 \
+**Version:** 0.1.98-draft \
+**Applies-To:** 0.10.8 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-10-21 \
@@ -185,6 +185,7 @@ enforcement.
 | 0.1.95-draft | 2026-10-21 | Codex | S175 corrects elapsed Capture deadlines, exact role and direction scope including extcap, metadata-only pcapng output, comma-bearing sink destinations, and shipped-mode help under #484, #485, #486, #490, #496, and #497. Updates sections 12.6, 12.7, 13.3, 14.1, 14.5, and 17.2 without changing the published v0.10.7 record. |
 | 0.1.96-draft | 2026-10-21 | Codex | S176 defines pre-authorized exact-owned managed Deep Capture shutdown and preserves failed historical cleanup independently of present readiness under #498 and #499. Constitution 1.6.0 adds only exact process control with named minimal rights. Updates sections 17.2.1 and 19.2 without changing the published v0.10.7 record. |
 | 0.1.97-draft | 2026-10-21 | Codex | S177 reconciles first-use readiness, Steam client setup, and Deep Capture command help under #487, #494, and #495. Current-token elevation blocks a live-ready Doctor verdict; verified Steam client authoring reports setup completion with a same-store next command without claiming reachability; help marks `--launch` required and explains exact input and sensitive outputs. Updates sections 17.2.1, 17.2.2, and 26.3 without changing the published v0.10.7 record. |
+| 0.1.98-draft | 2026-10-23 | Codex | S180 prepares v0.10.8 from accepted S179 and all remaining unreleased changes. Candidate version, generated evidence, graph digests, chronological changelog and short highlights advance together while actual public v0.10.7 remains independently bound. The owner delegates this release's PR integration, exact tag and normal protected publication without changing standing protection. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
@@ -5014,6 +5015,8 @@ S166 publishes v0.10.5 from merged S165 and all unreleased changes since v0.10.4
 S172 publishes v0.10.6 from merged S167-S171 and all remaining unreleased fragments since v0.10.5, including the exact site dependency patch from PR #470. The owner merged PR #474; its reviewed head and merged source share the exact tree. The separately authorized annotated tag selects `a2967166531c6f0430ceef6fe9d13e97e63ceb4e`. All four release jobs passed after normal protected registry approval, and six certified public files plus ten non-yanked downloaded crate archives reconcile independently. At S172 completion, publication markers and the frozen review candidate advanced to these immutable bytes. This evidence does not establish universal real-title compatibility or an independent whole-product review.
 
 S174 publishes v0.10.7 from accepted S173 and all remaining unreleased fragments. Delegated candidate PR #482 passed all 23 active checks and both bounded code-review rounds without findings before merge; exact annotated v0.10.7 selects `ae2d3a1a0661b705af48ce1ee36786fdd176a0f6`. All four tagged release jobs pass after normal protected owner approval without settings changes or bypass. Six public certified files and ten non-yanked downloaded crate archives reconcile before current markers and replay authority advance. The separate requested security report remains unpublished; no independent whole-product review or universal title compatibility is claimed.
+
+S180 prepares v0.10.8 from accepted S179 and all merged changes since v0.10.7. Candidate version identities, generated corpus, governed supply-chain digests, changelog and short highlights advance together, while current public markers remain bound to v0.10.7 until tagged Windows files and all ten registry crate archives independently reconcile. The owner delegates this release's reviewed PR integration, exact annotated tag and normal protected approval without changing future workflow policy or protection settings. IGDB #155 and live-title or independent-audit claims remain outside this release.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
