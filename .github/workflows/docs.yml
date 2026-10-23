@@ -62,13 +62,15 @@ jobs:
 
       # Root content can bypass the full CI workflow on main. Keep the release
       # marker check here when higher-level release automation rotates README
-      # and CONTRIBUTING, alongside the documentation and license contracts.
+      # and CONTRIBUTING, alongside the documentation, license, and static
+      # package contracts read from root content.
       - name: Validate root content contracts
         if: github.event_name == 'push'
         run: |
           cargo run --package xtask -- lint
           cargo run --package xtask -- license
           cargo run --package xtask -- spec
+          cargo run --package xtask -- package-certification
           cargo run --package xtask -- docs check
 
       - name: Install dependencies
