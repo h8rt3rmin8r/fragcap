@@ -321,6 +321,12 @@ fragcap-targets = { version = "0.10.8", path = "crates/fragcap-targets" }
 fragcap-proxy   = { version = "0.10.8", path = "crates/fragcap-proxy" }
 fragcap         = { version = "0.10.8", path = "crates/fragcap" }
 
+# Tests inherit these settings. Keep file/line backtraces without full variable
+# and type information, and avoid retaining the incremental compilation cache.
+[profile.dev]
+debug       = "line-tables-only"
+incremental = false
+
 [profile.release]
 opt-level     = 3
 lto           = "thin"
