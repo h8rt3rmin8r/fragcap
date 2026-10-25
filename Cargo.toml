@@ -26,7 +26,7 @@ bytes           = "1.12"
 # upgrade, crypto-provider change, or new native build input is always a visible
 # review event. Rust 1.88 is the measured floor because rcgen 0.14.10 and the
 # selected time graph declare it. See the S102 research and decisions fragment.
-tokio = { version = "=1.53.1", default-features = false, features = [
+tokio = { version = "=1.53.3", default-features = false, features = [
     "io-util",
     "macros",
     "net",
@@ -320,6 +320,12 @@ fragcap-steam   = { version = "0.10.8", path = "crates/fragcap-steam" }
 fragcap-targets = { version = "0.10.8", path = "crates/fragcap-targets" }
 fragcap-proxy   = { version = "0.10.8", path = "crates/fragcap-proxy" }
 fragcap         = { version = "0.10.8", path = "crates/fragcap" }
+
+# Tests inherit these settings. Keep file/line backtraces without full variable
+# and type information, and avoid retaining the incremental compilation cache.
+[profile.dev]
+debug       = "line-tables-only"
+incremental = false
 
 [profile.release]
 opt-level     = 3
