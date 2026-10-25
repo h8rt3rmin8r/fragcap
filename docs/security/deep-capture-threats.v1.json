@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-10-19",
-  "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch, S170 retained-output recipient access, S171 whole-session retention and exact collection, and S173 automatic same-account shell-token acquisition with historical repair retired, plus Rustls 0.23.46 and quinn-proto 0.11.18 patches for RUSTSEC-2026-0338, 0340, 0343 and 0346 through 0349 (scoped source review and fresh all-feature advisory audit; unchanged providers and no new waiver)",
+  "reviewed_on": "2026-10-25",
+  "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch, S170 retained-output recipient access, S171 whole-session retention and exact collection, and S173 automatic same-account shell-token acquisition with historical repair retired, plus Rustls 0.23.46 and quinn-proto 0.11.18 patches for RUSTSEC-2026-0338, 0340, 0343 and 0346 through 0349, and the Tokio 1.53.3 I/O-safety patch for RUSTSEC-2026-0386 (scoped dependency review; unchanged providers and no new waiver)",
   "protocol_families": [
     "generic-tcp",
     "generic-udp",

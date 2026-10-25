@@ -160,5 +160,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+      - name: Allow the two analyzer fixtures in TShark's AppArmor profile
+        run: |
+          if [ -f /etc/apparmor.d/tshark ]; then
+            sudo install -d /etc/apparmor.d/local
+            printf '"%s" r,\n' \
+              "$GITHUB_WORKSPACE/conformance/native-http-tls/analyzer.pcapng" \
+              "$GITHUB_WORKSPACE/conformance/native-http-tls/tls-keylog.log" \
+              | sudo tee -a /etc/apparmor.d/local/tshark
+            sudo apparmor_parser -r /etc/apparmor.d/tshark
+          fi
       - name: Read pcapng with the TLS key log and require protocol fields
         run: cargo run --package xtask -- conformance --analyzer
