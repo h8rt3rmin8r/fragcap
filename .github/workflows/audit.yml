@@ -40,4 +40,41 @@ jobs:
       - name: Install pinned cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Audit all features
-        run: cargo deny --all-features check advisories licenses bans sources
+        run: cargo deny --locked --all-features check advisories licenses bans sources
+
+      - name: Audit isolated Rust graphs
+        run: |
+          for manifest in \
+            fuzz/Cargo.toml \
+            performance/native-proxy/Cargo.toml \
+            spikes/native-proxy/Cargo.toml \
+            spikes/native-proxy/audit/Cargo.toml \
+            spikes/http-mitm-proxy/Cargo.toml \
+            spikes/http-mitm-proxy/audit/Cargo.toml
+          do
+            cargo deny --locked --all-features --manifest-path "$manifest" --config deny.toml check advisories
+          done
+
+  site:
+    name: site dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.0"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install site dependencies
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit the complete site graph
+        working-directory: site
+        run: pnpm audit --audit-level low
