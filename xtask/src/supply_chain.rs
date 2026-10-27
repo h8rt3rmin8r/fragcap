@@ -909,11 +909,101 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
     }
 }
 
+fn workflow_step<'a>(workflow: &'a str, name: &str) -> Option<&'a str> {
+    let marker = format!("      - name: {name}\n");
+    let (_, body) = workflow.split_once(&marker)?;
+    Some(body.split("\n      - ").next().unwrap_or(body))
+}
+
+fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (workflow, name, commands) in [
+        (docs, "Fetch locked Rust dependencies", vec!["run: cargo fetch --locked"]),
+        (docs, "Validate root content contracts", vec![
+            "cargo run --locked --package xtask -- lint",
+            "cargo run --locked --package xtask -- license",
+            "cargo run --locked --package xtask -- spec",
+            "cargo run --locked --package xtask -- package-certification",
+            "cargo run --locked --package xtask -- docs check",
+        ]),
+        (audit, "Install site dependencies", vec!["working-directory: site", "run: pnpm install --frozen-lockfile"]),
+        (audit, "Audit the complete site graph", vec!["working-directory: site", "run: pnpm audit --audit-level low"]),
+        (audit, "Audit isolated Rust graphs", vec![
+            "cargo deny --locked --all-features --manifest-path \"$manifest\" --config deny.toml check advisories",
+        ]),
+    ] {
+        let Some(step) = workflow_step(workflow, name) else {
+            findings.push(format!("dependency-workflow: missing step {name}"));
+            continue;
+        };
+        let lines: Vec<_> = step.lines().map(str::trim).collect();
+        if lines.iter().any(|line| line.starts_with("if:") || line.starts_with("continue-on-error:"))
+            || commands.iter().any(|command| !lines.contains(command))
+        {
+            findings.push(format!("dependency-workflow: {name} must run its complete blocking contract"));
+        }
+    }
+    if !matches!((docs.find("      - name: Fetch locked Rust dependencies\n"), docs.find("      - name: Validate root content contracts\n")), (Some(fetch), Some(check)) if fetch < check)
+    {
+        findings.push("dependency-workflow: locked fetch must precede root validation".to_string());
+    }
+    for required in [
+        "pnpm/action-setup@v4",
+        "version: \"10.26.0\"",
+        "actions/setup-node@v4",
+        "node-version: \"24\"",
+    ] {
+        if !audit.contains(required) {
+            findings.push(format!("dependency-workflow: site audit lacks {required}"));
+        }
+    }
+    let isolated = workflow_step(audit, "Audit isolated Rust graphs").unwrap_or_default();
+    for manifest in [
+        "fuzz/Cargo.toml",
+        "performance/native-proxy/Cargo.toml",
+        "spikes/native-proxy/Cargo.toml",
+        "spikes/native-proxy/audit/Cargo.toml",
+        "spikes/http-mitm-proxy/Cargo.toml",
+        "spikes/http-mitm-proxy/audit/Cargo.toml",
+    ] {
+        if !isolated.contains(manifest) {
+            findings.push(format!(
+                "dependency-workflow: missing isolated graph {manifest}"
+            ));
+        }
+    }
+    for required in [
+        "cold_cache:",
+        "CARGO_HOME=$RUNNER_TEMP/fragcap-docs-cargo",
+        "CARGO_TARGET_DIR=$RUNNER_TEMP/fragcap-docs-target",
+        "if: inputs.cold_cache != true",
+        "CARGO_NET_OFFLINE: ${{ inputs.cold_cache && 'true' || 'false' }}",
+    ] {
+        if !docs.contains(required) {
+            findings.push(format!(
+                "dependency-workflow: cold-cache qualification lacks {required}"
+            ));
+        }
+    }
+    if audit.contains("continue-on-error:")
+        || audit.contains("|| true")
+        || audit
+            .lines()
+            .any(|line| line.trim_start().starts_with("if:"))
+    {
+        findings.push("dependency-workflow: advisory failures cannot become success".to_string());
+    }
+    findings
+}
+
 fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
     findings.extend(validate_critical_declarations(root, policy)?);
     let audit =
         fs::read_to_string(root.join(".github/workflows/audit.yml")).map_err(|e| e.to_string())?;
+    let docs =
+        fs::read_to_string(root.join(".github/workflows/docs.yml")).map_err(|e| e.to_string())?;
+    findings.extend(validate_dependency_workflows(&audit, &docs));
     let release = fs::read_to_string(root.join(".github/workflows/release.yml"))
         .map_err(|e| e.to_string())?;
     let packaging = fs::read_to_string(root.join(".github/workflows/package-certification.yml"))
@@ -936,7 +1026,7 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
         "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
         "toolchain: 1.88.0",
         "cargo install cargo-deny --version 0.20.2 --locked",
-        "cargo deny --all-features check advisories licenses bans sources",
+        "cargo deny --locked --all-features check advisories licenses bans sources",
     ] {
         if !audit.contains(required) {
             findings.push(format!("workflow-tool-pin: audit.yml lacks {required}"));
@@ -2675,6 +2765,62 @@ mod tests {
             assert!(findings
                 .iter()
                 .any(|finding| finding.contains("invalid dates")));
+        }
+    }
+
+    #[test]
+    fn dependency_workflows_cover_cold_preparation_and_all_graphs() {
+        let audit = include_str!("../../.github/workflows/audit.yml");
+        let docs = include_str!("../../.github/workflows/docs.yml");
+        let findings = validate_dependency_workflows(audit, docs);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn dependency_workflows_reject_skips_unlocked_fetch_and_filtered_audits() {
+        let audit = include_str!("../../.github/workflows/audit.yml");
+        let docs = include_str!("../../.github/workflows/docs.yml");
+        for (old, new) in [
+            ("run: cargo fetch --locked", "run: cargo fetch"),
+            ("      - name: Fetch locked Rust dependencies", "      - name: Fetch locked Rust dependencies\n        if: github.event_name == 'push'"),
+            ("      - name: Validate root content contracts", "      - name: Validate root content contracts\n        if: github.event_name == 'push'"),
+        ] {
+            assert!(docs.contains(old));
+            assert!(!validate_dependency_workflows(audit, &docs.replace(old, new)).is_empty());
+        }
+        let fetch =
+            "      - name: Fetch locked Rust dependencies\n        run: cargo fetch --locked\n";
+        let moved = docs.replace(fetch, "");
+        let moved = format!("{moved}\n{fetch}");
+        assert!(validate_dependency_workflows(audit, &moved)
+            .iter()
+            .any(|finding| finding.contains("must precede")));
+        assert!(
+            !validate_dependency_workflows(audit, &docs.replace("cold_cache:", "removed:"))
+                .is_empty()
+        );
+        for (old, new) in [
+            ("pnpm install --frozen-lockfile", "pnpm install"),
+            (
+                "pnpm audit --audit-level low",
+                "pnpm audit --prod --audit-level low",
+            ),
+            (
+                "pnpm audit --audit-level low",
+                "pnpm audit --audit-level low --ignore-registry-errors",
+            ),
+            (
+                "pnpm audit --audit-level low",
+                "pnpm audit --audit-level low || true",
+            ),
+            (
+                "Audit the complete site graph\n",
+                "Audit the complete site graph\n        continue-on-error: true\n",
+            ),
+            ("spikes/native-proxy/audit/Cargo.toml", "omitted/Cargo.toml"),
+        ] {
+            assert!(audit.contains(old));
+            assert!(!validate_dependency_workflows(&audit.replace(old, new), docs).is_empty());
         }
     }
 

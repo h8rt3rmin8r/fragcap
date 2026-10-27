@@ -21,6 +21,11 @@ on:
       - fragcap.code-workspace
   pull_request:
   workflow_dispatch:
+    inputs:
+      cold_cache:
+        description: Validate with an empty isolated Cargo cache and target
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,20 +63,31 @@ jobs:
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Isolate cold-cache validation
+        if: inputs.cold_cache == true
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/fragcap-docs-cargo" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/fragcap-docs-target" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
+        if: inputs.cold_cache != true
+
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked
 
       # Root content can bypass the full CI workflow on main. Keep the release
       # marker check here when higher-level release automation rotates README
       # and CONTRIBUTING, alongside the documentation, license, and static
       # package contracts read from root content.
       - name: Validate root content contracts
-        if: github.event_name == 'push'
+        env:
+          CARGO_NET_OFFLINE: ${{ inputs.cold_cache && 'true' || 'false' }}
         run: |
-          cargo run --package xtask -- lint
-          cargo run --package xtask -- license
-          cargo run --package xtask -- spec
-          cargo run --package xtask -- package-certification
-          cargo run --package xtask -- docs check
+          cargo run --locked --package xtask -- lint
+          cargo run --locked --package xtask -- license
+          cargo run --locked --package xtask -- spec
+          cargo run --locked --package xtask -- package-certification
+          cargo run --locked --package xtask -- docs check
 
       - name: Install dependencies
         working-directory: site

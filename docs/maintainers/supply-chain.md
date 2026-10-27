@@ -2,9 +2,15 @@
 
 S130 makes the dependency graph a release authority rather than a best-effort report. `cargo xtask supply-chain` is the offline gate over the reviewed Windows, Linux, and exact shipped Windows graphs. The GitHub `audit` workflow adds fresh advisory, yanked, unmaintained, unsound, license, ban, and source intelligence. Neither result may be skipped or converted to a warning for release.
 
+The same audit workflow checks advisories in all six isolated Rust graphs (`fuzz`, `performance/native-proxy`, and both proxy spikes plus their audit projects) using the pinned cargo-deny and root policy. A separate Node 24/pnpm 10.26.0 job installs `site/` with `--frozen-lockfile` and runs `pnpm audit --audit-level low` over production, development, and optional dependencies. PRs, main pushes, weekly runs, and manual dispatch all execute these checks. Registry failures and advisory findings remain blocking.
+
 ## Routine update
 
 Update one direct package or one coordinated package family at a time. Refresh the lockfile deliberately, inspect the complete `cargo metadata` and `cargo tree -e features` diff, and run `cargo xtask supply-chain snapshot`. Review every package, checksum, feature, target edge, compatibility line, declared Rust floor, and unsafe containment change before replacing the affected digest and count in `supply-chain/policy-v1.json`.
+
+Inventory every committed manifest and lockfile when reconciling Dependabot findings; the default workspace does not cover isolated graphs. For site changes, update the owning manifest or pnpm workspace override, regenerate the lock with the pinned package manager, and inspect every resolved copy. An override can block Dependabot from selecting a patched version. Preserve explicit supersession links when a consolidated PR incorporates a bot update. After merge, require scanner readback of fixed alerts rather than dismissing them.
+
+The docs workflow runs `cargo fetch --locked` before root content contracts on PRs, main, and manual dispatch. Offline compiled-test discovery remains unchanged. Dispatch docs with `cold_cache=true` to isolate both Cargo home and target, skip cache restoration, fetch the locked graph, and run the original root contracts with network access disabled. This proves the actual dependency preparation and validation path without relying on a warm cache.
 
 If a security-critical package or generator changes, update its exact pin, resolved feature inventory, `last_reviewed` date, compatibility boundary, and the dated decisions fragment in the same pull request. Do not widen a version requirement to make the gate pass. Run the Rust 1.88 build, the exact Windows release build, cargo-deny, evidence generation and validation, and `cargo xtask ci` before merge.
 

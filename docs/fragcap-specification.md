@@ -3947,6 +3947,8 @@ S130 closes the native dependency policy around three reviewed graph views: comp
 
 The network-backed `audit` workflow runs cargo-deny on pull requests, `main`, manual dispatch, and weekly. It fails on actionable advisories, yanked, unmaintained, unsound, license, ban, or source findings and on unavailable advisory data. Static policy never converts absent mutable intelligence into a clean result. Routine and emergency maintenance procedures are in `docs/maintainers/supply-chain.md`.
 
+Advisory coverage includes the six isolated Rust workspaces (fuzz, native performance, and both historical proxy spikes plus their audit projects) under the same pinned tool and root advisory policy. The site graph receives a separate frozen-install pnpm audit covering production, development, and optional dependencies at every severity. Dependency updates reconcile every affected lockfile and default-branch scanner state; ignored findings and unavailable registry data cannot establish a clean result.
+
 ### 20.5 Contribution Terms
 
 Contributions are accepted under the Apache-2.0 inbound-equals-outbound
@@ -4331,9 +4333,9 @@ build time per section 20.2 rather than vendored.
 | --- | --- | --- |
 | `ci` | Push, pull request | Format, lint, unit and pipeline tests |
 | `platform` | Push, pull request | Windows platform tests with capture driver |
-| `audit` | Pull request, push to default branch, weekly, manual | Dependency vulnerabilities, maintenance status, licenses, bans, and sources |
-| `docs` | Push to default branch | Build and deploy the site |
-| `links` | Weekly | External reference verification |
+| `audit` | Pull request, push to default branch, weekly, manual | Root policy, isolated Rust advisories, and complete site dependency advisories |
+| `docs` | Pull request, push to default branch, manual | Validate root contracts and build the site; deploy from main; optional isolated cold-cache qualification |
+| `links` | Weekly, manual | External reference verification |
 | `release` | Tag push | Artifacts and crate publication |
 
 ### 24.3 Continuous Integration Gates
@@ -4351,6 +4353,8 @@ from Bash, because a skipped static-analysis pass is not a successful
 compliance pass.
 
 The offline supply-chain gate also runs in the ordinary sequence. It validates the complete reviewed graph, exact shipped closure, critical dependency and tool pins, compatibility-line exceptions, unsafe-review currency, release workflow ordering, and evidence payload wiring without downloading advisory data or running product effects.
+
+The docs workflow explicitly fetches locked Rust dependencies before executing the same root content contracts on PRs and main. Compiled documentation evidence discovery remains offline. Manual cold-cache qualification isolates Cargo home and target, disables cache restoration, and executes root contracts offline after the locked fetch. The supply-chain wiring gate rejects missing or reordered preparation, PR-skipping of root validation, narrowed site advisory coverage, omitted isolated graphs, and failure-to-warning conversions.
 
 `cargo xtask guided-calibration-acceptance` validates the versioned issue #380 registry in the ordinary Linux and Windows sequence. It requires exactly thirteen criteria, controlled automated evidence, tracked Rust source paths, and exact non-ignored test functions. Portable evidence must be unconditional; Windows evidence must be explicitly Windows-gated and is executed by the ordinary Windows workspace test leg. The gate rejects stale, duplicate, malformed, missing, disabled, or documentary references. It neither runs nor accepts a real game, real account, remote game service, capture driver, real trust mutation, or sensitive live capture as implementation evidence.
 
