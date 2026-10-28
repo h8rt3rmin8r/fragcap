@@ -52,19 +52,19 @@
 - [X] T021 [US4] Configure static MSVC CRT in .cargo/config.toml or the reviewed release build path and verify PE imports.
 - [X] T022 [US4] Update exact package import contract and clean-guest startup certification in integration/windows-package-contract-v1.json and xtask/src/package_certification.rs.
 - [X] T023 [US4] Correct intentional non-admin refusal assertion in crates/fragcap-cli/tests/windows_native_integration.rs.
-- [ ] T024 [US4] Produce fresh exact official v0.10.8 physical reference and separate candidate evidence in integration/windows-native-reference-v1.json and xtask/src/windows_integration.rs.
-- [ ] T025 [US4] Verify MSI/ZIP version, help, Doctor, install, repair, uninstall, and user-state preservation in .github/workflows/package-certification.yml.
+- [X] T024 [US4] Produce fresh exact official v0.10.8 physical reference and separate candidate evidence in integration/windows-native-reference-v1.json and xtask/src/windows_integration.rs.
+- [X] T025 [US4] Verify MSI/ZIP version, help, Doctor, install, repair, uninstall, and user-state preservation in .github/workflows/package-certification.yml.
 - [X] T026 [US4] Update plain-English lifecycle and relocation guidance in site/content/docs/getting-started.mdx, reference/cli.mdx, reference/deep-capture-compatibility.mdx, guides/packaging-and-migration.mdx, and guides/doctor-and-troubleshooting.mdx.
 - [X] T027 [US4] Add parser-checked examples and lifecycle semantic checks in site/ and verify documentation build.
 
 ## Phase 7: Cross-cutting qualification and handoff
 
-- [ ] T028 Run focused crate and full repository gates, native protocol conformance, advisory checks, and two-hour soak; record exact failures and fixes in specs/182-installed-product-recovery/quickstart.md.
-- [ ] T029 Run all seven physical Windows rows and clean package lifecycle against exact bytes; retain honest reference and candidate authority in integration/.
+- [X] T028 Run focused crate and full repository gates, native protocol conformance, advisory checks, and two-hour soak; record exact failures and fixes in specs/182-installed-product-recovery/quickstart.md.
+- [X] T029 Run all seven physical Windows rows and clean package lifecycle against exact bytes; retain honest reference and candidate authority in integration/.
 - [X] T030 Add chronological S182 entry to docs/plans/README.md, changelog fragment in changelog.d/, and synchronize master specification where behavior changes.
-- [ ] T031 Check UTF-8/no BOM, mojibake, private identity absence, source format, and task completion across specs/182-installed-product-recovery/ and changed files.
-- [ ] T032 Commit, push codex/s182-installed-product-recovery, and open one official PR linked to #514, #515, #516, #517, #518, #520, #521, #522.
-- [ ] T033 Resolve CI and every actionable review comment, use at most one explicit @Codex second-round request, and stop at owner merge handoff.
+- [X] T031 Check UTF-8/no BOM, mojibake, private identity absence, source format, and task completion across specs/182-installed-product-recovery/ and changed files.
+- [X] T032 Commit, push codex/s182-installed-product-recovery, and open one official PR linked to #514, #515, #516, #517, #518, #520, #521, #522.
+- [X] T033 Resolve CI and every actionable review comment, use at most one explicit @Codex second-round request, and stop at owner merge handoff.
 
 ## Dependencies and execution
 
