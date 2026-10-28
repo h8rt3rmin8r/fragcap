@@ -230,6 +230,13 @@ Review the new rows with `fragcap targets show sample-target`. If current eviden
 fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
 
+Windows may show a separate **Security Warning** when it adds this session's CA
+to the current-user Trusted Root store. Compare the warning's SHA-1 thumbprint
+with `certificate_thumbprint_sha1` in fragcap's displayed plan before deciding.
+The command waits while that Windows prompt is open. Declining the warning
+prevents the TLS measurement; after approval, fragcap must remove only the
+exact trust entry added by this session and report any unresolved cleanup.
+
 Use the same exact cold launch case in both phases.
 
 Routing and environment propagation remain separate facts. Reaching the final client does not prove how the launcher propagated proxy configuration, and fragcap records `proxy-propagation = confirmed` only when a separate non-invasive observation supports it. CA acceptance requires full HTTPS semantics correlated to the final client, so launcher traffic cannot establish the target's trust behavior. Silence remains inconclusive. A phase outcome such as proxy not reached, metadata only, or unsupported protocol is recorded in the local bundle and is not converted into an aggregate compatible or incompatible target verdict.
