@@ -194,6 +194,7 @@ the owning category page.
 - [Replay source](process-and-attribution.md#replay-source)
 - [Resolution cascade](process-and-attribution.md#resolution-cascade)
 - [Resource journal](file-and-wire-formats.md#resource-journal)
+- [Resource obligation](capture-and-networking.md#resource-obligation)
 - [Retention window](process-and-attribution.md#retention-window)
 - [Ring mode](capture-and-networking.md#ring-mode)
 - [Ring window](capture-and-networking.md#ring-window)

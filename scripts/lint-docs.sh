@@ -18,9 +18,10 @@
 #     check   Validate the glossary. Four checks: entry completeness (every entry
 #             carries a prose blurb or detail, not merely metadata markers, and a
 #             References section or matters callout, where present, is not empty);
-#             cross-link resolution (every sibling <category>.md#<anchor> link
-#             resolves to an existing term); the glossary-reference check (every
-#             glossary reference in the canonical documents names a defined term,
+#             cross-link resolution (every sibling <category>.md#<anchor> or
+#             same-page #<anchor> link resolves to an existing term); the
+#             glossary-reference check (every glossary reference in the canonical
+#             documents names a defined term,
 #             enforcing the Undefined Term Rule of section 4.2); and index
 #             reproducibility (the committed index.md matches a fresh generation).
 #             References are not mandated on every entry: much of the glossary is
@@ -199,8 +200,8 @@ run_check() {
         printf '%s#%s\n' "$slug" "$anchor"
     done | sort -u >"$valid"
 
-    # 2. Cross-link resolution within the glossary: every sibling link
-    #    <slug>.md#<anchor> resolves to an existing term on that page.
+    # 2. Cross-link resolution within the glossary: sibling and same-page
+    #    anchors both resolve to a real term heading on the target page.
     local link linkslug linkanchor
     for file in "$GLOSSARY_DIR"/*.md; do
         [ "$(page_slug "$file")" = "index" ] && continue
@@ -211,6 +212,14 @@ run_check() {
             linkanchor="${link##*#}"
             if ! grep -qxF "${linkslug}#${linkanchor}" "$valid"; then
                 printf '%s: cross-link does not resolve: %s\n' "$file" "$link" >>"$FAIL_LOG"
+            fi
+        done
+        slug="$(page_slug "$file")"
+        { grep -oE '\]\(#[a-z0-9_-]+\)' "$file" 2>/dev/null || true; } | while read -r link; do
+            linkanchor="${link#](#}"
+            linkanchor="${linkanchor%)}"
+            if ! grep -qxF "${slug}#${linkanchor}" "$valid"; then
+                printf '%s: same-page link does not resolve: %s\n' "$file" "$link" >>"$FAIL_LOG"
             fi
         done
     done

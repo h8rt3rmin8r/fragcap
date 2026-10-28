@@ -11,10 +11,16 @@ parser, observer, artifact writer, and lifecycle effect is finite, visible, and
 recoverable from its owning evidence. Failure never expands into transparent or
 system-wide forwarding.
 
-Nothing in this path opens a target process handle, reads or writes target
-memory, injects code or libraries, installs hooks, extracts target keys, modifies
-an executable, or changes the system proxy. Child-scoped environment routing is
-the concrete strategy. Any unavailable strategy is an explicit refusal.
+Passive Capture and proxy observation do not open a target process handle.
+Deep Capture may hold a handle to an exact session-created managed process or
+causally proven owned descendant only after the operator authorizes bounded
+shutdown. Its rights are limited to a process-bound graceful request and the
+minimal identity query, synchronization, or termination needed to finish that
+request. Warm, unrelated, escaped, or ambiguous processes receive no such
+control. Neither mode reads or writes target memory, injects code or libraries,
+installs hooks, extracts target keys, modifies an executable, or changes the
+system proxy. Child-scoped environment routing is the concrete strategy. Any
+unavailable strategy is an explicit refusal.
 
 ## Trust boundaries and assets
 
