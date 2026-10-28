@@ -192,7 +192,10 @@ fn reconcile_pending_current_user_trust() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    assert_eq!(calculated, thumbprint);
+    assert!(
+        calculated.eq_ignore_ascii_case(&thumbprint),
+        "retained trust obligation does not match its certificate"
+    );
     let store = NativeCertificateStore;
     store.remove_exact(&der, &thumbprint).unwrap();
     assert_eq!(
