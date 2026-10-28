@@ -292,8 +292,10 @@ authored launch entries, and launch hint. Applying changes only the selected
 location and observed hints, preserves authored identity and roles, and marks
 historical Deep Capture facts stale. A changed plan, present old root, missing
 old volume, duplicate installation, changed executable hint, or missing
-authored executable refuses the update. Published v0.10.8 does not provide
-this command.
+authored executable refuses the update. This includes an absolute authored
+launcher path that still names the missing old library. Export the target,
+correct that authored path, import it, and preview relocation again. Published
+v0.10.8 does not provide this command.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |

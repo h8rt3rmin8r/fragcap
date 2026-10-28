@@ -1583,6 +1583,12 @@ fn relocation_plan(
     }
     for launch in entry_windows_launch_entries(target) {
         let path = Path::new(launch.executable());
+        if path.is_absolute() && !path.is_file() {
+            return Err(CliError::usage(format!(
+                "the authored absolute launch executable {:?} is unavailable; use targets export, correct that authored path, and targets import before retrying relocation",
+                launch.executable()
+            )));
+        }
         if !path.is_absolute() && !new_path.join(path).is_file() {
             return Err(CliError::usage(format!(
                 "the authored launch executable {:?} is absent from the discovered installation",
@@ -2481,6 +2487,14 @@ mod tests {
         assert!(relocation_plan(&target, &changed_title).is_err());
         std::fs::remove_file(new.join("client.exe")).unwrap();
         assert!(relocation_plan(&target, &title).is_err());
+        let missing_absolute = old.join("client.exe");
+        target.launch_entries = Some(fragcap::targets::resolved_client_launch(
+            missing_absolute.to_str().unwrap(),
+        ));
+        assert!(relocation_plan(&target, &title)
+            .unwrap_err()
+            .message()
+            .contains("authored absolute launch executable"));
     }
 
     #[test]

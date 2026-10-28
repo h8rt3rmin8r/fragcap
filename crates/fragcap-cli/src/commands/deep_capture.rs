@@ -1210,10 +1210,11 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                     error,
                 )
             })?;
-        bound_real_capture_duration(
-            &mut capture_args,
+        let duration = bound_real_capture_duration(
+            &capture_args,
             budget.remaining().saturating_sub(adapter_started.elapsed()),
         )?;
+        capture_args.duration = Some(prepared.bound_duration(duration));
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
         let (result, process_evidence, process_release_watch, interrupted, retained_target_packets) =
@@ -1293,9 +1294,9 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
 /// Leave finite wall-clock time for the real runner's stop and artifact return.
 /// The facade still checks the outer deadline after this cooperative bound.
 fn bound_real_capture_duration(
-    args: &mut CaptureArgs,
+    args: &CaptureArgs,
     remaining: Duration,
-) -> Result<(), deep_capture_api::StageFailure> {
+) -> Result<Duration, deep_capture_api::StageFailure> {
     let reserve = (remaining / 10)
         .min(Duration::from_secs(5))
         .max(Duration::from_millis(100));
@@ -1307,11 +1308,9 @@ fn bound_real_capture_duration(
             "no finite observation time remains after reserving Capture completion",
         ));
     }
-    args.duration = Some(
-        args.duration
-            .map_or(available, |requested| requested.min(available)),
-    );
-    Ok(())
+    Ok(args
+        .duration
+        .map_or(available, |requested| requested.min(available)))
 }
 
 struct LibraryFactAdapter {
@@ -5016,25 +5015,27 @@ mod tests {
         else {
             panic!("expected Deep Capture");
         };
-        let mut capture = super::real_capture_args(
+        let capture = super::real_capture_args(
             &args,
             std::path::Path::new("bundle"),
             super::CalibrationDeadlines::from_args(&args),
         );
         assert_eq!(capture.duration, Some(std::time::Duration::from_secs(60)));
-        super::bound_real_capture_duration(&mut capture, std::time::Duration::from_secs(60))
-            .unwrap();
-        assert_eq!(capture.duration, Some(std::time::Duration::from_secs(55)));
-        let mut short = super::real_capture_args(
+        assert_eq!(
+            super::bound_real_capture_duration(&capture, std::time::Duration::from_secs(60))
+                .unwrap(),
+            std::time::Duration::from_secs(55)
+        );
+        let short = super::real_capture_args(
             &args,
             std::path::Path::new("bundle"),
             super::CalibrationDeadlines::from_args(&args),
         );
-        super::bound_real_capture_duration(&mut short, std::time::Duration::from_secs(2)).unwrap();
-        assert_eq!(short.duration, Some(std::time::Duration::from_millis(1800)));
-        assert!(
-            super::bound_real_capture_duration(&mut short, std::time::Duration::ZERO,).is_err()
+        assert_eq!(
+            super::bound_real_capture_duration(&short, std::time::Duration::from_secs(2)).unwrap(),
+            std::time::Duration::from_millis(1800)
         );
+        assert!(super::bound_real_capture_duration(&short, std::time::Duration::ZERO,).is_err());
     }
 
     #[test]

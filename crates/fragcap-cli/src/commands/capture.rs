@@ -31,6 +31,7 @@ use fragcap::targets::{resolved_client_launch, Store};
 use fragcap::{CaptureScope, FlowRegistry};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::assemble;
 use crate::attach;
@@ -56,6 +57,17 @@ pub(crate) struct PreparedCapture {
 }
 
 impl PreparedCapture {
+    /// Tighten the effective duration that the orchestrator actually consumes.
+    /// Preparation has already resolved CLI and profile defaults into `config`.
+    pub(crate) fn bound_duration(&mut self, maximum: Duration) -> Duration {
+        let duration = self
+            .config
+            .duration
+            .map_or(maximum, |current| current.min(maximum));
+        self.config.duration = Some(duration);
+        duration
+    }
+
     pub(crate) fn prepare_shutdown_scope(
         &mut self,
         target: &fragcap::targets::TargetEntry,
@@ -422,6 +434,38 @@ fn promote_if_observed(
 #[cfg(test)]
 mod authorization_tests {
     use super::*;
+    use crate::cli::{Cli, Command};
+    use crate::emit::{Format, Verbosity};
+    use clap::Parser;
+
+    #[test]
+    fn bounded_duration_reaches_the_prepared_configuration_consumed_by_runner() {
+        let Some(Command::Capture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "capture",
+            "--process",
+            "client.exe",
+            "--out",
+            "capture.pcapng",
+            "--duration",
+            "60s",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Capture");
+        };
+        let mut stderr = Vec::new();
+        let mut emitter = Emitter::new(&mut stderr, Format::Human, Verbosity::Normal);
+        let mut prepared = prepare(&args, &mut emitter).unwrap();
+        assert_eq!(prepared.config.duration, Some(Duration::from_secs(60)));
+        assert_eq!(
+            prepared.bound_duration(Duration::from_secs(55)),
+            Duration::from_secs(55)
+        );
+        let PreparedCapture { config, .. } = prepared;
+        assert_eq!(config.duration, Some(Duration::from_secs(55)));
+    }
 
     #[test]
     fn authorization_authority_names_profile_predicates_and_exact_launch() {
