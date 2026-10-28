@@ -13,10 +13,13 @@ use std::collections::BTreeMap;
 
 // A closed vocabulary keeps adapter detail out of the report and bounds this
 // projection independently from the retained observation population.
-const CORRELATION_REASONS: [&str; 10] = [
+const CORRELATION_REASONS: [&str; 13] = [
     "exact-flow-and-owner",
     "packet-flow-not-observed",
     "packet-history-bound-exceeded",
+    "packet-scope-withheld",
+    "packet-omission-unlocalized",
+    "packet-omission-history-bound-exceeded",
     "capture-buffer-history-incomplete",
     "packet-flow-has-no-overlapping-observation",
     "packet-flow-unattributed",
@@ -592,6 +595,9 @@ mod tests {
         for reason in [
             "packet-flow-not-observed",
             "packet-history-bound-exceeded",
+            "packet-scope-withheld",
+            "packet-omission-unlocalized",
+            "packet-omission-history-bound-exceeded",
             "capture-buffer-history-incomplete",
             "packet-flow-has-no-overlapping-observation",
             "packet-flow-unattributed",
@@ -605,7 +611,7 @@ mod tests {
             value.correlation_reason = reason.into();
             report.snapshot.observations.push(value);
         }
-        let mut windows = vec![EvidenceWindow::Observation; 9];
+        let mut windows = vec![EvidenceWindow::Observation; report.snapshot.observations.len() - 1];
         windows.push(EvidenceWindow::OwnerRelease);
         let value = AttemptAssessment::from_report(
             &report,
@@ -619,6 +625,9 @@ mod tests {
         let reasons = &value["correlation_evidence"]["reasons"];
         assert_eq!(reasons["packet-flow-not-observed"], 1);
         assert_eq!(reasons["packet-history-bound-exceeded"], 1);
+        assert_eq!(reasons["packet-scope-withheld"], 1);
+        assert_eq!(reasons["packet-omission-unlocalized"], 1);
+        assert_eq!(reasons["packet-omission-history-bound-exceeded"], 1);
         assert_eq!(reasons["capture-buffer-history-incomplete"], 1);
         assert_eq!(reasons["packet-flow-has-no-overlapping-observation"], 1);
         assert_eq!(reasons["packet-flow-unattributed"], 1);

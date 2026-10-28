@@ -57,6 +57,14 @@ pub enum AuthorTargetClientOutcome {
     Missing,
 }
 
+/// Outcome of one exact, reviewed Steam root replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelocateTargetOutcome {
+    Applied,
+    Changed,
+    Missing,
+}
+
 impl Store {
     /// Open or create a store at `path`, enabling foreign keys and applying or
     /// verifying the version-1 migration.
@@ -912,6 +920,61 @@ impl Store {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Change only one reviewed anchored location and observed platform hints.
+    /// Historical compatibility rows remain, marked stale atomically with the
+    /// location change so they cannot authorize the new installation.
+    pub fn relocate_target_if_unchanged(
+        &mut self,
+        expected: &TargetEntry,
+        new_root: &str,
+        folder_name: &str,
+        executable_hint: Option<&str>,
+    ) -> Result<RelocateTargetOutcome, TargetsError> {
+        if expected
+            .anchor
+            .as_deref()
+            .is_none_or(|anchor| !anchor.starts_with("steam:"))
+            || expected.install_root.as_deref().is_none_or(str::is_empty)
+            || new_root.is_empty()
+        {
+            return Err(TargetsError::Model(
+                "Steam relocation needs one anchored target and exact roots".to_string(),
+            ));
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = tx
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
+                 FROM targets WHERE stable_id = ?1",
+                params![expected.stable_id],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()?;
+        let Some(current) = current else {
+            return Ok(RelocateTargetOutcome::Missing);
+        };
+        if current != *expected {
+            return Ok(RelocateTargetOutcome::Changed);
+        }
+        tx.execute(
+            "UPDATE targets SET install_root = ?2, folder_name = ?3,
+                    executable_hint = ?4 WHERE stable_id = ?1",
+            params![expected.stable_id, new_root, folder_name, executable_hint],
+        )?;
+        tx.execute(
+            "UPDATE deep_capture_facts SET stale = 1 WHERE target_id = ?1",
+            params![expected.id.expect("stored row has id")],
+        )?;
+        tx.commit()?;
+        Ok(RelocateTargetOutcome::Applied)
     }
 
     /// Merge a batch of imported targets in one transaction: each element updates
@@ -2895,6 +2958,46 @@ mod tests {
         assert!(facts[0].final_owner_handoff);
         assert!(!facts[0].stale);
         assert_eq!(facts[0].note.as_deref(), Some("scrubbed local observation"));
+    }
+
+    #[test]
+    fn relocation_marks_existing_facts_stale_without_changing_authored_fields() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut entry = sample_target("moved", Some("steam:620"), FidelityTier::Authored);
+        entry.install_root = Some("C:/LibraryOld/common/sample".into());
+        entry.launch_entries = Some(crate::resolved_client_launch("client.exe"));
+        let id = store.insert_target(&entry).unwrap();
+        let fact = CompatibilityFact::new(
+            id,
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .unwrap();
+        store.insert_compatibility_fact(&fact).unwrap();
+        let expected = store.target(id).unwrap().unwrap();
+        assert_eq!(
+            store
+                .relocate_target_if_unchanged(
+                    &expected,
+                    "C:/LibraryNew/common/sample",
+                    "sample",
+                    Some("client.exe"),
+                )
+                .unwrap(),
+            RelocateTargetOutcome::Applied
+        );
+        let current = store.target(id).unwrap().unwrap();
+        assert_eq!(current.stable_id, expected.stable_id);
+        assert_eq!(current.handle, expected.handle);
+        assert_eq!(current.launch_entries, expected.launch_entries);
+        assert_eq!(
+            current.install_root.as_deref(),
+            Some("C:/LibraryNew/common/sample")
+        );
+        let facts = store.compatibility_facts_for_target(id).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0].stale);
     }
 
     #[test]

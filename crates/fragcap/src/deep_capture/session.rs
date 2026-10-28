@@ -676,7 +676,6 @@ impl DeepCaptureSession<'_> {
             return Ok(());
         }
         let started = self.adapters.clock.monotonic_elapsed();
-        let budget = self.remaining_budget(started, self.plan.deadlines.observation);
         let capture_target = self.capture.token.clone();
         if !self.record_resource(
             "capture",
@@ -713,6 +712,7 @@ impl DeepCaptureSession<'_> {
             self.observe_cancellation();
             return Ok(());
         }
+        let budget = self.remaining_budget(started, self.plan.deadlines.observation);
         let capture_result = self.adapters.capture.run(
             &self.capture,
             self.routing
@@ -955,6 +955,18 @@ impl DeepCaptureSession<'_> {
             self.record_cancellation();
         }
         self.cleanup_resources();
+        // Stop-time diagnostics may be unavailable when the owner thread has
+        // not joined. Publish the final bounded cleanup authority separately
+        // so the terminal consumer never retains a timeout placeholder.
+        self.emit(DeepCaptureEvent::Diagnostics {
+            sequence: 0,
+            session_id: self.plan.session_id.clone(),
+            diagnostics: Box::new(TerminalDiagnostics {
+                proxy: self.proxy_diagnostics.clone(),
+                evidence_windows: self.evidence_windows.clone(),
+                observation_windows: self.observation_windows.clone(),
+            }),
+        });
         if self.cancellation.is_requested() {
             self.record_cancellation();
         }
@@ -1290,6 +1302,11 @@ impl DeepCaptureSession<'_> {
             );
             let budget = self.remaining_budget(started, self.plan.deadlines.cleanup);
             let results = proxy.cleanup(budget);
+            self.proxy_diagnostics = proxy.terminal_diagnostics();
+            self.application_classification_summary = proxy.application_classification_summary();
+            self.classification_records_lost = self
+                .classification_records_lost
+                .max(proxy.observations_lost());
             let combined = if results
                 .iter()
                 .any(|result| result.status == CleanupStatus::Failed)

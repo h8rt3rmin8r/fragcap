@@ -602,7 +602,7 @@ impl NativeProxyLease {
             )
         });
         self.observations_lost = observation.protocol.observations_dropped_oldest;
-        self.diagnostics = Some(super::ProxyDiagnostics::from_runtime(&observation));
+        self.diagnostics = complete.then(|| super::ProxyDiagnostics::from_runtime(&observation));
         let observations = self.map_observations(observation.application);
         if complete {
             Ok(super::PhaseObservationDrain::complete(observations))
@@ -770,7 +770,9 @@ impl ProxyLease for NativeProxyLease {
 
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
-        self.diagnostics = Some(super::ProxyDiagnostics::from_runtime(&report.observation));
+        self.diagnostics = report
+            .is_clean()
+            .then(|| super::ProxyDiagnostics::from_runtime(&report.observation));
         self.stop_authority = Some(NativeStopAuthority::from_report(&report));
         self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
@@ -796,6 +798,10 @@ impl ProxyLease for NativeProxyLease {
 
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult> {
         let report = self.lease.cleanup(budget.remaining());
+        self.diagnostics = report
+            .is_clean()
+            .then(|| super::ProxyDiagnostics::from_runtime(&report.observation));
+        self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut results = vec![cleanup_result("native-proxy-runtime", &report)];
         if let Some(key_log) = self.key_log.take() {
             let status = key_log.status();
@@ -817,6 +823,9 @@ impl ProxyLease for NativeProxyLease {
         }
         if let Some(mut artifact) = self.application_artifact.take() {
             let status = artifact.finish();
+            if status.is_ok() {
+                self.application_classification_summary = artifact.classification_summary();
+            }
             results.push(CleanupResult {
                 resource: "application-writer".to_string(),
                 status: if status.is_ok() {
@@ -927,7 +936,7 @@ fn correlate_native_observation(
             "packet-flow-not-observed".to_string(),
         );
     };
-    if summary.unretained_observations > 0 {
+    if summary.omission_precision_lost {
         return (
             Some(summary.id),
             None,
@@ -937,7 +946,42 @@ fn correlate_native_observation(
             summary.observations.len() as u64,
             summary.unretained_observations,
             CorrelationState::Unavailable,
-            "packet-history-bound-exceeded".to_string(),
+            "packet-omission-history-bound-exceeded".to_string(),
+        );
+    }
+    if let Some(omission) = summary.omissions.iter().find(|omission| {
+        omission.cause == fragcap_core::FlowOmissionCause::Unknown
+            || i128::from(omission.first.as_nanos()) <= i128::from(closed_at_ns)
+                && i128::from(omission.last.as_nanos()) >= i128::from(opened_at_ns)
+    }) {
+        let reason = match omission.cause {
+            fragcap_core::FlowOmissionCause::ScopeWithheld => "packet-scope-withheld",
+            fragcap_core::FlowOmissionCause::HistoryCapacity => "packet-history-bound-exceeded",
+            fragcap_core::FlowOmissionCause::Unknown => "packet-omission-unlocalized",
+        };
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            summary.observations.len() as u64,
+            summary.unretained_observations,
+            CorrelationState::Unavailable,
+            reason.to_string(),
+        );
+    }
+    if summary.unretained_observations > 0 && summary.omissions.is_empty() {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            summary.observations.len() as u64,
+            summary.unretained_observations,
+            CorrelationState::Unavailable,
+            "packet-omission-unlocalized".to_string(),
         );
     }
     if summary.global_unretained_observations > 0 {
@@ -1052,7 +1096,7 @@ fn correlate_native_observation(
             .to_string(),
         ),
         overlapping.len() as u64,
-        0,
+        summary.unretained_observations,
         CorrelationState::Matched,
         "exact-flow-and-owner".to_string(),
     )
@@ -1520,6 +1564,65 @@ mod tests {
         assert_eq!(result.6, 1);
         assert_eq!(result.7, CorrelationState::Unavailable);
         assert_eq!(result.8, "packet-history-bound-exceeded");
+    }
+
+    #[test]
+    fn early_scope_withholding_does_not_veto_later_exact_connection() {
+        use fragcap_core::FlowOmissionCause;
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        registry.mark_unretained_at(
+            key,
+            Timestamp::from_nanos(10),
+            FlowOmissionCause::ScopeWithheld,
+        );
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(30),
+            Some(&Attribution::new(7, "selected.exe", Fidelity::Live).with_role("client")),
+        );
+        let later = correlate_native_observation(&registry, client, proxy, 25, 40);
+        assert_eq!(later.1, Some(7));
+        assert_eq!(later.7, CorrelationState::Matched);
+        assert_eq!(later.6, 1);
+        let overlapping = correlate_native_observation(&registry, client, proxy, 5, 40);
+        assert_eq!(overlapping.7, CorrelationState::Unavailable);
+        assert_eq!(overlapping.8, "packet-scope-withheld");
+    }
+
+    #[test]
+    fn bounded_omission_runs_refuse_a_join_without_losing_the_packet_count() {
+        use fragcap_core::FlowOmissionCause;
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        for timestamp in 0..65 {
+            registry.mark_unretained_at(
+                key,
+                Timestamp::from_nanos(timestamp),
+                if timestamp % 2 == 0 {
+                    FlowOmissionCause::ScopeWithheld
+                } else {
+                    FlowOmissionCause::HistoryCapacity
+                },
+            );
+        }
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(100),
+            Some(&Attribution::new(7, "selected.exe", Fidelity::Live)),
+        );
+        let summary = registry.summary(&key).unwrap();
+        assert_eq!(summary.unretained_observations, 65);
+        assert!(summary.omission_precision_lost);
+        assert!(summary.omissions.is_empty());
+        let result = correlate_native_observation(&registry, client, proxy, 90, 110);
+        assert_eq!(result.6, 65);
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "packet-omission-history-bound-exceeded");
     }
 
     #[test]

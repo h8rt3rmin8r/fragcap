@@ -1164,6 +1164,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         route: &deep_capture_api::AppliedRoute,
         budget: deep_capture_api::Budget,
     ) -> Result<deep_capture_api::CaptureRunResult, deep_capture_api::StageFailure> {
+        let adapter_started = Instant::now();
         if self.args.controlled_target {
             let phase = match self.mode {
                 deep_capture_api::SessionMode::Capture => None,
@@ -1192,13 +1193,14 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 interrupted: false,
             });
         }
-        let (capture_args, mut prepared) = self.prepared.borrow_mut().take().ok_or_else(|| {
-            deep_capture_api::StageFailure::new(
-                deep_capture_api::Stage::Capture,
-                "capture-not-prepared",
-                "ordinary Capture preparation was not retained",
-            )
-        })?;
+        let (mut capture_args, mut prepared) =
+            self.prepared.borrow_mut().take().ok_or_else(|| {
+                deep_capture_api::StageFailure::new(
+                    deep_capture_api::Stage::Capture,
+                    "capture-not-prepared",
+                    "ordinary Capture preparation was not retained",
+                )
+            })?;
         prepared
             .with_launch_environment(route.environment())
             .map_err(|error| {
@@ -1208,6 +1210,10 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                     error,
                 )
             })?;
+        bound_real_capture_duration(
+            &mut capture_args,
+            budget.remaining().saturating_sub(adapter_started.elapsed()),
+        )?;
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
         let (result, process_evidence, process_release_watch, interrupted, retained_target_packets) =
@@ -1282,6 +1288,30 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             reason: "ordinary Capture returned after its own bounded stop".to_string(),
         }
     }
+}
+
+/// Leave finite wall-clock time for the real runner's stop and artifact return.
+/// The facade still checks the outer deadline after this cooperative bound.
+fn bound_real_capture_duration(
+    args: &mut CaptureArgs,
+    remaining: Duration,
+) -> Result<(), deep_capture_api::StageFailure> {
+    let reserve = (remaining / 10)
+        .min(Duration::from_secs(5))
+        .max(Duration::from_millis(100));
+    let available = remaining.saturating_sub(reserve);
+    if available.is_zero() {
+        return Err(deep_capture_api::StageFailure::new(
+            deep_capture_api::Stage::Capture,
+            "observation-budget-exhausted",
+            "no finite observation time remains after reserving Capture completion",
+        ));
+    }
+    args.duration = Some(
+        args.duration
+            .map_or(available, |requested| requested.min(available)),
+    );
+    Ok(())
 }
 
 struct LibraryFactAdapter {
@@ -4965,6 +4995,48 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn real_capture_receives_an_inner_duration_with_finite_return_budget() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--calibrate",
+            "reachability",
+            "--launch-case",
+            "direct-exe-cold",
+            "--calibration-protocol",
+            "https",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Deep Capture");
+        };
+        let mut capture = super::real_capture_args(
+            &args,
+            std::path::Path::new("bundle"),
+            super::CalibrationDeadlines::from_args(&args),
+        );
+        assert_eq!(capture.duration, Some(std::time::Duration::from_secs(60)));
+        super::bound_real_capture_duration(&mut capture, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(capture.duration, Some(std::time::Duration::from_secs(55)));
+        let mut short = super::real_capture_args(
+            &args,
+            std::path::Path::new("bundle"),
+            super::CalibrationDeadlines::from_args(&args),
+        );
+        super::bound_real_capture_duration(&mut short, std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(short.duration, Some(std::time::Duration::from_millis(1800)));
+        assert!(
+            super::bound_real_capture_duration(&mut short, std::time::Duration::ZERO,).is_err()
+        );
+    }
+
     #[test]
     fn real_deep_capture_packet_artifact_inherits_metadata_only_request() {
         use crate::cli::{Cli, Command};

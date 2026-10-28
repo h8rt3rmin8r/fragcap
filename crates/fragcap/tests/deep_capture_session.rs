@@ -1797,6 +1797,80 @@ impl EventSink for DiagnosticEvents {
     }
 }
 
+struct DeferredDiagnosticsProxy;
+impl ProxyBackend for DeferredDiagnosticsProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "deferred-diagnostics".into(),
+            version: "1".into(),
+        }
+    }
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(DeferredDiagnosticsRun { cleaned: false }))
+    }
+}
+
+struct DeferredDiagnosticsRun {
+    cleaned: bool,
+}
+impl ProxyLease for DeferredDiagnosticsRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+    fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        Err(StageFailure::new(
+            Stage::Observe,
+            "observe-timeout",
+            "controlled timeout",
+        ))
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        CleanupResult {
+            resource: "native-proxy-listener".into(),
+            status: CleanupStatus::TimedOut,
+            reason: "controlled stop timeout".into(),
+        }
+    }
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        self.cleaned = true;
+        vec![released("native-proxy-runtime")]
+    }
+    fn terminal_diagnostics(&self) -> Option<ProxyDiagnostics> {
+        self.cleaned.then(|| ProxyDiagnostics {
+            accepted_connections: 8,
+            authenticated_connections: 8,
+            failed_connections: 7,
+            forced_connections: 1,
+            http1_exchanges_completed: 11,
+            ..ProxyDiagnostics::default()
+        })
+    }
+}
+
+#[test]
+fn final_cleanup_replaces_unavailable_stop_population_without_calibration_success() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(DeferredDiagnosticsProxy);
+    let captured = Rc::new(RefCell::new(None));
+    environment.events = Box::new(DiagnosticEvents(captured.clone(), ledger.clone()));
+    let report = run_with(environment);
+    let final_diagnostics = captured.borrow().clone().expect("final diagnostics");
+    let proxy = final_diagnostics
+        .proxy
+        .expect("cleanup observed proxy totals");
+    assert_eq!(proxy.accepted_connections, 8);
+    assert_eq!(proxy.http1_exchanges_completed, 11);
+    assert!(!proxy.terminal_details_reconcile());
+    assert!(report.snapshot.cleanup.iter().any(|result| {
+        result.resource == "native-proxy-listener" && result.status == CleanupStatus::TimedOut
+    }));
+    assert!(report.snapshot.observations.is_empty());
+    assert!(!report.snapshot.fact_writes.iter().any(|write| {
+        write.fact.value == "reached-client" || write.fact.value == "local-ca-accepted"
+    }));
+}
+
 #[test]
 fn trust_failure_still_cleans_the_proxy() {
     let ledger = Rc::new(RefCell::new(Vec::new()));

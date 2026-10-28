@@ -399,9 +399,14 @@ fn validate_steam_client_root(
         ));
     };
     if candidate.install_root.as_deref() != Some(target_root) {
-        return Err(CliError::usage(
-            "Steam client setup is unavailable: the discovered Steam install root does not match the stored target; refresh the target authority and retry",
-        ));
+        let app_id = target
+            .anchor
+            .as_deref()
+            .and_then(|anchor| anchor.strip_prefix("steam:"))
+            .unwrap_or("<APP_ID>");
+        return Err(CliError::usage(format!(
+            "Steam client setup is unavailable: the discovered install root differs from the stored target; preview fragcap targets relocate --steam {app_id}, confirm its exact plan, then retry calibration"
+        )));
     }
     Ok(())
 }
@@ -2850,6 +2855,25 @@ pub fn run(
     result
 }
 
+fn validate_current_stored_steam_root(target: &TargetEntry) -> Result<(), CliError> {
+    let Some(app_id) = target
+        .anchor
+        .as_deref()
+        .and_then(|anchor| anchor.strip_prefix("steam:"))
+    else {
+        return Ok(());
+    };
+    let Some(root) = target.install_root.as_deref() else {
+        return Ok(());
+    };
+    if Path::new(root).is_dir() {
+        return Ok(());
+    }
+    Err(CliError::usage(format!(
+        "the stored Steam install root is unavailable; inspect fragcap targets relocate --steam {app_id} to distinguish a moved library from an unavailable or removed installation before calibration"
+    )))
+}
+
 fn run_inner(
     args: &CalibrateArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
@@ -2932,6 +2956,9 @@ fn run_inner(
             return Err(CliError::usage(format!(
                 "calibration workflow {workflow_id} target authority changed; start a fresh workflow"
             )));
+        }
+        if !args.controlled_target {
+            validate_current_stored_steam_root(&target)?;
         }
         if workflow.state == CalibrationWorkflowState::Refused {
             return Err(CliError::usage(format!(
@@ -3120,6 +3147,9 @@ fn run_inner(
             TargetFrontDoor::Declined => return Ok(Exit::SUCCESS),
         };
         candidate_selection.require_consumed()?;
+        if !args.controlled_target {
+            validate_current_stored_steam_root(&target)?;
+        }
         let workflow = store
             .create_calibration_workflow_with_intent(
                 &target,
@@ -5335,7 +5365,9 @@ mod tests {
             &selected,
         )
         .unwrap_err();
-        assert!(wrong_root.message().contains("install root does not match"));
+        assert!(wrong_root
+            .message()
+            .contains("targets relocate --steam 620"));
         for invalid in [
             "",
             " client.exe",
@@ -5354,6 +5386,21 @@ mod tests {
             );
         }
         assert!(fragcap::targets::is_client_executable("bin/client.EXE"));
+    }
+
+    #[test]
+    fn stored_steam_root_must_be_present_before_a_real_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("moved-install");
+        let mut target = steam_target(None);
+        target.install_root = Some(root.display().to_string());
+        let refusal = validate_current_stored_steam_root(&target).unwrap_err();
+        assert!(refusal.message().contains("targets relocate --steam 620"));
+        std::fs::create_dir(&root).unwrap();
+        assert!(validate_current_stored_steam_root(&target).is_ok());
+        target.anchor = None;
+        std::fs::remove_dir(&root).unwrap();
+        assert!(validate_current_stored_steam_root(&target).is_ok());
     }
 
     #[test]

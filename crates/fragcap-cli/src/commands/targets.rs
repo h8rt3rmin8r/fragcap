@@ -18,17 +18,17 @@ use fragcap::profile::FidelityTier;
 use std::io::IsTerminal;
 
 use fragcap::targets::{
-    handle, identifier, install_presence, is_row_index, name_divergence, resolve_id,
-    resolve_positional, CandidateIdentity, ClassificationSource, CompatibilityMatrix,
-    DetectionScan, DirectorySource, Discovery, InstallPresence, NameDivergence, Selection,
-    SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetSource,
-    INSTALL_MISSING_NOTE,
+    entry_windows_launch_entries, handle, identifier, install_presence, is_row_index,
+    name_divergence, resolve_id, resolve_positional, CandidateIdentity, ClassificationSource,
+    CompatibilityMatrix, DetectionScan, DirectorySource, Discovery, InstallPresence,
+    NameDivergence, RelocateTargetOutcome, Selection, SocketHolderAnswer, Store,
+    TargetClassification, TargetEntry, TargetSource, INSTALL_MISSING_NOTE,
 };
 use serde_json::json;
 
 use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
-    TargetsReconcileArgs, TargetsShowArgs,
+    TargetsReconcileArgs, TargetsRelocateArgs, TargetsShowArgs,
 };
 use crate::color::{use_color, Stream, RESET, WARN};
 use crate::commands::result::{write_json, ResultMode};
@@ -52,6 +52,7 @@ pub(crate) fn run_mode(
     };
     match command {
         TargetsCommand::Add(args) => add(args, out, emitter, mode),
+        TargetsCommand::Relocate(args) => relocate(args, out, emitter, mode),
         // `list` mirrors the bare `fragcap targets`: an omitted `--db` resolves the
         // default store, and an unresolvable location degrades to the empty listing
         // rather than erroring, since there is nothing to list either way.
@@ -1527,6 +1528,182 @@ fn authored_executable_metadata(executable: &str) -> (Option<String>, String) {
     (None, executable.to_string())
 }
 
+fn relocation_plan(
+    target: &TargetEntry,
+    title: &fragcap::steam::InstalledTitle,
+) -> Result<serde_json::Value, CliError> {
+    let expected_anchor = format!("steam:{}", title.app_id);
+    if target.anchor.as_deref() != Some(expected_anchor.as_str()) {
+        return Err(CliError::usage(
+            "stored Steam anchor changed during relocation preview",
+        ));
+    }
+    let old_root = target.install_root.as_deref().ok_or_else(|| {
+        CliError::usage("stored Steam target has no exact old install root to compare")
+    })?;
+    let old_path = Path::new(old_root);
+    let new_path = &title.install_dir;
+    if !old_path.is_absolute() || !new_path.is_absolute() || !new_path.is_dir() {
+        return Err(CliError::usage(
+            "the old or discovered Steam install root is unavailable or not absolute",
+        ));
+    }
+    if old_path
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&new_path.to_string_lossy())
+    {
+        return Err(CliError::usage(
+            "the stored Steam install root is already current",
+        ));
+    }
+    if old_path.exists() {
+        return Err(CliError::usage(
+            "the old Steam install root still exists; relocation is ambiguous",
+        ));
+    }
+    if let Some(previous) = target.executable_hint.as_deref() {
+        if !title
+            .launch_executable
+            .as_deref()
+            .is_some_and(|discovered| previous.eq_ignore_ascii_case(discovered))
+        {
+            return Err(CliError::usage(
+                "the discovered Steam launch executable differs from the stored hint; review the changed installation before relocation",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(prefix)) = old_path.components().next() {
+        let volume = format!("{}\\", prefix.as_os_str().to_string_lossy());
+        if !Path::new(&volume).exists() {
+            return Err(CliError::usage(
+                "the old Steam library volume is unavailable; restore it before relocation",
+            ));
+        }
+    }
+    for launch in entry_windows_launch_entries(target) {
+        let path = Path::new(launch.executable());
+        if !path.is_absolute() && !new_path.join(path).is_file() {
+            return Err(CliError::usage(format!(
+                "the authored launch executable {:?} is absent from the discovered installation",
+                launch.executable()
+            )));
+        }
+    }
+    let canonical = json!({
+        "anchor": expected_anchor,
+        "row_id": target.id,
+        "stable_id": target.stable_id,
+        "handle": target.handle,
+        "old_root": old_root,
+        "new_root": new_path.display().to_string(),
+        "folder_name": title.installdir,
+        "executable_hint": title.launch_executable,
+        "authored_launch_entries": target.launch_entries,
+    });
+    let encoded =
+        serde_json::to_vec(&canonical).expect("relocation proposal contains serializable values");
+    let plan_id = format!("relocate-v1:{}", blake3::hash(&encoded).to_hex());
+    Ok(json!({"plan_id":plan_id,"proposal":canonical}))
+}
+
+fn relocate(
+    args: &TargetsRelocateArgs,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+    mode: ResultMode,
+) -> Result<Exit, CliError> {
+    let db = resolve_store(args.db.as_deref())?;
+    let mut store = Store::open(&db).map_err(|error| CliError::failure(error.to_string()))?;
+    let anchor = format!("steam:{}", args.steam);
+    let target = store
+        .target_by_anchor(&anchor)
+        .map_err(|error| CliError::failure(error.to_string()))?
+        .ok_or_else(|| CliError::usage("no stored target has the requested Steam anchor"))?;
+    let root = args.steam_root.clone().map(Ok).unwrap_or_else(|| {
+        fragcap::steam::installation_root().map_err(crate::commands::steam::map_steam_error)
+    })?;
+    let installation = fragcap::steam::discover_app_in(&root, args.steam)
+        .map_err(crate::commands::steam::map_steam_error)?;
+    for warning in &installation.warnings {
+        emitter.warn(warning);
+    }
+    if !installation.warnings.is_empty() || installation.malformed_manifests > 0 {
+        return Err(CliError::usage(
+            "Steam discovery is incomplete; relocation cannot prove one authoritative installation",
+        ));
+    }
+    if installation.titles.len() != 1 {
+        return Err(CliError::usage(if installation.titles.is_empty() {
+            "the requested Steam app is not installed in any available library"
+        } else {
+            "the requested Steam app has multiple library identities"
+        }));
+    }
+    let title = &installation.titles[0];
+    let plan = relocation_plan(&target, title)?;
+    let plan_id = plan["plan_id"].as_str().expect("plan id string");
+    if let Some(confirmed) = args.plan_id.as_deref() {
+        if confirmed != plan_id {
+            return Err(CliError::usage(
+                "the exact relocation proposal changed; preview it again before applying",
+            ));
+        }
+        let proposal = &plan["proposal"];
+        let outcome = store
+            .relocate_target_if_unchanged(
+                &target,
+                proposal["new_root"].as_str().expect("new root string"),
+                proposal["folder_name"]
+                    .as_str()
+                    .expect("folder name string"),
+                proposal["executable_hint"].as_str(),
+            )
+            .map_err(|error| CliError::failure(error.to_string()))?;
+        if outcome != RelocateTargetOutcome::Applied {
+            return Err(CliError::usage(
+                "the stored target changed during relocation; preview it again",
+            ));
+        }
+        let current = store
+            .target_by_anchor(&anchor)
+            .map_err(|error| CliError::failure(error.to_string()))?
+            .expect("applied target remains");
+        if mode.json {
+            write_json(
+                out,
+                &json!({"event":"targets.relocate","status":"applied","plan_id":plan_id,"target":target_json(&current),"compatibility":"historical-facts-stale"}),
+            )?;
+        } else if mode.human_result() {
+            writeln!(
+                out,
+                "Moved target {} to {}. Historical Deep Capture facts are stale; calibrate again.",
+                current.handle,
+                current.install_root.as_deref().unwrap_or("")
+            )
+            .map_err(|error| CliError::failure(error.to_string()))?;
+        }
+    } else if mode.json {
+        write_json(
+            out,
+            &json!({"event":"targets.relocate","status":"proposal","plan":plan}),
+        )?;
+    } else if mode.human_result() {
+        writeln!(
+            out,
+            "Steam relocation proposal: {}",
+            serde_json::to_string_pretty(&plan).expect("plan serializes")
+        )
+        .map_err(|error| CliError::failure(error.to_string()))?;
+        writeln!(
+            out,
+            "Apply only this exact proposal with --plan-id {plan_id}"
+        )
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    }
+    Ok(Exit::SUCCESS)
+}
+
 fn add(
     args: &TargetsAddArgs,
     out: &mut dyn Write,
@@ -1604,10 +1781,13 @@ fn add(
             .target_by_anchor(a)
             .map_err(|e| CliError::failure(e.to_string()))?
         {
+            let location_differs = args.steam.is_some()
+                && steam_install_root.is_some()
+                && existing.install_root != steam_install_root;
             if mode.json {
                 write_json(
                     out,
-                    &json!({"event":"targets.add","status":"already_registered","target":target_json(&existing)}),
+                    &json!({"event":"targets.add","status":"already_registered","target":target_json(&existing),"discovered_location_differs":location_differs}),
                 )?;
             } else if mode.human_result() {
                 let _ = writeln!(
@@ -1615,6 +1795,13 @@ fn add(
                     "already registered as {} (id {})",
                     existing.handle, existing.stable_id
                 );
+                if location_differs {
+                    let _ = writeln!(
+                        out,
+                        "Steam reports a different install root; preview targets relocate --steam {} before calibration",
+                        args.steam.as_deref().expect("Steam location comparison")
+                    );
+                }
             }
             return Ok(Exit::SUCCESS);
         }
@@ -2159,9 +2346,10 @@ mod tests {
         evidence_from_scan, filter_platform_non_game_steam_targets,
         hero_listing_with_machine_probe, order_targets_for_listing, print_compatibility,
         print_discovery, print_discovery_summary, print_target, prompt_socket_holder_with,
-        reconcile, render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
-        ClassificationSource, CompatibilityMatrix, DetectionScan, Discovery, ExeScan, FidelityTier,
-        SteamNonGameExclusions, Store, TargetClassification, TargetEntry, TargetsReconcileArgs,
+        reconcile, relocation_plan, render_machine_section, render_table, steam_add_metadata,
+        CandidateIdentity, ClassificationSource, CompatibilityMatrix, DetectionScan, Discovery,
+        ExeScan, FidelityTier, SteamNonGameExclusions, Store, TargetClassification, TargetEntry,
+        TargetsReconcileArgs,
     };
     use crate::display::display_width;
     use crate::emit::{Emitter, Format, Verbosity};
@@ -2223,6 +2411,76 @@ mod tests {
             folder_name: None,
             executable_hint: None,
         }
+    }
+
+    #[test]
+    fn relocation_preserves_authored_identity_and_refuses_uncertain_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        std::fs::create_dir(&new).unwrap();
+        std::fs::write(new.join("client.exe"), b"controlled").unwrap();
+        let mut target = listing_target(
+            fragcap::targets::identifier::anchored_id("steam:620"),
+            "sample_target",
+            Some("steam:620"),
+        );
+        target.install_root = Some(old.display().to_string());
+        target.launch_entries = Some(fragcap::targets::resolved_client_launch("client.exe"));
+        target.executable_hint = Some("client.exe".into());
+        let title = fragcap::steam::InstalledTitle {
+            app_id: "620".into(),
+            name: "Synthetic".into(),
+            install_dir: new.clone(),
+            installdir: "new".into(),
+            app_type: None,
+            launch_executable: Some("client.exe".into()),
+            anti_cheat: Vec::new(),
+        };
+        let plan = relocation_plan(&target, &title).unwrap();
+        assert!(plan["plan_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("relocate-v1:"));
+        let mut store = Store::open_in_memory().unwrap();
+        store.insert_target(&target).unwrap();
+        let expected = store.target_by_anchor("steam:620").unwrap().unwrap();
+        assert_eq!(
+            store
+                .relocate_target_if_unchanged(
+                    &expected,
+                    plan["proposal"]["new_root"].as_str().unwrap(),
+                    "new",
+                    Some("client.exe"),
+                )
+                .unwrap(),
+            fragcap::targets::RelocateTargetOutcome::Applied
+        );
+        let current = store.target_by_anchor("steam:620").unwrap().unwrap();
+        assert_eq!(current.stable_id, expected.stable_id);
+        assert_eq!(current.handle, expected.handle);
+        assert_eq!(current.launch_entries, expected.launch_entries);
+        assert_eq!(current.install_root, Some(new.display().to_string()));
+        assert!(relocation_plan(&current, &title).is_err());
+        assert_eq!(
+            store
+                .relocate_target_if_unchanged(&expected, "another", "another", None)
+                .unwrap(),
+            fragcap::targets::RelocateTargetOutcome::Changed
+        );
+        std::fs::create_dir(&old).unwrap();
+        assert!(relocation_plan(&target, &title).is_err());
+        std::fs::remove_dir(&old).unwrap();
+        let mut changed_title = title.clone();
+        changed_title.launch_executable = Some("other.exe".into());
+        assert!(relocation_plan(&target, &changed_title)
+            .unwrap_err()
+            .message()
+            .contains("launch executable differs"));
+        changed_title.launch_executable = None;
+        assert!(relocation_plan(&target, &changed_title).is_err());
+        std::fs::remove_file(new.join("client.exe")).unwrap();
+        assert!(relocation_plan(&target, &title).is_err());
     }
 
     #[test]

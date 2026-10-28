@@ -71,6 +71,45 @@ fn exited_after(evidence: &CaptureProcessEvidence, pid: u32, started: fragcap::T
     })
 }
 
+/// Descendants without an exact shutdown receipt are observation obligations,
+/// not controllable owners. Their exit may follow a proven parent's close.
+fn live_helpers(evidence: &CaptureProcessEvidence) -> Vec<(u32, String)> {
+    let Some(root) = evidence.launch_pid else {
+        return Vec::new();
+    };
+    let starts: Vec<_> = evidence
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Started {
+                pid, parent, at, ..
+            } => Some((*pid, *parent, *at)),
+            _ => None,
+        })
+        .collect();
+    evidence
+        .events
+        .iter()
+        .filter_map(|event| {
+            let ProcessEvent::Started { pid, image, at, .. } = event else {
+                return None;
+            };
+            if *pid == root
+                || depth_to_root(*pid, root, &starts).is_none()
+                || exited_after(evidence, *pid, *at)
+            {
+                return None;
+            }
+            let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+            (!evidence.shutdown_scope.iter().any(|path| {
+                path.file_name()
+                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            }))
+            .then(|| (*pid, name.to_string()))
+        })
+        .collect()
+}
+
 fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String> {
     if evidence.shutdown_scope.is_empty() {
         return Err("authorized shutdown scope is absent".to_string());
@@ -112,26 +151,6 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
         return Err(
             "exact created root event is missing or outside its launch receipt".to_string(),
         );
-    }
-    for event in &evidence.events {
-        let ProcessEvent::Started { pid, image, at, .. } = event else {
-            continue;
-        };
-        if *pid == root
-            || depth_to_root(*pid, root, &starts).is_none()
-            || exited_after(evidence, *pid, *at)
-        {
-            continue;
-        }
-        let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
-        if !evidence.shutdown_scope.iter().any(|path| {
-            path.file_name()
-                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
-        }) {
-            return Err(format!(
-                "undeclared launch descendant pid {pid} ({name}) has no verified exit; inherited route release is unresolved"
-            ));
-        }
     }
     let current = ProcessIdentity::current()
         .map_err(|error| format!("current account/session unavailable: {error}"))?;
@@ -277,7 +296,8 @@ fn release_monitored(
                 }
             }
         }
-        if remaining.is_empty() {
+        let helpers = live_helpers(evidence);
+        if remaining.is_empty() && helpers.is_empty() {
             // A graceful-close handler can launch a child after Capture has
             // stopped. Keep ETW running through this decision, close it only
             // after known owners exit, then reconcile every queued start/exit.
@@ -300,6 +320,16 @@ fn release_monitored(
                             steps,
                         );
                     }
+                }
+                let late_helpers = live_helpers(evidence);
+                if !late_helpers.is_empty() {
+                    steps.push(json!({"action":"helper-exit-unresolved","helpers":late_helpers}));
+                    return failed(
+                        format!(
+                            "undeclared launch descendants have no verified exit: {late_helpers:?}"
+                        ),
+                        steps,
+                    );
                 }
             }
             for owner in &owners {
@@ -333,9 +363,9 @@ fn release_monitored(
             }
         }
         if elapsed >= ceiling {
-            steps.push(json!({"action":"release-deadline","unresolved_pids":remaining}));
+            steps.push(json!({"action":"release-deadline","unresolved_pids":remaining,"unresolved_helpers":helpers}));
             return failed(
-                format!("exact route owners remain or cannot be verified: {remaining:?}"),
+                format!("exact route owners or observed helpers remain or cannot be verified: owners={remaining:?}, helpers={helpers:?}"),
                 steps,
             );
         }
@@ -568,8 +598,8 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_steam_descendant_refuses_shared_root_control() {
-        let mut owned = child();
+    fn unrelated_descendant_blocks_release_after_exact_owner_close_request() {
+        let owned = child();
         let mut evidence = child_evidence(&owned);
         evidence
             .shutdown_scope
@@ -583,11 +613,11 @@ mod tests {
         ));
         let outcome = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
-        assert!(owned.0.try_wait().unwrap().is_none());
         assert!(outcome
-            .result
-            .reason
-            .contains("undeclared launch descendant"));
+            .steps
+            .iter()
+            .any(|step| step["action"] == "graceful-request"));
+        assert!(outcome.result.reason.contains("unrelated-game.exe"));
     }
 
     #[test]
@@ -621,10 +651,45 @@ mod tests {
         assert!(outcome.result.reason.contains("helper.exe"));
     }
 
+    #[test]
+    fn observed_helper_exit_allows_release_after_owner_exit() {
+        let owned = child();
+        let mut evidence = child_evidence(&owned);
+        let at = evidence.launch_at.unwrap();
+        evidence.events.push(ProcessEvent::started(
+            999_998,
+            owned.0.id(),
+            "helper.exe",
+            "",
+            at,
+        ));
+        evidence
+            .events
+            .push(ProcessEvent::Exited { pid: 999_998, at });
+        evidence.managed_instances[0]
+            .identity
+            .force_close()
+            .unwrap();
+        let started = Instant::now();
+        while !evidence.managed_instances[0].identity.exited().unwrap()
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(evidence.managed_instances[0].identity.exited().unwrap());
+        evidence.events.push(ProcessEvent::Exited {
+            pid: owned.0.id(),
+            at,
+        });
+
+        let outcome = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_eq!(outcome.result.status, CleanupStatus::Released);
+    }
+
     #[cfg(feature = "etw")]
     #[test]
     fn late_helper_during_grace_blocks_route_release() {
-        let mut owned = child();
+        let owned = child();
         let mut evidence = child_evidence(&owned);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watch = crate::orchestrator::ProcessReleaseWatch::test_receiver(rx);
@@ -652,6 +717,9 @@ mod tests {
             "{:?}",
             outcome.steps
         );
-        assert!(owned.0.try_wait().unwrap().is_none());
+        assert!(outcome
+            .steps
+            .iter()
+            .any(|step| step["action"] == "graceful-request"));
     }
 }

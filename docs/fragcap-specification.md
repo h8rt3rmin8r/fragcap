@@ -187,6 +187,7 @@ enforcement.
 | 0.1.97-draft | 2026-10-21 | Codex | S177 reconciles first-use readiness, Steam client setup, and Deep Capture command help under #487, #494, and #495. Current-token elevation blocks a live-ready Doctor verdict; verified Steam client authoring reports setup completion with a same-store next command without claiming reachability; help marks `--launch` required and explains exact input and sensitive outputs. Updates sections 17.2.1, 17.2.2, and 26.3 without changing the published v0.10.7 record. |
 | 0.1.98-draft | 2026-10-23 | Codex | S180 prepares v0.10.8 from accepted S179 and all remaining unreleased changes. Candidate version, generated evidence, graph digests, chronological changelog and short highlights advance together while actual public v0.10.7 remains independently bound. The owner delegates this release's PR integration, exact tag and normal protected publication without changing standing protection. Updates sections 1 and 27.3. |
 | 0.1.99-draft | 2026-10-23 | Codex | S180 reconciles public v0.10.8 from exact reviewed source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status remain separate. Updates sections 1, 22.7, 25.2 and 27.3. |
+| 0.1.100-draft | 2026-10-27 | Codex | S182 repairs stored Steam relocation, calibration timing and packet correlation, exact managed shutdown and final proxy accounting, clean Windows startup, physical evidence, and version-scoped operator guidance under #514-#518 and #520-#522. Updates sections 15.8, 17.2, 24.5, 25.2, and 26.3 without changing published v0.10.8. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2880,6 +2881,16 @@ profile directory, the `--profile-dir` global, the file-backed provider, and the
 `run`/`tap`/`watch --profile` capture selectors) is retired by S054's command
 rework, which collapses `run`/`tap`/`watch` into the single `capture` verb.
 
+S182 permits an explicit relocation of one existing anchored Steam target only
+when current platform discovery proves one new installation, the former root
+is absent on an available volume, and authored executables and launch hints
+still agree. A complete preview binds target identity, old and new roots, and
+authored roles to a plan digest. Applying an unchanged plan compares the full
+stored row in one transaction, changes only location and discovery hints, and
+marks historical Deep Capture facts stale. Ambiguity, missing discovery,
+changed executables, and concurrent row changes refuse mutation. Calibration
+and resumed workflow preparation recheck exact target authority before effects.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope
@@ -3352,6 +3363,18 @@ failed, and unverified writes retain their existing non-success outcomes. For
 structured authorization in PowerShell, redirected standard input must send
 the exact emitted plan identifier followed by one LF (`[char]10`); CRLF is
 not silently normalized into a valid authorization.
+
+S182 computes the real Capture adapter's duration from the observation budget
+remaining immediately before Capture starts and reserves a finite return
+margin. Per-flow omitted packets retain bounded time intervals and causes;
+only omissions overlapping the exact proxy connection window withhold a
+positive packet-owner correlation. Unknown or globally lost observations and
+exhausted omission precision still refuse a positive fact. Reachability and
+TLS remain separate measurements. After observation, an exact session-created
+owner may receive its pre-authorized graceful close request even while
+ordinary descendants are observed; only the owner can receive bounded force.
+Route release requires verified exit of every potentially routed owner and
+observed helper. Unverifiable exits retain incomplete cleanup authority.
 
 #### 17.2.2 Embedded Workflow Help
 
@@ -4412,6 +4435,15 @@ is repo-oriented rather than an archive component.
 
 No artifact contains npcap or any component of it, per section 20.2.
 
+S182's official Windows build uses static MSVC CRT linkage so the supported
+portable and MSI executable can start version, help, and Doctor on a clean
+Windows guest without a separately installed Visual C++ runtime. The exact
+PE ordinary-import allowlist must exclude those runtime DLLs. Npcap remains
+a separately diagnosed Capture prerequisite. A clean-guest startup record
+and the existing exact-byte install, repair, and uninstall certification are
+distinct package authorities; candidate bytes do not replace published
+release identity.
+
 ### 24.6 Versioning of the Output Profile
 
 The `.fcapng` annotation profile carries its own version, declared in
@@ -4487,6 +4519,13 @@ The controlled matrix also enumerates every selectable native protocol over both
 | 1 | No | No | No | Yes |
 | 2 | Yes | Yes | No | Yes, Windows runner |
 | 3 | Yes | Yes | Yes | No, manual |
+
+S182 refreshes the seven-row physical Windows reference against exact
+published v0.10.8 bytes after correcting the non-admin refusal assertion.
+The reference identifies the harness revision, product version, binary digest,
+date, row outcomes, and reconciled effects. A source candidate is measured
+separately and cannot silently replace the published reference. Clean-guest
+package startup and the two-hour native proxy soak remain independent gates.
 
 ### 25.3 Fixture Corpus
 
@@ -4884,6 +4923,13 @@ Native Deep Capture human authorization includes a readable consequence summary 
 Typed preflight, proxy readiness, trust readiness, managed launch, observation, and cleanup events receive normal human progress without claiming unobserved target traffic, CA acceptance, decryption, or final-client ownership. Fact append and bundle finalization calls announce their attempted work, not success. Existing Capture counters remain live packet authority. Application observations are delivered after collection and reconciliation; fixed saturating counters show the first and every hundredth delivered record across canonical full, metadata-only, decrypted-unknown, encrypted-opaque, packet-only, and unavailable classes. They are not live proxy totals or compatibility proof; loss and ownership reconcile in terminal artifacts.
 
 After all coordinator reporting obligations finish, the human terminal report uses the actual complete, partial, interrupted, or failed outcome and remains visible under quiet. It reports every artifact's independent status and confirms retained paths only from present files, names each exact cleanup result and reason, and offers `fragcap doctor --fix` only for unresolved owned resource results. Sensitive or incomplete evidence remains retained independently from external cleanup. Partial or interrupted retry guidance requires fresh preparation and separate authorization. Silent suppresses optional terminal text, while existing errors remain unsuppressed; JSON retains its existing exclusive structured schemas and prompt-free exact input. New human prose uses shared display-cell wrapping at 40 through 80 columns, with deterministic redirected width and indivisible exact values preserved.
+
+S182 obtains final proxy counters after cleanup and application finalization
+when the earlier stop attempt lacked a complete report. The later measured
+counts may replace unavailable counters, while the stop timeout, record loss,
+classification limits, and earliest causal failure remain explicit. Neither
+an unavailable count nor an absent final report is displayed as observed
+zero.
 
 ### 26.4 Failure Reporting
 

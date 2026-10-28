@@ -149,6 +149,63 @@ struct RegisteredFlow {
     attribution: Option<Attribution>,
     observations: Vec<FlowObservation>,
     unretained_observations: u64,
+    omissions: Vec<FlowOmission>,
+    last_was_omission: bool,
+    omission_precision_lost: bool,
+}
+
+/// Why packet-side ownership evidence was not retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowOmissionCause {
+    ScopeWithheld,
+    HistoryCapacity,
+    Unknown,
+}
+
+/// A bounded consecutive run of omitted packet observations.
+#[derive(Clone, Debug)]
+pub struct FlowOmission {
+    pub first: Timestamp,
+    pub last: Timestamp,
+    pub count: u64,
+    pub cause: FlowOmissionCause,
+}
+
+const MAX_OMISSION_RUNS_PER_FLOW: usize = 64;
+
+impl RegisteredFlow {
+    fn omit(&mut self, timestamp: Timestamp, cause: FlowOmissionCause) {
+        self.unretained_observations = self.unretained_observations.saturating_add(1);
+        if self.omission_precision_lost {
+            return;
+        }
+        if self.last_was_omission {
+            if let Some(last) = self.omissions.last_mut() {
+                if last.cause == cause {
+                    if timestamp.as_nanos() < last.first.as_nanos() {
+                        last.first = timestamp;
+                    }
+                    if timestamp.as_nanos() > last.last.as_nanos() {
+                        last.last = timestamp;
+                    }
+                    last.count = last.count.saturating_add(1);
+                    return;
+                }
+            }
+        }
+        if self.omissions.len() == MAX_OMISSION_RUNS_PER_FLOW {
+            self.omissions.clear();
+            self.omission_precision_lost = true;
+            return;
+        }
+        self.omissions.push(FlowOmission {
+            first: timestamp,
+            last: timestamp,
+            count: 1,
+            cause,
+        });
+        self.last_was_omission = true;
+    }
 }
 
 /// Packet-side evidence retained for deterministic Deep Capture correlation.
@@ -165,6 +222,8 @@ pub struct FlowSummary {
     pub observations: Vec<FlowObservation>,
     pub unretained_observations: u64,
     pub global_unretained_observations: u64,
+    pub omissions: Vec<FlowOmission>,
+    pub omission_precision_lost: bool,
 }
 
 /// The capture-wide mapping from canonical flow keys to session-local ids.
@@ -227,8 +286,9 @@ impl FlowRegistry {
                     timestamp,
                     attribution: attribution.cloned(),
                 });
+                flow.last_was_omission = false;
             } else {
-                flow.unretained_observations = flow.unretained_observations.saturating_add(1);
+                flow.omit(timestamp, FlowOmissionCause::HistoryCapacity);
             }
             if retain {
                 state.retained_observations += 1;
@@ -253,6 +313,17 @@ impl FlowRegistry {
                     .into_iter()
                     .collect(),
                 unretained_observations: u64::from(!retain),
+                omissions: (!retain)
+                    .then_some(FlowOmission {
+                        first: timestamp,
+                        last: timestamp,
+                        count: 1,
+                        cause: FlowOmissionCause::HistoryCapacity,
+                    })
+                    .into_iter()
+                    .collect(),
+                last_was_omission: !retain,
+                omission_precision_lost: false,
             },
         );
         if retain {
@@ -264,9 +335,19 @@ impl FlowRegistry {
     /// Record that a packet for this flow was observed but evicted before its
     /// full correlation evidence could be retained.
     pub fn mark_unretained(&self, key: FlowKey) -> FlowId {
+        self.mark_unretained_at(key, Timestamp::from_nanos(0), FlowOmissionCause::Unknown)
+    }
+
+    /// Record a withheld packet with its observed time and exact cause.
+    pub fn mark_unretained_at(
+        &self,
+        key: FlowKey,
+        timestamp: Timestamp,
+        cause: FlowOmissionCause,
+    ) -> FlowId {
         let mut state = self.state.lock().expect("flow registry mutex poisoned");
         if let Some(flow) = state.flows.get_mut(&key) {
-            flow.unretained_observations = flow.unretained_observations.saturating_add(1);
+            flow.omit(timestamp, cause);
             return flow.id;
         }
         let id = FlowId::new(state.next).expect("the flow id counter starts at one");
@@ -281,6 +362,14 @@ impl FlowRegistry {
                 attribution: None,
                 observations: Vec::new(),
                 unretained_observations: 1,
+                omissions: vec![FlowOmission {
+                    first: timestamp,
+                    last: timestamp,
+                    count: 1,
+                    cause,
+                }],
+                last_was_omission: true,
+                omission_precision_lost: false,
             },
         );
         id
@@ -329,6 +418,8 @@ impl FlowRegistry {
                 observations: flow.observations.clone(),
                 unretained_observations: flow.unretained_observations,
                 global_unretained_observations: self.globally_unretained(),
+                omissions: flow.omissions.clone(),
+                omission_precision_lost: flow.omission_precision_lost,
             })
     }
 
@@ -348,6 +439,8 @@ impl FlowRegistry {
                 observations: flow.observations.clone(),
                 unretained_observations: flow.unretained_observations,
                 global_unretained_observations: global,
+                omissions: flow.omissions.clone(),
+                omission_precision_lost: flow.omission_precision_lost,
             })
             .collect::<Vec<_>>();
         summaries.sort_by_key(|summary| summary.id.ordinal());
@@ -560,6 +653,35 @@ mod tests {
         let summary = registry.summary(&tcp()).unwrap();
         assert_eq!(summary.observations.len(), 1);
         assert_eq!(summary.unretained_observations, 2);
+    }
+
+    #[test]
+    fn omitted_packet_runs_retain_cause_and_time_without_losing_counts() {
+        let registry = FlowRegistry::default();
+        registry.mark_unretained_at(
+            tcp(),
+            Timestamp::from_nanos(10),
+            FlowOmissionCause::ScopeWithheld,
+        );
+        registry.mark_unretained_at(
+            tcp(),
+            Timestamp::from_nanos(11),
+            FlowOmissionCause::ScopeWithheld,
+        );
+        registry.observe_at(tcp(), Timestamp::from_nanos(20), None);
+        registry.mark_unretained_at(
+            tcp(),
+            Timestamp::from_nanos(30),
+            FlowOmissionCause::ScopeWithheld,
+        );
+        let summary = registry.summary(&tcp()).unwrap();
+        assert_eq!(summary.unretained_observations, 3);
+        assert_eq!(summary.omissions.len(), 2);
+        assert_eq!(summary.omissions[0].cause, FlowOmissionCause::ScopeWithheld);
+        assert_eq!(summary.omissions[0].first.as_nanos(), 10);
+        assert_eq!(summary.omissions[0].last.as_nanos(), 11);
+        assert_eq!(summary.omissions[0].count, 2);
+        assert_eq!(summary.omissions[1].first.as_nanos(), 30);
     }
 
     #[test]

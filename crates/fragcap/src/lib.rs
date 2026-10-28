@@ -30,8 +30,8 @@ pub mod core {
     pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{
-        AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowObservation, FlowRegistry,
-        FlowSummary, Proto,
+        AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowObservation, FlowOmission,
+        FlowOmissionCause, FlowRegistry, FlowSummary, Proto,
     };
     pub use fragcap_core::interface::{
         is_loopback_adapter, select, virtual_verdict, InterfaceId, InterfaceInventory,
@@ -104,9 +104,9 @@ pub mod targets {
         EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary,
         InstallPresence, LaunchEntry, NameDivergence, PlatformInventory, ReconciliationPlan,
         ReconciliationPreservationReason, ReconciliationRemovalReason, RegistrationOutcome,
-        ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection, SocketHolderAnswer, Store,
-        TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
-        CALIBRATION_CANDIDATE_PREFIX, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        RelocateTargetOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
+        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
+        Technology, CALIBRATION_CANDIDATE_PREFIX, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
         INSTALL_MISSING_NOTE,
     };
 

@@ -1098,7 +1098,11 @@ fn output_loop(
                 // fact conservatively so a later packet on a reused tuple
                 // cannot become a false sole match.
                 if let Some(flow) = packet.flow {
-                    flow_registry.mark_unretained(flow);
+                    flow_registry.mark_unretained_at(
+                        flow,
+                        packet.ts,
+                        crate::flow::FlowOmissionCause::ScopeWithheld,
+                    );
                 }
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;
