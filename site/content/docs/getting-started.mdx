@@ -111,8 +111,10 @@ an already running Steam client is reported before broad discovery or
 recursive executable scans, setup prompts, tracing, new workflow writes or
 session effects. Close Steam normally and repeat calibration, or explicitly use
 `--restart-warm` for a bounded wait while you close the declared applications.
-Fragcap performs no process control. Direct and publisher targets remain usable
-when unrelated Steam is running. Resume status/pause history retains its own
+This warm preflight and close-and-retry wait never control a process; the
+separate cold, session-created shutdown contract is described below. Direct
+and publisher targets remain usable when unrelated Steam is running. Resume
+status/pause history retains its own
 meaning, and launch preparation rechecks current processes after early preflight.
 A display name alone does not establish Steam topology. Names shared across
 sources retain their candidate ambiguity; choosing a direct candidate remains
@@ -156,8 +158,9 @@ You normally do not need to close the application yourself. If an owner or
 helper remains, its identity cannot be verified, or fragcap ends unexpectedly,
 the session reports partial cleanup. Close the remaining application normally,
 then launch it outside the ended session before using its networked features.
-The published v0.10.8 workflow instead asks you to close named applications
-manually; the automatic close sequence is an S182 source-candidate correction.
+The published v0.10.8 plan already authorizes this automatic close sequence.
+S182 corrects a defect that can prevent its graceful request when ordinary
+platform helpers remain live.
 
 Interactive execution requires a complete response line. Structured execution requires `--authorize-stdin`: read the emitted plan event and return its exact identifier plus one LF in the same process. `--quiet` and `--silent` never hide required consent output or authorize effects. Retired trust booleans do not authorize a run. Omit optional HAR or key logging when unnecessary.
 
