@@ -118,6 +118,17 @@ Stored resolution takes precedence. On a clean miss, an exact installed Steam ap
 
 The workflow proposes reachability first when applicable routing evidence is missing. Fresh eligible final-client observations can propose concrete protocols, but requested `--protocol` values are only measurement intent. Each workflow runs reachability at most once and each concrete protocol at most once, with at most fourteen durable attempt ordinals. A failure, limitation, decline, partial result, interruption, target change, or repeated case checkpoints coverage and stops later effects instead of pretending success.
 
+In the S182 source candidate, an early packet withheld by Capture's selected
+scope does not automatically invalidate a later, separate proxy connection.
+The later connection still needs retained packet observations in its exact
+time window with one proven final-client owner. A withheld packet inside that
+window remains a refusal (`packet-scope-withheld`); saturated per-flow history
+reports `packet-history-bound-exceeded`, and an acquisition-buffer loss reports
+`capture-buffer-history-incomplete`. An unknown omission or exhausted omission
+history also refuses a positive match. These reasons explain missing evidence;
+they are not a claim that the target accepted TLS or that the route propagated.
+Published v0.10.8 has the earlier untimed omission behavior.
+
 Resume from the same effective local store using the workflow identity printed by the command:
 
 ```powershell
@@ -138,6 +149,14 @@ The next-source S168 contract presents authorization, observation, captured evid
 The final verdict separates the attempted case from current applicable stored readiness. Its case identity includes target, launch, route, address family, native backend/version, fragcap version, target version when available, and protocol. The greatest durable row ID for each exact applicable measurement key supplies current readiness; older differing values remain history. A later exact negative measurement supersedes an earlier positive one, and a later exact positive measurement supersedes an earlier negative one. A stale or unrelated attempt does not displace an applicable current measurement. Contradictory values at the same greatest durable ID, or absent durable chronology, cannot establish readiness. A satisfied stored routing prerequisite still requires fresh launch preflight, recovery, and authorization. Remaining protocols are explicit. Resume preserves workflow intent and attempt history and obtains a new plan; one supported next command is printed with that purpose.
 
 Connection endings and application exchanges count different populations. For example, a controlled session can report six failed connections, with five protocol failures and one idle timeout, while seven HTTP exchanges completed successfully. The timeout does not erase those exchanges. Separate fields show accepted/completed/failed/forced/live connections, retained failure categories, exchange/stream totals, bounded detail loss, record ownership, and unavailable correlation. Records observed during the observation window and later owner release remain distinguishable. Later records are retained but cannot satisfy the earlier calibration case.
+
+The S182 source candidate takes final proxy counters after cleanup and
+application finalization, including when the first stop attempt timed out.
+Earlier unavailable counters stay unavailable until an actual runtime report
+establishes them; a later count does not erase the timeout. The final
+calibration diagnosis uses these last observed counts and keeps the earliest
+known causal failure. Published v0.10.8 can report a premature zero after a
+stop timeout; inspect its retained application and cleanup records separately.
 
 A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. The S170 correction published in v0.10.6 verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.6 includes this correction.
 
@@ -210,6 +229,13 @@ Review the new rows with `fragcap targets show sample-target`. If current eviden
 ```powershell
 fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
+
+Windows may show a separate **Security Warning** when it adds this session's CA
+to the current-user Trusted Root store. Compare the warning's SHA-1 thumbprint
+with `certificate_thumbprint_sha1` in fragcap's displayed plan before deciding.
+The command waits while that Windows prompt is open. Declining the warning
+prevents the TLS measurement; after approval, fragcap must remove only the
+exact trust entry added by this session and report any unresolved cleanup.
 
 Use the same exact cold launch case in both phases.
 

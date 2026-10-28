@@ -1213,6 +1213,81 @@ fn write_steam_fixture(root: &Path) {
     .expect("write manifest");
 }
 
+#[test]
+fn moved_steam_target_requires_an_exact_preview_and_preserves_authored_identity() {
+    let dir = TempDir::new().expect("tempdir");
+    let steam_root = dir.path().join("steam");
+    write_steam_fixture(&steam_root);
+    let new_root = steam_root.join("steamapps").join("common").join("Portal 2");
+    fs::create_dir_all(&new_root).unwrap();
+    fs::write(new_root.join("client.exe"), b"controlled fixture").unwrap();
+    let old_root = dir.path().join("former-library").join("Portal 2");
+    let local = dir.path().join("local.db");
+    let anchor = "steam:620";
+    let original = TargetEntry {
+        id: None,
+        stable_id: fragcap::targets::identifier::anchored_id(anchor),
+        handle: "stored_fixture".into(),
+        name: "Stored Fixture".into(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: None,
+        anchor: Some(anchor.into()),
+        launch_entries: Some(fragcap::targets::resolved_client_launch("client.exe")),
+        install_root: Some(old_root.display().to_string()),
+        evidence: None,
+        detection_scan: None,
+        folder_name: Some("former-library".into()),
+        executable_hint: None,
+    };
+    let mut store = Store::open(&local).unwrap();
+    store.insert_target(&original).unwrap();
+    let before = store.target_by_anchor(anchor).unwrap().unwrap();
+    drop(store);
+
+    let db = local.to_string_lossy();
+    let root = steam_root.to_string_lossy();
+    let args = [
+        "--json",
+        "targets",
+        "relocate",
+        "--steam",
+        "620",
+        "--db",
+        &db,
+        "--steam-root",
+        &root,
+    ];
+    let (code, out, err) = run(&args);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let proposal: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(proposal["status"], "proposal");
+    assert_eq!(
+        proposal["plan"]["proposal"]["old_root"],
+        old_root.display().to_string()
+    );
+    assert_eq!(
+        proposal["plan"]["proposal"]["new_root"],
+        new_root.display().to_string()
+    );
+    let plan_id = proposal["plan"]["plan_id"].as_str().unwrap();
+    let (code, _out, err) = run(&[&args[..], &["--plan-id", "relocate-v1:stale"]].concat());
+    assert_eq!(code, 2, "{err}");
+    let (code, out, err) = run(&[&args[..], &["--plan-id", plan_id]].concat());
+    assert_eq!(code, 0, "{out}\n{err}");
+    let applied: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(applied["status"], "applied");
+    let store = Store::open(&local).unwrap();
+    let after = store.target_by_anchor(anchor).unwrap().unwrap();
+    assert_eq!(after.stable_id, before.stable_id);
+    assert_eq!(after.handle, before.handle);
+    assert_eq!(after.launch_entries, before.launch_entries);
+    assert_eq!(after.install_root, Some(new_root.display().to_string()));
+    let (code, _out, err) = run(&args);
+    assert_eq!(code, 2, "{err}");
+}
+
 fn write_many_exes(root: &Path, count: usize) {
     std::fs::create_dir_all(root).expect("install dir");
     let bytes = fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text"]);

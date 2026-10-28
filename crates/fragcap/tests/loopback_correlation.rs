@@ -20,11 +20,11 @@ use fragcap::deep_capture::{
     StageTransitionKind,
 };
 use fragcap::{
-    AttributorConfig, CaptureSession, DeclaredNames, DeclaredTable, FlowRegistry, InterfaceAddrs,
-    InterfaceDeclaration, InterfaceId, JsonLinesWriter, LinkType, PacketSource, PayloadMode,
-    PcapngWriter, Pipeline, PipelineConfig, ProcessEvent, Profile, RawPacket,
-    RoleStampingAttributor, SessionConfig, SessionGate, SocketTable, SocketTableAttributor,
-    SocketTableEntry, SourceBinding, SourceStats, TestClock, Timestamp,
+    AttributorConfig, CaptureSession, DeclaredNames, DeclaredTable, FlowOmissionCause,
+    FlowRegistry, InterfaceAddrs, InterfaceDeclaration, InterfaceId, JsonLinesWriter, LinkType,
+    PacketSource, PayloadMode, PcapngWriter, Pipeline, PipelineConfig, ProcessEvent, Profile,
+    RawPacket, RoleStampingAttributor, SessionConfig, SessionGate, SocketTable,
+    SocketTableAttributor, SocketTableEntry, SourceBinding, SourceStats, TestClock, Timestamp,
 };
 use fragcap_core::filter::FilterProgram;
 use fragcap_core::process::WatcherReport;
@@ -174,10 +174,16 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
         assert_eq!(session.role_bindings().len(), 2);
         let mut rows = Vec::new();
         let mut packets = VecDeque::new();
+        // The same exact client flow has an earlier packet outside the armed
+        // interval. Its omission must retain a time and cause without erasing
+        // the later final-client packet evidence.
         for (index, (peer, pid)) in endpoints.iter().zip([PLATFORM, CLIENT]).enumerate() {
             rows.push(SocketTableEntry::tcp(*peer, proxy, pid).created_at(at(10)));
             rows.push(SocketTableEntry::tcp(proxy, *peer, PROXY).created_at(at(10)));
             let time = 50 + index as i64 * 20;
+            if index == 1 {
+                packets.push_back(frame(*peer, proxy, REQUEST, 1));
+            }
             packets.push_back(frame(*peer, proxy, REQUEST, time));
             packets.push_back(frame(proxy, *peer, RESPONSE, time + 10));
         }
@@ -226,10 +232,10 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
         ));
         let report = pipeline.run();
         assert!(report.sink_failures.is_empty());
-        assert_eq!(report.stats.packets_captured, 4);
+        assert_eq!(report.stats.packets_captured, 5);
         assert_eq!(report.stats.buffer_dropped, 0);
         assert_eq!(report.stats.sink_dropped, 0);
-        assert_eq!(report.stats.gate_dropped, 0);
+        assert_eq!(report.stats.gate_dropped, 1);
         assert_eq!(handle.admitted(), 4);
         let json = String::from_utf8(json_bytes.contents()).unwrap();
         let written = json
@@ -258,9 +264,16 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
         assert_eq!(summaries.len(), 2);
         for summary in &summaries {
             assert_eq!(summary.observations.len(), 2);
-            assert_eq!(summary.unretained_observations, 0);
             assert_eq!(summary.global_unretained_observations, 0);
         }
+        assert_eq!(summaries[0].unretained_observations, 0);
+        assert_eq!(summaries[1].unretained_observations, 1);
+        assert_eq!(summaries[1].omissions.len(), 1);
+        assert_eq!(summaries[1].omissions[0].first, at(1));
+        assert_eq!(
+            summaries[1].omissions[0].cause,
+            FlowOmissionCause::ScopeWithheld
+        );
         let evidence = CaptureProcessEvidence {
             launch_pid: Some(PLATFORM),
             launch_at: Some(at(6)),

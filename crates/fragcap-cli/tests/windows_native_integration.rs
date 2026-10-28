@@ -106,7 +106,7 @@ fn loopback_families_preserve_system_network_state() {
 #[ignore = "S129 matrix runner only"]
 fn non_admin_host_refuses_elevated_process_watching() {
     let records = doctor();
-    assert_eq!(named(&records, "privilege")["status"], "warn");
+    assert_eq!(named(&records, "privilege")["status"], "fail");
     assert_ne!(named(&records, "process events")["status"], "ok");
 }
 

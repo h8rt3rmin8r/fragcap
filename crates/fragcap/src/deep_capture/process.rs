@@ -944,6 +944,8 @@ mod tests {
             ],
             unretained_observations: 0,
             global_unretained_observations: 0,
+            omissions: Vec::new(),
+            omission_precision_lost: false,
         };
         let trace = build_process_trace(ProcessTraceInput {
             session_id: "s",

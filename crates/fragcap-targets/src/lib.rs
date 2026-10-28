@@ -125,7 +125,7 @@ pub use sources::directory::DirectorySource;
 pub use sources::interactive::{Confirm, InteractiveSource, ScriptedConfirm};
 pub use sources::known_roots::{KnownRootsSource, KNOWN_ROOTS};
 pub use sources::{DirListing, DirectoryLister, FixtureTree, FsDirectoryLister};
-pub use store::{AuthorTargetClientOutcome, Store};
+pub use store::{AuthorTargetClientOutcome, RelocateTargetOutcome, Store};
 pub use targets_export::{export_targets, import_targets};
 pub use volume::{
     DriveType, EligibilityReason, FixtureInventory, Volume, VolumeEligibility, VolumeInventory,

@@ -70,6 +70,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:FRAGCAP_SOURCE_REVISION = $env:GITHUB_SHA
           $env:FRAGCAP_OFFICIAL_BUILD = '1'
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
           $identity = & target/release/fragcap.exe __build-identity | ConvertFrom-Json
           if (-not $identity.official -or $identity.source_revision -ne $env:GITHUB_SHA) { throw 'Official build identity was not embedded' }

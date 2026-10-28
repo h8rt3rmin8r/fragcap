@@ -160,6 +160,18 @@ Deep Capture hides and rejects the former `--trust-ca` and `--yes` inputs for on
 
 Authorization plan and prompt writes must succeed before input is read. Interactive approval requires a complete LF-terminated line, and effective deadlines are bound at exact millisecond precision. The prepared CA must remain within its displayed validity period. Stored target authority is checked immediately after approval, then the facade independently resolves and compares the exact profile, executable paths, platform root, dispatch, and managed launch before endpoint selection. Before constructing a new plan, a bounded read-only inspection refuses any pending prior-session recovery and directs the operator to `fragcap doctor --fix`; the new plan never authorizes effects against an older session.
 
+The published v0.10.8 plan already authorizes a normal window close from exact
+session-created route owners when observation ends. S182 corrects the helper
+refusal that can prevent this request. Fragcap verifies owner and observed
+helper exits before releasing the proxy route. The displayed grace
+and two-minute release ceiling bound this work. Save the selected application's
+work before authorizing; an exact owner still open after grace may be
+terminated. Helpers, warm applications, and unrelated processes are observed
+but never controlled. If any exit cannot be proved, cleanup stays partial and
+Doctor retains the recovery record. The operator closes an application
+manually only for warm preflight or when exact automatic cleanup remains
+incomplete.
+
 Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.
 See [Deep Capture compatibility](/docs/reference/deep-capture-compatibility) for
@@ -266,6 +278,33 @@ fragcap targets add --steam 620
 | `--handle` | open | none | all | Override the derived handle, subject to normal validity and uniqueness rules. |
 | `--socket-holder` | open | none | all | Record whether `--exe` holds sockets: `yes`, `no`, or `unsure`. Requires `--exe`. |
 | `--steam` | open | none | all | Register an installed Steam title by app id and anchor it as `steam:<app_id>`. |
+
+### `targets relocate`
+
+Recover an existing anchored Steam target after a library move. First preview,
+then apply the exact printed `plan_id`:
+
+```powershell
+fragcap targets relocate --steam 620
+fragcap targets relocate --steam 620 --plan-id relocate-v1:<printed-digest>
+```
+
+The preview names the old root, uniquely discovered new root, stored target,
+authored launch entries, and launch hint. Applying changes only the selected
+location and observed hints, preserves authored identity and roles, and marks
+historical Deep Capture facts stale. A changed plan, present old root, missing
+old volume, duplicate installation, changed executable hint, or missing
+authored executable refuses the update. This includes an absolute authored
+launcher path that still names the missing old library. Export the target,
+correct that authored path, import it, and preview relocation again. Published
+v0.10.8 does not provide this command.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--steam` | open | none | all | Select the stored `steam:<app_id>` target and exact platform discovery. Required for this command. |
+| `--plan-id` | open | none | all | Apply only an unchanged proposal; without it the command previews. |
+| `--steam-root` | open | none | all | Use a specific Steam installation root for discovery. |
+| `--db` | open | none | all | Select the same effective store used by calibration. |
 
 ### `targets list`
 

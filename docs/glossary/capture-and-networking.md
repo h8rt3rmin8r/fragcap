@@ -1274,6 +1274,20 @@ occurred and therefore preserves cleanup or exact recovery authority.
 **See also:** [Resource obligation](#resource-obligation),
 [Threat registry](#threat-registry)
 
+## Resource obligation
+
+An exact resource fragcap must release or restore after a Deep Capture effect,
+such as a loopback listener, child-scoped route, temporary certificate trust,
+or session-created process. Before the effect, the lifecycle journal binds the
+resource identity and required cleanup action to that session. A later cleanup
+record proves release only after checking the actual resource; if it cannot
+prove release, Doctor reports an unresolved obligation for exact recovery.
+Retained capture evidence is saved output, not proof that a live route, process,
+listener, or trust change remains active.
+
+**See also:** [Failure boundary](#failure-boundary),
+[Threat registry](#threat-registry)
+
 ## Fuzz surface
 
 A stable registry identity for one fragcap-owned parser or state machine that

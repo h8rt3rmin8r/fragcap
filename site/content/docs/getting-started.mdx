@@ -92,6 +92,17 @@ For missing or incomplete evidence, start guided calibration:
 fragcap calibrate sample-target
 ```
 
+If a stored Steam target was moved to another library, check its stored root
+with `fragcap targets show sample-target` before calibrating. In the S182 source
+candidate, `fragcap targets relocate --steam 620` prints the exact old and new
+roots and a `plan_id`. Review them, then repeat the command with
+`--plan-id <the printed value>` to update that one stored target. Its handle,
+stable identity, and authored launch roles remain; historical Deep Capture
+facts become stale, so measure again. Relocation refuses an unavailable old
+volume, a still-present old root, duplicate installs, a changed launch hint, or
+a missing authored executable. Published v0.10.8 does not have this command;
+use the documentation matching the version you actually installed.
+
 Registration, executable setup or candidate selection, and every later effectful attempt have separate complete plans and confirmations. Requested protocols are measurement intent, not proof. The workflow measures reachability first when needed, then proposes useful concrete cases from fresh observations. Failure, decline, limitation, interruption, or partial result stops later effects and checkpoints coverage.
 
 Calibration observes running process images before substantive setup work. For a
@@ -100,8 +111,10 @@ an already running Steam client is reported before broad discovery or
 recursive executable scans, setup prompts, tracing, new workflow writes or
 session effects. Close Steam normally and repeat calibration, or explicitly use
 `--restart-warm` for a bounded wait while you close the declared applications.
-Fragcap performs no process control. Direct and publisher targets remain usable
-when unrelated Steam is running. Resume status/pause history retains its own
+This warm preflight and close-and-retry wait never control a process; the
+separate cold, session-created shutdown contract is described below. Direct
+and publisher targets remain usable when unrelated Steam is running. Resume
+status/pause history retains its own
 meaning, and launch preparation rechecks current processes after early preflight.
 A display name alone does not establish Steam topology. Names shared across
 sources retain their candidate ambiguity; choosing a direct candidate remains
@@ -133,7 +146,21 @@ fragcap deep-capture sample-target --launch --duration 5m --har
 
 Review the complete plan: target and managed launch authority, exact loopback and routing policy, session CA and current-user trust action, sensitive artifacts, millisecond deadlines, fact writes, cleanup obligations, and refusal boundaries. No listener, bundle, trust, launch, Capture, or fact effect occurs until exact authorization. Output failure, target drift, plan mismatch, expiry, or pending prior-session recovery refuses rather than broadening scope.
 
-When capture ends, close the launched game and any Steam or publisher application named by fragcap using its normal Exit control. Fragcap keeps the session proxy available during the plan's two-minute route-owner release interval and checks complete read-only process inventories before stopping it. The proxy may continue recording application observations during this interval even though packet Capture has ended. The required close instruction appears even with `--silent`. If an application remains open or the inventory is unavailable when the interval ends, the session reports partial cleanup. Close the application normally and relaunch it outside the ended session before using its networked features. Use the same close-and-relaunch recovery after fragcap itself ends unexpectedly; an old application can retain the prior session's proxy environment.
+When capture ends, fragcap first asks exact session-created route owners to
+close through their ordinary window controls. It watches their exits and the
+exits of observed helper processes while keeping the session proxy available.
+The plan shows a two-minute route-owner release limit. After the shorter grace
+period in the plan, fragcap can terminate only an exact owner created by this
+session and proven again at the time of control. Save work before authorizing:
+an automatic close or bounded termination can end the selected application.
+Helpers, warm processes, and unrelated processes never receive that control.
+You normally do not need to close the application yourself. If an owner or
+helper remains, its identity cannot be verified, or fragcap ends unexpectedly,
+the session reports partial cleanup. Close the remaining application normally,
+then launch it outside the ended session before using its networked features.
+The published v0.10.8 plan already authorizes this automatic close sequence.
+S182 corrects a defect that can prevent its graceful request when ordinary
+platform helpers remain live.
 
 Interactive execution requires a complete response line. Structured execution requires `--authorize-stdin`: read the emitted plan event and return its exact identifier plus one LF in the same process. `--quiet` and `--silent` never hide required consent output or authorize effects. Retired trust booleans do not authorize a run. Omit optional HAR or key logging when unnecessary.
 

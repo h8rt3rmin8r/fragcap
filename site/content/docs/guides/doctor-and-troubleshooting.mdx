@@ -41,6 +41,26 @@ The corrections shipped in v0.10.6 (S169) address several loopback acquisition g
 
 If exchanges complete but calibration says missing packet-flow correlation, run `fragcap doctor` to inspect Npcap and loopback readiness. Inspect the retained application correlation reasons and process trace separately. `packet-flow-not-observed` means no matching flow summary; `packet-history-bound-exceeded` means matching evidence was withheld or exceeded its bound; `capture-buffer-history-incomplete` means a global acquisition-buffer gap. A flow outside the connection window, missing owner or conflicting owners has its own reason. Counts describe retained observation-window records and do not include later route-owner release traffic. A readable artifact or successful HTTP response does not prove final-client ownership.
 
+The S182 source candidate reports `packet-scope-withheld` for a selected-scope
+packet missing inside the exact proxy connection window and
+`packet-omission-unlocalized` when its omission time cannot be trusted. A
+withheld packet before that window does not by itself rule out a later exact
+match. `packet-history-bound-exceeded` now specifically names saturated
+per-flow retention; `packet-omission-history-bound-exceeded` means even the
+bounded omission intervals filled. Global acquisition-buffer loss is still a
+separate refusal. Published v0.10.8 retains the older broader
+`packet-history-bound-exceeded` meaning.
+
+If calibration says the stored Steam install root differs after a library
+move, inspect `targets show` and the platform's current installation. The S182
+source candidate offers `targets relocate --steam <app-id>` for a unique,
+reviewable move, followed by an exact `--plan-id` application. A missing old
+volume, two candidate locations, changed executable, or still-present old
+root requires manual investigation; retrying calibration cannot establish a
+new root. Published v0.10.8 has no relocation command. Do not remove and
+recreate the authored target merely to bypass a mismatch: that discards its
+stable identity and history.
+
 Doctor is read-only and checks prerequisites; it does not repair packet ownership or prove compatibility. Gameplay retry is not an established remedy for a missing evidence path. S170 shipped ordinary-user output access in v0.10.6. v0.10.7 (S173) fixes automatic same-account elevated recipient acquisition and retires historical permission repair; unresolved historical access uses normal Windows permission administration. Controlled sockets and synthesized packet fixtures prove the source corrections; they do not prove live Npcap acquisition or universal title compatibility.
 
 ## A stalled check
@@ -49,6 +69,6 @@ Historical v0.10.0 has coarse progress and a hidden `fragcap doctor --timings` s
 
 In published v0.10.1 and later, normal Doctor help exposes `--timings`. Interactive normal human read-only runs identify nested residue inventory, manifest/artifact scanning, manifest CA identities, separate root certificate stores and IPv4/IPv6 readiness. After one second of pending work, stderr reports the active operation and elapsed milliseconds, repeating no faster than once per second. Slow completions include actual durations automatically; `--timings` includes fast completions too. Residue inventory and ETW session availability remain aggregate boundaries, not individual API attribution. Pending does not mean unavailable, and there is no new probe timeout or cancellation guarantee. JSON, redirected human, quiet, silent, fix behavior and final reports remain unchanged.
 
-The operator owns installed reproduction on published bytes; agents do not run the installed sensitive product or change real host trust to manufacture evidence. Report version, privilege, first-run versus repeat, named phase/sub-operation, elapsed time and sanitized diagnostic evidence. Exclude account names, private paths, target inventory, endpoints, credentials and bundle contents. A stalled or interrupted check does not establish readiness or authorize repair.
+For installed reproduction on published bytes, report version, privilege, first-run versus repeat, named phase/sub-operation, elapsed time and sanitized diagnostic evidence. Exclude account names, private paths, target inventory, endpoints, credentials and bundle contents. A stalled or interrupted check does not establish readiness or authorize repair.
 
 For bundle authority and explicit sharing, see [Output formats](/docs/reference/output-formats) and [Security and privacy](/docs/guides/security-and-privacy).

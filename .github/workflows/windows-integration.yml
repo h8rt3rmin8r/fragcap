@@ -37,7 +37,9 @@ jobs:
           "LIB=$env:RUNNER_TEMP\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build official-feature binary
-        run: cargo build --locked --release -p fragcap-cli --features live,socket-table,etw
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --locked --release -p fragcap-cli --features live,socket-table,etw
 
       - name: Create staged install layout
         shell: pwsh

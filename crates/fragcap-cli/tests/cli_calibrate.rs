@@ -987,7 +987,7 @@ fn seed_topology(
         provenance: None,
         anchor: anchor.map(str::to_string),
         launch_entries: Some(launch_entries),
-        install_root: Some("C:\\Games\\Fixture".to_string()),
+        install_root: Some(local.parent().expect("scratch root").display().to_string()),
         evidence: None,
         detection_scan: None,
         folder_name: None,

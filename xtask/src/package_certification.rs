@@ -14,6 +14,7 @@ const PACKAGE_WORKFLOW: &str = ".github/workflows/package-certification.yml";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const WIX_SOURCE: &str = "crates/fragcap-cli/wix/main.wxs";
 const HARNESS: &str = "scripts/Test-PackageCertification.ps1";
+const CLEAN_GUEST_HARNESS: &str = "scripts/Test-CleanWindowsStartup.ps1";
 const MAX_CONTRACT_BYTES: u64 = 128 * 1024;
 const MAX_SMOKE_EVENT_BYTES: usize = 256 * 1024;
 // The controlled session now emits a route-owner cleanup result. Keep a finite
@@ -43,11 +44,40 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
         }
         return report(problems);
     }
+    if arguments.first().map(String::as_str) == Some("validate-clean-guest")
+        && (3..=4).contains(&arguments.len())
+    {
+        let evidence = fs::read(&arguments[1])?;
+        let value: Value = serde_json::from_slice(&evidence).map_err(invalid_data)?;
+        let portable_hash = sha256(&fs::read(&arguments[2])?);
+        let msi_hash = arguments
+            .get(3)
+            .map(|path| fs::read(path).map(|bytes| sha256(&bytes)))
+            .transpose()?;
+        problems.extend(validate_clean_guest_value(
+            &value,
+            evidence.len(),
+            &portable_hash,
+            msi_hash.as_deref(),
+        ));
+        if problems.is_empty() {
+            println!(
+                "package-certification: clean guest {} evidence matches exact bytes",
+                if msi_hash.is_some() {
+                    "MSI and portable"
+                } else {
+                    "portable"
+                }
+            );
+            return Ok(0);
+        }
+        return report(problems);
+    }
     if arguments.first().map(String::as_str) != Some("validate-report")
         || !(2..=3).contains(&arguments.len())
     {
         return Err(invalid_input(
-            "use validate-report <report.json> [artifact-directory] or validate-smoke-events <events.ndjson> <summary.json>",
+            "use validate-report <report.json> [artifact-directory], validate-clean-guest <report.json> <portable.exe> [candidate.msi], or validate-smoke-events <events.ndjson> <summary.json>",
         ));
     }
     problems.extend(validate_report(
@@ -118,6 +148,99 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &mut problems,
     );
     problems
+}
+
+fn validate_clean_guest_value(
+    value: &Value,
+    byte_len: usize,
+    portable_hash: &str,
+    msi_hash: Option<&str>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if byte_len > 16 * 1024 {
+        problems.push("clean guest report exceeds 16 KiB".into());
+    }
+    let mut fields = vec![
+        "schema_version",
+        "os_build",
+        "guest_model",
+        "msvc_runtime_present",
+        "npcap_present",
+        "portable",
+        "installed",
+        "install",
+        "repair",
+        "uninstall",
+        "user_state_preserved",
+        "complete",
+    ];
+    if msi_hash.is_some() {
+        fields.push("msi_sha256");
+    }
+    exact_keys(value, &fields, "clean_guest", &mut problems);
+    if value["schema_version"] != 1 || value["complete"] != true {
+        problems.push("clean guest report is not complete schema 1".into());
+    }
+    if value["os_build"].as_u64().is_none_or(|build| build < 19041)
+        || value["guest_model"].as_str().is_none_or(str::is_empty)
+    {
+        problems.push("clean guest platform authority is incomplete".into());
+    }
+    if value["msvc_runtime_present"] != false || value["npcap_present"] != false {
+        problems.push("clean guest has an undeclared runtime prerequisite".into());
+    }
+    validate_clean_executable(&value["portable"], portable_hash, "portable", &mut problems);
+    if let Some(msi_hash) = msi_hash {
+        if value["msi_sha256"] != msi_hash
+            || value["install"] != 0
+            || value["repair"] != 0
+            || value["uninstall"] != 0
+            || value["user_state_preserved"] != true
+        {
+            problems.push("clean MSI lifecycle or exact bytes did not reconcile".into());
+        }
+        validate_clean_executable(
+            &value["installed"],
+            portable_hash,
+            "installed",
+            &mut problems,
+        );
+    } else if !value["installed"].is_null()
+        || !value["install"].is_null()
+        || !value["repair"].is_null()
+        || !value["uninstall"].is_null()
+        || !value["user_state_preserved"].is_null()
+    {
+        problems.push("portable-only clean guest report claims MSI evidence".into());
+    }
+    problems
+}
+
+fn validate_clean_executable(value: &Value, hash: &str, label: &str, problems: &mut Vec<String>) {
+    exact_keys(
+        value,
+        &[
+            "sha256",
+            "version",
+            "help",
+            "doctor_reached",
+            "npcap_missing",
+            "native_proxy_available",
+        ],
+        label,
+        problems,
+    );
+    if value["sha256"] != hash
+        || value["version"] != true
+        || value["help"] != true
+        || value["doctor_reached"] != true
+        || value["npcap_missing"] != true
+        || value["native_proxy_available"] != true
+    {
+        problems.push(format!(
+            "{label} clean startup did not match exact bytes and readiness"
+        ));
+    }
 }
 
 fn validate_release_identity(value: &Value, problems: &mut Vec<String>) {
@@ -410,6 +533,19 @@ fn validate_limits(value: &Value, problems: &mut Vec<String>) {
 
 fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
     let mut problems = Vec::new();
+    validate_markers(
+        root,
+        CLEAN_GUEST_HARNESS,
+        &[
+            "CreateNoWindow = $true",
+            "vcruntime140.dll",
+            "npcap is not installed",
+            "msiexec.exe",
+            "sentinel-roaming",
+            "sentinel-local",
+        ],
+        &mut problems,
+    );
     validate_markers(
         root,
         WIX_SOURCE,
@@ -1545,6 +1681,44 @@ mod tests {
     #[test]
     fn checked_in_contract_is_closed_and_complete() {
         assert_eq!(validate_contract(&contract(), 1), Vec::<String>::new());
+    }
+
+    #[test]
+    fn clean_guest_report_requires_exact_bytes_absent_runtime_and_real_msi_lifecycle() {
+        let executable = serde_json::json!({
+            "sha256":"a".repeat(64), "version":true, "help":true,
+            "doctor_reached":true, "npcap_missing":true,
+            "native_proxy_available":true
+        });
+        let mut report = serde_json::json!({
+            "schema_version":1, "os_build":26100, "guest_model":"Virtual Machine",
+            "msvc_runtime_present":false, "npcap_present":false,
+            "portable":executable.clone(), "installed":executable,
+            "install":0, "repair":0, "uninstall":0,
+            "user_state_preserved":true, "msi_sha256":"b".repeat(64),
+            "complete":true
+        });
+        assert!(
+            validate_clean_guest_value(&report, 1024, &"a".repeat(64), Some(&"b".repeat(64)))
+                .is_empty()
+        );
+        report["installed"]["sha256"] = Value::String("c".repeat(64));
+        assert!(
+            !validate_clean_guest_value(&report, 1024, &"a".repeat(64), Some(&"b".repeat(64)))
+                .is_empty()
+        );
+        report["installed"]["sha256"] = Value::String("a".repeat(64));
+        report["msvc_runtime_present"] = Value::Bool(true);
+        assert!(
+            !validate_clean_guest_value(&report, 1024, &"a".repeat(64), Some(&"b".repeat(64)))
+                .is_empty()
+        );
+        report["msvc_runtime_present"] = Value::Bool(false);
+        report["repair"] = Value::from(1603);
+        assert!(
+            !validate_clean_guest_value(&report, 1024, &"a".repeat(64), Some(&"b".repeat(64)))
+                .is_empty()
+        );
     }
 
     #[test]

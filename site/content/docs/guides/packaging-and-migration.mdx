@@ -11,6 +11,18 @@ The MSI owns its Program Files payload, product registration, exact system PATH 
 
 Final-package certification builds the official feature closure once, checks build identity, imports, sizes, shared digests and checksums, then validates isolated Windows lifecycle and constrained loopback smoke. Release publication uses those exact certified bytes, not a rebuilt executable. This is package evidence, not a claim that all games were tested or that the whole-product independent review passed. See [maintainer certification policy](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/maintainers/package-certification.md).
 
+Published v0.10.8 has a startup defect on a clean Windows installation
+without the Visual C++ runtime: the executable can stop before showing
+`--version`, `--help`, or Doctor. The S182 source candidate links the MSVC C
+runtime into the executable and checks the resulting PE imports. In an
+isolated clean Windows guest without that runtime, both the portable and
+MSI-installed candidate executables start those three commands; Doctor then
+reports missing Npcap as a separate Capture prerequisite. The candidate MSI
+also installs, repairs, and uninstalls while preserving synthetic user state.
+This correction is not in the published v0.10.8 MSI or ZIP. Install a later
+release carrying S182 when it is published; do not treat the candidate's
+version string alone as proof that an installed package has the correction.
+
 ## Upgrade without losing research
 
 Ordinary upgrade and uninstall preserve writable catalogs, local targets, profiles, captures, settings, logs, and Deep Capture bundles. Current local-store schema version 13 adds target-bound calibration checkpoints and immutable exact-case intent while retaining earlier evidence. Back up your writable stores and bundles before upgrading; a successful migration does not make old compatibility evidence applicable to a new product/backend/target version. Recalibrate the exact intended case when current applicable routing evidence is missing.

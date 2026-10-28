@@ -989,6 +989,8 @@ pub enum TargetsCommand {
     /// Register a target from a name, deriving a unique handle.
     #[command(after_long_help = crate::workflow_help::TARGETS_ADD_LONG_HELP)]
     Add(TargetsAddArgs),
+    /// Preview or confirm one exact Steam library relocation of a stored target.
+    Relocate(TargetsRelocateArgs),
     /// List capture targets by row number, handle, readiness, and known
     /// technologies.
     ///
@@ -1059,6 +1061,24 @@ pub enum TargetsCommand {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+}
+
+/// A two-step location repair. The exact plan id is obtained from a preview
+/// and revalidated against current platform and store state before mutation.
+#[derive(Debug, Args)]
+pub struct TargetsRelocateArgs {
+    /// Existing Steam app id whose stored install root is obsolete.
+    #[arg(long)]
+    pub steam: u32,
+    /// Local target store to inspect and, with an exact plan id, update.
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+    /// Exact Steam root, mainly useful for a separately installed client.
+    #[arg(long)]
+    pub steam_root: Option<PathBuf>,
+    /// Exact current proposal id from the preview; omitting it writes nothing.
+    #[arg(long)]
+    pub plan_id: Option<String>,
 }
 
 /// Arguments to `targets discover`.
