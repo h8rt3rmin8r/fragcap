@@ -512,6 +512,7 @@ impl ProxyBackend for NativeProxyAdapter {
             proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
             observations_lost: 0,
+            classification_loss_accounted: 0,
             diagnostics: None,
             observation_ended_at_ns: None,
             application_classification_summary: None,
@@ -560,6 +561,7 @@ struct NativeProxyLease {
     proxy_lifecycle: Option<super::ProxyLifecycleLease>,
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
     observations_lost: u64,
+    classification_loss_accounted: u64,
     application_classification_summary: Option<ClassificationSummary>,
     stop_authority: Option<NativeStopAuthority>,
     diagnostics: Option<super::ProxyDiagnostics>,
@@ -567,6 +569,18 @@ struct NativeProxyLease {
 }
 
 impl NativeProxyLease {
+    fn account_final_classification_loss(&mut self) {
+        if let Some(artifact) = self.application_artifact.as_ref() {
+            let newly_lost = self
+                .observations_lost
+                .saturating_sub(self.classification_loss_accounted);
+            artifact.add_classification_loss(newly_lost);
+            self.classification_loss_accounted = self
+                .classification_loss_accounted
+                .saturating_add(newly_lost);
+        }
+    }
+
     fn collect_observation_drain(
         &mut self,
         budget: Budget,
@@ -776,9 +790,9 @@ impl ProxyLease for NativeProxyLease {
         self.stop_authority = Some(NativeStopAuthority::from_report(&report));
         self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
+        self.account_final_classification_loss();
         if report.is_clean() {
             if let Some(artifact) = self.application_artifact.as_mut() {
-                artifact.add_classification_loss(self.observations_lost);
                 if let Err(error) = artifact.finish() {
                     result.status = CleanupStatus::Failed;
                     result.reason = format!("application writer failed: {error}");
@@ -803,6 +817,7 @@ impl ProxyLease for NativeProxyLease {
             .then(|| super::ProxyDiagnostics::from_runtime(&report.observation));
         self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut results = vec![cleanup_result("native-proxy-runtime", &report)];
+        self.account_final_classification_loss();
         if let Some(key_log) = self.key_log.take() {
             let status = key_log.status();
             results.push(CleanupResult {
@@ -1822,11 +1837,39 @@ mod tests {
             proxy_lifecycle: None,
             key_log: None,
             observations_lost: 0,
+            classification_loss_accounted: 0,
             application_classification_summary: None,
             stop_authority: None,
             diagnostics: None,
             observation_ended_at_ns: None,
         }
+    }
+
+    #[test]
+    fn final_proxy_classification_loss_is_accounted_once_across_stop_and_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let ip = "127.0.0.1".parse().unwrap();
+        let mut lease = native_join_test_lease(
+            ip,
+            SocketAddr::new(ip, 9),
+            &directory.path().join("application.jsonl"),
+        );
+
+        // A failed stop may return a loss total before cleanup finalizes the
+        // writer. Repeated totals must not inflate the final classification.
+        lease.observations_lost = 2;
+        lease.account_final_classification_loss();
+        lease.account_final_classification_loss();
+        lease.observations_lost = 3;
+        lease.account_final_classification_loss();
+        lease.cleanup(Budget::new(Duration::from_secs(3)));
+        assert_eq!(
+            lease
+                .application_classification_summary
+                .unwrap()
+                .unclassified_lost,
+            3
+        );
     }
 
     #[test]
