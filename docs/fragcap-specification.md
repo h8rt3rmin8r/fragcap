@@ -2,7 +2,7 @@
 
 **Status:** Draft \
 **Version:** 0.1.99-draft \
-**Applies-To:** 0.10.8 \
+**Applies-To:** 0.10.9 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-10-23 \
@@ -188,6 +188,7 @@ enforcement.
 | 0.1.98-draft | 2026-10-23 | Codex | S180 prepares v0.10.8 from accepted S179 and all remaining unreleased changes. Candidate version, generated evidence, graph digests, chronological changelog and short highlights advance together while actual public v0.10.7 remains independently bound. The owner delegates this release's PR integration, exact tag and normal protected publication without changing standing protection. Updates sections 1 and 27.3. |
 | 0.1.99-draft | 2026-10-23 | Codex | S180 reconciles public v0.10.8 from exact reviewed source after all four tagged jobs, normal protected registry approval, six independently verified public files and ten non-yanked downloaded crate archives. Current markers and frozen replay authority advance together; historical evidence, unsigned policy and unperformed independent-review status remain separate. Updates sections 1, 22.7, 25.2 and 27.3. |
 | 0.1.100-draft | 2026-10-27 | Codex | S182 repairs stored Steam relocation, calibration timing and packet correlation, exact managed shutdown and final proxy accounting, clean Windows startup, physical evidence, and version-scoped operator guidance under #514-#518 and #520-#522. Updates sections 15.8, 17.2, 24.5, 25.2, and 26.3 without changing published v0.10.8. |
+| 0.1.101-draft | 2026-10-29 | Codex | S183 prepares a v0.10.9 patch candidate from merged S181 and S182 corrections. Candidate Applies-To and generated evidence advance with the workspace version while published v0.10.8 identities remain current until separate public reconciliation. Updates sections 1 and 27.3. |
 
 ## 2. Purpose and Problem Statement
 
@@ -5069,6 +5070,8 @@ S172 publishes v0.10.6 from merged S167-S171 and all remaining unreleased fragme
 S174 publishes v0.10.7 from accepted S173 and all remaining unreleased fragments. Delegated candidate PR #482 passed all 23 active checks and both bounded code-review rounds without findings before merge; exact annotated v0.10.7 selects `ae2d3a1a0661b705af48ce1ee36786fdd176a0f6`. All four tagged release jobs pass after normal protected owner approval without settings changes or bypass. Six public certified files and ten non-yanked downloaded crate archives reconcile before current markers and replay authority advance. The separate requested security report remains unpublished; no independent whole-product review or universal title compatibility is claimed.
 
 S180 publishes v0.10.8 from accepted S179 and all merged changes since v0.10.7. Candidate PR #505 passed 23 checks with two expected skips and two code-review rounds without findings before its exact reviewed tree merged as `03de229b6c665cc6d039f9c373a5abb59d2c4865`. Annotated tag v0.10.8 selects that source. All four tagged jobs pass after normal protected owner approval with no settings change or bypass. Six certified public files and ten non-yanked downloaded crate archives reconcile before current markers and replay authority advance. The requested separate Codex security-review field remained empty after the second and final trigger, so neither a separate security bot receipt nor an independent whole-product audit is claimed. IGDB #155 and universal live-title compatibility remain outside this release.
+
+S183 prepares a v0.10.9 candidate from merged source corrections, including the Tokio 1.53.3 graph and S182 installed-product recovery. The candidate changes version-bound source and test authorities while the current public release remains v0.10.8. Issue #519 remains open until the corrected files and registry packages are actually published and reconciled after owner merge, annotated tag, and protected approval. Controlled qualification does not prove a real-title calibration or Deep Capture run.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 

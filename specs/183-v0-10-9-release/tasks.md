@@ -12,10 +12,10 @@
 
 **Independent test**: Version, changelog, notes, generated evidence, graph and spec checks agree.
 
-- [ ] T004 [US1] Bump workspace and product versions on `release/0.10.9` in `Cargo.toml`, crate manifests and release-bound lockfiles with no third-party resolution drift.
-- [ ] T005 [US1] Update embedded versions and regenerate owned goldens in `conformance/native-http-tls/`, `crates/fragcap-cli/tests/`, and `fixtures/`.
-- [ ] T006 [US1] Assemble chronological `CHANGELOG.md`, add `release-notes/v0.10.9.md`, update `docs/fragcap-specification.md` Applies-To and `docs/plans/README.md`, preserving current public v0.10.8 markers.
-- [ ] T007 [US1] Measure and rebind exact first-party dependency authorities in `supply-chain/` and verify no unreviewed third-party change.
+- [x] T004 [US1] Bump workspace and product versions on `release/0.10.9` in `Cargo.toml`, crate manifests and release-bound lockfiles with no third-party resolution drift.
+- [x] T005 [US1] Update embedded versions and regenerate owned goldens in `conformance/native-http-tls/`, `crates/fragcap-cli/tests/`, and `fixtures/`.
+- [x] T006 [US1] Assemble chronological `CHANGELOG.md`, add `release-notes/v0.10.9.md`, update `docs/fragcap-specification.md` Applies-To and `docs/plans/README.md`, preserving current public v0.10.8 markers.
+- [x] T007 [US1] Measure and rebind exact first-party dependency authorities in `supply-chain/` and verify no unreviewed third-party change.
 
 ## Phase 3 - User Story 2: Controlled qualification
 
@@ -23,8 +23,8 @@
 
 **Independent test**: Local checks, current advisories, packages and physical trust receipt have exact identities and terminal outcomes.
 
-- [ ] T008 [US2] Run product and isolated locked advisory checks and graph diff, recording exact results in `specs/183-v0-10-9-release/verification.md`.
-- [ ] T009 [US2] Run `cargo xtask ci`, MSRV, neutral, docs, release-notes and text gates; record results in `specs/183-v0-10-9-release/verification.md`.
+- [x] T008 [US2] Run product and isolated locked advisory checks and graph diff, recording exact results in `specs/183-v0-10-9-release/verification.md`.
+- [x] T009 [US2] Run `cargo xtask ci`, MSRV, neutral, docs, release-notes and text gates; record results in `specs/183-v0-10-9-release/verification.md`.
 - [ ] T010 [US2] Run controlled Windows package certification and physical current-user trust attempt with exact cleanup; record measured or unverified rows in `specs/183-v0-10-9-release/verification.md`.
 
 ## Phase 4 - User Story 3: Review-ready PR
