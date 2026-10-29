@@ -3,10 +3,10 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.8](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.8).
+Published baseline: [v0.10.9](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9).
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.8. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.9. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
@@ -118,7 +118,7 @@ Stored resolution takes precedence. On a clean miss, an exact installed Steam ap
 
 The workflow proposes reachability first when applicable routing evidence is missing. Fresh eligible final-client observations can propose concrete protocols, but requested `--protocol` values are only measurement intent. Each workflow runs reachability at most once and each concrete protocol at most once, with at most fourteen durable attempt ordinals. A failure, limitation, decline, partial result, interruption, target change, or repeated case checkpoints coverage and stops later effects instead of pretending success.
 
-In the S182 source candidate, an early packet withheld by Capture's selected
+In v0.10.9, an early packet withheld by Capture's selected
 scope does not automatically invalidate a later, separate proxy connection.
 The later connection still needs retained packet observations in its exact
 time window with one proven final-client owner. A withheld packet inside that
@@ -127,7 +127,7 @@ reports `packet-history-bound-exceeded`, and an acquisition-buffer loss reports
 `capture-buffer-history-incomplete`. An unknown omission or exhausted omission
 history also refuses a positive match. These reasons explain missing evidence;
 they are not a claim that the target accepted TLS or that the route propagated.
-Published v0.10.8 has the earlier untimed omission behavior.
+v0.10.8 has the earlier untimed omission behavior.
 
 Resume from the same effective local store using the workflow identity printed by the command:
 
@@ -144,18 +144,18 @@ Ordinary eligibility uses the latest exact applicable routing row for target/ver
 
 ### Reading a calibration result
 
-The next-source S168 contract presents authorization, observation, captured evidence, resource cleanup, and one final calibration verdict as separate blocks. The complete canonical plan and exact identifier still govern authorization. Human field anchors use the widest actual label plus four spaces; redirected output is plain, quiet suppresses ordinary guided progress and its final human verdict, silent suppresses terminal evidence, and JSON carries additive `calibration.verdict` decisions instead of prose. Required authorization and actionable cleanup notices retain their established visibility.
+The S168 contract shipped in v0.10.6 presents authorization, observation, captured evidence, resource cleanup, and one final calibration verdict as separate blocks. The complete canonical plan and exact identifier still govern authorization. Human field anchors use the widest actual label plus four spaces; redirected output is plain, quiet suppresses ordinary guided progress and its final human verdict, silent suppresses terminal evidence, and JSON carries additive `calibration.verdict` decisions instead of prose. Required authorization and actionable cleanup notices retain their established visibility.
 
 The final verdict separates the attempted case from current applicable stored readiness. Its case identity includes target, launch, route, address family, native backend/version, fragcap version, target version when available, and protocol. The greatest durable row ID for each exact applicable measurement key supplies current readiness; older differing values remain history. A later exact negative measurement supersedes an earlier positive one, and a later exact positive measurement supersedes an earlier negative one. A stale or unrelated attempt does not displace an applicable current measurement. Contradictory values at the same greatest durable ID, or absent durable chronology, cannot establish readiness. A satisfied stored routing prerequisite still requires fresh launch preflight, recovery, and authorization. Remaining protocols are explicit. Resume preserves workflow intent and attempt history and obtains a new plan; one supported next command is printed with that purpose.
 
 Connection endings and application exchanges count different populations. For example, a controlled session can report six failed connections, with five protocol failures and one idle timeout, while seven HTTP exchanges completed successfully. The timeout does not erase those exchanges. Separate fields show accepted/completed/failed/forced/live connections, retained failure categories, exchange/stream totals, bounded detail loss, record ownership, and unavailable correlation. Records observed during the observation window and later owner release remain distinguishable. Later records are retained but cannot satisfy the earlier calibration case.
 
-The S182 source candidate takes final proxy counters after cleanup and
+v0.10.9 takes final proxy counters after cleanup and
 application finalization, including when the first stop attempt timed out.
 Earlier unavailable counters stay unavailable until an actual runtime report
 establishes them; a later count does not erase the timeout. The final
 calibration diagnosis uses these last observed counts and keeps the earliest
-known causal failure. Published v0.10.8 can report a premature zero after a
+known causal failure. v0.10.8 can report a premature zero after a
 stop timeout; inspect its retained application and cleanup records separately.
 
 A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. The S170 correction published in v0.10.6 verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.6 includes this correction.

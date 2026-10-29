@@ -88,3 +88,7 @@ The owner receives an official PR whose required checks are green, actual review
 - Issue #519 remains open through actual public delivery and reconciliation after merge.
 - Current public documentation stays on v0.10.8 until v0.10.9 assets and registry packages exist.
 - Real-title calibration is field evidence only on published product bytes and is outside this candidate's source gate.
+
+## 2026-10-29 owner-directed post-merge continuation
+
+After the owner merged PR #524, the owner directed the agent to perform the release. The v0.10.9 annotated tag, normal protected crates.io approval, public asset and registry verification, installed MSI upgrade, and a separate publication-records PR are now in scope. The pre-merge requirements above remain the candidate acceptance record. The records PR still follows the repository's human review and merge rule. A real-title full calibration and Deep Capture success remain unverified until separately observed on published bytes.

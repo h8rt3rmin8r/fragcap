@@ -12,9 +12,9 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-Published baseline: [v0.10.8](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.8).
+Published baseline: [v0.10.9](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9).
 
-This page describes the current source command tree, checked by the production parser without dispatch. The published v0.10.8 baseline includes the native API, guided calibration, command migrations below, S151's visible Doctor `--timings`, nested readiness timings and live elapsed diagnostics, S161's interactive CLI input correction, S163's guided first-run Steam client setup and causal failure reporting, and S165's managed route-owner lifetime correction. Historical v0.10.0 retains the hidden completion-only timing option. v0.10.6 publishes terminal display alignment, bounded acquisition and exact attempt correlation, recipient-context artifact access, finite generated-session retention, and dependency-alert corrections from S167-S171. v0.10.7 corrects automatic same-account elevated output access, retires historical permission repair, and includes seven TLS/QUIC advisory fixes. v0.10.8 enforces Capture scope and metadata-only output, adds bounded managed shutdown, improves first-use and CLI result guidance, and updates rustls-webpki. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
+This page describes the current source command tree, checked by the production parser without dispatch. The published v0.10.9 baseline includes the native API, guided calibration, command migrations below, S151's visible Doctor `--timings`, nested readiness timings and live elapsed diagnostics, S161's interactive CLI input correction, S163's guided first-run Steam client setup and causal failure reporting, and S165's managed route-owner lifetime correction. Historical v0.10.0 retains the hidden completion-only timing option. v0.10.6 publishes terminal display alignment, bounded acquisition and exact attempt correlation, recipient-context artifact access, finite generated-session retention, and dependency-alert corrections from S167-S171. v0.10.7 corrects automatic same-account elevated output access, retires historical permission repair, and includes seven TLS/QUIC advisory fixes. v0.10.8 enforces Capture scope and metadata-only output, adds bounded managed shutdown, improves first-use and CLI result guidance, and updates rustls-webpki. v0.10.9 includes the corrected Tokio dependency graph and fixes for relocated libraries, calibration evidence timing, managed shutdown, final proxy counters, and clean Windows startup. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
 
 In the tables, `open` means the parser accepts a value whose grammar is explained
 in the Meaning column. `none` means clap declares no default; the application may
@@ -27,7 +27,7 @@ Running `fragcap` with no command lists registered targets and points at
 
 ## Retired command migration
 
-Older releases and their preserved changelog pages may refer to command forms that the current CLI no longer accepts. Use these replacements with the published v0.10.8 command surface:
+Older releases and their preserved changelog pages may refer to command forms that the current CLI no longer accepts. Use these replacements with the published v0.10.9 command surface:
 
 | Retired form | Current form |
 | --- | --- |
@@ -160,9 +160,9 @@ Deep Capture hides and rejects the former `--trust-ca` and `--yes` inputs for on
 
 Authorization plan and prompt writes must succeed before input is read. Interactive approval requires a complete LF-terminated line, and effective deadlines are bound at exact millisecond precision. The prepared CA must remain within its displayed validity period. Stored target authority is checked immediately after approval, then the facade independently resolves and compares the exact profile, executable paths, platform root, dispatch, and managed launch before endpoint selection. Before constructing a new plan, a bounded read-only inspection refuses any pending prior-session recovery and directs the operator to `fragcap doctor --fix`; the new plan never authorizes effects against an older session.
 
-The published v0.10.8 plan already authorizes a normal window close from exact
-session-created route owners when observation ends. S182 corrects the helper
-refusal that can prevent this request. Fragcap verifies owner and observed
+The published v0.10.9 plan authorizes a normal window close from exact
+session-created route owners when observation ends and corrects the earlier
+helper refusal. Fragcap verifies owner and observed
 helper exits before releasing the proxy route. The displayed grace
 and two-minute release ceiling bound this work. Save the selected application's
 work before authorizing; an exact owner still open after grace may be
@@ -297,7 +297,7 @@ old volume, duplicate installation, changed executable hint, or missing
 authored executable refuses the update. This includes an absolute authored
 launcher path that still names the missing old library. Export the target,
 correct that authored path, import it, and preview relocation again. Published
-v0.10.8 does not provide this command.
+v0.10.8 does not provide this command; v0.10.9 does.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
