@@ -40,6 +40,7 @@ const CURRENT_RELEASE_SURFACES: &[&str] = &[
     "site/content/docs/reference/deep-capture-compatibility.mdx",
     "site/content/docs/reference/output-formats.mdx",
     "site/content/docs/reference/cli.mdx",
+    "site/content/docs/reference/native-documentation.mdx",
     "docs/security/native-product-review-handoff.md",
     "docs/maintainers/v0.10.0-release-handoff.md",
 ];
