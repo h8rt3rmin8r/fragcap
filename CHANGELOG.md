@@ -10,6 +10,46 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-10-29
+
+### Changed
+
+Development and test builds retain file and line information for backtraces instead of full debug information and disable incremental compilation to reduce build storage. Full variable and type information requires an explicit debug-information override.
+
+Main-branch pushes limited to selected root content files skip unrelated runtime, performance, fuzz, audit and published-replay jobs. README and release-text edits retain documentation, version-marker and static package validation, while LICENSE and NOTICE changes retain full package certification.
+
+### Fixed
+
+Current documentation and frozen replay authority identify independently verified v0.10.8 files and all ten published crates. Capture scope, managed shutdown, first-use guidance and CLI result corrections are marked as shipped, while historical releases and independent-review non-claims retain their meaning.
+
+Prepare locked dependencies before documentation validation and run the same root contracts before and after merge. Add explicit cold-cache qualification, complete site advisory auditing, and recurring advisory checks for every isolated Rust graph.
+
+Recover uniquely moved Steam targets without losing authored identity, bound real calibration observation time, correlate packet omissions to the exact connection window, and reconcile managed shutdown and final proxy counts. Make official Windows executables start without a separately installed Visual C++ runtime, refresh physical Windows evidence, and explain the corrected workflow in version-scoped operator documentation.
+
+The Linux TShark conformance job grants its installed AppArmor profile read access to the exact committed capture fixture and synthetic TLS key log, allowing analyzer validation on runners whose profile excludes repository paths.
+
+### Security
+
+Update Zod to 4.6.6 and DOMPurify to 3.4.17 throughout the documentation site. Patch isolated Rust lockfiles to Tokio 1.53.3 and rustls-webpki 0.103.16, and update the historical native-proxy compression chain to patched Zstd releases.
+
+Update Tokio to exact version 1.53.3 for RUSTSEC-2026-0386, which corrects the I/O-safety contract of Unix asynchronous file-descriptor registration. Keep the existing runtime feature set and synchronize the product, fuzz and performance lockfiles, performance manifest, governed dependency inventory and conformance implementation identities.
+
+### Decisions
+
+2026-10-23: Advance current v0.10.8 publication markers, coverage identity, frozen review candidate and six exact asset authorities only after accepted source, annotated tag, all four tagged jobs, normal protected approval, six independently downloaded files and ten non-yanked registry archives reconcile. Retarget the published replay job label to these verified bytes. Preserve the v0.8.0 predecessor, unsigned policy, historical evidence and unperformed independent-review status. The owner delegates this release-specific records PR integration and production deployment without changing future protection.
+
+2026-10-23: Limit main-push path exclusions to the exact root README, CHANGELOG, CONTRIBUTING, AI_CONTEXT, CLAUDE, LICENSE, NOTICE and editor-workspace files; keep all pull-request, manual, scheduled and tag behavior. The platform trigger guard now permits only this exact main-push exception, preserving whole-workspace coverage for every source change. README and CONTRIBUTING published-version markers remain checked by `cargo xtask spec` in the docs workflow, including when release automation rotates them. The docs workflow also retains lint, license, static package authority, CLI-reference and site-build checks; LICENSE and NOTICE continue to trigger full Windows package certification. Repository governance, toolchain, dependency, workflow and source files are outside the exclusion set. GitHub-managed default CodeQL scanning is unaffected.
+
+2026-10-25: PR #509's initial CI found RUSTSEC-2026-0386 in Tokio 1.53.1 and a TShark fixture-read denial on the Ubuntu 26.04 runner. Select exact Tokio 1.53.3 as the smallest patched release on the existing line. Update `.github/workflows/ci.yml` to add two exact read rules through the installed TShark AppArmor profile's local include, then reload that profile before analyzer validation. This is an ephemeral CI-runner configuration change; the analyzer must still decrypt the expected synthetic request, and the remainder of the installed profile stays enforced. The upstream profile is documented at https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor.d/tshark.
+
+2026-10-27: S181 consolidates issue #511, Dependabot PR #510, five site alerts, stale Tokio/webpki in six isolated Rust locks, and fourteen Zstd advisories discovered by fresh complete-graph audits. Advance only compatible security resolutions; preserve the native spike's decoder feature by updating its compression dependency chain. Keep original offline compiled documentation discovery, add explicit locked fetch before identical PR/main root contracts, and expose a manual cold-cache path with isolated Cargo home/target and offline validation. Extend the existing pinned cargo-deny workflow to isolated graphs and add Node 24/pnpm 10.26.0 full-site auditing on all existing audit triggers. Workflow mutation regressions enforce preparation ordering, parity, graph coverage, and failure propagation. Owner approval explicitly delegates publication and integration through final green main for S181; existing protection settings and published release identity remain unchanged.
+
+2026-10-27: Correct the two native-spike manifests' declared Rust floor from 1.82 to 1.88, already required by their unchanged selected time dependencies before S181. The compatible compression update does not raise that existing graph requirement. The root product floor remains 1.88; historical measurement documents retain their original context.
+
+2026-10-27: S182 groups the installed v0.10.8 recovery findings #514-#518 and #520-#522 without changing the published release marker or closing publication #519. A moved target needs one exact preview and conditional update; omitted packet evidence needs time and cause; ordinary helpers can block route release without gaining process-control authority. Static MSVC CRT linkage removes the undeclared startup dependency, while clean-guest, physical-release, candidate, and protocol evidence retain distinct identities. Owner authorization covers push, PR creation, CI and at most one explicit second review request; merge and release remain separate. 2026-10-28: The first external code review found that a late Capture duration limit had only changed the CLI argument, while the prepared effective configuration still held the old limit. S182 now tightens the exact configuration consumed by the orchestrator. Relocation also refuses a missing absolute authored launcher path, including one that still names the old library, and directs the operator through the existing export/import correction path. 2026-10-28: The second external code review found that an unclean proxy stop could bypass application classification loss accounting before cleanup finalized the writer. The native lease now transfers each observed cumulative loss increment before either stop or cleanup finalization, so timeout recovery retains the exact loss total without counting a clean-stop total twice. 2026-10-28: Issue #518's same-version documentation audit also identified a stale blanket process-handle claim and two glossary links to an absent resource-obligation anchor. The threat model now names the exact session-created shutdown exception; the glossary defines the journaled obligation in plain English; source and rendered-anchor checks guard the links. 2026-10-28: A final same-version read caught two source pages wrongly calling automatic cold-session shutdown new in S182. The published v0.10.8 plan already authorizes that behavior; S182 fixes the helper refusal that prevented it. Both pages now state the published contract and distinguish warm operator close from cold managed shutdown.
+
+2026-10-29: Prepare v0.10.9 on the reviewed release branch from merged S181 and S182 corrections, with exact candidate-bound versions, generated evidence, graph digests, changelog and short release notes. Keep verified v0.10.8 public markers unchanged until a separate post-merge publication and records reconciliation. Owner authorization covers the candidate push and PR with at most one explicit second Codex review request, while merge, annotated tag and protected registry approval remain separate decisions.
+
 ## [0.10.8] - 2026-10-23
 
 ### Fixed
@@ -2454,6 +2494,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.9]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9
 [0.10.8]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.8
 [0.10.7]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.7
 [0.10.6]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.6
