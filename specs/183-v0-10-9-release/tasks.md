@@ -34,9 +34,18 @@
 **Independent test**: Final head, checks, review round count and every actual thread reconcile.
 
 - [x] T011 [US3] Commit candidate and push `release/0.10.9`; open and attach the official PR referencing #519 without closing it.
-- [ ] T012 [US3] Inspect exact-head hosted checks and automatic bot comments, fix findings, answer and resolve every actionable thread; record in `specs/183-v0-10-9-release/verification.md`.
-- [ ] T013 [US3] If useful, request at most one explicit second `@Codex` round; resolve all resulting threads and reconfirm green final-head checks.
-- [ ] T014 [US3] Hand the final PR SHA, check/review receipts and physical limits to the owner, with merge and publication pending.
+- [x] T012 [US3] Inspect exact-head hosted checks and automatic bot comments, fix findings, answer and resolve every actionable thread; record in `specs/183-v0-10-9-release/verification.md`.
+- [x] T013 [US3] If useful, request at most one explicit second `@Codex` round; resolve all resulting threads and reconfirm green final-head checks.
+- [x] T014 [US3] Hand the final PR SHA, check/review receipts and physical limits to the owner, with merge and publication pending.
+
+## Post-merge owner-directed continuation
+
+- [x] T015 Confirm the owner merge tree, ten main workflow results, release-guard readiness, and annotated tag identity.
+- [x] T016 Follow all four tagged release jobs through normal protected approval; verify six public files, sidecars, certification report, and ten non-yanked crate archives.
+- [x] T017 Install the official public MSI with one UAC prompt and compare the installed executable with the public ZIP.
+- [x] T018 Advance same-version documentation, current markers, frozen review authority and publication handoff on a separate records branch.
+- [ ] T019 Review the records PR's exact head, hosted checks, comments and permitted review rounds, then hand it to the owner for merge.
+- [ ] T020 After owner merge and Pages success, reconcile public documentation and close issue #519.
 
 ## Dependencies
 

@@ -40,6 +40,7 @@ const CURRENT_RELEASE_SURFACES: &[&str] = &[
     "site/content/docs/reference/deep-capture-compatibility.mdx",
     "site/content/docs/reference/output-formats.mdx",
     "site/content/docs/reference/cli.mdx",
+    "site/content/docs/reference/native-documentation.mdx",
     "docs/security/native-product-review-handoff.md",
     "docs/maintainers/v0.10.0-release-handoff.md",
 ];
@@ -530,9 +531,11 @@ mod tests {
             );
             assert!(!path.contains('\\'), "inventory uses portable separators");
         }
-        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 14);
+        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 15);
         assert!(CURRENT_RELEASE_SURFACES
             .contains(&"site/content/docs/guides/doctor-and-troubleshooting.mdx"));
+        assert!(CURRENT_RELEASE_SURFACES
+            .contains(&"site/content/docs/reference/native-documentation.mdx"));
     }
 
     #[test]
