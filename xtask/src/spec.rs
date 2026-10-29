@@ -531,9 +531,11 @@ mod tests {
             );
             assert!(!path.contains('\\'), "inventory uses portable separators");
         }
-        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 14);
+        assert_eq!(CURRENT_RELEASE_SURFACES.len(), 15);
         assert!(CURRENT_RELEASE_SURFACES
             .contains(&"site/content/docs/guides/doctor-and-troubleshooting.mdx"));
+        assert!(CURRENT_RELEASE_SURFACES
+            .contains(&"site/content/docs/reference/native-documentation.mdx"));
     }
 
     #[test]
