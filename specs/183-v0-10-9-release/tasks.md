@@ -25,7 +25,7 @@
 
 - [x] T008 [US2] Run product and isolated locked advisory checks and graph diff, recording exact results in `specs/183-v0-10-9-release/verification.md`.
 - [x] T009 [US2] Run `cargo xtask ci`, MSRV, neutral, docs, release-notes and text gates; record results in `specs/183-v0-10-9-release/verification.md`.
-- [ ] T010 [US2] Run controlled Windows package certification and physical current-user trust attempt with exact cleanup; record measured or unverified rows in `specs/183-v0-10-9-release/verification.md`.
+- [x] T010 [US2] Run controlled Windows package certification and physical current-user trust attempt with exact cleanup; record measured or unverified rows in `specs/183-v0-10-9-release/verification.md`.
 
 ## Phase 4 - User Story 3: Review-ready PR
 
@@ -33,7 +33,7 @@
 
 **Independent test**: Final head, checks, review round count and every actual thread reconcile.
 
-- [ ] T011 [US3] Commit candidate and push `release/0.10.9`; open and attach the official PR referencing #519 without closing it.
+- [x] T011 [US3] Commit candidate and push `release/0.10.9`; open and attach the official PR referencing #519 without closing it.
 - [ ] T012 [US3] Inspect exact-head hosted checks and automatic bot comments, fix findings, answer and resolve every actionable thread; record in `specs/183-v0-10-9-release/verification.md`.
 - [ ] T013 [US3] If useful, request at most one explicit second `@Codex` round; resolve all resulting threads and reconfirm green final-head checks.
 - [ ] T014 [US3] Hand the final PR SHA, check/review receipts and physical limits to the owner, with merge and publication pending.
