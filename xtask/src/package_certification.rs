@@ -438,6 +438,7 @@ fn validate_lifecycle(value: &Value, problems: &mut Vec<String>) {
         "installer_effects",
         &[
             "defender-exclusion-if-created",
+            "installation-ca-persistent",
             "installed-files",
             "product-registration",
             "system-path-entry",
