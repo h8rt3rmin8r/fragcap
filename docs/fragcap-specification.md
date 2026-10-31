@@ -2,7 +2,7 @@
 
 **Status:** Draft \
 **Version:** 0.1.103-draft \
-**Applies-To:** 0.10.9 \
+**Applies-To:** 0.10.10 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-10-23 \

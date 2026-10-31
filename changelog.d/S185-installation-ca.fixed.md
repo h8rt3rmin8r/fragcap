@@ -1,2 +1,0 @@
-<!-- spec-impact: 17.2.1, 20.3, 27.3 -->
-Deep Capture now uses one machine-specific installation CA trusted in `LocalMachine/Root` for all Windows users, rather than adding and removing a root per session. First installation removes identified pre-S185 Fragcap state. MSI provisioning and explicit portable `ca install` verify the signer and exact root; startup, Doctor and Deep Capture report or refuse unhealthy installation trust. Session cleanup and ordinary uninstall retain the root until explicit exact-fingerprint removal.

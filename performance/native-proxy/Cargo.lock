@@ -364,7 +364,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "fragcap"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "base64",
  "blake3",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-attr"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "arc-swap",
  "fragcap-core",
@@ -394,14 +394,14 @@ dependencies = [
 
 [[package]]
 name = "fragcap-capture"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "fragcap-core",
 ]
 
 [[package]]
 name = "fragcap-core"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "bytes",
 ]
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-profile"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "fragcap-core",
  "regex",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-proxy"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "async-compression",
  "base64",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-sink"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "fragcap-core",
  "windows-sys 0.36.1",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-steam"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "fragcap-profile",
  "serde_json",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "fragcap-targets"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "blake3",
  "fragcap-profile",
