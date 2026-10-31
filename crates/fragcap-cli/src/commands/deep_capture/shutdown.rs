@@ -22,6 +22,12 @@ struct Owner {
     control_refused: bool,
 }
 
+#[derive(Debug)]
+struct OwnerSelection {
+    owners: Vec<Owner>,
+    unresolved: Vec<String>,
+}
+
 fn failed(reason: impl Into<String>, steps: Vec<Value>) -> ShutdownOutcome {
     ShutdownOutcome {
         result: CleanupResult {
@@ -110,7 +116,7 @@ fn live_helpers(evidence: &CaptureProcessEvidence) -> Vec<(u32, String)> {
         .collect()
 }
 
-fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String> {
+fn select_owners(evidence: &CaptureProcessEvidence) -> Result<OwnerSelection, String> {
     if evidence.shutdown_scope.is_empty() {
         return Err("authorized shutdown scope is absent".to_string());
     }
@@ -155,6 +161,7 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
     let current = ProcessIdentity::current()
         .map_err(|error| format!("current account/session unavailable: {error}"))?;
     let mut owners = Vec::new();
+    let mut unresolved = Vec::new();
     for event in &evidence.events {
         let ProcessEvent::Started { pid, image, at, .. } = event else {
             continue;
@@ -167,8 +174,8 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
             continue;
         }
         let Some(depth) = depth_to_root(*pid, root, &starts) else {
-            if *at >= earliest {
-                return Err(format!(
+            if *at >= earliest && !exited_after(evidence, *pid, *at) {
+                unresolved.push(format!(
                     "declared image pid {pid} has no proven ancestry to the created root"
                 ));
             }
@@ -186,14 +193,20 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
             if exited_after(evidence, *pid, *at) {
                 continue;
             }
-            return Err(format!(
+            unresolved.push(format!(
                 "exact process-object receipt unavailable for declared owner pid {pid}"
             ));
+            continue;
         }
         let identity = root_receipt.unwrap_or_else(|| &receipts[0].identity);
         let event_nanos = i128::from(at.as_nanos());
         if (identity.created_unix_nanos() - event_nanos).abs() > 5_000_000_000 {
-            return Err(format!("creation-time mismatch for owner pid {pid}"));
+            let reason = format!("creation-time mismatch for owner pid {pid}");
+            if *pid == root {
+                return Err(reason);
+            }
+            unresolved.push(reason);
+            continue;
         }
         if !identity.same_user_session(&current)
             || !evidence
@@ -201,9 +214,13 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
                 .iter()
                 .any(|path| same_path(path, &identity.path))
         {
-            return Err(format!(
-                "account, session, or canonical path mismatch for owner pid {pid}"
-            ));
+            let reason =
+                format!("account, session, or canonical path mismatch for owner pid {pid}");
+            if *pid == root {
+                return Err(reason);
+            }
+            unresolved.push(reason);
+            continue;
         }
         owners.push(Owner {
             identity: identity.clone(),
@@ -223,7 +240,49 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<Vec<Owner>, String
             .cmp(&left.depth)
             .then(left.identity.pid.cmp(&right.identity.pid))
     });
-    Ok(owners)
+    Ok(OwnerSelection { owners, unresolved })
+}
+
+/// Retain every observed process that may still hold the child route. The
+/// returned start identity is conservative: a missing or reused PID can later
+/// prove exit, while a live matching PID or incomplete event stream blocks
+/// Doctor recovery. No process control follows from this list.
+pub(super) fn owner_exit_prerequisite(
+    evidence: &CaptureProcessEvidence,
+) -> Option<Vec<(u32, i64)>> {
+    select_owners(evidence).ok()?;
+    let root = evidence.launch_pid?;
+    let earliest = evidence.launch_earliest_at?;
+    let starts: Vec<_> = evidence
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Started {
+                pid, parent, at, ..
+            } => Some((*pid, *parent, *at)),
+            _ => None,
+        })
+        .collect();
+    let mut pending = Vec::new();
+    for event in &evidence.events {
+        let ProcessEvent::Started { pid, image, at, .. } = event else {
+            continue;
+        };
+        if *at < earliest || exited_after(evidence, *pid, *at) {
+            continue;
+        }
+        let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+        let declared = evidence.shutdown_scope.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+        });
+        if declared || depth_to_root(*pid, root, &starts).is_some() {
+            pending.push((*pid, at.as_nanos()));
+        }
+    }
+    pending.sort_unstable();
+    pending.dedup();
+    (pending.len() <= 256).then_some(pending)
 }
 
 pub(super) fn release(
@@ -259,13 +318,13 @@ fn release_monitored(
             watch.drain_into(evidence);
         }
         let fresh = match select_owners(evidence) {
-            Ok(owners) => owners,
+            Ok(selection) => selection,
             Err(reason) => {
                 steps.push(json!({"action":"identity-refusal","reason":reason}));
                 return failed(reason, steps);
             }
         };
-        for mut owner in fresh {
+        for mut owner in fresh.owners {
             if owners.iter().any(|known| {
                 known.identity.pid == owner.identity.pid
                     && known.identity.created == owner.identity.created
@@ -297,20 +356,20 @@ fn release_monitored(
             }
         }
         let helpers = live_helpers(evidence);
-        if remaining.is_empty() && helpers.is_empty() {
+        if remaining.is_empty() && helpers.is_empty() && fresh.unresolved.is_empty() {
             // A graceful-close handler can launch a child after Capture has
             // stopped. Keep ETW running through this decision, close it only
             // after known owners exit, then reconcile every queued start/exit.
             if let Some(watch) = watch.take() {
                 watch.finish_into(evidence);
-                let final_owners = match select_owners(evidence) {
-                    Ok(owners) => owners,
+                let final_selection = match select_owners(evidence) {
+                    Ok(selection) => selection,
                     Err(reason) => {
                         steps.push(json!({"action":"identity-refusal","reason":reason}));
                         return failed(reason, steps);
                     }
                 };
-                for owner in final_owners {
+                for owner in final_selection.owners {
                     if !owner.identity.exited().unwrap_or(false) {
                         steps.push(
                             json!({"action":"late-owner-unresolved","pid":owner.identity.pid}),
@@ -322,11 +381,12 @@ fn release_monitored(
                     }
                 }
                 let late_helpers = live_helpers(evidence);
-                if !late_helpers.is_empty() {
-                    steps.push(json!({"action":"helper-exit-unresolved","helpers":late_helpers}));
+                if !late_helpers.is_empty() || !final_selection.unresolved.is_empty() {
+                    steps.push(json!({"action":"unresolved-route-events","helpers":late_helpers,"declared_images":final_selection.unresolved}));
                     return failed(
                         format!(
-                            "undeclared launch descendants have no verified exit: {late_helpers:?}"
+                            "late route events have no verified exit: helpers={late_helpers:?}, declared_images={:?}",
+                            final_selection.unresolved
                         ),
                         steps,
                     );
@@ -363,9 +423,9 @@ fn release_monitored(
             }
         }
         if elapsed >= ceiling {
-            steps.push(json!({"action":"release-deadline","unresolved_pids":remaining,"unresolved_helpers":helpers}));
+            steps.push(json!({"action":"release-deadline","unresolved_pids":remaining,"unresolved_helpers":helpers,"unresolved_declared_images":fresh.unresolved}));
             return failed(
-                format!("exact route owners or observed helpers remain or cannot be verified: owners={remaining:?}, helpers={helpers:?}"),
+                format!("exact route owners or observed events remain or cannot be verified: owners={remaining:?}, helpers={helpers:?}, declared_images={:?}", fresh.unresolved),
                 steps,
             );
         }
@@ -479,10 +539,111 @@ mod tests {
         );
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
         assert!(unrelated.0.try_wait().unwrap().is_none());
-        assert!(!outcome
-            .steps
+        let prerequisite = owner_exit_prerequisite(&evidence).expect("complete event authority");
+        assert!(prerequisite.iter().any(|(pid, _)| *pid == unrelated.0.id()));
+        assert!(!outcome.steps.iter().any(|step| {
+            matches!(
+                step["action"].as_str(),
+                Some("graceful-request" | "force-request")
+            ) && step["pid"] == unrelated.0.id()
+        }));
+    }
+
+    #[test]
+    fn proven_root_and_client_exit_despite_unproven_declared_image() {
+        let root = child();
+        let client = child();
+        let mut unrelated = child();
+        let mut evidence = child_evidence(&root);
+        let client_identity = ProcessIdentity::observe(client.0.id()).unwrap();
+        let client_at = fragcap::Timestamp::from_nanos(
+            i64::try_from(client_identity.created_unix_nanos()).unwrap(),
+        );
+        evidence.events.push(ProcessEvent::started(
+            client_identity.pid,
+            root.0.id(),
+            client_identity.path.display().to_string(),
+            "",
+            client_at,
+        ));
+        evidence.managed_instances.push(ManagedProcessInstance {
+            event_at: client_at,
+            identity: client_identity,
+        });
+        evidence.events.push(ProcessEvent::started(
+            unrelated.0.id(),
+            std::process::id(),
+            evidence.shutdown_scope[0].display().to_string(),
+            "",
+            evidence.launch_at.unwrap(),
+        ));
+        let outcome = release_with_grace(
+            &evidence,
+            Budget::new(Duration::from_secs(3)),
+            Duration::from_millis(50),
+        );
+        assert_eq!(outcome.result.status, CleanupStatus::Failed);
+        assert!(
+            outcome.result.reason.contains("no proven ancestry"),
+            "{:?}",
+            outcome.steps
+        );
+        for pid in [root.0.id(), client.0.id()] {
+            assert!(outcome
+                .steps
+                .iter()
+                .any(|step| step["action"] == "force-request" && step["pid"] == pid));
+        }
+        assert!(evidence
+            .managed_instances
             .iter()
-            .any(|step| step["pid"] == unrelated.0.id()));
+            .all(|receipt| receipt.identity.exited().unwrap()));
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        assert!(!outcome.steps.iter().any(|step| {
+            matches!(
+                step["action"].as_str(),
+                Some("graceful-request" | "force-request")
+            ) && step["pid"] == unrelated.0.id()
+        }));
+    }
+
+    #[test]
+    fn exited_unproven_declared_image_does_not_block_complete_release() {
+        let root = child();
+        let mut unrelated = child();
+        let mut evidence = child_evidence(&root);
+        let at = evidence.launch_at.unwrap();
+        evidence.events.push(ProcessEvent::started(
+            unrelated.0.id(),
+            std::process::id(),
+            evidence.shutdown_scope[0].display().to_string(),
+            "",
+            at,
+        ));
+        unrelated.0.kill().unwrap();
+        unrelated.0.wait().unwrap();
+        evidence.events.push(ProcessEvent::Exited {
+            pid: unrelated.0.id(),
+            at: fragcap::Timestamp::from_nanos(at.as_nanos() + 1),
+        });
+        let outcome = release_with_grace(
+            &evidence,
+            Budget::new(Duration::from_secs(3)),
+            Duration::from_millis(50),
+        );
+        assert_eq!(
+            outcome.result.status,
+            CleanupStatus::Released,
+            "{:?}",
+            outcome.steps
+        );
+        assert!(evidence.managed_instances[0].identity.exited().unwrap());
+        assert!(!outcome.steps.iter().any(|step| {
+            matches!(
+                step["action"].as_str(),
+                Some("graceful-request" | "force-request")
+            ) && step["pid"] == unrelated.0.id()
+        }));
     }
 
     #[test]
@@ -524,8 +685,10 @@ mod tests {
             evidence.launch_at.unwrap(),
         ));
         assert!(select_owners(&evidence)
-            .unwrap_err()
-            .contains("no proven ancestry"));
+            .unwrap()
+            .unresolved
+            .iter()
+            .any(|reason| reason.contains("no proven ancestry")));
         assert!(owned.0.try_wait().unwrap().is_none());
     }
 
@@ -534,11 +697,12 @@ mod tests {
         let mut owned = child();
         let mut evidence = child_evidence(&owned);
         evidence.launch_identity = Some(evidence.managed_instances.remove(0).identity);
-        assert_eq!(select_owners(&evidence).unwrap().len(), 1);
+        assert_eq!(select_owners(&evidence).unwrap().owners.len(), 1);
         evidence.watcher_report.as_mut().unwrap().events_lost = 1;
         assert!(select_owners(&evidence)
             .unwrap_err()
             .contains("process event authority is incomplete"));
+        assert!(owner_exit_prerequisite(&evidence).is_none());
         assert!(owned.0.try_wait().unwrap().is_none());
     }
 
@@ -561,7 +725,7 @@ mod tests {
             event_at: at,
             identity,
         });
-        let owners = select_owners(&evidence).unwrap();
+        let owners = select_owners(&evidence).unwrap().owners;
         assert_eq!(
             owners.iter().map(|owner| owner.depth).collect::<Vec<_>>(),
             [1, 0]

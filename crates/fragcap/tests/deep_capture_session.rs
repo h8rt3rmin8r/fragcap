@@ -1104,6 +1104,31 @@ fn config() -> SessionConfig {
     }
 }
 
+#[test]
+fn ordinary_observation_preserves_four_minutes_and_refuses_a_hidden_cap() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    let mut request = config();
+    request.mode = SessionMode::Capture;
+    request.calibration_protocol = None;
+    request.deadlines.observation = Duration::from_secs(240);
+    let prepared = DeepCapture::preflight(request.clone(), &mut environment).unwrap();
+    assert_eq!(
+        prepared.plan().deadlines.observation,
+        Duration::from_secs(240)
+    );
+
+    request.deadlines.observation = Duration::from_secs(301);
+    ledger.borrow_mut().clear();
+    let mut environment = adapters(&ledger);
+    let refusal = DeepCapture::preflight(request, &mut environment).unwrap_err();
+    assert_eq!(refusal.code, "ordinary-observation-bound");
+    assert!(
+        ledger.borrow().is_empty(),
+        "invalid duration reached an adapter"
+    );
+}
+
 fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
     AdapterSet {
         boundaries: Box::new(AllowBoundaries),
@@ -1207,7 +1232,16 @@ fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
     assert!(report.snapshot.cleanup.iter().any(|result| {
         result.resource == "route-owner" && result.status == CleanupStatus::Failed
     }));
+    assert!(report.snapshot.cleanup.iter().any(|result| {
+        result.resource == "target-route" && result.status == CleanupStatus::Failed
+    }));
+    assert!(report.snapshot.cleanup.iter().any(|result| {
+        result.resource == "trust-entry"
+            && result.status == CleanupStatus::Failed
+            && result.reason.contains("retained")
+    }));
     let calls = ledger.borrow();
+    assert!(!calls.iter().any(|call| call == "trust.cleanup"));
     let release = calls
         .iter()
         .position(|call| call == "capture.release_route_owners.failed")

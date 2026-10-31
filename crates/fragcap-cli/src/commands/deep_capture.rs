@@ -452,7 +452,11 @@ impl CalibrationDeadlines {
     fn from_args(args: &DeepCaptureArgs) -> Self {
         Self {
             launch: bounded_timeout(args.wait, CALIBRATION_LAUNCH_TIMEOUT),
-            observation: bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT),
+            observation: if args.calibrate.is_some() {
+                bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT)
+            } else {
+                args.duration.unwrap_or(CALIBRATION_OBSERVATION_TIMEOUT)
+            },
             route_owner_release: ROUTE_OWNER_RELEASE_TIMEOUT,
             shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
             cleanup: CALIBRATION_CLEANUP_TIMEOUT,
@@ -466,6 +470,19 @@ impl CalibrationDeadlines {
     fn milliseconds(duration: Duration) -> u64 {
         u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
     }
+}
+
+fn validate_ordinary_duration(args: &DeepCaptureArgs) -> Result<(), CliError> {
+    if args.calibrate.is_none()
+        && args.duration.is_some_and(|duration| {
+            duration.is_zero() || duration > fragcap::deep_capture::MAX_ORDINARY_OBSERVATION
+        })
+    {
+        return Err(CliError::usage(
+            "ordinary Deep Capture --duration must be greater than zero and at most 5m; no session effects were applied",
+        ));
+    }
+    Ok(())
 }
 
 fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
@@ -1077,6 +1094,10 @@ impl deep_capture_api::TrustLease for LibraryTrustLease {
     fn cleanup(&mut self, budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
         library_cleanup_resource(self.manager.cleanup(budget.remaining()))
     }
+
+    fn retain_for_unresolved_owner(&self) -> bool {
+        self.manager.installed_this_session()
+    }
 }
 
 struct LibraryLaunchAdapter;
@@ -1280,6 +1301,11 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
 
     fn take_route_owner_steps(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.route_owner_steps)
+    }
+
+    fn route_owner_exit_prerequisite(&self) -> Option<Vec<(u32, i64)>> {
+        let runtime = self.runtime.borrow();
+        shutdown::owner_exit_prerequisite(runtime.process_evidence.as_ref()?)
     }
 
     fn stop(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
@@ -2022,6 +2048,18 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     manifest: "manifest.json".to_string(),
                     status: status.to_string(),
                     cleanup_status: cleanup_status.to_string(),
+                    observation_duration_ms: CalibrationDeadlines::milliseconds(
+                        report.deadlines.observation,
+                    ),
+                    capture_return_allowance_ms: if report.mode
+                        == deep_capture_api::SessionMode::Capture
+                    {
+                        CalibrationDeadlines::milliseconds(
+                            fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE,
+                        )
+                    } else {
+                        0
+                    },
                     inspectable: *classification_summary
                         .by_inspectability
                         .get("full")
@@ -2235,6 +2273,9 @@ fn build_authorization_plan(
             "cleanup": CalibrationDeadlines::milliseconds(deadlines.cleanup),
             "launch": CalibrationDeadlines::milliseconds(deadlines.launch),
             "observation": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "capture_return_allowance": if mode == deep_capture_api::SessionMode::Capture {
+                CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE)
+            } else { 0 },
             "route_owner_release": CalibrationDeadlines::milliseconds(deadlines.route_owner_release),
             "shutdown": CalibrationDeadlines::milliseconds(deadlines.shutdown),
         },
@@ -2492,6 +2533,7 @@ pub(crate) fn run_with_outcome(
             "TLS calibration requires one concrete protocol, not routing",
         ));
     }
+    validate_ordinary_duration(args)?;
     let deadlines = CalibrationDeadlines::from_args(args);
     if calibration == Some(CalibrationPhase::Reachability) && (args.har || args.key_log) {
         return Err(CliError::usage(
@@ -2921,6 +2963,15 @@ pub(crate) fn run_with_outcome(
             runtime.borrow().output_access.as_ref(),
             crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
         ));
+    emitter.borrow_mut().terminal_human(&format!(
+        "Authorized observation: {} ms; Capture return allowance: {} ms\n",
+        CalibrationDeadlines::milliseconds(report.snapshot.deadlines.observation),
+        if report.snapshot.mode == deep_capture_api::SessionMode::Capture {
+            CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE)
+        } else {
+            0
+        },
+    ));
     let observation_windows = runtime
         .borrow()
         .diagnostics
@@ -3069,11 +3120,16 @@ impl CleanupReport {
 trait TrustManager {
     fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError>;
     fn cleanup(&mut self, timeout: Duration) -> CleanupResource;
+    fn installed_this_session(&self) -> bool;
 }
 
 struct ControlledTrustManager;
 
 impl TrustManager for ControlledTrustManager {
+    fn installed_this_session(&self) -> bool {
+        false
+    }
+
     fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError> {
         if !confirmed {
             return Err(CliError::usage(
@@ -3129,6 +3185,10 @@ struct WindowsCurrentUserTrustManager {
 
 #[cfg(windows)]
 impl TrustManager for WindowsCurrentUserTrustManager {
+    fn installed_this_session(&self) -> bool {
+        self.installed_this_session
+    }
+
     fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError> {
         if !confirmed {
             return Err(CliError::usage(
@@ -3895,6 +3955,12 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
         return Err(CliError::failure(
             "controlled target stopped at the requested test checkpoint",
         ));
+    }
+    if let Some(milliseconds) = std::env::var("FRAGCAP_CONTROLLED_TARGET_HOLD_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(milliseconds));
     }
     Ok(Exit::SUCCESS)
 }
@@ -5665,6 +5731,69 @@ mod tests {
             bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
             CALIBRATION_OBSERVATION_TIMEOUT
         );
+    }
+
+    #[test]
+    fn ordinary_four_minute_request_is_not_capped_by_calibration() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--duration",
+            "4m",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Deep Capture");
+        };
+        let deadlines = CalibrationDeadlines::from_args(&args);
+        assert_eq!(deadlines.observation, Duration::from_secs(240));
+        let capture = real_capture_args(&args, std::path::Path::new("bundle"), deadlines);
+        assert_eq!(capture.duration, Some(Duration::from_secs(240)));
+        assert_eq!(
+            bound_real_capture_duration(&capture, Duration::from_secs(245)).unwrap(),
+            Duration::from_secs(240),
+            "the separately authorized return allowance must not shorten Capture",
+        );
+    }
+
+    #[test]
+    fn ordinary_duration_range_refuses_before_session_effects() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        assert!(Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--duration",
+            "0s",
+        ])
+        .is_err());
+        for (value, accepted) in [("4m", true), ("5m", true), ("6m", false)] {
+            let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+                "fragcap",
+                "deep-capture",
+                "target",
+                "--launch",
+                "--duration",
+                value,
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected Deep Capture");
+            };
+            assert_eq!(
+                validate_ordinary_duration(&args).is_ok(),
+                accepted,
+                "{value}"
+            );
+        }
     }
 
     #[test]

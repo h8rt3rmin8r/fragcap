@@ -137,7 +137,7 @@ fragcap deep-capture sample-target --launch --har --key-log
 | `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
 | `--calibration-protocol` | `routing`, `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Select the exact case to measure. Reachability requires `routing`; TLS requires one concrete protocol. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
-| `-d`, `--duration` | open | none | all | Stop after a duration measured from arm. |
+| `-d`, `--duration` | open | none | all | Set the ordinary observation bound measured from arm; it defaults to `60s` and accepts a positive duration up to `5m`. Unsupported ordinary values are refused before session effects. Calibration has its separate `60s` maximum and displays the effective shorter bound. |
 | `--har` | open | `false` | all | Write an HTTP-oriented projection when HTTP semantics are observable. |
 | `--id` | open | none | all | Select a stored target by durable identifier. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
@@ -171,6 +171,8 @@ but never controlled. If any exit cannot be proved, cleanup stays partial and
 Doctor retains the recovery record. The operator closes an application
 manually only for warm preflight or when exact automatic cleanup remains
 incomplete.
+
+The S184 candidate source corrects the v0.10.9 installed-session findings [#526](https://github.com/h8rt3rmin8r/fragcap/issues/526) and [#527](https://github.com/h8rt3rmin8r/fragcap/issues/527). An ordinary `--duration 4m` now appears as 240,000 ms in the authorization plan and the terminal event; a separate five-second allowance is reserved for Capture to return after the requested observation. Calibration retains its 60-second maximum. A same-name process event without proven ancestry receives no control and no longer blocks release of independently proven managed owners. If any plausible routed owner remains unresolved, route cleanup stays partial, the session-added CA remains an exact Doctor recovery obligation, and a stopped proxy is reported as unable to serve that route. Close the application normally, then use `fragcap doctor --fix` for exact recovery. Doctor verifies that every observed plausible routed process has exited before it replays route or trust cleanup and refuses recovery if exit evidence is incomplete. Installation-owned trust and full live-client continuity remain tracked by [#529](https://github.com/h8rt3rmin8r/fragcap/issues/529) and [#528](https://github.com/h8rt3rmin8r/fragcap/issues/528).
 
 Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.

@@ -167,6 +167,12 @@ pub trait ProxyBackend {
 /// Optional current-user trust resource.
 pub trait TrustLease {
     fn cleanup(&mut self, budget: Budget) -> CleanupResult;
+
+    /// Whether unresolved routed owners require this lease to remain active.
+    /// Unknown adapters conservatively retain their lease for exact recovery.
+    fn retain_for_unresolved_owner(&self) -> bool {
+        true
+    }
 }
 
 /// Explicit, reversible trust management.
@@ -216,6 +222,11 @@ pub trait CaptureRunner {
     /// Typed, bounded route-owner decisions produced by the preceding release.
     fn take_route_owner_steps(&mut self) -> Vec<serde_json::Value> {
         Vec::new()
+    }
+    /// Complete observed start set requiring an exit check before recovery.
+    /// `None` means the event authority is incomplete and recovery must refuse.
+    fn route_owner_exit_prerequisite(&self) -> Option<Vec<(u32, i64)>> {
+        None
     }
 
     fn stop(&mut self, budget: Budget) -> CleanupResult;

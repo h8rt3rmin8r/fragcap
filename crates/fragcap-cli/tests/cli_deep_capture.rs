@@ -1215,6 +1215,94 @@ fn controlled_human_summary_reports_shared_classification_counts() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn controlled_ordinary_session_runs_past_calibration_limit_with_plan_and_cleanup() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fragcap"))
+        .args([
+            "--json",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--authorize-stdin",
+            "--controlled-target",
+            "--duration",
+            "70s",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ])
+        .env(
+            "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+            env!("CARGO_BIN_EXE_fragcap"),
+        )
+        .env("FRAGCAP_CONTROLLED_TARGET_HOLD_MS", "61000")
+        .env("FRAGCAP_SESSION_DIR", dir.path().join("sessions"))
+        .env(
+            "FRAGCAP_CATALOG_DB",
+            dir.path().join("nonexistent-catalog.db"),
+        )
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut records = Vec::new();
+    for line in BufReader::new(child.stderr.take().unwrap()).lines() {
+        let record: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if record["event"] == "deep_capture.authorization_plan" {
+            writeln!(stdin, "{}", record["plan_id"].as_str().unwrap()).unwrap();
+            stdin.flush().unwrap();
+        }
+        records.push(record);
+    }
+    let status = child.wait().unwrap();
+    let elapsed = started.elapsed();
+    assert!(status.success(), "events: {records:#?}");
+    assert!(elapsed >= Duration::from_secs(60), "elapsed {elapsed:?}");
+    assert!(elapsed < Duration::from_secs(80), "elapsed {elapsed:?}");
+    let plan = records
+        .iter()
+        .find(|record| record["event"] == "deep_capture.authorization_plan")
+        .expect("authorization plan");
+    assert_eq!(
+        plan["plan"]["deadlines_milliseconds"]["observation"],
+        70_000
+    );
+    assert_eq!(
+        plan["plan"]["deadlines_milliseconds"]["capture_return_allowance"],
+        5_000
+    );
+    let terminal = records
+        .iter()
+        .find(|record| record["event"] == "deep_capture.complete")
+        .expect("terminal event");
+    assert_eq!(terminal["observation_duration_ms"], 70_000);
+    assert_eq!(terminal["capture_return_allowance_ms"], 5_000);
+    let cleanup: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("cleanup.json")).unwrap()).unwrap();
+    assert!(cleanup["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|resource| resource["resource"] == "native-proxy-listener"
+            && resource["status"] == "succeeded"));
+    assert!(bundle.join("capture.fcapng").is_file());
+}
+
 #[test]
 fn controlled_session_ux_preserves_human_quiet_silent_and_json_contracts() {
     let _environment = controlled_environment().lock().unwrap();

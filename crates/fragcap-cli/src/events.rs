@@ -354,6 +354,8 @@ pub enum Event {
         manifest: String,
         status: String,
         cleanup_status: String,
+        observation_duration_ms: u64,
+        capture_return_allowance_ms: u64,
         inspectable: u64,
         metadata_only: u64,
         unsupported: u64,
@@ -1209,6 +1211,8 @@ impl Event {
                 manifest,
                 status,
                 cleanup_status,
+                observation_duration_ms,
+                capture_return_allowance_ms,
                 inspectable,
                 metadata_only,
                 unsupported,
@@ -1228,6 +1232,10 @@ impl Event {
                 write_json_string(status, &mut line);
                 line.push_str(",\"cleanup_status\":");
                 write_json_string(cleanup_status, &mut line);
+                line.push_str(",\"observation_duration_ms\":");
+                line.push_str(&observation_duration_ms.to_string());
+                line.push_str(",\"capture_return_allowance_ms\":");
+                line.push_str(&capture_return_allowance_ms.to_string());
                 line.push_str(",\"inspectable\":");
                 line.push_str(&inspectable.to_string());
                 line.push_str(",\"metadata_only\":");

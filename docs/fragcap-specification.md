@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.99-draft \
+**Version:** 0.1.103-draft \
 **Applies-To:** 0.10.9 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -190,6 +190,7 @@ enforcement.
 | 0.1.100-draft | 2026-10-27 | Codex | S182 repairs stored Steam relocation, calibration timing and packet correlation, exact managed shutdown and final proxy accounting, clean Windows startup, physical evidence, and version-scoped operator guidance under #514-#518 and #520-#522. Updates sections 15.8, 17.2, 24.5, 25.2, and 26.3 without changing published v0.10.8. |
 | 0.1.101-draft | 2026-10-29 | Codex | S183 prepares a v0.10.9 patch candidate from merged S181 and S182 corrections. Candidate Applies-To and generated evidence advance with the workspace version while published v0.10.8 identities remain current until separate public reconciliation. Updates sections 1 and 27.3. |
 | 0.1.102-draft | 2026-10-29 | Codex | S183 reconciles public v0.10.9 from the exact merged source after four successful tagged jobs, normal protected registry approval, six independently verified files, and ten non-yanked downloaded crate archives. The current markers and frozen review candidate advance together; real-title compatibility and independent security review remain unverified. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.103-draft | 2026-10-31 | Codex | S184 repairs managed owner release amid unproven declared-image events and preserves ordinary Deep Capture observation above the calibration ceiling under #526 and #527. It reports unresolved inherited routing and retained session-added trust as incomplete. Installation-owned CA and final live-client continuity remain #529 and #528. Updates sections 17.2.1 and 27.3 without changing published v0.10.9. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3378,6 +3379,8 @@ ordinary descendants are observed; only the owner can receive bounded force.
 Route release requires verified exit of every potentially routed owner and
 observed helper. Unverifiable exits retain incomplete cleanup authority.
 
+S184 keeps the calibration observation ceiling at sixty seconds. Ordinary Deep Capture accepts a positive `--duration` of at most five minutes and defaults to sixty seconds; an out-of-range ordinary request is refused before session effects. The ordinary authorization plan and terminal event report the exact requested observation duration and a separate five-second Capture return allowance. The real Capture adapter receives the requested duration when the full budget remains, rather than inheriting the calibration cap. Capture may still end earlier for an independently reported stop condition. During managed shutdown, a declared-image event without proven ancestry or an exact usable receipt does not prevent bounded release of independently proven session owners. Such an event receives no process control and remains unresolved until its exit is verified. Unresolved route ownership leaves inherited routing partial even if the local route lease closes; the session-added CA is retained as an exact Doctor recovery obligation, and a stopped proxy is reported as unavailable to a still-routed process. The operator closes that process normally and uses `fragcap doctor --fix` after exit. This is a candidate-source correction to #526 and #527. Persistent installation-owned trust and full live-client continuity remain separate work under #529 and #528.
+
 #### 17.2.2 Embedded Workflow Help
 
 The root long-help page and the long-help pages for Doctor, target discovery and
@@ -5074,6 +5077,8 @@ S174 publishes v0.10.7 from accepted S173 and all remaining unreleased fragments
 S180 publishes v0.10.8 from accepted S179 and all merged changes since v0.10.7. Candidate PR #505 passed 23 checks with two expected skips and two code-review rounds without findings before its exact reviewed tree merged as `03de229b6c665cc6d039f9c373a5abb59d2c4865`. Annotated tag v0.10.8 selects that source. All four tagged jobs pass after normal protected owner approval with no settings change or bypass. Six certified public files and ten non-yanked downloaded crate archives reconcile before current markers and replay authority advance. The requested separate Codex security-review field remained empty after the second and final trigger, so neither a separate security bot receipt nor an independent whole-product audit is claimed. IGDB #155 and universal live-title compatibility remain outside this release.
 
 S183 publishes v0.10.9 from merged source corrections, including the Tokio 1.53.3 graph and S182 installed-product recovery. Owner-merged PR #524 became source `e4961719b2bd1cb432d29248d294bf69fb838fa6`; annotated tag v0.10.9 selects that commit. All four tagged jobs passed after normal owner approval of the protected registry environment. Six public files, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. The controlled seven-row physical Windows matrix passed on the reviewed PR bytes, and the official published MSI was installed and started on the operator machine. Neither result proves a real-title full calibration or Deep Capture run. Independent whole-product security review remains unperformed.
+
+S184 (`specs/184-deep-capture-session-lifecycle`) follows the published v0.10.9 findings #526 and #527. Candidate source releases independently proven managed owners despite an unproven declared-image event, keeps unresolved inherited routing and session-added trust as exact partial obligations, and separates ordinary requested observation from the calibration maximum. A synchronized route-owner exit prerequisite prevents Doctor from replaying route or trust recovery while any observed plausible routed process remains alive or exit evidence is incomplete. Controlled process and timing regressions are required before candidate handoff. This slice makes no publication claim and does not close #528 or #529.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 

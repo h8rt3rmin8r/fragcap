@@ -337,6 +337,14 @@ pub struct Deadlines {
     pub cleanup: Duration,
 }
 
+/// Maximum accepted ordinary Deep Capture observation. Callers must reject
+/// longer requests before authorization rather than silently shortening them.
+pub const MAX_ORDINARY_OBSERVATION: Duration = Duration::from_secs(300);
+
+/// Finite completion time after the requested ordinary Capture observation.
+/// This allowance never reduces the operator's authorized observation span.
+pub const CAPTURE_RETURN_ALLOWANCE: Duration = Duration::from_secs(5);
+
 impl Default for Deadlines {
     fn default() -> Self {
         Self {
