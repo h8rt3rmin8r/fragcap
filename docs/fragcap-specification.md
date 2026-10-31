@@ -3379,24 +3379,7 @@ ordinary descendants are observed; only the owner can receive bounded force.
 Route release requires verified exit of every potentially routed owner and
 observed helper. Unverifiable exits retain incomplete cleanup authority.
 
-S184 keeps the calibration observation ceiling at sixty seconds. Ordinary Deep
-Capture accepts a positive `--duration` of at most five minutes and defaults to
-sixty seconds; an out-of-range ordinary request is refused before session
-effects. The ordinary authorization plan and terminal event report the exact
-requested observation duration and a separate five-second Capture return
-allowance. The real Capture adapter receives the requested duration when the
-full budget remains, rather than inheriting the calibration cap. Capture may
-still end earlier for an independently reported stop condition. During managed
-shutdown, a declared-image event without proven ancestry or an exact usable
-receipt does not prevent bounded release of independently proven session
-owners. Such an event receives no process control and remains unresolved until
-its exit is verified. Unresolved route ownership leaves inherited routing
-partial even if the local route lease closes; the session-added CA is retained
-as an exact Doctor recovery obligation, and a stopped proxy is reported as
-unavailable to a still-routed process. The operator closes that process
-normally and uses `fragcap doctor --fix` after exit. This is a candidate-source
-correction to #526 and #527. Persistent installation-owned trust and full
-live-client continuity remain separate work under #529 and #528.
+S184 keeps the calibration observation ceiling at sixty seconds. Ordinary Deep Capture accepts a positive `--duration` of at most five minutes and defaults to sixty seconds; an out-of-range ordinary request is refused before session effects. The ordinary authorization plan and terminal event report the exact requested observation duration and a separate five-second Capture return allowance. The real Capture adapter receives the requested duration when the full budget remains, rather than inheriting the calibration cap. Capture may still end earlier for an independently reported stop condition. During managed shutdown, a declared-image event without proven ancestry or an exact usable receipt does not prevent bounded release of independently proven session owners. Such an event receives no process control and remains unresolved until its exit is verified. Unresolved route ownership leaves inherited routing partial even if the local route lease closes; the session-added CA is retained as an exact Doctor recovery obligation, and a stopped proxy is reported as unavailable to a still-routed process. The operator closes that process normally and uses `fragcap doctor --fix` after exit. This is a candidate-source correction to #526 and #527. Persistent installation-owned trust and full live-client continuity remain separate work under #529 and #528.
 
 #### 17.2.2 Embedded Workflow Help
 
