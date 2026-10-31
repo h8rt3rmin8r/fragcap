@@ -222,8 +222,18 @@ fn trusted_machine_owner(owner: windows_sys::Win32::Foundation::PSID) -> bool {
             || unsafe { IsWellKnownSid(owner, WinLocalSystemSid) } != 0)
 }
 
-fn machine_dacl_matches(observed: &str, expected: &str) -> bool {
-    observed == expected || observed == expected.replacen("D:P", "D:PAI", 1)
+fn machine_dacl_matches(observed: &str, kind: MachineAcl) -> bool {
+    let expected = machine_sddl(kind);
+    if observed == expected || observed == expected.replacen("D:P", "D:PAI", 1) {
+        return true;
+    }
+    if matches!(kind, MachineAcl::PublicDirectory) {
+        // NTFS maps the generic read ACE on this directory to FILE_GENERIC_READ
+        // and keeps its inheritable generic grant as an inherit-only child ACE.
+        const MAPPED: &str = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)";
+        return observed == MAPPED || observed == MAPPED.replacen("D:PAI", "D:P", 1);
+    }
+    false
 }
 
 fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateError> {
@@ -302,10 +312,9 @@ fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateEr
     unsafe { LocalFree(text as isize) };
     let observed = observed?;
     let expected = machine_sddl(kind);
-    // NTFS can set SE_DACL_AUTO_INHERITED when persisting a protected DACL.
-    // That control bit changes no ACE; all grants and protection must still
-    // match the closed descriptor exactly.
-    if !machine_dacl_matches(&observed, expected) {
+    // Compare only the exact protected DACL and its measured NTFS rendering;
+    // owner verification above is independent of the DACL representation.
+    if !machine_dacl_matches(&observed, kind) {
         return Err(CertificateError {
             code: "installation-acl-invalid",
             detail: format!("expected {expected}, observed {observed}"),
@@ -652,27 +661,35 @@ mod tests {
     }
 
     #[test]
-    fn installation_dacl_accepts_only_its_exact_aces_and_optional_auto_inherit_marker() {
+    fn installation_dacl_accepts_only_exact_ntfs_renderings() {
         for kind in [
             MachineAcl::PublicDirectory,
             MachineAcl::PrivateDirectory,
             MachineAcl::PrivateFile,
         ] {
             let expected = machine_sddl(kind);
-            assert!(machine_dacl_matches(expected, expected));
+            assert!(machine_dacl_matches(expected, kind));
             assert!(machine_dacl_matches(
                 &expected.replacen("D:P", "D:PAI", 1),
-                expected
+                kind
             ));
             assert!(!machine_dacl_matches(
                 &expected.replacen("D:P", "D:", 1),
-                expected
+                kind
             ));
             assert!(!machine_dacl_matches(
                 &format!("{expected}(A;;FA;;;BU)"),
-                expected
+                kind
             ));
         }
+        assert!(machine_dacl_matches(
+            "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
+        assert!(!machine_dacl_matches(
+            "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FW;;;BU)(A;OICIIO;GR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
     }
 
     #[test]
