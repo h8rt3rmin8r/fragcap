@@ -574,21 +574,38 @@ fn validate_tunnel_authority(
     request: &hyper::Request<RecvStream>,
     expected: &DestinationAuthority,
 ) -> Result<(), ProtocolError> {
+    if request.uri().scheme_str() != Some("https") {
+        return Err(ProtocolError::new(
+            "http2-tunnel-scheme-mismatch",
+            "tunneled HTTP/2 request does not declare HTTPS",
+        ));
+    }
     let raw = request.uri().authority().ok_or_else(|| {
         ProtocolError::new(
             "http2-authority-required",
             "tunneled HTTP/2 request has no authority",
         )
     })?;
-    let observed = DestinationAuthority::parse_uri(raw.as_str())
-        .map_err(|error| ProtocolError::new(error.code, error.detail))?;
+    let observed = parse_tunnel_http2_authority(raw)?;
     if &observed != expected {
         return Err(ProtocolError::new(
             "http2-tunnel-authority-mismatch",
-            "HTTP/2 request authority differs from CONNECT authority",
+            "HTTP/2 request authority differs from CONNECT; cross-authority forwarding is unsupported on this verified tunnel",
         ));
     }
     Ok(())
+}
+
+fn parse_tunnel_http2_authority(
+    raw: &hyper::http::uri::Authority,
+) -> Result<DestinationAuthority, ProtocolError> {
+    let effective = if raw.port_u16().is_some() {
+        raw.as_str().to_string()
+    } else {
+        format!("{}:443", raw.as_str())
+    };
+    DestinationAuthority::parse_uri(&effective)
+        .map_err(|error| ProtocolError::new(error.code, error.detail))
 }
 
 fn authenticate_cleartext_request(
@@ -1430,6 +1447,17 @@ fn account_stream_result(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn tunneled_http2_authority_uses_the_https_default_port() {
+        let bare: hyper::http::uri::Authority = "EXAMPLE.test".parse().unwrap();
+        let explicit: hyper::http::uri::Authority = "example.test:443".parse().unwrap();
+        let distinct: hyper::http::uri::Authority = "example.test:444".parse().unwrap();
+        let expected = DestinationAuthority::parse("example.test:443").unwrap();
+        assert_eq!(parse_tunnel_http2_authority(&bare).unwrap(), expected);
+        assert_eq!(parse_tunnel_http2_authority(&explicit).unwrap(), expected);
+        assert_ne!(parse_tunnel_http2_authority(&distinct).unwrap(), expected);
+    }
 
     #[test]
     fn grpc_content_type_requires_a_native_media_type_boundary() {

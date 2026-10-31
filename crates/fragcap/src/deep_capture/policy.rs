@@ -865,6 +865,62 @@ mod launch_case_tests {
     }
 
     #[test]
+    fn http_responses_do_not_promote_a_failed_https_calibration() {
+        let mut http = correlated_client_observation();
+        http.inspectability = Inspectability::Full;
+        http.classification = ProtocolClassification::new(
+            TrafficFamily::Http1,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap();
+        let mut https = correlated_client_observation();
+        https.protocol = "https".into();
+        https.inspectability = Inspectability::MetadataOnly;
+        https.status = None;
+        https.classification = ProtocolClassification::new(
+            TrafficFamily::Https,
+            DetectionState::Identified,
+            InspectabilityState::MetadataOnly,
+            None,
+        )
+        .unwrap();
+        let mut observations = vec![https.clone(); 6];
+        observations.extend(vec![http; 7]);
+        assert_eq!(
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Https,
+                &observations,
+                false,
+                false,
+            ),
+            CalibrationOutcome::MetadataOnly
+        );
+        let facts = compatibility_fact_candidates(
+            LaunchCase::DirectExeCold.as_str(),
+            &observations,
+            false,
+            Some(CalibrationPhase::Tls),
+            Some(CompatibilityProtocol::Https),
+        );
+        assert!(!facts.iter().any(|fact| {
+            (fact.key == CompatibilityFactKey::Inspectability && fact.value == "full")
+                || (fact.key == CompatibilityFactKey::TlsTrustBehavior
+                    && fact.value == "accepts-local-ca")
+        }));
+        https.classification = ProtocolClassification::new(
+            TrafficFamily::Https,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap();
+        assert!(observation_proves_final_client_ca_acceptance(&https));
+    }
+
+    #[test]
     fn processing_failures_never_promote_positive_compatibility_facts() {
         for reason in [
             ClassificationReason::ParserFailed,

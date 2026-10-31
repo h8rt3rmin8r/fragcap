@@ -90,6 +90,28 @@ pub struct ProtocolError {
     pub timed_out: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HttpRequestContext {
+    CleartextProxy,
+    HttpsTunnel,
+}
+
+impl HttpRequestContext {
+    fn scheme(self) -> &'static str {
+        match self {
+            Self::CleartextProxy => "http",
+            Self::HttpsTunnel => "https",
+        }
+    }
+
+    fn default_port(self) -> u16 {
+        match self {
+            Self::CleartextProxy => 80,
+            Self::HttpsTunnel => 443,
+        }
+    }
+}
+
 impl ProtocolError {
     pub(crate) fn new(code: &'static str, detail: impl Into<String>) -> Self {
         Self {
@@ -528,18 +550,30 @@ where
     Ok(Some(parsed))
 }
 
-pub(crate) async fn read_request<S>(
+pub(crate) async fn read_request_in_context<S>(
     stream: &mut S,
     limits: &ProtocolLimits,
+    context: HttpRequestContext,
 ) -> Result<Option<RequestHead>, ProtocolError>
 where
     S: AsyncRead + Unpin,
 {
-    let raw = match read_head(stream, limits.max_header_bytes, limits.header_timeout).await? {
+    let raw = match read_head(stream, limits.max_header_bytes, limits.header_timeout)
+        .await
+        .map_err(|mut error| {
+            if error.code == "http-header-timeout" {
+                error.detail = match context {
+                    HttpRequestContext::CleartextProxy => "client HTTP request head timed out",
+                    HttpRequestContext::HttpsTunnel => "client HTTPS inner request head timed out",
+                }
+                .to_string();
+            }
+            error
+        })? {
         Some(raw) => raw,
         None => return Ok(None),
     };
-    parse_request(&raw, limits).map(Some)
+    parse_request_in_context(&raw, limits, context).map(Some)
 }
 
 pub(crate) async fn serve_http<S, C, F, U>(
@@ -568,7 +602,16 @@ where
             None => match if authenticate_subsequent {
                 read_authenticated_request(&mut client, capability, limits).await
             } else {
-                read_request(&mut client, limits).await
+                read_request_in_context(
+                    &mut client,
+                    limits,
+                    if context.protocol == "https" {
+                        HttpRequestContext::HttpsTunnel
+                    } else {
+                        HttpRequestContext::CleartextProxy
+                    },
+                )
+                .await
             } {
                 Ok(Some(request)) => request,
                 Ok(None) => break None,
@@ -1221,6 +1264,14 @@ pub(crate) fn parse_request(
     raw: &[u8],
     limits: &ProtocolLimits,
 ) -> Result<RequestHead, ProtocolError> {
+    parse_request_in_context(raw, limits, HttpRequestContext::CleartextProxy)
+}
+
+pub(crate) fn parse_request_in_context(
+    raw: &[u8],
+    limits: &ProtocolLimits,
+    context: HttpRequestContext,
+) -> Result<RequestHead, ProtocolError> {
     let mut storage = vec![httparse::EMPTY_HEADER; limits.max_headers];
     let mut request = httparse::Request::new(&mut storage);
     let status = request
@@ -1257,7 +1308,7 @@ pub(crate) fn parse_request(
             "header contains a prohibited control byte",
         ));
     }
-    let (authority, origin_target, url) = request_destination(&method, &target, &headers)?;
+    let (authority, origin_target, url) = request_destination(&method, &target, &headers, context)?;
     let framing = framing(&headers, false, None)?;
     let close = connection_token(&headers, "close");
     let upgrade = connection_token(&headers, "upgrade") && header(&headers, "upgrade").is_some();
@@ -1336,6 +1387,7 @@ fn request_destination(
     method: &str,
     target: &str,
     headers: &[(String, Vec<u8>)],
+    context: HttpRequestContext,
 ) -> Result<(DestinationAuthority, String, String), ProtocolError> {
     let hosts: Vec<_> = headers
         .iter()
@@ -1357,6 +1409,12 @@ fn request_destination(
             .parse::<hyper::Uri>()
             .map_err(|error| ProtocolError::new("http-target-invalid", error.to_string()))?;
         let scheme = uri.scheme_str().unwrap_or("http");
+        if context == HttpRequestContext::HttpsTunnel && scheme != "https" {
+            return Err(ProtocolError::new(
+                "tls-tunnel-scheme-mismatch",
+                "inner absolute URI is not HTTPS under CONNECT TLS",
+            ));
+        }
         let authority_text = uri
             .authority()
             .ok_or_else(|| ProtocolError::new("http-authority-missing", "URI has no authority"))?
@@ -1376,10 +1434,12 @@ fn request_destination(
                 .map_err(|_| ProtocolError::new("http-host-invalid", "Host is not ASCII"))?;
             let normalized_host =
                 normalize_authority(host, if scheme == "https" { 443 } else { 80 });
-            if normalized_host != authority.lookup_host() {
+            let host_authority = DestinationAuthority::parse_uri(&normalized_host)
+                .map_err(|error| ProtocolError::new("http-host-invalid", error.detail))?;
+            if host_authority != authority {
                 return Err(ProtocolError::new(
                     "http-host-mismatch",
-                    "absolute request target and Host field disagree",
+                    "absolute request target and Host field disagree on host or port",
                 ));
             }
         }
@@ -1399,13 +1459,20 @@ fn request_destination(
         .ok_or_else(|| ProtocolError::new("http-host-missing", "request has no Host field"))?;
     let host = std::str::from_utf8(host)
         .map_err(|_| ProtocolError::new("http-host-invalid", "Host is not ASCII"))?;
-    let normalized = normalize_authority(host, 80);
+    let normalized = normalize_authority(host, context.default_port());
     let authority = DestinationAuthority::parse(&normalized)
         .map_err(|error| ProtocolError::new(error.code, error.detail))?;
     Ok((
         authority,
         target.to_string(),
-        format!("http://{host}{target}"),
+        format!(
+            "{}{host}{target}",
+            if context.scheme() == "https" {
+                "https://"
+            } else {
+                "http://"
+            }
+        ),
     ))
 }
 
@@ -1794,11 +1861,7 @@ fn request_observation(
         connection_closed_at_ns: 0,
         protocol: context.protocol.to_string(),
         method: Some(request.method.clone()),
-        url: Some(if context.protocol == "https" {
-            request.url.replacen("http://", "https://", 1)
-        } else {
-            request.url.clone()
-        }),
+        url: Some(request.url.clone()),
         status: None,
         inspectability: "metadata-only",
         reason: None,
@@ -1831,6 +1894,155 @@ fn emit_response_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_request_uses_https_scheme_and_effective_port() {
+        let limits = ProtocolLimits::default();
+        let bare = parse_request_in_context(
+            b"GET /secure HTTP/1.1\r\nHost: EXAMPLE.test\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap();
+        let explicit = parse_request_in_context(
+            b"GET /secure HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap();
+        let distinct = parse_request_in_context(
+            b"GET /secure HTTP/1.1\r\nHost: example.test:444\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap();
+        assert_eq!(
+            bare.authority,
+            DestinationAuthority::parse("example.test:443").unwrap()
+        );
+        assert_eq!(bare.authority, explicit.authority);
+        assert_ne!(bare.authority, distinct.authority);
+        assert_eq!(bare.url, "https://EXAMPLE.test/secure");
+        let cleartext = parse_request(
+            b"GET /secure HTTP/1.1\r\nHost: EXAMPLE.test\r\n\r\n",
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(
+            cleartext.authority,
+            DestinationAuthority::parse("example.test:80").unwrap()
+        );
+        assert_eq!(cleartext.url, "http://EXAMPLE.test/secure");
+        let wrong_host_port = parse_request_in_context(
+            b"GET https://example.test/secure HTTP/1.1\r\nHost: example.test:444\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_host_port.code, "http-host-mismatch");
+        let wrong_scheme = parse_request_in_context(
+            b"GET http://example.test/secure HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_scheme.code, "tls-tunnel-scheme-mismatch");
+    }
+
+    #[tokio::test]
+    async fn inner_header_timeout_identifies_its_read_stage() {
+        let (mut client, _writer) = tokio::io::duplex(64);
+        let limits = ProtocolLimits {
+            header_timeout: std::time::Duration::from_millis(5),
+            ..ProtocolLimits::default()
+        };
+        let error = read_request_in_context(&mut client, &limits, HttpRequestContext::HttpsTunnel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "http-header-timeout");
+        assert_eq!(error.detail, "client HTTPS inner request head timed out");
+        assert!(error.timed_out);
+    }
+
+    #[tokio::test]
+    async fn bare_host_in_https_tunnel_forwards_and_retains_https_identity() {
+        let limits = ProtocolLimits::default();
+        let first = parse_request_in_context(
+            b"GET /secure HTTP/1.1\r\nHost: EXAMPLE.test\r\nConnection: close\r\n\r\n",
+            &limits,
+            HttpRequestContext::HttpsTunnel,
+        )
+        .unwrap();
+        let expected = DestinationAuthority::parse("example.test:443").unwrap();
+        let (mut client, proxy_client) = tokio::io::duplex(2048);
+        let (proxy_origin, mut origin) = tokio::io::duplex(2048);
+        let origin_task = tokio::spawn(async move {
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                origin.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            assert!(request.starts_with(b"GET /secure HTTP/1.1\r\n"));
+            assert!(request
+                .windows(b"Host: EXAMPLE.test".len())
+                .any(|part| part == b"Host: EXAMPLE.test"));
+            origin
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECURE",
+                )
+                .await
+                .unwrap();
+        });
+        let mut upstream = Some(proxy_origin);
+        let capability = SessionCapability::generate().unwrap();
+        let (run, response) = tokio::join!(
+            serve_http(
+                proxy_client,
+                first,
+                &capability,
+                &limits,
+                ObservationContext {
+                    session_id: "s186-https-default-port",
+                    connection_id: 1,
+                    client_peer: "127.0.0.1:10000".parse().unwrap(),
+                    proxy_local: "127.0.0.1:10001".parse().unwrap(),
+                    protocol: "https",
+                    application_sink: None,
+                    body_resources: crate::body::SessionBodyResources::new(1),
+                },
+                false,
+                |requested| {
+                    let stream = upstream.take();
+                    let allowed = requested == expected;
+                    async move {
+                        if allowed {
+                            Ok(stream.unwrap())
+                        } else {
+                            Err(ProtocolError::new(
+                                "unexpected-authority",
+                                "wrong tunnel authority",
+                            ))
+                        }
+                    }
+                },
+            ),
+            async {
+                let mut bytes = Vec::new();
+                client.read_to_end(&mut bytes).await.unwrap();
+                bytes
+            }
+        );
+        origin_task.await.unwrap();
+        assert!(run.failure.is_none(), "{:?}", run.failure);
+        assert_eq!(run.accounting.responses, 1);
+        assert_eq!(
+            run.observations[0].url.as_deref(),
+            Some("https://EXAMPLE.test/secure")
+        );
+        assert_eq!(run.observations[0].inspectability, "full");
+        assert!(response.ends_with(b"SECURE"));
+    }
 
     #[test]
     fn websocket_handshake_requires_matching_accept_proof() {
