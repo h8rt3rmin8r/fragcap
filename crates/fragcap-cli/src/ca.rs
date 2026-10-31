@@ -19,6 +19,7 @@ use std::io::Write;
 const KEY_NAME: &str = "signer.dpapi";
 const IDENTITY_NAME: &str = "ca.json";
 const CUTOVER_NAME: &str = "cutover-v1.json";
+const MSI_RECEIPT_NAME: &str = "msi-ca-creation-v1.json";
 const CA_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,6 +248,83 @@ fn cutover_path(root: &Path) -> PathBuf {
     root.join(CUTOVER_NAME)
 }
 
+fn msi_receipt_path(root: &Path) -> PathBuf {
+    root.join(MSI_RECEIPT_NAME)
+}
+
+fn validate_msi_transaction(value: &str) -> Result<(), CliError> {
+    if value.len() > 128
+        || value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '{' | '}' | '-'))
+    {
+        return Err(CliError::usage("invalid MSI transaction identity"));
+    }
+    Ok(())
+}
+
+fn read_msi_receipt(root: &Path) -> Result<Option<(String, String)>, CliError> {
+    let path = msi_receipt_path(root);
+    if !ordinary_file_presence(&path).map_err(CliError::failure)? {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|error| CliError::failure(format!("MSI CA receipt unreadable: {error}")))?;
+    if bytes.len() > 4096 {
+        return Err(CliError::failure("MSI CA receipt oversized"));
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| CliError::failure(format!("MSI CA receipt invalid: {error}")))?;
+    if value["scheme"].as_u64() != Some(1) {
+        return Err(CliError::failure("MSI CA receipt scheme mismatch"));
+    }
+    let transaction = value["transaction"]
+        .as_str()
+        .ok_or_else(|| CliError::failure("MSI CA receipt transaction missing"))?;
+    validate_msi_transaction(transaction)?;
+    let fingerprint = value["fingerprint"]
+        .as_str()
+        .ok_or_else(|| CliError::failure("MSI CA receipt fingerprint missing"))?;
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CliError::failure("MSI CA receipt fingerprint invalid"));
+    }
+    Ok(Some((transaction.to_string(), fingerprint.to_string())))
+}
+
+fn rollback_owns_identity(
+    receipt: Option<&(String, String)>,
+    transaction: &str,
+    identity: &Identity,
+) -> bool {
+    receipt.is_some_and(|(created_by, fingerprint)| {
+        created_by == transaction
+            && fingerprint == &identity.fingerprint
+            && identity.provenance == format!("fragcap S185 MSI {transaction}")
+    })
+}
+
+#[cfg(windows)]
+fn write_msi_receipt(root: &Path, transaction: &str, fingerprint: &str) -> Result<(), CliError> {
+    let path = msi_receipt_path(root);
+    let bytes = serde_json::to_vec(
+        &json!({"scheme":1,"transaction":transaction,"fingerprint":fingerprint}),
+    )
+    .map_err(|error| CliError::failure(error.to_string()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| CliError::failure(format!("MSI CA receipt create failed: {error}")))?;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(CliError::failure(format!(
+            "MSI CA receipt write failed: {error}"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn health() -> Health {
     let root = match root() {
         Ok(root) => root,
@@ -387,9 +465,25 @@ pub(crate) fn install() -> Result<String, CliError> {
 
 #[cfg(windows)]
 fn install_new(generation: u64, transaction: Option<&str>) -> Result<String, CliError> {
+    if let Some(transaction) = transaction {
+        validate_msi_transaction(transaction)?;
+    }
     let observed = health();
     if observed.ready() {
         let authority = load_for_deep_capture()?;
+        let root = root()?;
+        if let Some((prior_transaction, prior_fingerprint)) = read_msi_receipt(&root)? {
+            if transaction != Some(prior_transaction.as_str())
+                || prior_fingerprint != authority.sha256_fingerprint()
+            {
+                return Err(CliError::failure(
+                    "existing MSI CA creation receipt is unresolved; refuse reuse",
+                ));
+            }
+            std::fs::remove_file(msi_receipt_path(&root)).map_err(|error| {
+                CliError::failure(format!("MSI CA receipt disarm failed: {error}"))
+            })?;
+        }
         return Ok(format!(
             "reused installation CA {}",
             authority.sha256_fingerprint()
@@ -402,6 +496,11 @@ fn install_new(generation: u64, transaction: Option<&str>) -> Result<String, Cli
         )));
     }
     let root = root()?;
+    if read_msi_receipt(&root)?.is_some() {
+        return Err(CliError::failure(
+            "unresolved MSI CA creation receipt blocks a new installation",
+        ));
+    }
     let pki = root.join("pki");
     NativeProxyAdapter::prepare_installation_directories(&root, &pki)
         .map_err(|error| CliError::failure(format!("installation storage refused: {error}")))?;
@@ -426,15 +525,7 @@ fn install_new(generation: u64, transaction: Option<&str>) -> Result<String, Cli
     )
     .map_err(|error| CliError::failure(format!("installation CA generation failed: {error}")))?;
     let provenance = match transaction {
-        Some(value)
-            if value.len() <= 128
-                && value
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '{' | '}' | '-')) =>
-        {
-            format!("fragcap S185 MSI {value}")
-        }
-        Some(_) => return Err(CliError::usage("invalid MSI transaction identity")),
+        Some(value) => format!("fragcap S185 MSI {value}"),
         None => "fragcap S185 portable installation".to_string(),
     };
     let identity = Identity::from_authority(&authority, provenance)?;
@@ -465,6 +556,19 @@ fn install_new(generation: u64, transaction: Option<&str>) -> Result<String, Cli
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&key);
         return Err(error);
+    }
+    if let Some(transaction) = transaction {
+        if let Err(error) = write_msi_receipt(&root, transaction, &identity.fingerprint) {
+            let cleanup = remove(&identity.fingerprint, true);
+            return Err(CliError::failure(format!(
+                "{error}; newly created CA rollback: {}",
+                if cleanup.is_ok() {
+                    "complete"
+                } else {
+                    "incomplete"
+                }
+            )));
+        }
     }
     Ok(format!(
         "installed CA {} in LocalMachine/Root",
@@ -706,6 +810,7 @@ pub(crate) fn repair(_: bool) -> Result<String, CliError> {
 #[cfg(windows)]
 pub(crate) fn remove(fingerprint: &str, yes: bool) -> Result<String, CliError> {
     let root = root()?;
+    let has_msi_receipt = read_msi_receipt(&root)?.is_some();
     let identity = Identity::read(&identity_path(&root))?;
     if !yes || fingerprint != identity.fingerprint {
         return Err(CliError::usage(format!("removing the installation CA revokes machine-wide trust for all Windows users; review the exact SHA-256 fingerprint {} and run `fragcap ca remove --fingerprint {} --yes`", identity.fingerprint, identity.fingerprint)));
@@ -736,6 +841,11 @@ pub(crate) fn remove(fingerprint: &str, yes: bool) -> Result<String, CliError> {
     std::fs::remove_file(identity_path(&root)).map_err(|error| {
         CliError::failure(format!("installation identity removal failed: {error}"))
     })?;
+    if has_msi_receipt {
+        std::fs::remove_file(msi_receipt_path(&root)).map_err(|error| {
+            CliError::failure(format!("MSI CA receipt removal failed: {error}"))
+        })?;
+    }
     if health().state != "not-provisioned" {
         return Err(CliError::failure(
             "installation CA removal readback incomplete",
@@ -754,15 +864,61 @@ pub(crate) fn remove(_: &str, _: bool) -> Result<String, CliError> {
 
 #[cfg(windows)]
 fn rollback_install(transaction: &str) -> Result<String, CliError> {
+    validate_msi_transaction(transaction)?;
     let root = root()?;
+    let Some((receipt_transaction, receipt_fingerprint)) = read_msi_receipt(&root)? else {
+        return Ok("no CA creation receipt for this MSI execution; retained".to_string());
+    };
+    if receipt_transaction != transaction {
+        return Ok("CA creation receipt belongs to another MSI transaction; retained".to_string());
+    }
     if !identity_path(&root).exists() {
-        return Ok("no installation CA created by this transaction".to_string());
+        return Err(CliError::failure(
+            "MSI CA creation receipt exists without installation identity",
+        ));
     }
     let identity = Identity::read(&identity_path(&root))?;
-    if identity.provenance != format!("fragcap S185 MSI {transaction}") {
-        return Ok("existing installation CA belongs to another transaction; retained".to_string());
+    if !rollback_owns_identity(
+        Some(&(receipt_transaction, receipt_fingerprint)),
+        transaction,
+        &identity,
+    ) {
+        return Err(CliError::failure(
+            "MSI CA receipt does not match the exact installation identity",
+        ));
     }
     remove(&identity.fingerprint, true)
+}
+
+#[cfg(windows)]
+fn commit_install(transaction: &str) -> Result<String, CliError> {
+    validate_msi_transaction(transaction)?;
+    let root = root()?;
+    let Some((receipt_transaction, receipt_fingerprint)) = read_msi_receipt(&root)? else {
+        return Ok("no CA creation receipt to commit; installation root retained".to_string());
+    };
+    if receipt_transaction != transaction {
+        return Err(CliError::failure(
+            "MSI CA creation receipt belongs to another transaction",
+        ));
+    }
+    let identity = Identity::read(&identity_path(&root))?;
+    if identity.fingerprint != receipt_fingerprint || !health().ready() {
+        return Err(CliError::failure(
+            "MSI CA commit requires the exact healthy installation identity",
+        ));
+    }
+    std::fs::remove_file(msi_receipt_path(&root))
+        .map_err(|error| CliError::failure(format!("MSI CA receipt commit failed: {error}")))?;
+    Ok(format!(
+        "committed installation CA {}",
+        identity.fingerprint
+    ))
+}
+
+#[cfg(not(windows))]
+fn commit_install(_: &str) -> Result<String, CliError> {
+    Err(CliError::failure("installation CA requires Windows"))
 }
 
 #[cfg(not(windows))]
@@ -801,6 +957,7 @@ pub(crate) fn run_command(
             }
         }
         CaCommand::RollbackInstall { msi_transaction } => rollback_install(&msi_transaction)?,
+        CaCommand::CommitInstall { msi_transaction } => commit_install(&msi_transaction)?,
         CaCommand::Repair { rotate } => repair(rotate)?,
         CaCommand::Remove { fingerprint, yes } => remove(&fingerprint, yes)?,
     };
@@ -817,6 +974,54 @@ pub(crate) fn run_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_product_code_cannot_rollback_a_committed_or_reused_ca() {
+        let transaction = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
+        let authority =
+            NativeProxyAdapter::generate_installation_authority(1, SystemTime::now(), CA_LIFETIME)
+                .unwrap();
+        let identity =
+            Identity::from_authority(&authority, format!("fragcap S185 MSI {transaction}"))
+                .unwrap();
+        let receipt = (transaction.to_string(), identity.fingerprint.clone());
+        assert!(rollback_owns_identity(
+            Some(&receipt),
+            transaction,
+            &identity
+        ));
+        assert!(!rollback_owns_identity(None, transaction, &identity));
+        assert!(!rollback_owns_identity(
+            Some(&receipt),
+            "{FEDCBA98-7654-3210-FEDC-BA9876543210}",
+            &identity,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn creation_receipt_is_exact_and_rejects_tampering() {
+        let directory = std::env::temp_dir().join(format!(
+            "fragcap-s185-msi-receipt-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let transaction = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
+        let fingerprint = "A".repeat(64);
+        write_msi_receipt(&directory, transaction, &fingerprint).unwrap();
+        assert_eq!(
+            read_msi_receipt(&directory).unwrap(),
+            Some((transaction.to_string(), fingerprint))
+        );
+        assert!(write_msi_receipt(&directory, transaction, &"B".repeat(64)).is_err());
+        std::fs::write(msi_receipt_path(&directory), b"{\"scheme\":1}").unwrap();
+        assert!(read_msi_receipt(&directory).is_err());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn public_identity_roundtrip_rejects_changed_validity_and_digest() {

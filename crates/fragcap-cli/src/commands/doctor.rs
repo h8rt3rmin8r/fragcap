@@ -32,9 +32,19 @@ pub fn run(
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let result = run_with_terminal(args, json, out, emitter, std::io::stdout().is_terminal())?;
+    run_with_terminal(
+        args,
+        json,
+        out,
+        emitter,
+        std::io::stdout().is_terminal(),
+        installation_ca_check(),
+    )
+}
+
+fn installation_ca_check() -> crate::doctor::Check {
     let health = crate::ca::health();
-    let check = if health.ready() {
+    if health.ready() {
         crate::doctor::Check::ok(
             "Deep Capture",
             "installation CA",
@@ -50,26 +60,7 @@ pub fn run(
             format!("{}: {}", health.state, health.detail),
             "run elevated `fragcap ca repair`",
         )
-    };
-    let report = crate::doctor::Report {
-        checks: vec![check],
-    };
-    let text = if json {
-        report.render_json()
-    } else {
-        report.render_human_with_history(
-            use_color(Stream::Stdout),
-            selected_stdout_width(std::io::stdout().is_terminal()),
-            args.history_details,
-        )
-    };
-    write!(out, "{text}")
-        .map_err(|error| CliError::failure(format!("Doctor CA output failed: {error}")))?;
-    Ok(if report.exit() == Exit::FAILURE {
-        Exit::FAILURE
-    } else {
-        result
-    })
+    }
 }
 
 fn run_with_terminal(
@@ -78,6 +69,7 @@ fn run_with_terminal(
     out: &mut dyn Write,
     emitter: &mut Emitter,
     stdout_terminal: bool,
+    ca_check: crate::doctor::Check,
 ) -> Result<Exit, CliError> {
     // `--yes` only shapes the `--fix` action phase; alone it is a usage error
     // rather than a silent no-op.
@@ -86,13 +78,14 @@ fn run_with_terminal(
     }
 
     if !args.fix {
-        return Ok(run_read_only(
+        return Ok(run_read_only_with_ca(
             args,
             json,
             out,
             emitter,
             stdout_terminal,
             probe::gather_with,
+            Some(ca_check),
         ));
     }
 
@@ -131,10 +124,12 @@ fn run_with_terminal(
         args.history_details,
         out,
         emitter,
+        Some(ca_check),
     ))
 }
 
 /// Inject gathering for command-contract tests without touching the host.
+#[cfg(test)]
 fn run_read_only(
     args: &DoctorArgs,
     json: bool,
@@ -143,12 +138,27 @@ fn run_read_only(
     stdout_terminal: bool,
     gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
 ) -> Exit {
+    run_read_only_with_ca(args, json, out, emitter, stdout_terminal, gather, None)
+}
+
+fn run_read_only_with_ca(
+    args: &DoctorArgs,
+    json: bool,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+    stdout_terminal: bool,
+    gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
+    ca_check: Option<crate::doctor::Check>,
+) -> Exit {
     let enabled = !json && stdout_terminal && emitter.allows_progress();
     let silent_human = !json && !emitter.allows_human_result();
     let width = selected_stdout_width(stdout_terminal);
     let color = !json && use_color(Stream::Stdout);
     let work = move |observer: &mut dyn ProbeObserver| {
-        let report = checks::run(&gather(observer));
+        let mut report = checks::run(&gather(observer));
+        if let Some(check) = ca_check {
+            report.checks.push(check);
+        }
         let text = probe::observe(observer, ProbeName::ReportRendering, || {
             if json {
                 report.render_json()
@@ -406,6 +416,48 @@ mod tests {
             std::time::Duration::from_secs(2),
         );
         fake_inputs()
+    }
+
+    #[test]
+    fn installation_ca_check_shares_the_one_authoritative_doctor_verdict() {
+        let ca_check = crate::doctor::Check::ok(
+            "Deep Capture",
+            "installation CA",
+            "controlled installation root",
+        );
+        let mut expected = checks::run(&fake_inputs());
+        assert!(!expected.capture_ready(), "missing Npcap blocks Capture");
+        expected.checks.push(ca_check.clone());
+        for json in [false, true] {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut emitter = Emitter::new(
+                &mut stderr,
+                if json { Format::Json } else { Format::Human },
+                Verbosity::Normal,
+            );
+            let exit = run_read_only_with_ca(
+                &doctor_args(false, false),
+                json,
+                &mut stdout,
+                &mut emitter,
+                false,
+                fake_gather,
+                Some(ca_check.clone()),
+            );
+            assert_eq!(exit, expected.exit());
+            let actual = String::from_utf8(stdout).unwrap();
+            let rendered = if json {
+                expected.render_json()
+            } else {
+                expected.render_human_with_width(
+                    use_color(Stream::Stdout),
+                    selected_stdout_width(false),
+                )
+            };
+            assert_eq!(actual, rendered);
+            assert_eq!(actual.matches("installation CA").count(), 1);
+        }
     }
 
     #[test]

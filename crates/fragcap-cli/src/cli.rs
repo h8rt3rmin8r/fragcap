@@ -215,6 +215,12 @@ pub enum CaCommand {
         #[arg(long)]
         msi_transaction: String,
     },
+    /// Disarm rollback after one successful MSI transaction.
+    #[command(hide = true)]
+    CommitInstall {
+        #[arg(long)]
+        msi_transaction: String,
+    },
     /// Explicitly repair the installed machine CA with administrator elevation.
     Repair {
         /// Explicitly rotate a healthy CA after compromise or planned expiry.

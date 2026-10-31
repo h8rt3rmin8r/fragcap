@@ -191,8 +191,12 @@ pub fn run_fix(
     history_details: bool,
     out: &mut dyn Write,
     emitter: &mut Emitter,
+    ca_check: Option<super::Check>,
 ) -> Exit {
-    let report = checks::run(&probe::gather());
+    let mut report = checks::run(&probe::gather());
+    if let Some(check) = ca_check.clone() {
+        report.checks.push(check);
+    }
     let _ = write!(
         out,
         "{}",
@@ -248,7 +252,10 @@ pub fn run_fix(
         return Exit::SUCCESS;
     }
 
-    let rechecked = checks::run(&probe::gather());
+    let mut rechecked = checks::run(&probe::gather());
+    if let Some(check) = ca_check {
+        rechecked.checks.push(check);
+    }
     let _ = writeln!(out, "\nRe-checked:");
     let _ = writeln!(
         out,

@@ -18,7 +18,7 @@ Decision: the first S185 install inventories canonical pre-S185 Fragcap roots an
 
 ## R4. MSI and portable boundary
 
-Decision: WiX deferred elevated custom actions call the product's `ca install` backend after installing files; an immediate action passes only the exact executable path, and a rollback action removes only resources created by that transaction. Provision failure is an installer error with a logged reason. Portable extraction cannot run setup, so an explicit elevated `fragcap ca install` provides the same backend. Ordinary commands check read-only health and warn; Deep Capture refuses before effects.
+Decision: WiX deferred elevated custom actions call the product's `ca install` backend after installing files. A new CA writes an exact creation receipt; the MSI commit action disarms it, and rollback requires that uncommitted receipt plus the exact identity. Repair, reinstall, and upgrade reuse a healthy root without arming rollback, even when ProductCode repeats. Provision failure is an installer error with a logged reason. Portable extraction cannot run setup, so an explicit elevated `fragcap ca install` provides the same backend. Ordinary commands check read-only health and warn; Deep Capture refuses before effects.
 
 ## R5. Session continuity
 

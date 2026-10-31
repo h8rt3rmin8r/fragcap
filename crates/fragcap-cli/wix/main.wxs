@@ -106,9 +106,9 @@
       <ComponentRef Id="Comp_third_party_notices" />
     </Feature>
 
-    <!-- S185 installation CA: a failed new install rolls back only the identity
-         whose MSI ProductCode created it. Existing healthy identities are reused
-         and are not removed by this rollback or ordinary uninstall. -->
+    <!-- S185 installation CA: rollback requires the exact uncommitted creation
+         receipt written by this execution. Commit disarms it; reused identities
+         have no creation receipt and are retained by rollback or uninstall. -->
     <CustomAction Id="SetCaRollback"
                   Property="CaRollback"
                   Value="&quot;[INSTALLDIR]fragcap.exe&quot; ca rollback-install --msi-transaction &quot;[ProductCode]&quot;"
@@ -127,6 +127,16 @@
                   BinaryKey="WixCA"
                   DllEntry="WixQuietExec"
                   Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetCaCommit"
+                  Property="CaCommit"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; ca commit-install --msi-transaction &quot;[ProductCode]&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="CaCommit"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="commit"
                   Impersonate="no"
                   Return="check" />
 
@@ -279,9 +289,11 @@
       <Custom Action="CaRollback" After="SetCaRollback">NOT REMOVE="ALL"</Custom>
       <Custom Action="SetCaInstall" After="CaRollback">NOT REMOVE="ALL"</Custom>
       <Custom Action="CaInstall" After="SetCaInstall">NOT REMOVE="ALL"</Custom>
+      <Custom Action="SetCaCommit" After="CaInstall">NOT REMOVE="ALL"</Custom>
+      <Custom Action="CaCommit" After="SetCaCommit">NOT REMOVE="ALL"</Custom>
       <!-- Install: set the rollback command and queue the rollback immediately
            before the add, so a failure after the add is undone; then add. -->
-      <Custom Action="SetDefenderAdd" After="CaInstall">NOT Installed</Custom>
+      <Custom Action="SetDefenderAdd" After="CaCommit">NOT Installed</Custom>
       <Custom Action="SetDefenderRollback" After="SetDefenderAdd">NOT Installed</Custom>
       <Custom Action="DefenderRollback" After="SetDefenderRollback">NOT Installed</Custom>
       <Custom Action="DefenderAdd" After="DefenderRollback">NOT Installed</Custom>

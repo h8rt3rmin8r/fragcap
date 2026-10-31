@@ -29,7 +29,6 @@ use deep_capture_api::{
     calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
     CompatibilityObservation as Observation, Inspectability, ManifestOmissionReason,
 };
-#[cfg(windows)]
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
