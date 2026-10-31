@@ -550,7 +550,30 @@ fn recover_deep_capture_journals_inner(
             .iter()
             .any(|bundle| journal.starts_with(bundle))
     }) {
+        let prefix = match fragcap::deep_capture::read_resource_journal(&journal) {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                failed.push(format!(
+                    "could not inspect {} before recovery: {error}",
+                    journal.display()
+                ));
+                continue;
+            }
+        };
+        if let Err(reason) = check_route_owner_exit_prerequisite(&prefix) {
+            failed.push(format!(
+                "{} retains route-owner recovery: {reason}",
+                journal.display()
+            ));
+            continue;
+        }
         match fragcap::deep_capture::recover_resource_journal(&journal, |action| {
+            if action.resource_id == "route-owner-exit"
+                && action.kind == fragcap::deep_capture::ResourceKind::Route
+                && action.action == "verify-route-owner-exits"
+            {
+                return Ok("all observed route-owner process starts have exited".to_string());
+            }
             match action.kind {
                 fragcap::deep_capture::ResourceKind::Trust => {
                     let thumbprint = action.target.strip_prefix("sha1:").ok_or_else(|| {
@@ -631,6 +654,75 @@ fn recover_deep_capture_journals_inner(
     } else {
         Err(failed)
     }
+}
+
+fn check_route_owner_exit_prerequisite(
+    prefix: &fragcap::deep_capture::JournalPrefix,
+) -> Result<(), String> {
+    use fragcap::deep_capture::{ResourceKind, ResourceState};
+
+    let latest = prefix.latest();
+    let Some(guard) = latest.get("route-owner-exit") else {
+        if latest.values().any(|transition| {
+            transition.kind == ResourceKind::Route && !transition.state.terminal()
+        }) {
+            return Err("nonterminal route has no recorded owner-exit prerequisite".into());
+        }
+        return Ok(());
+    };
+    if guard.kind != ResourceKind::Route
+        || guard.action != "verify-route-owner-exits"
+        || guard.target != format!("session:{}", prefix.session_id)
+        || guard.ownership != guard.target
+    {
+        return Err("owner-exit prerequisite has invalid resource identity".into());
+    }
+    if guard.state == ResourceState::Released {
+        return Ok(());
+    }
+    let detail: serde_json::Value = serde_json::from_str(&guard.detail)
+        .map_err(|_| "owner-exit prerequisite has invalid detail".to_string())?;
+    if detail.get("schema").and_then(serde_json::Value::as_u64) != Some(1)
+        || detail.get("complete").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return Err("owner-exit evidence is incomplete".into());
+    }
+    let starts = detail
+        .get("starts")
+        .and_then(serde_json::Value::as_array)
+        .filter(|starts| starts.len() <= 256)
+        .ok_or("owner-exit start set is invalid or exceeds its bound")?;
+    for start in starts {
+        let pair = start
+            .as_array()
+            .filter(|pair| pair.len() == 2)
+            .ok_or("owner-exit start identity is malformed")?;
+        let pid = pair[0]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|pid| *pid > 0)
+            .ok_or("owner-exit process ID is invalid")?;
+        let started = pair[1]
+            .as_i64()
+            .filter(|started| *started >= 0)
+            .ok_or("owner-exit start time is invalid")?;
+        match fragcap::managed_shutdown::ProcessIdentity::observe(pid) {
+            Ok(identity) => {
+                if identity.created_unix_nanos() <= i128::from(started) + 5_000_000_000
+                    && !identity.exited().map_err(|error| {
+                        format!("could not determine exit of process {pid}: {error}")
+                    })?
+                {
+                    return Err(format!("observed route-owner process {pid} is still alive"));
+                }
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(87 | 1168)) => {}
+            Err(error) => {
+                return Err(format!("could not verify exit of process {pid}: {error}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bundle_is_within_recovery_root(root: &Path, bundle: &Path) -> bool {
@@ -1363,6 +1455,121 @@ mod tests {
         assert!(registered_session_owners(root.path())
             .expect("owners")
             .is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_retains_trust_while_observed_route_owner_is_alive() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("unresolved-owner");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let identity = fragcap::managed_shutdown::ProcessIdentity::current().expect("identity");
+        let detail = serde_json::json!({
+            "schema": 1,
+            "complete": true,
+            "starts": [[identity.pid, i64::try_from(identity.created_unix_nanos()).expect("time")]],
+        })
+        .to_string();
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "route-owner-exit",
+                ResourceKind::Route,
+                "session:session",
+                "session:session",
+                "verify-route-owner-exits",
+                ResourceState::Failed,
+                detail,
+            ))
+            .expect("guard");
+        journal
+            .append(ResourceTransition::new(
+                "session-ca-trust",
+                ResourceKind::Trust,
+                "sha1:0000000000000000000000000000000000000000",
+                "session:session",
+                "remove-current-user-ca",
+                ResourceState::Failed,
+                "retained while route owner is alive",
+            ))
+            .expect("trust");
+        drop(journal);
+        drop(lease);
+
+        let errors = recover_deep_capture_journals(root.path(), &mut std::io::sink())
+            .expect_err("live route owner blocks all recovery effects");
+        assert!(errors.iter().any(|error| error.contains("still alive")));
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("journal");
+        assert_eq!(
+            prefix.latest()["session-ca-trust"].state,
+            ResourceState::Failed
+        );
+        assert_eq!(
+            prefix.latest()["route-owner-exit"].state,
+            ResourceState::Failed
+        );
+        assert_eq!(registered_session_owners(root.path()).unwrap().len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_releases_route_after_observed_owner_exit() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("exited-owner");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "route-owner-exit",
+                ResourceKind::Route,
+                "session:session",
+                "session:session",
+                "verify-route-owner-exits",
+                ResourceState::Failed,
+                r#"{"schema":1,"complete":true,"starts":[[4294967295,1]]}"#,
+            ))
+            .expect("guard");
+        journal
+            .append(ResourceTransition::new(
+                "target-route",
+                ResourceKind::Route,
+                "session:session",
+                "session:session",
+                "restore-target-route",
+                ResourceState::Failed,
+                "route owner unresolved",
+            ))
+            .expect("route");
+        drop(journal);
+        drop(lease);
+
+        recover_deep_capture_journals(root.path(), &mut std::io::sink()).expect("recover");
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("journal");
+        assert_eq!(
+            prefix.latest()["route-owner-exit"].state,
+            ResourceState::Released
+        );
+        assert_eq!(
+            prefix.latest()["target-route"].state,
+            ResourceState::Released
+        );
+        assert!(registered_session_owners(root.path()).unwrap().is_empty());
     }
 
     #[test]

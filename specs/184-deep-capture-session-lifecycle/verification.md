@@ -13,6 +13,7 @@
 | Exact root and client with an unrelated same-name declared event | Pass | Windows shutdown adapter controls and verifies exit only for the two exact owners; unrelated child remains alive and route release is partial. |
 | Same event with a verified exit | Pass | Windows shutdown adapter verifies the exact owner exit and permits complete release. |
 | Unresolved route owner after Capture failure | Pass | Facade reports `route-owner` and `target-route` failed, retains the trust lease for exact recovery, and records proxy continuity loss after finite stop. |
+| Doctor recovery while an observed route owner remains live | Pass | The synchronized route-owner exit prerequisite blocks all recovery actions, including trust removal, and keeps the session owner registered. An absent observed owner permits exact route replay. |
 | Four-minute ordinary request and real adapter mapping | Pass | CLI deadline/adapter unit checks 240-second plan and 240-second Capture request with a separately budgeted five-second return. Facade preflight preserves 240 seconds and refuses 301 seconds before invoking adapters. |
 | Controlled binary-backed duration above one minute | Pass (61.41 seconds) | Hidden `fragcap.exe` process requests 70 seconds, authorizes its emitted JSON plan, keeps a controlled target alive past 60 seconds, then checks terminal and cleanup. |
 

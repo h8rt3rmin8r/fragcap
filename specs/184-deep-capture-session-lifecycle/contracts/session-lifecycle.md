@@ -7,6 +7,7 @@
 3. Complete the watcher and reconsider late events and helpers before declaring route-owner release.
 4. Any unresolved plausible routed process produces incomplete route-owner, route, and target-route truth. A local environment-lease cleanup result does not establish process exit.
 5. Keep proxy and trust until the bounded owner-release decision. If a plausible live owner remains, retain exact recoverable trust and report proxy continuity unavailable after its finite shutdown.
+6. Before any Doctor replay of an incomplete route, use the synchronized resource journal's route-owner exit prerequisite to verify that every observed plausible routed process has exited. If event authority or exit verification is incomplete, leave route and trust obligations unchanged and retain the session owner registry entry.
 
 ## Duration
 

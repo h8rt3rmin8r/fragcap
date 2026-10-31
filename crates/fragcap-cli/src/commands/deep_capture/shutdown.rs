@@ -243,6 +243,48 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<OwnerSelection, St
     Ok(OwnerSelection { owners, unresolved })
 }
 
+/// Retain every observed process that may still hold the child route. The
+/// returned start identity is conservative: a missing or reused PID can later
+/// prove exit, while a live matching PID or incomplete event stream blocks
+/// Doctor recovery. No process control follows from this list.
+pub(super) fn owner_exit_prerequisite(
+    evidence: &CaptureProcessEvidence,
+) -> Option<Vec<(u32, i64)>> {
+    select_owners(evidence).ok()?;
+    let root = evidence.launch_pid?;
+    let earliest = evidence.launch_earliest_at?;
+    let starts: Vec<_> = evidence
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Started {
+                pid, parent, at, ..
+            } => Some((*pid, *parent, *at)),
+            _ => None,
+        })
+        .collect();
+    let mut pending = Vec::new();
+    for event in &evidence.events {
+        let ProcessEvent::Started { pid, image, at, .. } = event else {
+            continue;
+        };
+        if *at < earliest || exited_after(evidence, *pid, *at) {
+            continue;
+        }
+        let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+        let declared = evidence.shutdown_scope.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+        });
+        if declared || depth_to_root(*pid, root, &starts).is_some() {
+            pending.push((*pid, at.as_nanos()));
+        }
+    }
+    pending.sort_unstable();
+    pending.dedup();
+    (pending.len() <= 256).then_some(pending)
+}
+
 pub(super) fn release(
     evidence: &mut CaptureProcessEvidence,
     budget: Budget,
@@ -497,6 +539,8 @@ mod tests {
         );
         assert_eq!(outcome.result.status, CleanupStatus::Failed);
         assert!(unrelated.0.try_wait().unwrap().is_none());
+        let prerequisite = owner_exit_prerequisite(&evidence).expect("complete event authority");
+        assert!(prerequisite.iter().any(|(pid, _)| *pid == unrelated.0.id()));
         assert!(!outcome.steps.iter().any(|step| {
             matches!(
                 step["action"].as_str(),
@@ -658,6 +702,7 @@ mod tests {
         assert!(select_owners(&evidence)
             .unwrap_err()
             .contains("process event authority is incomplete"));
+        assert!(owner_exit_prerequisite(&evidence).is_none());
         assert!(owned.0.try_wait().unwrap().is_none());
     }
 

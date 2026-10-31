@@ -153,7 +153,12 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
             problems.push(format!("duplicate lifecycle edge {edge}"));
         }
     }
-    let source_effects = coordinator_effects(&coordinator_source);
+    let mut source_effects = coordinator_effects(&coordinator_source);
+    // This synchronized journal row is a recovery prerequisite, not an
+    // external effect with a before/after injection boundary.
+    if !source_effects.remove("route-owner-exit") {
+        problems.push("route-owner exit prerequisite is missing from the coordinator".into());
+    }
     if effect_ids != source_effects {
         problems.push(format!(
             "coordinator effect inventory drift: registry={effect_ids:?}, source={source_effects:?}"

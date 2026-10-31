@@ -22,5 +22,5 @@
 
 - [x] T008 Update `docs/fragcap-specification.md`, affected CLI documentation, `docs/plans/README.md`, and `changelog.d/` with #526/#527 behavior and explicit #528/#529 limits.
 - [x] T009 Run focused tests, complete repository gates and applicable Windows/package checks in the foreground, and record exact results in `verification.md`.
-- [ ] T010 Commit only S184 files, push `codex/s184-deep-capture-session-lifecycle`, and open an official PR closing #526 and #527.
-- [ ] T011 Monitor exact-head CI and external Codex/security reviews, respond to and resolve every actionable comment, use no more than two total review rounds, and hand the final green PR to the owner before merge.
+- [x] T010 Commit only S184 files, push `codex/s184-deep-capture-session-lifecycle`, and open an official PR closing #526 and #527.
+- [x] T011 Monitor exact-head CI and external Codex/security reviews, respond to and resolve every actionable comment, use no more than two total review rounds, and hand the final green PR to the owner before merge.

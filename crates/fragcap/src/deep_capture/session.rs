@@ -799,10 +799,58 @@ impl DeepCaptureSession<'_> {
         }
         self.seal_observation_window();
         if self.launch.is_some() {
+            let owner_exit_target = format!("session:{}", self.plan.session_id);
+            self.record_resource(
+                "route-owner-exit",
+                ResourceKind::Route,
+                &owner_exit_target,
+                "verify-route-owner-exits",
+                ResourceState::Pending,
+                r#"{"schema":1,"complete":false,"starts":[]}"#,
+            );
             let started = self.adapters.clock.monotonic_elapsed();
             let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
             let result = self.adapters.capture.release_route_owners(budget);
             let steps = self.adapters.capture.take_route_owner_steps();
+            let owners_released = matches!(
+                result.status,
+                CleanupStatus::Released | CleanupStatus::NotNeeded
+            );
+            if owners_released {
+                self.record_resource(
+                    "route-owner-exit",
+                    ResourceKind::Route,
+                    &owner_exit_target,
+                    "verify-route-owner-exits",
+                    ResourceState::CleanupPending,
+                    "route-owner release succeeded; finalizing exit prerequisite",
+                );
+            }
+            let owner_exit_detail = if owners_released {
+                "verified route-owner release".to_string()
+            } else {
+                match self.adapters.capture.route_owner_exit_prerequisite() {
+                    Some(starts) => serde_json::json!({
+                        "schema": 1,
+                        "complete": true,
+                        "starts": starts,
+                    })
+                    .to_string(),
+                    None => r#"{"schema":1,"complete":false,"starts":[]}"#.to_string(),
+                }
+            };
+            self.record_resource(
+                "route-owner-exit",
+                ResourceKind::Route,
+                &owner_exit_target,
+                "verify-route-owner-exits",
+                if owners_released {
+                    ResourceState::Released
+                } else {
+                    ResourceState::Failed
+                },
+                &owner_exit_detail,
+            );
             for step in steps {
                 let write = self
                     .cleanup_lifecycle

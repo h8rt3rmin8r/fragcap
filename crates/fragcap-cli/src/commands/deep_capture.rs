@@ -1303,6 +1303,11 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         std::mem::take(&mut self.route_owner_steps)
     }
 
+    fn route_owner_exit_prerequisite(&self) -> Option<Vec<(u32, i64)>> {
+        let runtime = self.runtime.borrow();
+        shutdown::owner_exit_prerequisite(runtime.process_evidence.as_ref()?)
+    }
+
     fn stop(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
         deep_capture_api::CleanupResult {
             resource: "capture".to_string(),
