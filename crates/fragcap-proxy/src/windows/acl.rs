@@ -18,8 +18,9 @@ use windows_sys::Win32::Security::Cryptography::{
     CRYPTPROTECT_UI_FORBIDDEN,
 };
 use windows_sys::Win32::Security::{
-    GetFileSecurityW, GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION,
-    SECURITY_ATTRIBUTES, TOKEN_USER,
+    GetFileSecurityW, GetSecurityDescriptorOwner, GetTokenInformation, IsWellKnownSid, TokenUser,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid, DACL_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, FileDispositionInfo, GetFileInformationByHandle,
@@ -212,8 +213,13 @@ fn machine_sddl(kind: MachineAcl) -> &'static str {
 }
 
 fn machine_descriptor(kind: MachineAcl) -> Result<PrivateDescriptor, CertificateError> {
-    let sddl = machine_sddl(kind);
-    descriptor_from_sddl(sddl)
+    descriptor_from_sddl(&format!("O:BA{}", machine_sddl(kind)))
+}
+
+fn trusted_machine_owner(owner: windows_sys::Win32::Foundation::PSID) -> bool {
+    !owner.is_null()
+        && (unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) } != 0
+            || unsafe { IsWellKnownSid(owner, WinLocalSystemSid) } != 0)
 }
 
 fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateError> {
@@ -230,7 +236,7 @@ fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateEr
     unsafe {
         GetFileSecurityW(
             wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             ptr::null_mut(),
             0,
             &mut needed,
@@ -246,7 +252,7 @@ fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateEr
     if unsafe {
         GetFileSecurityW(
             wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             buffer.as_mut_ptr().cast(),
             needed,
             &mut needed,
@@ -257,6 +263,15 @@ fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateEr
             "installation-acl-read-failed",
             unsafe { GetLastError() },
         ));
+    }
+    let mut owner = ptr::null_mut();
+    let mut owner_defaulted = 0;
+    if unsafe {
+        GetSecurityDescriptorOwner(buffer.as_mut_ptr().cast(), &mut owner, &mut owner_defaulted)
+    } == 0
+        || !trusted_machine_owner(owner)
+    {
+        return Err(CertificateError::new("installation-owner-invalid"));
     }
     let mut text = ptr::null_mut();
     if unsafe {
@@ -590,6 +605,41 @@ mod tests {
         PROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    #[test]
+    fn installation_owner_refuses_an_ordinary_user_even_with_an_exact_dacl() {
+        let descriptor = machine_descriptor(MachineAcl::PrivateFile).unwrap();
+        let mut configured_owner = ptr::null_mut();
+        let mut owner_defaulted = 0;
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorOwner(
+                    descriptor.0,
+                    &mut configured_owner,
+                    &mut owner_defaulted,
+                )
+            },
+            0
+        );
+        assert_ne!(
+            unsafe { IsWellKnownSid(configured_owner, WinBuiltinAdministratorsSid) },
+            0
+        );
+        for (sid_text, trusted) in [
+            ("S-1-5-18", true),
+            ("S-1-5-32-544", true),
+            ("S-1-5-21-111-222-333-1001", false),
+        ] {
+            let wide: Vec<u16> = sid_text.encode_utf16().chain(Some(0)).collect();
+            let mut sid = ptr::null_mut();
+            assert_ne!(
+                unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) },
+                0
+            );
+            assert_eq!(trusted_machine_owner(sid), trusted, "{sid_text}");
+            unsafe { LocalFree(sid as isize) };
+        }
+    }
 
     #[test]
     fn issuer_private_dacl_names_exact_producer_without_owner_relative_access() {

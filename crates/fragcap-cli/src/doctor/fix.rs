@@ -183,12 +183,16 @@ fn report_outcome(out: &mut dyn Write, outcome: &ActionOutcome) {
 /// performer); the tested surface is [`drive_actions`]. The refusal gates
 /// (`--json`, non-terminal stdout/stdin, `--yes` without `--fix`) are applied by
 /// the command shell before this runs.
+pub struct ReportStyle {
+    pub color: bool,
+    pub width: usize,
+    pub history_details: bool,
+}
+
 pub fn run_fix(
     caps: Capabilities,
     yes: bool,
-    color: bool,
-    width: usize,
-    history_details: bool,
+    style: ReportStyle,
     out: &mut dyn Write,
     emitter: &mut Emitter,
     ca_check: Option<super::Check>,
@@ -200,7 +204,7 @@ pub fn run_fix(
     let _ = write!(
         out,
         "{}",
-        report.render_human_with_history(color, width, history_details)
+        report.render_human_with_history(style.color, style.width, style.history_details)
     );
 
     let offered = offered_actions(&report, caps);

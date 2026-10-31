@@ -115,13 +115,14 @@ fn run_with_terminal(
         // is not offered rather than offered only to fail.
         elevation: cfg!(windows),
     };
-    let human_width = selected_stdout_width(true);
     Ok(fix::run_fix(
         caps,
         args.yes,
-        use_color(Stream::Stdout),
-        human_width,
-        args.history_details,
+        fix::ReportStyle {
+            color: use_color(Stream::Stdout),
+            width: selected_stdout_width(true),
+            history_details: args.history_details,
+        },
         out,
         emitter,
         Some(ca_check),

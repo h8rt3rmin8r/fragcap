@@ -155,13 +155,14 @@
       "id":"certificate-authority-abuse","title":"Installation certificate authority escapes its scope","severity":"high",
       "categories":["certificate-abuse","artifact-theft","confused-deputy"],
       "boundaries":["tls-to-authority","observation-to-artifact","resource-to-recovery"],"assets":["installation-ca-private-key","sensitive-artifacts","resource-obligations"],
-      "prevention":["One installation authority has exact machine trust and a protected signer; leaves use validated identities and upstream trust is independent."],
+      "prevention":["One installation authority has exact machine trust and a protected signer; installation directories and signer require SYSTEM or Administrators ownership as well as exact DACLs, because an ordinary owner can rewrite a matching DACL. Leaves use validated identities and upstream trust is independent."],
       "detection":["Read-only health names trust mismatch or absence; privileged preflight proves signer use and the manifest binds its fingerprint."],
       "containment":["Session cleanup never removes installation trust; explicit exact-fingerprint repair or removal refuses unrelated authorities."],
       "evidence":["installation CA status and package readback","manifest fingerprint and session cleanup"],
       "tests":[
         {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"malformed_leaf_identities_are_refused","proves":"Malformed leaf identities cannot obtain certificates."},
         {"path":"crates/fragcap-proxy/src/certificate.rs","function":"reload_preserves_exact_root_and_leaf_issuer","proves":"Two runtime reloads issue HTTP and H3 leaves under one exact installation root."},
+        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_owner_refuses_an_ordinary_user_even_with_an_exact_dacl","proves":"New installation objects declare Administrators ownership and an ordinary-user owner is rejected even when DACL text matches."},
         {"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"Upstream name and trust failures cannot downgrade."}
       ]
     },
