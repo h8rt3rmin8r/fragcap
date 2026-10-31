@@ -222,6 +222,10 @@ fn trusted_machine_owner(owner: windows_sys::Win32::Foundation::PSID) -> bool {
             || unsafe { IsWellKnownSid(owner, WinLocalSystemSid) } != 0)
 }
 
+fn machine_dacl_matches(observed: &str, expected: &str) -> bool {
+    observed == expected || observed == expected.replacen("D:P", "D:PAI", 1)
+}
+
 fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateError> {
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     let metadata = std::fs::symlink_metadata(path)
@@ -298,8 +302,14 @@ fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateEr
     unsafe { LocalFree(text as isize) };
     let observed = observed?;
     let expected = machine_sddl(kind);
-    if observed != expected {
-        return Err(CertificateError::new("installation-acl-invalid"));
+    // NTFS can set SE_DACL_AUTO_INHERITED when persisting a protected DACL.
+    // That control bit changes no ACE; all grants and protection must still
+    // match the closed descriptor exactly.
+    if !machine_dacl_matches(&observed, expected) {
+        return Err(CertificateError {
+            code: "installation-acl-invalid",
+            detail: format!("expected {expected}, observed {observed}"),
+        });
     }
     Ok(())
 }
@@ -638,6 +648,30 @@ mod tests {
             );
             assert_eq!(trusted_machine_owner(sid), trusted, "{sid_text}");
             unsafe { LocalFree(sid as isize) };
+        }
+    }
+
+    #[test]
+    fn installation_dacl_accepts_only_its_exact_aces_and_optional_auto_inherit_marker() {
+        for kind in [
+            MachineAcl::PublicDirectory,
+            MachineAcl::PrivateDirectory,
+            MachineAcl::PrivateFile,
+        ] {
+            let expected = machine_sddl(kind);
+            assert!(machine_dacl_matches(expected, expected));
+            assert!(machine_dacl_matches(
+                &expected.replacen("D:P", "D:PAI", 1),
+                expected
+            ));
+            assert!(!machine_dacl_matches(
+                &expected.replacen("D:P", "D:", 1),
+                expected
+            ));
+            assert!(!machine_dacl_matches(
+                &format!("{expected}(A;;FA;;;BU)"),
+                expected
+            ));
         }
     }
 
