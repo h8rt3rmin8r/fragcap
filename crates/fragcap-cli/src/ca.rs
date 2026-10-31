@@ -4,7 +4,9 @@
 //! the signer is opened only by elevated setup and Deep Capture preflight.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(any(windows, test))]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(any(windows, test))]
 use fragcap::deep_capture::api::NativeProxyAdapter;
@@ -21,7 +23,9 @@ use std::io::Write;
 const KEY_NAME: &str = "signer.dpapi";
 const IDENTITY_NAME: &str = "ca.json";
 const CUTOVER_NAME: &str = "cutover-v1.json";
+#[cfg(any(windows, test))]
 const MSI_RECEIPT_NAME: &str = "msi-ca-creation-v1.json";
+#[cfg(any(windows, test))]
 const CA_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,16 +58,19 @@ impl Health {
 
 #[derive(Clone, Debug)]
 struct Identity {
+    #[cfg_attr(not(windows), allow(dead_code))]
     generation: u64,
     der: Vec<u8>,
     fingerprint: String,
     thumbprint: String,
     not_before: u64,
     not_after: u64,
+    #[cfg_attr(not(windows), allow(dead_code))]
     provenance: String,
 }
 
 impl Identity {
+    #[cfg(any(windows, test))]
     fn from_authority(
         authority: &PreparedNativeAuthority,
         provenance: String,
@@ -150,6 +157,7 @@ impl Identity {
         })
     }
 
+    #[cfg(any(windows, test))]
     fn write_new(&self, path: &Path) -> Result<(), CliError> {
         use std::io::Write;
         let value = json!({
@@ -189,6 +197,7 @@ fn digest_hex(algorithm: &'static ring::digest::Algorithm, bytes: &[u8]) -> Stri
         .collect()
 }
 
+#[cfg(any(windows, test))]
 fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02X}")).collect()
 }
@@ -250,10 +259,12 @@ fn cutover_path(root: &Path) -> PathBuf {
     root.join(CUTOVER_NAME)
 }
 
+#[cfg(any(windows, test))]
 fn msi_receipt_path(root: &Path) -> PathBuf {
     root.join(MSI_RECEIPT_NAME)
 }
 
+#[cfg(any(windows, test))]
 fn validate_msi_transaction(value: &str) -> Result<(), CliError> {
     if value.len() > 128
         || value.is_empty()
@@ -266,6 +277,7 @@ fn validate_msi_transaction(value: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn read_msi_receipt(root: &Path) -> Result<Option<(String, String)>, CliError> {
     let path = msi_receipt_path(root);
     if !ordinary_file_presence(&path).map_err(CliError::failure)? {
@@ -294,6 +306,7 @@ fn read_msi_receipt(root: &Path) -> Result<Option<(String, String)>, CliError> {
     Ok(Some((transaction.to_string(), fingerprint.to_string())))
 }
 
+#[cfg(any(windows, test))]
 fn rollback_owns_identity(
     receipt: Option<&(String, String)>,
     transaction: &str,
