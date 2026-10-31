@@ -30,7 +30,7 @@
 
 - [x] T013 Update master specification, threat model, install/portable/upgrade docs, package inventory, `docs/plans/README.md`, and `changelog.d/` with the clean cutover and issue limits.
 - [ ] T014 Rerun focused tests, `cargo xtask ci`, Windows/package source checks, encoding and mojibake sanity checks on the review-fix head, and update exact evidence in `verification.md`; hosted MSI execution remains under T016.
-- [ ] T015 Commit the completed S185 slice, push the branch, open and attach the official PR referencing #528 and #529.
+- [x] T015 Commit the completed S185 slice, push the branch, open and attach the official PR referencing #528 and #529.
 - [ ] T016 Watch exact-head CI and all Codex/security reviews, answer and resolve every actionable comment, request no more than one second review round, and hand the green PR to the owner before merge.
 
 ## Dependencies and execution

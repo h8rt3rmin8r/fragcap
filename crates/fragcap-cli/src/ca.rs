@@ -6,9 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fragcap::deep_capture::api::{
-    NativeCertificateStore, NativeProxyAdapter, PreparedNativeAuthority, TrustMutation, TrustState,
-};
+#[cfg(any(windows, test))]
+use fragcap::deep_capture::api::NativeProxyAdapter;
+#[cfg(windows)]
+use fragcap::deep_capture::api::TrustMutation;
+use fragcap::deep_capture::api::{NativeCertificateStore, PreparedNativeAuthority, TrustState};
 use serde_json::{json, Value};
 
 use crate::cli::CaCommand;
@@ -439,6 +441,7 @@ fn ordinary_file_presence(path: &Path) -> Result<bool, String> {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn load_for_deep_capture() -> Result<PreparedNativeAuthority, CliError> {
     let observed = health();
     if !observed.ready() {
@@ -456,6 +459,11 @@ pub(crate) fn load_for_deep_capture() -> Result<PreparedNativeAuthority, CliErro
         ));
     }
     Ok(authority)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn load_for_deep_capture() -> Result<PreparedNativeAuthority, CliError> {
+    Err(CliError::failure("installation CA requires Windows"))
 }
 
 #[cfg(windows)]

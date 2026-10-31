@@ -487,7 +487,6 @@ fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
     provided.unwrap_or(maximum).min(maximum)
 }
 
-#[cfg(windows)]
 fn calibration_answer_is_affirmative(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
