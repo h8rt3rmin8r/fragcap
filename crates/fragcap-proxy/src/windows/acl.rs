@@ -228,10 +228,15 @@ fn machine_dacl_matches(observed: &str, kind: MachineAcl) -> bool {
         return true;
     }
     if matches!(kind, MachineAcl::PublicDirectory) {
-        // NTFS maps the generic read ACE on this directory to FILE_GENERIC_READ
-        // and keeps its inheritable generic grant as an inherit-only child ACE.
-        const MAPPED: &str = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)";
-        return observed == MAPPED || observed == MAPPED.replacen("D:PAI", "D:P", 1);
+        // NTFS maps the generic read ACE on this directory to FILE_GENERIC_READ.
+        // The hosted MSI retained its inheritance flags; a local NTFS probe
+        // split the object read and inheritable child grants instead.
+        const MAPPED: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+        const SPLIT: &str = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)";
+        return observed == MAPPED
+            || observed == MAPPED.replacen("D:P", "D:PAI", 1)
+            || observed == SPLIT
+            || observed == SPLIT.replacen("D:PAI", "D:P", 1);
     }
     false
 }
@@ -682,6 +687,10 @@ mod tests {
                 kind
             ));
         }
+        assert!(machine_dacl_matches(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
         assert!(machine_dacl_matches(
             "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)",
             MachineAcl::PublicDirectory

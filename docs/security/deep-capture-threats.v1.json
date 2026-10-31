@@ -163,7 +163,7 @@
         {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"malformed_leaf_identities_are_refused","proves":"Malformed leaf identities cannot obtain certificates."},
         {"path":"crates/fragcap-proxy/src/certificate.rs","function":"reload_preserves_exact_root_and_leaf_issuer","proves":"Two runtime reloads issue HTTP and H3 leaves under one exact installation root."},
         {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_owner_refuses_an_ordinary_user_even_with_an_exact_dacl","proves":"New installation objects declare Administrators ownership and an ordinary-user owner is rejected even when DACL text matches."},
-        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_dacl_accepts_only_exact_ntfs_renderings","proves":"The persisted public-directory read ACE may split into exact object and inherit-only grants without admitting write grants or unprotected inheritance."},
+        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_dacl_accepts_only_exact_ntfs_renderings","proves":"The persisted public-directory generic read ACE may become an exact inherited FR grant or split into object and inherit-only grants without admitting write grants or unprotected inheritance."},
         {"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"Upstream name and trust failures cannot downgrade."}
       ]
     },
