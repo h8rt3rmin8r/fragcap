@@ -25,7 +25,7 @@ Capture can stream to an analyzer or retain a rolling window for later dumping. 
 
 ## Install on Windows
 
-Published baseline: [v0.10.9](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9).
+Published baseline: [v0.10.10](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10).
 
 Download the [latest public release](https://github.com/h8rt3rmin8r/fragcap/releases/latest) and verify the package against its accompanying `.sha256` file. The packages are unsigned, so this checksum checks the downloaded bytes against the published value; it is not a publisher signature.
 
