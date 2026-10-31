@@ -23,7 +23,7 @@ use std::io::Write;
 const KEY_NAME: &str = "signer.dpapi";
 const IDENTITY_NAME: &str = "ca.json";
 const CUTOVER_NAME: &str = "cutover-v1.json";
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const MSI_RECEIPT_NAME: &str = "msi-ca-creation-v1.json";
 #[cfg(any(windows, test))]
 const CA_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
@@ -259,12 +259,12 @@ fn cutover_path(root: &Path) -> PathBuf {
     root.join(CUTOVER_NAME)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn msi_receipt_path(root: &Path) -> PathBuf {
     root.join(MSI_RECEIPT_NAME)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn validate_msi_transaction(value: &str) -> Result<(), CliError> {
     if value.len() > 128
         || value.is_empty()
@@ -277,7 +277,7 @@ fn validate_msi_transaction(value: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn read_msi_receipt(root: &Path) -> Result<Option<(String, String)>, CliError> {
     let path = msi_receipt_path(root);
     if !ordinary_file_presence(&path).map_err(CliError::failure)? {
