@@ -167,6 +167,12 @@ pub trait ProxyBackend {
 /// Optional current-user trust resource.
 pub trait TrustLease {
     fn cleanup(&mut self, budget: Budget) -> CleanupResult;
+
+    /// Whether unresolved routed owners require this lease to remain active.
+    /// Unknown adapters conservatively retain their lease for exact recovery.
+    fn retain_for_unresolved_owner(&self) -> bool {
+        true
+    }
 }
 
 /// Explicit, reversible trust management.

@@ -6,7 +6,6 @@ use super::*;
 use crate::targets::CompatibilityProtocol;
 
 const MAX_LAUNCH: Duration = Duration::from_secs(120);
-const MAX_OBSERVATION: Duration = Duration::from_secs(300);
 const MAX_ROUTE_OWNER_RELEASE: Duration = Duration::from_secs(300);
 const MAX_SHUTDOWN: Duration = Duration::from_secs(30);
 const MAX_CLEANUP: Duration = Duration::from_secs(60);
@@ -50,6 +49,15 @@ impl DeepCapture {
         adapters: &mut AdapterSet<'_>,
     ) -> Result<PreparedSession, PreflightRefusal> {
         validate_config(&config)?;
+        if config.mode == SessionMode::Capture
+            && (config.deadlines.observation.is_zero()
+                || config.deadlines.observation > MAX_ORDINARY_OBSERVATION)
+        {
+            return Err(PreflightRefusal::new(
+                "ordinary-observation-bound",
+                "ordinary Deep Capture observation must be greater than zero and at most five minutes",
+            ));
+        }
         let target = adapters.targets.resolve(&config)?;
         if config
             .launch_case
@@ -712,7 +720,13 @@ impl DeepCaptureSession<'_> {
             self.observe_cancellation();
             return Ok(());
         }
-        let budget = self.remaining_budget(started, self.plan.deadlines.observation);
+        let observation_budget = self.plan.deadlines.observation
+            + if self.plan.mode == SessionMode::Capture {
+                CAPTURE_RETURN_ALLOWANCE
+            } else {
+                Duration::ZERO
+            };
+        let budget = self.remaining_budget(started, observation_budget);
         let capture_result = self.adapters.capture.run(
             &self.capture,
             self.routing
@@ -752,7 +766,7 @@ impl DeepCaptureSession<'_> {
         if cancellation_requested || self.cancellation.is_requested() {
             self.record_cancellation();
         }
-        if self.deadline_expired(started, self.plan.deadlines.observation) {
+        if self.deadline_expired(started, observation_budget) {
             self.fail(
                 Stage::Capture,
                 "observation-deadline-exceeded",
@@ -860,6 +874,19 @@ impl DeepCaptureSession<'_> {
                 &result,
             );
             self.record_cleanup(result);
+        }
+        if self.cleanup.iter().any(|result| {
+            result.resource == "route-owner"
+                && !matches!(
+                    result.status,
+                    CleanupStatus::Released | CleanupStatus::NotNeeded
+                )
+        }) {
+            self.record_cleanup(CleanupResult {
+                resource: "proxy-continuity".into(),
+                status: CleanupStatus::Failed,
+                reason: "a plausible routed owner remains unresolved after the finite proxy shutdown; network continuity cannot be verified, so close the application normally before a fresh launch".into(),
+            });
         }
         if let Some(proxy) = self.proxy.as_mut() {
             let elapsed = self.adapters.clock.monotonic_elapsed();
@@ -1189,6 +1216,13 @@ impl DeepCaptureSession<'_> {
 
     fn cleanup_resources(&mut self) {
         let started = self.adapters.clock.monotonic_elapsed();
+        let route_owner_unresolved = self.cleanup.iter().any(|result| {
+            result.resource == "route-owner"
+                && !matches!(
+                    result.status,
+                    CleanupStatus::Released | CleanupStatus::NotNeeded
+                )
+        });
         if let Some(mut launch) = self.launch.take() {
             let target = format!("target:{}", self.plan.target.id);
             self.record_resource(
@@ -1220,8 +1254,17 @@ impl DeepCaptureSession<'_> {
                 ResourceState::CleanupPending,
                 "bounded route cleanup attempt",
             );
-            let result =
+            let mut result =
                 routing.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
+            if route_owner_unresolved
+                && matches!(
+                    result.status,
+                    CleanupStatus::Released | CleanupStatus::NotNeeded
+                )
+            {
+                result.status = CleanupStatus::Failed;
+                result.reason = "local route lease cleanup completed, but a plausible routed owner has no verified exit; inherited child routing may remain active".into();
+            }
             self.record_cleanup_transition(
                 "route",
                 ResourceKind::Route,
@@ -1236,23 +1279,41 @@ impl DeepCaptureSession<'_> {
                 .trust_target
                 .take()
                 .expect("acquired trust retains its exact recovery target");
-            self.record_resource(
-                "trust-entry",
-                ResourceKind::Trust,
-                &target,
-                "remove-current-user-root-by-exact-thumbprint",
-                ResourceState::CleanupPending,
-                "bounded exact trust cleanup attempt",
-            );
-            let result = trust.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
-            self.record_cleanup_transition(
-                "trust-entry",
-                ResourceKind::Trust,
-                &target,
-                "remove-current-user-root-by-exact-thumbprint",
-                &result,
-            );
-            self.record_cleanup(result);
+            if route_owner_unresolved && trust.retain_for_unresolved_owner() {
+                let reason = "trust lease retained because a plausible routed owner has no verified exit; Doctor must recover this exact trust entry after owner exit";
+                self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::Failed,
+                    reason,
+                );
+                self.record_cleanup(CleanupResult {
+                    resource: "trust-entry".into(),
+                    status: CleanupStatus::Failed,
+                    reason: reason.into(),
+                });
+            } else {
+                self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::CleanupPending,
+                    "bounded exact trust cleanup attempt",
+                );
+                let result =
+                    trust.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
+                self.record_cleanup_transition(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    &result,
+                );
+                self.record_cleanup(result);
+            }
         } else if !self
             .cleanup
             .iter()
@@ -1747,7 +1808,7 @@ fn validate_config(config: &SessionConfig) -> Result<(), PreflightRefusal> {
 fn cap_deadlines(deadlines: Deadlines) -> Deadlines {
     Deadlines {
         launch: deadlines.launch.min(MAX_LAUNCH),
-        observation: deadlines.observation.min(MAX_OBSERVATION),
+        observation: deadlines.observation.min(MAX_ORDINARY_OBSERVATION),
         route_owner_release: deadlines.route_owner_release.min(MAX_ROUTE_OWNER_RELEASE),
         shutdown: deadlines.shutdown.min(MAX_SHUTDOWN),
         cleanup: deadlines.cleanup.min(MAX_CLEANUP),
