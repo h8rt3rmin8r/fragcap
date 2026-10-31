@@ -11,7 +11,7 @@ Deep Capture binds a complete immutable plan to exact authorization before effec
 
 ## Trust and cryptographic material
 
-Client-facing TLS uses the exact session CA and separately verified upstream TLS. Explicit upstream client credentials require a matching operator-owned certificate and private key. The private key is not written to session output. Trust is scoped to the exact owned CA in Windows CurrentUser Root, never silently LocalMachine or another user's store. Pinning, failed trust, wrong identity, unsupported protocol, and unscopable traffic do not downgrade silently.
+Client-facing TLS uses a leaf issued by the exact machine installation CA, with separately verified upstream TLS. Explicit upstream client credentials require a matching operator-owned certificate and private key. The private key is not written to session output. The MSI provisions the machine-specific root in Windows `LocalMachine/Root` for all users after first-install cleanup of identified pre-S185 state; portable users explicitly run elevated `fragcap ca install`. The signer remains machine-protected, and session cleanup retains installation trust until exact-fingerprint removal is requested. Pinning, failed trust, wrong identity, unsupported protocol, and unscopable traffic do not downgrade silently.
 
 Optional TLS key logging captures only proxy-owned client-facing secrets, not upstream secrets or target-process keys. A key log can enable decryption of corresponding traffic and is highly sensitive even when the packet file looks harmless. Retain it only when needed and do not publish it casually.
 

@@ -3,9 +3,9 @@ title: Doctor and troubleshooting
 description: Read environment readiness, distinguish retained history from recoverable residue, and review exact remediation.
 ---
 
-Published baseline: [v0.10.9](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9).
+Published baseline: [v0.10.10](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10).
 
-S185 candidate builds add a read-only installation CA check at startup and in Doctor. `fragcap ca status` reports public `LocalMachine/Root` state without decrypting the signer. Deep Capture performs a separate signing proof before effects. A missing or unhealthy CA names its state and directs elevated `fragcap ca repair`; ordinary Capture remains available. Doctor recovery does not remove the installation root. This candidate behavior is not in published v0.10.9.
+v0.10.10 adds a read-only installation CA check at startup and in Doctor. `fragcap ca status` reports public `LocalMachine/Root` state without decrypting the signer. Deep Capture performs a separate signing proof before effects. A missing or unhealthy CA names its state and directs elevated `fragcap ca repair`; ordinary Capture remains available. Doctor recovery does not remove the installation root.
 
 ## Read first, repair separately
 

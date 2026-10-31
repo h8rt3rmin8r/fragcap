@@ -3,14 +3,14 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.9](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9).
+Published baseline: [v0.10.10](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10).
 
-<Callout title="S185 candidate trust change">
-S185 replaces the per-session root used by the published baseline with one installation CA in `LocalMachine/Root`. The MSI discloses and provisions it for all Windows users after removing identified pre-S185 Fragcap state. Portable users run elevated `fragcap ca install`; `fragcap ca status` is read-only. Both reachability and TLS calibration verify the installation identity before session effects. The plan and manifest carry its fingerprint. Session cleanup, including failed managed-client release, leaves the installation root trusted. If it is missing or unhealthy, use elevated `fragcap ca repair` after reviewing status. Explicit removal requires `fragcap ca remove --fingerprint <SHA-256> --yes`. These source-candidate instructions do not describe the published v0.10.9 behavior in the historical paragraphs below.
+<Callout title="Installation CA in v0.10.10">
+v0.10.10 uses one installation CA in `LocalMachine/Root`. The MSI discloses and provisions it for all Windows users after removing identified pre-S185 Fragcap state. Portable users run elevated `fragcap ca install`; `fragcap ca status` is read-only. Both reachability and TLS calibration verify the installation identity before session effects. The plan and manifest carry its fingerprint. Session cleanup, including failed managed-client release, leaves the installation root trusted. If it is missing or unhealthy, use elevated `fragcap ca repair` after reviewing status. Explicit removal requires `fragcap ca remove --fingerprint <SHA-256> --yes`.
 </Callout>
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.9. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.10. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
