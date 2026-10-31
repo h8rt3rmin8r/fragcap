@@ -383,6 +383,12 @@ fn execute(
         let status = if result.success { "passed" } else { "failed" };
         if !result.success {
             failed += 1;
+            if id == "hosted-process-watcher" {
+                eprintln!(
+                    "windows-integration: row {id:?} failure category: {}",
+                    process_watcher_failure_category(&result.output, result.timed_out, cleanup)
+                );
+            }
         }
         fs::write(
             diagnostics.join(format!("{id}.log")),
@@ -429,6 +435,35 @@ fn execute(
     )?;
     let problems = validate_summary(root, registry, &summary_path, RELEASE_SUMMARY)?;
     report(problems)
+}
+
+// Hosted registry rows publish a summary only. Emit a fixed category for the
+// one short-lived ETW child test so runner failures can be diagnosed without
+// publishing its raw process-event output or command line.
+fn process_watcher_failure_category(output: &str, timed_out: bool, cleanup: &str) -> &'static str {
+    if timed_out {
+        "timeout"
+    } else if cleanup != "reconciled" {
+        "effect-residue"
+    } else if output.contains("elevated session: NotElevated") {
+        "not-elevated"
+    } else if output.contains("elevated session: SessionUnavailable") {
+        "session-unavailable"
+    } else if output.contains("elevated session: ProviderUnavailable") {
+        "provider-unavailable"
+    } else if output.contains("the child was observed") {
+        "child-start-not-observed"
+    } else if output.contains("creation-time ancestry") {
+        "creation-ancestry-not-observed"
+    } else if output.contains("the start event carries the command line verbatim") {
+        "command-line-not-observed"
+    } else if output.contains("parent resolved") {
+        "parent-unresolved"
+    } else if output.contains("the exit event arrived") {
+        "child-exit-not-observed"
+    } else {
+        "other-test-failure"
+    }
 }
 
 fn prepare_scratch(root: &Path, scratch: &Path, allowed_resolved: &Path) -> io::Result<()> {
@@ -1410,6 +1445,30 @@ mod tests {
     }
     fn registry() -> Value {
         serde_json::from_slice(&fs::read(root().join(REGISTRY)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn hosted_watcher_failure_categories_expose_no_raw_process_output() {
+        assert_eq!(
+            process_watcher_failure_category(
+                "thread panicked: the child was observed; secret command-line value",
+                false,
+                "reconciled"
+            ),
+            "child-start-not-observed"
+        );
+        assert_eq!(
+            process_watcher_failure_category("anything", true, "reconciled"),
+            "timeout"
+        );
+        assert_eq!(
+            process_watcher_failure_category("anything", false, "failed"),
+            "effect-residue"
+        );
+        assert_eq!(
+            process_watcher_failure_category("secret command-line value", false, "reconciled"),
+            "other-test-failure"
+        );
     }
 
     #[test]
