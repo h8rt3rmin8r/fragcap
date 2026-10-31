@@ -3118,7 +3118,10 @@ fn missing_routing_runs_reachability_then_observed_protocol() {
         plan["plan"]["deadlines_milliseconds"]["route_owner_release"],
         120_000
     );
-    assert_eq!(plan["plan"]["trust"]["action"], "none");
+    assert_eq!(
+        plan["plan"]["trust"]["action"],
+        "verify installation CA; no TLS inspection"
+    );
     assert_eq!(
         plan["plan"]["capture"]["scope"],
         "selected target process tree"

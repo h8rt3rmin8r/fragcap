@@ -164,9 +164,14 @@ pub trait ProxyBackend {
     ) -> Result<Box<dyn ProxyLease>, StageFailure>;
 }
 
-/// Optional current-user trust resource.
+/// Trust proof or optional session-owned trust resource.
 pub trait TrustLease {
     fn cleanup(&mut self, budget: Budget) -> CleanupResult;
+
+    /// Persistent installation trust has no session cleanup obligation.
+    fn is_session_resource(&self) -> bool {
+        true
+    }
 
     /// Whether unresolved routed owners require this lease to remain active.
     /// Unknown adapters conservatively retain their lease for exact recovery.
@@ -177,6 +182,10 @@ pub trait TrustLease {
 
 /// Explicit, reversible trust management.
 pub trait TrustManager {
+    /// Whether acquisition may create a session-owned trust resource.
+    fn is_session_resource(&self) -> bool {
+        true
+    }
     fn acquire(
         &mut self,
         plan: &super::SessionPlan,

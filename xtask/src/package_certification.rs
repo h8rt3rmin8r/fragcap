@@ -550,6 +550,12 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
         root,
         WIX_SOURCE,
         &[
+            "Property=\"CaInstall\"",
+            "ca install --msi-transaction",
+            "Property=\"CaRollback\"",
+            "ca rollback-install --msi-transaction",
+            "<Custom Action=\"CaInstall\" After=\"SetCaInstall\">NOT REMOVE=\"ALL\"</Custom>",
+            "It remains after uninstall until explicit elevated",
             "AllowSameVersionUpgrades=\"yes\"",
             "Schedule=\"afterInstallInitialize\"",
             "FRAGCAP_DEFENDER_EXCLUSION_OWNER",

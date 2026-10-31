@@ -555,7 +555,10 @@ fn controlled_calibration_runs_reachability_then_tls() {
         plan["plan"]["versions"]["fragcap"],
         env!("CARGO_PKG_VERSION")
     );
-    assert_eq!(plan["plan"]["trust"]["action"], "none");
+    assert_eq!(
+        plan["plan"]["trust"]["action"],
+        "verify installation CA; no TLS inspection"
+    );
     let phase_events = reachability_events
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
@@ -799,17 +802,12 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
         "--bundle",
         bundle.to_str().unwrap(),
     ]);
-    assert_eq!(code, 2);
+    assert_eq!(code, 1);
     assert!(
-        err.contains("requires current compatibility facts"),
-        "the refusal names missing facts rather than backend state: {err}"
+        err.contains("installation CA") && err.contains("fragcap ca repair"),
+        "the refusal names missing installation trust before effects: {err}"
     );
-    assert!(
-        err.contains(&format!(
-            "Next command:  fragcap calibrate --id {target_id} --local-db \""
-        )) && err.contains("local.db\" --proxy-family ipv6"),
-        "the compatibility refusal provides the exact guided next step: {err}"
-    );
+    assert!(!bundle.exists());
 }
 
 #[test]
@@ -848,10 +846,10 @@ fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources()
         bundle.to_str().unwrap(),
     ]);
 
-    assert_eq!(code, 2);
+    assert_eq!(code, 1);
     assert!(
-        err.contains("stored install root"),
-        "the refusal names the missing direct-launch fact: {err}"
+        err.contains("installation CA") && err.contains("fragcap ca repair"),
+        "the refusal names missing installation trust before effects: {err}"
     );
     assert!(
         !bundle.exists(),

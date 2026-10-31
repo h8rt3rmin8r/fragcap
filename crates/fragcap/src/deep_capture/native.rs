@@ -83,6 +83,32 @@ impl std::fmt::Debug for PreparedNativeAuthority {
 }
 
 impl PreparedNativeAuthority {
+    pub fn generation(&self) -> u64 {
+        self.authority.generation()
+    }
+
+    pub fn der(&self) -> &[u8] {
+        self.authority.der().as_ref()
+    }
+
+    pub fn not_before(&self) -> SystemTime {
+        self.authority.not_before()
+    }
+
+    pub fn not_after(&self) -> SystemTime {
+        self.authority.not_after()
+    }
+
+    #[cfg(windows)]
+    pub fn persist_installation_key(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), super::PreflightRefusal> {
+        self.authority
+            .persist_installation_key(path)
+            .map_err(|error| super::PreflightRefusal::new(error.code, error.detail))
+    }
+
     pub fn sha1_thumbprint(&self) -> &str {
         self.authority.sha1_thumbprint()
     }
@@ -203,6 +229,52 @@ impl NativeObservationContext {
 }
 
 impl NativeProxyAdapter {
+    pub fn generate_installation_authority(
+        generation: u64,
+        now: SystemTime,
+        lifetime: Duration,
+    ) -> Result<PreparedNativeAuthority, super::PreflightRefusal> {
+        let authority =
+            fragcap_proxy::SessionCertificateAuthority::generate(generation, now, lifetime)
+                .map_err(|error| super::PreflightRefusal::new(error.code, error.detail))?;
+        Ok(PreparedNativeAuthority {
+            authority: Arc::new(authority),
+            lifetime,
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn prepare_installation_directories(
+        root: &std::path::Path,
+        pki: &std::path::Path,
+    ) -> Result<(), super::PreflightRefusal> {
+        fragcap_proxy::SessionCertificateAuthority::prepare_installation_directories(root, pki)
+            .map_err(|error| super::PreflightRefusal::new(error.code, error.detail))
+    }
+
+    #[cfg(windows)]
+    pub fn load_installation_authority(
+        generation: u64,
+        certificate_der: &[u8],
+        key_path: &std::path::Path,
+    ) -> Result<PreparedNativeAuthority, super::PreflightRefusal> {
+        let authority = fragcap_proxy::SessionCertificateAuthority::load_protected_installation(
+            generation,
+            certificate_der,
+            key_path,
+        )
+        .map_err(|error| super::PreflightRefusal::new(error.code, error.detail))?;
+        let lifetime = authority
+            .not_after()
+            .duration_since(SystemTime::now())
+            .unwrap_or_default()
+            .min(Duration::from_secs(24 * 60 * 60));
+        Ok(PreparedNativeAuthority {
+            authority: Arc::new(authority),
+            lifetime,
+        })
+    }
+
     pub fn new(limits: NativeProxyLimits) -> Self {
         Self {
             limits,

@@ -8,8 +8,8 @@ use windows_sys::Win32::Security::Cryptography::{
     CertFindCertificateInStore, CertFreeCertificateContext, CertGetCertificateContextProperty,
     CertOpenStore, CERT_CONTEXT, CERT_FIND_SHA1_HASH, CERT_SHA256_HASH_PROP_ID, CERT_STORE_ADD_NEW,
     CERT_STORE_OPEN_EXISTING_FLAG, CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER_ID,
-    CERT_SYSTEM_STORE_LOCAL_MACHINE_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT, CRYPTOAPI_BLOB,
-    PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    CERT_SYSTEM_STORE_LOCAL_MACHINE_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT,
+    CERT_SYSTEM_STORE_USERS_ID, CRYPTOAPI_BLOB, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
 };
 
 use crate::{TrustError, TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT};
@@ -28,6 +28,223 @@ pub(crate) fn observe(der: &[u8], thumbprint: &str) -> Result<TrustState, TrustE
         Found::Exact | Found::Mismatch => TrustState::PresentWrongStore,
         Found::Absent => TrustState::Absent,
     })
+}
+
+pub(crate) fn observe_machine(der: &[u8], thumbprint: &str) -> Result<TrustState, TrustError> {
+    let hash = parse_thumbprint(thumbprint)?;
+    let machine = find(LOCAL_MACHINE_ROOT, &hash, der)?;
+    if machine == Found::Exact {
+        return Ok(TrustState::PresentExact);
+    }
+    if machine == Found::Mismatch {
+        return Ok(TrustState::Mismatch);
+    }
+    let current = find(CURRENT_USER_ROOT, &hash, der)?;
+    Ok(if current == Found::Exact {
+        TrustState::PresentWrongStore
+    } else {
+        TrustState::Absent
+    })
+}
+
+pub(crate) fn add_machine(der: &[u8], thumbprint: &str) -> Result<TrustMutation, TrustError> {
+    match observe_machine(der, thumbprint)? {
+        TrustState::PresentExact => return Ok(TrustMutation::AlreadyPresent),
+        TrustState::Mismatch | TrustState::PresentWrongStore => {
+            return Err(TrustError::new(
+                "installation-trust-mismatch",
+                "add",
+                LOCAL_MACHINE_ROOT,
+                None,
+                "existing certificate is different or only in the wrong store",
+            ));
+        }
+        TrustState::Absent => {}
+    }
+    let store = open(LOCAL_MACHINE_ROOT, false, "add")?;
+    let mut added = ptr::null_mut();
+    let ok = unsafe {
+        CertAddEncodedCertificateToStore(
+            store,
+            X509_ASN_ENCODING,
+            der.as_ptr(),
+            der.len() as u32,
+            CERT_STORE_ADD_NEW,
+            &mut added,
+        )
+    };
+    let os_error = if ok == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    if !added.is_null() {
+        unsafe { CertFreeCertificateContext(added) };
+    }
+    unsafe { CertCloseStore(store, 0) };
+    if let Some(code) = os_error {
+        return Err(TrustError::new(
+            "installation-trust-add-failed",
+            "add",
+            LOCAL_MACHINE_ROOT,
+            Some(code),
+            format!("CryptoAPI add failed with 0x{code:08X}"),
+        ));
+    }
+    if observe_machine(der, thumbprint)? != TrustState::PresentExact {
+        return Err(TrustError::new(
+            "installation-trust-readback-failed",
+            "add",
+            LOCAL_MACHINE_ROOT,
+            None,
+            "exact root not present after add",
+        ));
+    }
+    Ok(TrustMutation::Added)
+}
+
+pub(crate) fn remove_machine(der: &[u8], thumbprint: &str) -> Result<TrustMutation, TrustError> {
+    let hash = parse_thumbprint(thumbprint)?;
+    let store = open(LOCAL_MACHINE_ROOT, false, "remove")?;
+    let context = find_context(store, &hash);
+    if context.is_null() {
+        unsafe { CertCloseStore(store, 0) };
+        return Ok(TrustMutation::AlreadyAbsent);
+    }
+    if !exact_certificate(context, der) {
+        unsafe {
+            CertFreeCertificateContext(context);
+            CertCloseStore(store, 0)
+        };
+        return Err(TrustError::new(
+            "installation-trust-mismatch",
+            "remove",
+            LOCAL_MACHINE_ROOT,
+            None,
+            "refusing to remove different certificate bytes",
+        ));
+    }
+    let ok = unsafe { CertDeleteCertificateFromStore(context) };
+    let os_error = if ok == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    unsafe { CertCloseStore(store, 0) };
+    if let Some(code) = os_error {
+        return Err(TrustError::new(
+            "installation-trust-remove-failed",
+            "remove",
+            LOCAL_MACHINE_ROOT,
+            Some(code),
+            format!("CryptoAPI delete failed with 0x{code:08X}"),
+        ));
+    }
+    if find(LOCAL_MACHINE_ROOT, &hash, der)? != Found::Absent {
+        return Err(TrustError::new(
+            "installation-trust-readback-failed",
+            "remove",
+            LOCAL_MACHINE_ROOT,
+            None,
+            "exact root remains after remove",
+        ));
+    }
+    Ok(TrustMutation::Removed)
+}
+
+pub(crate) fn remove_legacy_user_root(
+    sid: &str,
+    thumbprint: &str,
+) -> Result<TrustMutation, TrustError> {
+    if !sid.starts_with("S-1-")
+        || sid.len() > 128
+        || !sid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'S')
+    {
+        return Err(TrustError::new(
+            "legacy-sid-invalid",
+            "remove",
+            CURRENT_USER_ROOT,
+            None,
+            "invalid user SID",
+        ));
+    }
+    let hash = parse_thumbprint(thumbprint)?;
+    let name: Vec<u16> = format!("{sid}\\Root")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let flags = (CERT_SYSTEM_STORE_USERS_ID << CERT_SYSTEM_STORE_LOCATION_SHIFT)
+        | CERT_STORE_OPEN_EXISTING_FLAG;
+    let store =
+        unsafe { CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0, flags, name.as_ptr().cast()) };
+    if store.is_null() {
+        return Err(TrustError::new(
+            "legacy-user-store-unavailable",
+            "remove",
+            CURRENT_USER_ROOT,
+            Some(unsafe { GetLastError() }),
+            "cannot open exact user's Root store",
+        ));
+    }
+    let context = find_context(store, &hash);
+    if context.is_null() {
+        unsafe { CertCloseStore(store, 0) };
+        return Ok(TrustMutation::AlreadyAbsent);
+    }
+    let der = unsafe {
+        std::slice::from_raw_parts((*context).pbCertEncoded, (*context).cbCertEncoded as usize)
+    };
+    let owned = x509_parser::parse_x509_certificate(der)
+        .ok()
+        .is_some_and(|(rest, cert)| {
+            rest.is_empty()
+                && cert.is_ca()
+                && cert.subject() == cert.issuer()
+                && cert
+                    .subject()
+                    .iter_common_name()
+                    .next()
+                    .and_then(|name| name.as_str().ok())
+                    .is_some_and(|name| {
+                        name.strip_prefix("fragcap Deep Capture session CA ")
+                            .is_some_and(|generation| {
+                                !generation.is_empty()
+                                    && generation.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+        });
+    if !owned {
+        unsafe {
+            CertFreeCertificateContext(context);
+            CertCloseStore(store, 0)
+        };
+        return Err(TrustError::new(
+            "legacy-root-ownership-unproven",
+            "remove",
+            CURRENT_USER_ROOT,
+            None,
+            "certificate does not match the historical Fragcap session CA shape",
+        ));
+    }
+    let ok = unsafe { CertDeleteCertificateFromStore(context) };
+    let os_error = if ok == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    unsafe { CertCloseStore(store, 0) };
+    if let Some(code) = os_error {
+        return Err(TrustError::new(
+            "legacy-root-remove-failed",
+            "remove",
+            CURRENT_USER_ROOT,
+            Some(code),
+            format!("CryptoAPI delete failed with 0x{code:08X}"),
+        ));
+    }
+    Ok(TrustMutation::Removed)
 }
 
 pub(crate) fn add(der: &[u8], thumbprint: &str) -> Result<TrustMutation, TrustError> {

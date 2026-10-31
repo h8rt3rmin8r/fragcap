@@ -32,7 +32,44 @@ pub fn run(
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    run_with_terminal(args, json, out, emitter, std::io::stdout().is_terminal())
+    let result = run_with_terminal(args, json, out, emitter, std::io::stdout().is_terminal())?;
+    let health = crate::ca::health();
+    let check = if health.ready() {
+        crate::doctor::Check::ok(
+            "Deep Capture",
+            "installation CA",
+            format!(
+                "LocalMachine/Root: {}; signer use not verified by read-only Doctor",
+                health.fingerprint.unwrap_or_default()
+            ),
+        )
+    } else {
+        crate::doctor::Check::fail(
+            "Deep Capture",
+            "installation CA",
+            format!("{}: {}", health.state, health.detail),
+            "run elevated `fragcap ca repair`",
+        )
+    };
+    let report = crate::doctor::Report {
+        checks: vec![check],
+    };
+    let text = if json {
+        report.render_json()
+    } else {
+        report.render_human_with_history(
+            use_color(Stream::Stdout),
+            selected_stdout_width(std::io::stdout().is_terminal()),
+            args.history_details,
+        )
+    };
+    write!(out, "{text}")
+        .map_err(|error| CliError::failure(format!("Doctor CA output failed: {error}")))?;
+    Ok(if report.exit() == Exit::FAILURE {
+        Exit::FAILURE
+    } else {
+        result
+    })
 }
 
 fn run_with_terminal(

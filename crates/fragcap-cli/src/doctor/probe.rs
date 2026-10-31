@@ -720,6 +720,13 @@ fn manifest_ca_identities(manifests: &[PathBuf]) -> Result<Vec<OwnedCaIdentity>,
             .map_err(|err| format!("could not read {}: {err}", manifest.display()))?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|err| format!("could not parse {}: {err}", manifest.display()))?;
+        if value
+            .get("trust")
+            .and_then(|trust| trust.get("installation_ca_sha256"))
+            .is_some_and(|value| value.is_string())
+        {
+            continue;
+        }
         let Some(raw) = value
             .get("trust")
             .and_then(|trust| trust.get("thumbprint"))

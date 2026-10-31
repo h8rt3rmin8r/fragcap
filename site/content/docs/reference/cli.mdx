@@ -434,6 +434,46 @@ fragcap targets import targets.json
 | --- | --- | --- | --- | --- |
 | `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store, creating the selected store if absent. |
 
+## S185 installation CA
+
+### `ca`
+
+`fragcap ca status` reports the public installation CA identity and `LocalMachine/Root` health without decrypting the signer. The S185 MSI provisions one machine-specific root for all Windows users after removing identified pre-S185 Fragcap state. A portable ZIP requires one explicit elevated `fragcap ca install`. Later repair, reinstall, upgrade, ordinary uninstall, session cleanup and Doctor recovery retain the root. Use elevated `fragcap ca repair` for missing or damaged state, `fragcap ca repair --rotate` only for intentional replacement, and `fragcap ca remove --fingerprint <SHA-256> --yes` for exact removal after reviewing `ca status`. Deep Capture proves both exact trust and signer use before session effects. These commands are source-candidate behavior, not part of published v0.10.9.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `ca status`
+
+Read the public installation CA state without modifying trust or decrypting the signer.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `ca install`
+
+Provision or reuse the machine CA in an elevated shell. Portable users run this once.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `ca repair`
+
+Restore a missing exact root or explicitly rotate a damaged installation identity.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--rotate` | open | `false` | all | Intentionally replace a healthy installation CA after review. |
+
+### `ca remove`
+
+Remove only the installed CA and signer after checking its exact SHA-256 fingerprint.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--fingerprint` | open | none | all | Exact SHA-256 fingerprint from `fragcap ca status`. |
+| `--yes` | open | `false` | all | Confirm machine-wide trust removal. |
+
 ## Environment
 
 ### `technologies`

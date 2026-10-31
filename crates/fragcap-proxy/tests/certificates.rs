@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 use std::{fs, io, path::PathBuf};
 
 use fragcap_proxy::{CertificateIdentity, LeafCache, SessionCertificateAuthority};
+
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::parse_x509_certificate;
 

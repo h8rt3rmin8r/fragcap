@@ -1,4 +1,21 @@
 <!--
+Sync Impact Report (1.7.0, 2026-10-31)
+- Version change: 1.6.0 -> 1.7.0 (MINOR: P-1 materially expands the explicit
+  installation trust lifecycle)
+- Amended section: P-1. No Covert Target Instrumentation
+- Added rule: an approved Windows installation may create one machine-unique
+  Fragcap CA in LocalMachine/Root, retain it across sessions and ordinary
+  uninstall, and remove it only by an explicit administrative action. Deep
+  Capture still requires target-scoped session authorization and must refuse
+  before effects when installation CA health fails.
+- Reason: issues #528 and #529 require continuous CA trust while a managed
+  client remains live, including after session teardown failure. The owner
+  directed a clean cutover with no legacy state retention.
+- Templates: no changes required; the Constitution Check reads P-1 directly.
+- Runtime guidance: AI_CONTEXT.md, master specification, installer, and Doctor
+  contracts updated in S185.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.6.0, 2026-10-21)
 - Version change: 1.5.0 -> 1.6.0 (MINOR: P-1 materially expands the exact
   Deep Capture managed-launch lifecycle technique allowlist)
@@ -181,9 +198,18 @@ providers, IP Helper socket tables, query-only process enumeration, and
 ordinary platform protocol handler launches. Deep Capture adds the following
 permitted techniques, and only for sessions where the operator selected Deep
 Capture explicitly: a local inspection proxy, launch-time proxy environment or
-equivalent target-scoped proxy configuration, a local development certificate
-authority lifecycle, explicit user-confirmed trust changes, and proxy-owned TLS
-key-log export for analyzer correlation.
+equivalent target-scoped proxy configuration, use of an installation-owned
+certificate authority, and proxy-owned TLS key-log export for analyzer
+correlation. An approved Windows installation MAY provision one machine-unique
+Fragcap authority in LocalMachine/Root. The installer MUST disclose the
+machine-wide trust scope before commitment. Its signer MUST be protected with
+machine-local encryption and exact administrative access control. The authority
+MUST remain stable across sessions, repairs, upgrades, and ordinary uninstall.
+Only an explicit administrative removal or repair command MAY change it after
+installation; Deep Capture and session cleanup MUST NOT add, rotate, or revoke
+this trust entry. A clean cutover MAY remove exactly identified pre-S185
+Fragcap state during installation; incomplete removal MUST be reported and
+MUST block use of the new Deep Capture path.
 
 For a managed launch created by that exact Deep Capture session, a pre-effect
 authorization may also name bounded application shutdown at observation end.
@@ -200,9 +226,12 @@ in session evidence. Capture mode does not acquire process-control rights.
 Capture mode remains passive. Deep Capture is active by design, but it is not a
 license to interpose invisibly. It MUST be selected explicitly, scoped to the
 selected target and session, visible in logs and session output, reversible
-through `doctor` cleanup, and auditable after the fact. System-wide proxy
-changes are prohibited by default. Silent certificate trust changes are
-prohibited.
+through `doctor` cleanup for session-owned effects, and auditable after the
+fact. Installation CA trust is a separately disclosed persistent installation
+effect, removable through the explicit administrative CA command. Every Deep
+Capture entry path MUST verify exact installation trust and signing ability
+before session effects. System-wide proxy changes are prohibited by default.
+Silent certificate trust changes are prohibited.
 
 Any use of a process handle MUST state its requested access rights explicitly
 at the call site. A request carrying memory rights fails review. A dependency
@@ -489,4 +518,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 1.6.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-10-21
+**Version**: 1.7.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-10-31

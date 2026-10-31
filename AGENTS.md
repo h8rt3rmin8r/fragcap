@@ -281,7 +281,8 @@ load-bearing rather than bookkeeping.
 | `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
 | `tokio`, `hyper`, `hyper-util`, `http-body-util`, `rustls`, `tokio-rustls`, `rcgen`, `rustls-native-certs` | runtime | S102 | Exact-pinned native Deep Capture runtime and future HTTP/TLS/certificate stack in `fragcap-proxy`; default features off, ring is the sole crypto provider, Windows roots come from Schannel |
 | `ring`, `subtle`, `zeroize` | runtime, direct | S103 | Capability entropy and constant-time comparison plus explicit private-material zeroization; all were already transitive, so no lock packages were added |
-| `quinn`, `x509-parser` | dev | S103 | Real loopback QUIC coverage plus independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
+| `quinn` | dev, later runtime | S103, promoted S118 | Real loopback QUIC coverage in the controlled lab, later the native scoped QUIC path |
+| `x509-parser` | dev, later runtime | S103, promoted S185 | Independent certificate inspection in the controlled lab, later exact installation-root validity and signature verification |
 | `base64`, `httparse` | runtime, direct | S104 | Standard Basic proxy authentication and bounded HTTP/1.1 head parsing; both were already transitive, so no lock packages were added |
 | `h2`, `bytes` | runtime, direct | S105 | Native bounded HTTP/2 stream and flow-control ownership; both were already lock-resolved |
 | `async-compression` | runtime, direct | S105 | Exact-pinned pure-Rust gzip, zlib-deflate, and Brotli body derivations with only the selected Tokio codecs enabled |

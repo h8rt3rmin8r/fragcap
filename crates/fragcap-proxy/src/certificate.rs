@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
+    Issuer, KeyPair, KeyUsagePurpose, SigningKey,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
@@ -18,7 +18,8 @@ use zeroize::Zeroizing;
 
 pub struct SessionCertificateAuthority {
     generation: u64,
-    params: CertificateParams,
+    not_before: SystemTime,
+    not_after: SystemTime,
     key: Zeroizing<KeyPair>,
     der: CertificateDer<'static>,
     sha1_thumbprint: String,
@@ -51,12 +52,14 @@ impl SessionCertificateAuthority {
         let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|error| {
             CertificateError::with_detail("ca-params-failed", error.to_string())
         })?;
-        params.not_before = (now - Duration::from_secs(300)).into();
-        params.not_after = (now + lifetime).into();
+        let not_before = now - Duration::from_secs(300);
+        let not_after = now + lifetime;
+        params.not_before = not_before.into();
+        params.not_after = not_after.into();
         let mut name = DistinguishedName::new();
         name.push(
             DnType::CommonName,
-            format!("fragcap Deep Capture session CA {generation}"),
+            format!("fragcap Deep Capture CA {generation}"),
         );
         name.push(
             DnType::OrganizationName,
@@ -72,7 +75,8 @@ impl SessionCertificateAuthority {
         let der = certificate.der().clone();
         Ok(Self {
             generation,
-            params,
+            not_before,
+            not_after,
             key,
             sha1_thumbprint: digest_hex(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, der.as_ref()),
             sha256_fingerprint: digest_hex(&ring::digest::SHA256, der.as_ref()),
@@ -83,6 +87,12 @@ impl SessionCertificateAuthority {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    pub fn not_before(&self) -> SystemTime {
+        self.not_before
+    }
+    pub fn not_after(&self) -> SystemTime {
+        self.not_after
+    }
     pub fn der(&self) -> &CertificateDer<'static> {
         &self.der
     }
@@ -91,6 +101,91 @@ impl SessionCertificateAuthority {
     }
     pub fn sha256_fingerprint(&self) -> &str {
         &self.sha256_fingerprint
+    }
+
+    /// Reload an exact installation root and signer. The public key, CA flag,
+    /// validity, and key usage are checked before the signer can issue leaves.
+    pub fn load_installation(
+        generation: u64,
+        der: &[u8],
+        private_der: &[u8],
+    ) -> Result<Self, CertificateError> {
+        let (remaining, certificate) =
+            x509_parser::parse_x509_certificate(der).map_err(|error| {
+                CertificateError::with_detail("installation-ca-invalid", error.to_string())
+            })?;
+        if !remaining.is_empty()
+            || !certificate.is_ca()
+            || certificate.subject() != certificate.issuer()
+            || certificate.verify_signature(None).is_err()
+        {
+            return Err(CertificateError::new("installation-ca-invalid"));
+        }
+        let key = Zeroizing::new(KeyPair::try_from(private_der).map_err(|error| {
+            CertificateError::with_detail("installation-key-invalid", error.to_string())
+        })?);
+        if key.public_key_raw() != certificate.public_key().subject_public_key.data.as_ref() {
+            return Err(CertificateError::new("installation-key-mismatch"));
+        }
+        let challenge = ring::digest::digest(&ring::digest::SHA256, der);
+        let signature = key.sign(challenge.as_ref()).map_err(|error| {
+            CertificateError::with_detail("installation-sign-failed", error.to_string())
+        })?;
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
+            key.public_key_raw(),
+        )
+        .verify(challenge.as_ref(), &signature)
+        .map_err(|_| CertificateError::new("installation-sign-verify-failed"))?;
+        let not_before = SystemTime::from(certificate.validity().not_before.to_datetime());
+        let not_after = SystemTime::from(certificate.validity().not_after.to_datetime());
+        if not_after <= SystemTime::now() || not_before > SystemTime::now() {
+            return Err(CertificateError::new("installation-ca-expired"));
+        }
+        let der = CertificateDer::from(der.to_vec());
+        Issuer::from_ca_cert_der(&der, &*key).map_err(|error| {
+            CertificateError::with_detail("installation-ca-invalid", error.to_string())
+        })?;
+        Ok(Self {
+            generation,
+            not_before,
+            not_after,
+            key,
+            sha1_thumbprint: digest_hex(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, der.as_ref()),
+            sha256_fingerprint: digest_hex(&ring::digest::SHA256, der.as_ref()),
+            der,
+        })
+    }
+
+    /// Persist installation signing material only through the machine-scoped
+    /// protected writer. Callers never receive plaintext key bytes.
+    #[cfg(windows)]
+    pub fn persist_installation_key(&self, path: &Path) -> Result<(), CertificateError> {
+        let der = Zeroizing::new(self.key.serialize_der());
+        crate::windows::acl::protect_and_write_machine(path, der.as_slice())
+    }
+
+    #[cfg(windows)]
+    pub fn prepare_installation_directories(
+        root: &Path,
+        pki: &Path,
+    ) -> Result<(), CertificateError> {
+        if pki.parent() != Some(root) {
+            return Err(CertificateError::new("installation-pki-path-invalid"));
+        }
+        crate::windows::acl::create_machine_public_directory(root)?;
+        crate::windows::acl::create_machine_directory(pki)
+    }
+
+    /// Read and decrypt a protected installation signer after exact ACL checks.
+    #[cfg(windows)]
+    pub fn load_protected_installation(
+        generation: u64,
+        certificate_der: &[u8],
+        path: &Path,
+    ) -> Result<Self, CertificateError> {
+        let private = crate::windows::acl::read_and_unprotect_machine(path)?;
+        Self::load_installation(generation, certificate_der, &private)
     }
 
     /// Create a new CA private-key file with platform-owned encryption and private
@@ -294,14 +389,14 @@ fn issue_leaf(
     let mut params = CertificateParams::new(vec![identity.text()])
         .map_err(|error| CertificateError::with_detail("leaf-params-failed", error.to_string()))?;
     params.not_before = (now - Duration::from_secs(300)).into();
-    params.not_after = (now + lifetime)
-        .min(SystemTime::from(authority.params.not_after))
-        .into();
+    params.not_after = (now + lifetime).min(authority.not_after).into();
     params.is_ca = IsCa::ExplicitNoCa;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.use_authority_key_identifier_extension = true;
-    let issuer = Issuer::from_params(&authority.params, &*authority.key);
+    let issuer = Issuer::from_ca_cert_der(&authority.der, &*authority.key).map_err(|error| {
+        CertificateError::with_detail("installation-issuer-invalid", error.to_string())
+    })?;
     let certificate = params
         .signed_by(&*leaf_key, &issuer)
         .map_err(|error| CertificateError::with_detail("leaf-sign-failed", error.to_string()))?;
@@ -324,13 +419,93 @@ fn issue_leaf(
     })
 }
 
+#[cfg(test)]
+mod installation_tests {
+    use super::*;
+
+    #[test]
+    fn reload_preserves_exact_root_and_leaf_issuer() {
+        let now = SystemTime::now();
+        let original =
+            SessionCertificateAuthority::generate(1, now, Duration::from_secs(365 * 24 * 60 * 60))
+                .unwrap();
+        let private = Zeroizing::new(original.key.serialize_der());
+        let restored =
+            SessionCertificateAuthority::load_installation(1, original.der().as_ref(), &private)
+                .unwrap();
+        assert_eq!(original.der().as_ref(), restored.der().as_ref());
+        assert_eq!(original.sha256_fingerprint(), restored.sha256_fingerprint());
+        let leaf = issue_leaf(
+            &restored,
+            CertificateIdentity::parse("example.test").unwrap(),
+            now,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(leaf.generation, 1);
+        // Separate HTTP CONNECT and QUIC/H3 runtime instances reload the same
+        // installation signer. Neither instance creates a replacement root.
+        let second =
+            SessionCertificateAuthority::load_installation(1, original.der().as_ref(), &private)
+                .unwrap();
+        let h3_leaf = issue_leaf(
+            &second,
+            CertificateIdentity::parse("h3.example.test").unwrap(),
+            now,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let (_, http_certificate) = x509_parser::parse_x509_certificate(leaf.der.as_ref()).unwrap();
+        let (_, h3_certificate) =
+            x509_parser::parse_x509_certificate(h3_leaf.der.as_ref()).unwrap();
+        let (_, root_certificate) =
+            x509_parser::parse_x509_certificate(original.der().as_ref()).unwrap();
+        assert_eq!(http_certificate.issuer(), root_certificate.subject());
+        assert_eq!(h3_certificate.issuer(), root_certificate.subject());
+        assert_eq!(second.sha256_fingerprint(), restored.sha256_fingerprint());
+    }
+
+    #[test]
+    fn wrong_signer_is_refused() {
+        let now = SystemTime::now();
+        let original =
+            SessionCertificateAuthority::generate(1, now, Duration::from_secs(3600)).unwrap();
+        let other =
+            SessionCertificateAuthority::generate(2, now, Duration::from_secs(3600)).unwrap();
+        let private = Zeroizing::new(other.key.serialize_der());
+        assert_eq!(
+            SessionCertificateAuthority::load_installation(1, original.der().as_ref(), &private)
+                .unwrap_err()
+                .code,
+            "installation-key-mismatch"
+        );
+    }
+
+    #[test]
+    fn modified_root_signature_is_refused_before_leaf_issuance() {
+        let now = SystemTime::now();
+        let original =
+            SessionCertificateAuthority::generate(3, now, Duration::from_secs(3600)).unwrap();
+        let private = Zeroizing::new(original.key.serialize_der());
+        let mut der = original.der().as_ref().to_vec();
+        let last = der.last_mut().unwrap();
+        *last ^= 1;
+        assert_eq!(
+            SessionCertificateAuthority::load_installation(3, &der, &private)
+                .unwrap_err()
+                .code,
+            "installation-ca-invalid"
+        );
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateError {
     pub code: &'static str,
     pub detail: String,
 }
 impl CertificateError {
-    fn new(code: &'static str) -> Self {
+    pub(crate) fn new(code: &'static str) -> Self {
         Self {
             code,
             detail: code.to_string(),
