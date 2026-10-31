@@ -49,7 +49,7 @@ fragcap capture 1 --duration 5m --out first-capture.fcapng
 
 Open `first-capture.fcapng` in a pcapng-aware analyzer. The process and role information appears in packet comments. Row numbers belong to the current `fragcap targets` listing; use a target handle when you need a stable selector. If no target is ready, the [getting-started guide](https://fragcap.com/docs/getting-started) covers registration and setup. The [CLI reference](https://fragcap.com/docs/reference/cli) covers scope, metadata-only capture, streaming, and rolling windows.
 
-For Deep Capture, first use `fragcap calibrate <target>` to establish compatibility for your selected target and launch case. Calibration presents its effects for confirmation, including any current-user certificate trust change needed for TLS inspection. Once applicable evidence exists, `fragcap deep-capture <target> --launch` starts an explicitly scoped session. The [compatibility guide](https://fragcap.com/docs/reference/deep-capture-compatibility) explains routing, trust, and protocol limits.
+For Deep Capture, first use `fragcap calibrate <target>` to establish compatibility for your selected target and launch case. The S185 installer provisions one machine-specific CA in `LocalMachine/Root` for all Windows users, and a portable copy requires an explicit elevated `fragcap ca install`. Check it with `fragcap ca status`. Sessions verify the installation CA before effects and retain its trust after cleanup. Once applicable evidence exists, `fragcap deep-capture <target> --launch` starts an explicitly scoped session. The [compatibility guide](https://fragcap.com/docs/reference/deep-capture-compatibility) explains routing, trust, and protocol limits.
 
 ## Documentation and help
 

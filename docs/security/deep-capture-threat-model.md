@@ -28,7 +28,7 @@ The registry covers nine transitions: operator to immutable plan, target to
 route, local client to listener, proxy to DNS, proxy to origin, bytes to parser,
 TLS to session and upstream authorities, observation to artifact, and resource
 obligation to recovery. The protected assets are the session capability,
-routing and upstream authority, target ownership, per-session CA private key,
+routing and upstream authority, target ownership, installation CA private key,
 decrypted content, sensitive artifacts, and exact cleanup obligations.
 
 No one observation proves a different boundary. A loopback connection does not
@@ -46,7 +46,7 @@ The version 1 registry carries ten high-risk rows:
 3. DNS answer rebinding and unsolicited UDP replies;
 4. HTTP request framing desynchronization;
 5. connection, stream, parser, retention, and peer exhaustion;
-6. session certificate authority and upstream trust abuse;
+6. installation certificate authority and upstream trust abuse;
 7. artifact path, cleanup, and export theft;
 8. interrupted cleanup and unsafe recovery;
 9. target process or generation substitution;
@@ -94,6 +94,10 @@ Content collection adds a destructive filesystem authority. Eligibility requires
 ## 2026-10-25 Tokio I/O-Safety Patch Review
 
 The PR audit discovered [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) in the existing exact Tokio 1.53.1 pin. Tokio 1.53.3 is the smallest patched release on that version line: it deprecates safe `AsyncFd` constructors whose raw-descriptor contract cannot establish I/O safety and introduces explicit unsafe registration contracts. The upgrade also includes the 1.53.2 runtime, synchronization, filesystem and Windows child-wait corrections. fragcap adds no raw-descriptor registration call, feature, dependency name, provider or external authority. Existing controlled proxy, cancellation, stream, conformance and managed-lifecycle tests exercise integration; the registry date records this limited dependency review and does not claim independent security acceptance.
+
+## 2026-10-31 Installation CA Review (S185)
+
+S185 changes the CA asset from a session-owned signing key to one persistent machine installation signer. The first install removes recognized pre-S185 state and exact old user roots; an ambiguous certificate is refused rather than deleted. The new private key is machine-DPAPI protected under a non-inherited SYSTEM/Administrators DACL in ProgramData. Installation directories and the signer also require SYSTEM or Administrators ownership; an exact DACL on an ordinary-user-owned object is refused because its owner can change that DACL. The public certificate is installed only in `LocalMachine/Root` after elevated setup, and the installer discloses its all-user trust scope. Every session proves the exact root and signer before effects and binds its fingerprint into authorization and artifacts. Session cleanup and Doctor recovery cannot remove this installation root. Explicit exact-fingerprint removal or repair is a separate elevated operation. Read-only status does not claim that the signer was exercised. The controlled tests and package matrix establish source behavior; external review and exact-head CI remain separate evidence.
 
 ## Scope boundary
 

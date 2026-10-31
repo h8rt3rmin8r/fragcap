@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-10-25",
+  "reviewed_on": "2026-10-31",
   "scope": "Native Deep Capture product paths shipped through S124, plus S149 review of the Rustls 0.23.45 encryption-boundary security patch, S170 retained-output recipient access, S171 whole-session retention and exact collection, and S173 automatic same-account shell-token acquisition with historical repair retired, plus Rustls 0.23.46 and quinn-proto 0.11.18 patches for RUSTSEC-2026-0338, 0340, 0343 and 0346 through 0349, and the Tokio 1.53.3 I/O-safety patch for RUSTSEC-2026-0386 (scoped dependency review; unchanged providers and no new waiver)",
   "protocol_families": [
     "generic-tcp",
@@ -40,6 +40,7 @@
     "tokio",
     "tokio-rustls",
     "windows-sys",
+    "x509-parser",
     "zeroize"
   ],
   "protocol_reviews": [
@@ -66,7 +67,7 @@
     {"id":"proxy-to-dns","description":"The proxy resolves names and applies policy to canonical resulting addresses.","owner":"fragcap-proxy upstream policy"},
     {"id":"proxy-to-origin","description":"Each upstream TCP, UDP, TLS, QUIC, or HTTP connection is separately policy checked.","owner":"fragcap-proxy transport"},
     {"id":"bytes-to-protocol","description":"Untrusted bytes enter bounded protocol parsers without semantic normalization.","owner":"fragcap-proxy protocol engines"},
-    {"id":"tls-to-authority","description":"Client-facing TLS uses the session authority while upstream TLS verifies independently.","owner":"fragcap-proxy certificates and TLS"},
+    {"id":"tls-to-authority","description":"Client-facing TLS uses the verified installation authority while upstream TLS verifies independently.","owner":"fragcap-proxy certificates and TLS"},
     {"id":"observation-to-artifact","description":"Bounded observations become sensitive evidence under explicit artifact authority.","owner":"fragcap facade and CLI artifact writers"},
     {"id":"resource-to-recovery","description":"Synchronized resource obligations become exact cleanup and Doctor recovery decisions.","owner":"fragcap lifecycle and Doctor"}
   ],
@@ -74,7 +75,7 @@
     {"id":"session-capability","description":"Random secret admitting only the selected routed client.","owner":"fragcap-proxy"},
     {"id":"routing-authority","description":"Permission to route the selected target through the loopback proxy.","owner":"fragcap facade"},
     {"id":"upstream-access","description":"Proxy-owned ability to resolve and connect to destinations.","owner":"fragcap-proxy"},
-    {"id":"session-ca-private-key","description":"Per-session authority and leaf private material.","owner":"fragcap-proxy certificate store"},
+    {"id":"installation-ca-private-key","description":"Protected persistent installation authority and bounded leaf private material.","owner":"fragcap-proxy certificate store"},
     {"id":"decrypted-content","description":"Application plaintext, metadata, bodies, messages, and datagrams.","owner":"fragcap-proxy observers"},
     {"id":"sensitive-artifacts","description":"Key log, certificates, application evidence, journals, and exported bundle copies.","owner":"fragcap facade and CLI"},
     {"id":"resource-obligations","description":"Exact live listener, trust, route, process, and artifact cleanup obligations.","owner":"fragcap lifecycle journal"},
@@ -151,23 +152,25 @@
       ]
     },
     {
-      "id":"certificate-authority-abuse","title":"Session certificate authority escapes its scope","severity":"high",
+      "id":"certificate-authority-abuse","title":"Installation certificate authority escapes its scope","severity":"high",
       "categories":["certificate-abuse","artifact-theft","confused-deputy"],
-      "boundaries":["tls-to-authority","observation-to-artifact","resource-to-recovery"],"assets":["session-ca-private-key","sensitive-artifacts","resource-obligations"],
-      "prevention":["Authorities are per-session, leaves use exact validated identities, private storage is protected, and upstream trust is independent."],
-      "detection":["Trust identity, leaf issuance, store mismatch, and cleanup states are journaled."],
-      "containment":["Trust and private material are exact resource obligations removed without touching unrelated authorities."],
-      "evidence":["cleanup.jsonl trust and certificate records","manifest sensitivity declarations"],
+      "boundaries":["tls-to-authority","observation-to-artifact","resource-to-recovery"],"assets":["installation-ca-private-key","sensitive-artifacts","resource-obligations"],
+      "prevention":["One installation authority has exact machine trust and a protected signer; installation directories and signer require SYSTEM or Administrators ownership as well as exact DACLs, because an ordinary owner can rewrite a matching DACL. Leaves use validated identities and upstream trust is independent."],
+      "detection":["Read-only health names trust mismatch or absence; privileged preflight proves signer use and the manifest binds its fingerprint."],
+      "containment":["Session cleanup never removes installation trust; explicit exact-fingerprint repair or removal refuses unrelated authorities."],
+      "evidence":["installation CA status and package readback","manifest fingerprint and session cleanup"],
       "tests":[
         {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"malformed_leaf_identities_are_refused","proves":"Malformed leaf identities cannot obtain certificates."},
-        {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"ca_is_synthetic_bounded_and_fingerprinted","proves":"The session authority is synthetic, bounded, and exactly fingerprinted."},
+        {"path":"crates/fragcap-proxy/src/certificate.rs","function":"reload_preserves_exact_root_and_leaf_issuer","proves":"Two runtime reloads issue HTTP and H3 leaves under one exact installation root."},
+        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_owner_refuses_an_ordinary_user_even_with_an_exact_dacl","proves":"New installation objects declare Administrators ownership and an ordinary-user owner is rejected even when DACL text matches."},
+        {"path":"crates/fragcap-proxy/src/windows/acl.rs","function":"installation_dacl_accepts_only_exact_ntfs_renderings","proves":"The persisted public-directory generic read ACE may become an exact inherited FR grant or split into object and inherit-only grants without admitting write grants or unprotected inheritance."},
         {"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"Upstream name and trust failures cannot downgrade."}
       ]
     },
     {
       "id":"artifact-path-or-export-theft","title":"Artifact paths or exports expose unintended data","severity":"high",
       "categories":["artifact-theft","malicious-target-or-origin"],
-      "boundaries":["observation-to-artifact"],"assets":["decrypted-content","sensitive-artifacts","session-ca-private-key"],
+      "boundaries":["observation-to-artifact"],"assets":["decrypted-content","sensitive-artifacts","installation-ca-private-key"],
       "prevention":["Sensitive storage is protected before capture, paths are canonical and confined, and export is a separate explicit copy with a transformation manifest.","S170 retained permissions name the exact ordinary recipient, distinct producer and SYSTEM; issuer-private permissions instead name producer and SYSTEM. S173 obtains exact same-account ordinary shell authority through query-limited process/token access and validates SID, session, elevation and integrity; no historical repair or arbitrary process scanning remains."],
       "detection":["Manifest sensitivity, omission, transformation, and finalization fields are exhaustive.","Post-reconciliation recipient-context enumeration and file reads distinguish written evidence from accessible evidence; unresolved access is reported without automatic historical repair guidance."],
       "containment":["Cleanup targets only the exact owned bundle; export never mutates the source.","Historical permission repair is retired. Collection, sensitive cleanup and recovery retain their independent exact authority and preserve unrelated evidence."],

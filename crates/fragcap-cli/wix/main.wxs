@@ -106,6 +106,40 @@
       <ComponentRef Id="Comp_third_party_notices" />
     </Feature>
 
+    <!-- S185 installation CA: rollback requires the exact uncommitted creation
+         receipt written by this execution. Commit disarms it; reused identities
+         have no creation receipt and are retained by rollback or uninstall. -->
+    <CustomAction Id="SetCaRollback"
+                  Property="CaRollback"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; ca rollback-install --msi-transaction &quot;[ProductCode]&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="CaRollback"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetCaInstall"
+                  Property="CaInstall"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; ca install --msi-transaction &quot;[ProductCode]&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="CaInstall"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="SetCaCommit"
+                  Property="CaCommit"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; ca commit-install --msi-transaction &quot;[ProductCode]&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="CaCommit"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="commit"
+                  Impersonate="no"
+                  Return="check" />
+
     <!--
       Best-effort Windows Defender exclusion for fragcap's own install directory.
       Deferred, non-impersonated (runs with the installer's elevation), and
@@ -251,9 +285,15 @@
                   Return="ignore" />
 
     <InstallExecuteSequence>
+      <Custom Action="SetCaRollback" After="InstallFiles">NOT REMOVE="ALL"</Custom>
+      <Custom Action="CaRollback" After="SetCaRollback">NOT REMOVE="ALL"</Custom>
+      <Custom Action="SetCaInstall" After="CaRollback">NOT REMOVE="ALL"</Custom>
+      <Custom Action="CaInstall" After="SetCaInstall">NOT REMOVE="ALL"</Custom>
+      <Custom Action="SetCaCommit" After="CaInstall">NOT REMOVE="ALL"</Custom>
+      <Custom Action="CaCommit" After="SetCaCommit">NOT REMOVE="ALL"</Custom>
       <!-- Install: set the rollback command and queue the rollback immediately
            before the add, so a failure after the add is undone; then add. -->
-      <Custom Action="SetDefenderAdd" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="SetDefenderAdd" After="CaCommit">NOT Installed</Custom>
       <Custom Action="SetDefenderRollback" After="SetDefenderAdd">NOT Installed</Custom>
       <Custom Action="DefenderRollback" After="SetDefenderRollback">NOT Installed</Custom>
       <Custom Action="DefenderAdd" After="DefenderRollback">NOT Installed</Custom>
@@ -373,7 +413,7 @@
         <Control Id="MachineCheckBox" Type="CheckBox" X="20" Y="114" Width="330" Height="17" Property="REGISTEREXTCAP_MACHINE" CheckBoxValue="1" Text="Register for all users on this machine (administrators)" />
         <Control Id="MachineNote" Type="Text" X="35" Y="133" Width="320" Height="26" NoPrefix="yes" Text="Requires Wireshark to be installed; registers into Wireshark's system extcap directory. Ignored if Wireshark is not found." />
 
-        <Control Id="SkipNote" Type="Text" X="20" Y="175" Width="330" Height="26" NoPrefix="yes" Text="You can leave both unchecked and register later at any time by running: fragcap extcap install" />
+        <Control Id="TrustNote" Type="Text" X="20" Y="171" Width="330" Height="55" NoPrefix="yes" Text="Installation removes prior fragcap user and session state, then trusts one machine-specific CA in LocalMachine/Root for all Windows users. It remains after uninstall until explicit elevated 'fragcap ca remove'." />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>

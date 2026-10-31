@@ -283,7 +283,7 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
     ));
     text.push_str(&render_exact_fields(&fields, width));
     text.push_str(&wrapped(
-        "No system-wide proxy change. Separate CA trust and sensitive-output consent remain required by the complete plan. Key logs contain secret TLS material when selected; supplied client identity is used only for upstream client authentication. Evidence is retained after external resource cleanup; review before sharing. Cleanup removes only exact session-added trust and reports unresolved recovery obligations. Review the complete canonical plan below, including deadlines, before authorizing its exact identifier.",
+        "No system-wide proxy change. The installation CA is trusted machine-wide across sessions; this session does not add or remove a root. Key logs contain secret TLS material when selected; supplied client identity is used only for upstream client authentication. Evidence is retained after external resource cleanup; review before sharing. Cleanup reports unresolved route or proxy obligations without revoking installation trust. Review the complete canonical plan below, including deadlines, before authorizing its exact identifier.",
         width,
     ));
     text
@@ -1230,7 +1230,10 @@ mod tests {
                 assert_eq!(field("Client identity:") == "selected", sensitive);
                 assert_eq!(field("Payload retention:"), "disabled");
                 assert!(text.contains("retained") && text.contains("credentials"));
-                assert!(text.contains("Separate") && text.contains("consent"));
+                assert!(
+                    text.contains("installation CA")
+                        && text.contains("does not add or remove a root")
+                );
             }
         }
     }

@@ -25,6 +25,9 @@
 .PARAMETER DumpbinPath
     Optional explicit dumpbin.exe path. When omitted, Visual Studio Installer discovery is used. Alias: d
 
+.PARAMETER RequireInstallationCa
+    Qualify S185 installation CA behavior for newly built candidates. Historical published-package replay omits this switch and retains its original contract.
+
 .PARAMETER Quiet
     Suppress informational, success, and debug output while preserving warnings and errors. Alias: q
 
@@ -69,6 +72,9 @@ Param(
     [Parameter(Mandatory=$false,ParameterSetName='Default')]
     [Alias("d")]
     [string]$DumpbinPath = '',
+
+    [Parameter(Mandatory=$false,ParameterSetName='Default')]
+    [Switch]$RequireInstallationCa,
 
     [Parameter(Mandatory=$false,ParameterSetName='Default')]
     [Alias("q")]
@@ -709,13 +715,16 @@ Param(
         }
         $expectedFileFixtureNames = @($contract.user_owned_fixtures | Where-Object { $_ -ne 'preexisting-defender-exclusion' } | Sort-Object)
         if (Compare-Object -ReferenceObject $expectedFileFixtureNames -DifferenceObject @($userFixturePaths.Keys | Sort-Object)) { throw 'user-owned fixture path map does not cover the contract' }
-        $userDigests = @{}
-        foreach ($name in $userFixturePaths.Keys) {
-            $path = $userFixturePaths[$name]
-            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
-            [System.IO.File]::WriteAllText($path, "S131 user-owned fixture: $name", [System.Text.UTF8Encoding]::new($false))
-            $userDigests[$path] = Get-Sha256 -Path $path
+        if ($RequireInstallationCa) {
+            $preS185Roaming = Join-Path $env:APPDATA 'fragcap'
+            $preS185Local = Join-Path $env:LOCALAPPDATA 'fragcap'
+            if ((Test-Path -LiteralPath $preS185Roaming) -or (Test-Path -LiteralPath $preS185Local)) { throw 'S185 cutover certification requires initially absent runner data roots' }
+            [void][System.IO.Directory]::CreateDirectory($preS185Roaming)
+            [void][System.IO.Directory]::CreateDirectory($preS185Local)
+            [System.IO.File]::WriteAllText((Join-Path $preS185Roaming 'old-settings.json'), 'pre-S185 cutover fixture', [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText((Join-Path $preS185Local 'old-cache.bin'), 'pre-S185 cutover fixture', [System.Text.UTF8Encoding]::new($false))
         }
+        $userDigests = @{}
         $defenderAvailable = $null -ne (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Add-MpPreference -ErrorAction SilentlyContinue)
         if ($defenderAvailable) {
             $alreadyExcluded = @((Get-MpPreference).ExclusionPath) -contains $installDirectory
@@ -729,6 +738,21 @@ Param(
         if ((Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'ProductName') -cne 'fragcap' -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'ProductVersion') -cne $buildIdentity.version -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'Manufacturer') -cne 'ShruggieTech' -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'UpgradeCode') -cne '{7F3A2C4E-1D9B-4A6E-9C58-2B0E7D4F6A13}') { throw 'MSI metadata disagrees with the certified release identity' }
         $lifecycle = [System.Collections.Generic.List[object]]::new()
         $clean = Invoke-MsiOperation -Case 'clean-install' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-install.log')
+        if ($RequireInstallationCa -and ((Test-Path -LiteralPath $preS185Roaming) -or (Test-Path -LiteralPath $preS185Local))) { throw 'first S185 installation left canonical pre-S185 user state' }
+        foreach ($name in $userFixturePaths.Keys) {
+            $path = $userFixturePaths[$name]
+            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
+            [System.IO.File]::WriteAllText($path, "S185 current user fixture: $name", [System.Text.UTF8Encoding]::new($false))
+            $userDigests[$path] = Get-Sha256 -Path $path
+        }
+        if ($RequireInstallationCa) {
+            $caStatus = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($caStatus.state -cne 'ready' -or [string]::IsNullOrWhiteSpace($caStatus.fingerprint)) { throw 'clean install did not provision one readable installation CA' }
+            $installationCaFingerprint = [string]$caStatus.fingerprint
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'rollback-install', '--msi-transaction', $currentProductCode) -Environment $cleanEnvironment)
+            $committedStatus = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($committedStatus.state -cne 'ready' -or $committedStatus.fingerprint -cne $installationCaFingerprint) { throw 'a committed MSI creation receipt was still armed after clean install' }
+        }
         Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-SystemPathCount -ExpectedPath $installDirectory) -ne 1) { throw 'clean install did not create one exact product and PATH entry' }
         Test-UserFixture -Digests $userDigests
@@ -739,10 +763,21 @@ Param(
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'NOTICE'), 'Delete owned file before repair')) { Remove-Item -LiteralPath (Join-Path $installDirectory 'NOTICE') -Force }
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'LICENSE'), 'Alter owned file before repair')) { [System.IO.File]::WriteAllText((Join-Path $installDirectory 'LICENSE'), 'altered', [System.Text.UTF8Encoding]::new($false)) }
         $repair = Invoke-MsiOperation -Case 'repair' -Arguments @('/fa', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'repair.log')
+        if ($RequireInstallationCa) {
+            $caStatus = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($caStatus.state -cne 'ready' -or $caStatus.fingerprint -cne $installationCaFingerprint) { throw 'MSI repair changed the installation CA' }
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'rollback-install', '--msi-transaction', $currentProductCode) -Environment $cleanEnvironment)
+            $afterRepairRollback = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($afterRepairRollback.state -cne 'ready' -or $afterRepairRollback.fingerprint -cne $installationCaFingerprint) { throw 'same-product repair rollback removed a reused installation CA' }
+        }
         Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'repair'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$repair.ElapsedSeconds; complete = $true })
         $reinstall = Invoke-MsiOperation -Case 'same-version-reinstall' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'reinstall.log')
+        if ($RequireInstallationCa) {
+            $caStatus = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($caStatus.state -cne 'ready' -or $caStatus.fingerprint -cne $installationCaFingerprint) { throw 'MSI reinstall changed the installation CA' }
+        }
         Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-SystemPathCount -ExpectedPath $installDirectory) -ne 1) { throw 'same-version reinstall duplicated product state' }
         Test-UserFixture -Digests $userDigests
@@ -808,6 +843,24 @@ Param(
         $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment
         if ($cleanListing.Stdout -match 'S131 user-owned fixture' -or -not (Test-Path -LiteralPath $cleanLocalDb)) { throw 'clean reinstall restored prior local target state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-final-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'clean-reinstall-uninstall.log'))
+        if ($RequireInstallationCa) {
+            $caStatus = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($caStatus.state -cne 'ready' -or $caStatus.fingerprint -cne $installationCaFingerprint) { throw 'ordinary uninstall revoked or changed the installation CA' }
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'remove', '--fingerprint', $installationCaFingerprint, '--yes') -Environment $cleanEnvironment)
+            $caAfterRemove = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($caAfterRemove.state -cne 'not-provisioned') { throw 'explicit CA removal did not clear the exact installation identity' }
+            $rollbackTransaction = '{' + [guid]::NewGuid().ToString() + '}'
+            $wrongTransaction = '{' + [guid]::NewGuid().ToString() + '}'
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'install', '--msi-transaction', $rollbackTransaction) -Environment $cleanEnvironment)
+            $rollbackReady = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($rollbackReady.state -cne 'ready' -or $rollbackReady.fingerprint -ceq $installationCaFingerprint) { throw 'separate rollback fixture did not create one new installation CA' }
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'rollback-install', '--msi-transaction', $wrongTransaction) -Environment $cleanEnvironment)
+            $rollbackRetained = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($rollbackRetained.state -cne 'ready' -or $rollbackRetained.fingerprint -cne $rollbackReady.fingerprint) { throw 'unrelated MSI transaction removed or changed the installation CA' }
+            [void](Invoke-Fragcap -Executable $zipExe -Arguments @('ca', 'rollback-install', '--msi-transaction', $rollbackTransaction) -Environment $cleanEnvironment)
+            $rollbackAbsent = (Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'ca', 'status') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json -Depth 16
+            if ($rollbackAbsent.state -cne 'not-provisioned') { throw 'exact MSI transaction rollback left a trusted root or signer' }
+        }
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'fresh-start clean-reinstall proof left installer-owned state' }
         $artifactRows = @(
             [pscustomobject]@{ id = 'portable-zip'; filename = $candidateZip[0].Name; size_bytes = $candidateZip[0].Length; sha256 = Get-Sha256 -Path $candidateZip[0].FullName; signature = 'not_applicable'; complete = $true },

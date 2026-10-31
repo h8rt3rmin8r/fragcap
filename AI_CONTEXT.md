@@ -41,7 +41,7 @@ The intended workflow may include tasks such as:
 - Capturing decrypted request/response metadata or payloads for debugging and security analysis.
 - Correlating decrypted application-layer traffic with processes, games, connections, and packet captures.
 - Recording provenance and attribution information so observations can be reproduced and audited.
-- Reverting proxy, certificate, routing, and trust-store changes when an inspection session ends.
+- Reverting session-owned proxy and routing effects when an inspection session ends. The disclosed, machine-wide Fragcap installation CA remains trusted across sessions and ordinary uninstall until an explicit administrative removal.
 
 The goal is **visibility into authorized traffic**, not defeating the security of third-party systems.
 
@@ -57,7 +57,7 @@ Prefer designs that:
 2. Limit interception to explicitly selected applications, processes, interfaces, hosts, or test environments where practical.
 3. Make certificate installation and trust changes visible to the operator.
 4. Avoid silently weakening system-wide security settings.
-5. Remove temporary trust, proxy, routing, and configuration changes during cleanup.
+5. Remove temporary proxy, routing, and configuration changes during cleanup. Preserve the installation CA and signer across session teardown; remove them only by an explicit administrative command.
 6. Protect captured traffic and potentially sensitive debugging data.
 7. Produce clear logs showing what the tool changed and when.
 8. Fail safely if authorization-sensitive configuration cannot be established.

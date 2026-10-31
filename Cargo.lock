@@ -592,6 +592,7 @@ dependencies = [
  "fragcap-steam",
  "http_req",
  "regex",
+ "ring",
  "serde_json",
  "subtle",
  "tempfile",
@@ -599,6 +600,7 @@ dependencies = [
  "unicode-width",
  "windows-sys 0.36.1",
  "winresource",
+ "x509-parser",
 ]
 
 [[package]]

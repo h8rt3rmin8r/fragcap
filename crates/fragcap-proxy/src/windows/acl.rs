@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr;
@@ -14,23 +14,42 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
 };
 use windows_sys::Win32::Security::Cryptography::{
-    CryptProtectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    CryptProtectData, CryptUnprotectData, CRYPTOAPI_BLOB, CRYPTPROTECT_LOCAL_MACHINE,
+    CRYPTPROTECT_UI_FORBIDDEN,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_USER,
+    GetFileSecurityW, GetSecurityDescriptorOwner, GetTokenInformation, IsWellKnownSid, TokenUser,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid, DACL_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
-    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE,
+    CreateDirectoryW, CreateFileW, FileDispositionInfo, GetFileInformationByHandle,
+    SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 use windows_sys::Win32::System::Memory::LocalFree;
 
 use crate::CertificateError;
+use zeroize::Zeroizing;
 
 pub(crate) fn protect_and_write(path: &Path, plaintext: &[u8]) -> Result<(), CertificateError> {
+    protect_and_write_with_scope(path, plaintext, false)
+}
+
+pub(crate) fn protect_and_write_machine(
+    path: &Path,
+    plaintext: &[u8],
+) -> Result<(), CertificateError> {
+    protect_and_write_with_scope(path, plaintext, true)
+}
+
+fn protect_and_write_with_scope(
+    path: &Path,
+    plaintext: &[u8],
+    machine: bool,
+) -> Result<(), CertificateError> {
     let input = CRYPTOAPI_BLOB {
         cbData: plaintext.len() as u32,
         pbData: plaintext.as_ptr().cast_mut(),
@@ -46,7 +65,12 @@ pub(crate) fn protect_and_write(path: &Path, plaintext: &[u8]) -> Result<(), Cer
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
-            CRYPTPROTECT_UI_FORBIDDEN,
+            CRYPTPROTECT_UI_FORBIDDEN
+                | if machine {
+                    CRYPTPROTECT_LOCAL_MACHINE
+                } else {
+                    0
+                },
             &mut output,
         )
     };
@@ -58,7 +82,7 @@ pub(crate) fn protect_and_write(path: &Path, plaintext: &[u8]) -> Result<(), Cer
     }
     let encrypted = unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) };
     let write = (|| {
-        let mut output = PrivateOutput::create(path)?;
+        let mut output = PrivateOutput::create_with_scope(path, machine)?;
         if let Err(error) = output
             .file
             .write_all(encrypted)
@@ -81,6 +105,229 @@ pub(crate) fn protect_and_write(path: &Path, plaintext: &[u8]) -> Result<(), Cer
     write
 }
 
+pub(crate) fn create_machine_directory(path: &Path) -> Result<(), CertificateError> {
+    create_installation_directory(path, MachineAcl::PrivateDirectory)
+}
+
+pub(crate) fn create_machine_public_directory(path: &Path) -> Result<(), CertificateError> {
+    create_installation_directory(path, MachineAcl::PublicDirectory)
+}
+
+fn create_installation_directory(path: &Path, kind: MachineAcl) -> Result<(), CertificateError> {
+    if path.exists() {
+        return verify_machine_acl(path, kind);
+    }
+    let descriptor = machine_descriptor(kind)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
+        return Err(CertificateError::platform(
+            "installation-directory-create-failed",
+            unsafe { GetLastError() },
+        ));
+    }
+    verify_machine_acl(path, kind)
+}
+
+pub(crate) fn read_and_unprotect_machine(
+    path: &Path,
+) -> Result<Zeroizing<Vec<u8>>, CertificateError> {
+    verify_machine_acl(
+        path.parent()
+            .ok_or_else(|| CertificateError::new("installation-key-path-invalid"))?,
+        MachineAcl::PrivateDirectory,
+    )?;
+    verify_machine_acl(path, MachineAcl::PrivateFile)?;
+    let parents = pinned_parents(path)
+        .map_err(|error| CertificateError::io("installation-key-parent-invalid", error))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| CertificateError::io("installation-key-read-failed", error))?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as isize, &mut info) } == 0
+        || info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0
+    {
+        return Err(CertificateError::new("installation-key-alias-refused"));
+    }
+    let mut encrypted = Vec::new();
+    file.take(1024 * 1024)
+        .read_to_end(&mut encrypted)
+        .map_err(|error| CertificateError::io("installation-key-read-failed", error))?;
+    drop(parents);
+    if encrypted.is_empty() || encrypted.len() >= 1024 * 1024 {
+        return Err(CertificateError::new("installation-key-size-invalid"));
+    }
+    let input = CRYPTOAPI_BLOB {
+        cbData: encrypted.len() as u32,
+        pbData: encrypted.as_mut_ptr(),
+    };
+    let mut output = CRYPTOAPI_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    if unsafe {
+        CryptUnprotectData(
+            &input,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    } == 0
+    {
+        return Err(CertificateError::platform(
+            "installation-key-decrypt-failed",
+            unsafe { GetLastError() },
+        ));
+    }
+    let private = Zeroizing::new(unsafe {
+        slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
+    });
+    unsafe { ptr::write_bytes(output.pbData, 0, output.cbData as usize) };
+    unsafe { LocalFree(output.pbData as isize) };
+    Ok(private)
+}
+
+#[derive(Clone, Copy)]
+enum MachineAcl {
+    PublicDirectory,
+    PrivateDirectory,
+    PrivateFile,
+}
+
+fn machine_sddl(kind: MachineAcl) -> &'static str {
+    match kind {
+        MachineAcl::PublicDirectory => "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GR;;;BU)",
+        MachineAcl::PrivateDirectory => "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+        MachineAcl::PrivateFile => "D:P(A;;FA;;;SY)(A;;FA;;;BA)",
+    }
+}
+
+fn machine_descriptor(kind: MachineAcl) -> Result<PrivateDescriptor, CertificateError> {
+    descriptor_from_sddl(&format!("O:BA{}", machine_sddl(kind)))
+}
+
+fn trusted_machine_owner(owner: windows_sys::Win32::Foundation::PSID) -> bool {
+    !owner.is_null()
+        && (unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) } != 0
+            || unsafe { IsWellKnownSid(owner, WinLocalSystemSid) } != 0)
+}
+
+fn machine_dacl_matches(observed: &str, kind: MachineAcl) -> bool {
+    let expected = machine_sddl(kind);
+    if observed == expected || observed == expected.replacen("D:P", "D:PAI", 1) {
+        return true;
+    }
+    if matches!(kind, MachineAcl::PublicDirectory) {
+        // NTFS maps the generic read ACE on this directory to FILE_GENERIC_READ.
+        // The hosted MSI retained its inheritance flags; a local NTFS probe
+        // split the object read and inheritable child grants instead.
+        const MAPPED: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+        const SPLIT: &str = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)";
+        return observed == MAPPED
+            || observed == MAPPED.replacen("D:P", "D:PAI", 1)
+            || observed == SPLIT
+            || observed == SPLIT.replacen("D:PAI", "D:P", 1);
+    }
+    false
+}
+
+fn verify_machine_acl(path: &Path, kind: MachineAcl) -> Result<(), CertificateError> {
+    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| CertificateError::io("installation-resource-inaccessible", error))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || matches!(kind, MachineAcl::PrivateFile) != metadata.is_file()
+    {
+        return Err(CertificateError::new("installation-resource-alias-refused"));
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut needed = 0;
+    unsafe {
+        GetFileSecurityW(
+            wide.as_ptr(),
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if needed == 0 || needed > 65536 {
+        return Err(CertificateError::platform(
+            "installation-acl-read-failed",
+            unsafe { GetLastError() },
+        ));
+    }
+    let mut buffer = vec![0_usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
+    if unsafe {
+        GetFileSecurityW(
+            wide.as_ptr(),
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Err(CertificateError::platform(
+            "installation-acl-read-failed",
+            unsafe { GetLastError() },
+        ));
+    }
+    let mut owner = ptr::null_mut();
+    let mut owner_defaulted = 0;
+    if unsafe {
+        GetSecurityDescriptorOwner(buffer.as_mut_ptr().cast(), &mut owner, &mut owner_defaulted)
+    } == 0
+        || !trusted_machine_owner(owner)
+    {
+        return Err(CertificateError::new("installation-owner-invalid"));
+    }
+    let mut text = ptr::null_mut();
+    if unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            buffer.as_mut_ptr().cast(),
+            1,
+            DACL_SECURITY_INFORMATION,
+            &mut text,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(CertificateError::platform(
+            "installation-acl-read-failed",
+            unsafe { GetLastError() },
+        ));
+    }
+    let mut len = 0;
+    while unsafe { *text.add(len) } != 0 {
+        len += 1;
+    }
+    let observed = String::from_utf16(unsafe { slice::from_raw_parts(text, len) })
+        .map_err(|_| CertificateError::new("installation-acl-invalid"));
+    unsafe { LocalFree(text as isize) };
+    let observed = observed?;
+    let expected = machine_sddl(kind);
+    // Compare only the exact protected DACL and its measured NTFS rendering;
+    // owner verification above is independent of the DACL representation.
+    if !machine_dacl_matches(&observed, kind) {
+        return Err(CertificateError {
+            code: "installation-acl-invalid",
+            detail: format!("expected {expected}, observed {observed}"),
+        });
+    }
+    Ok(())
+}
+
 struct PrivateDescriptor(*mut core::ffi::c_void);
 
 impl Drop for PrivateDescriptor {
@@ -92,10 +339,11 @@ impl Drop for PrivateDescriptor {
 fn private_descriptor() -> Result<PrivateDescriptor, CertificateError> {
     // DPAPI issuer material belongs to its producer, independently of object owner
     // and of the selected recipient for retained packet and application evidence.
-    let sddl: Vec<u16> = format!("D:P(A;;FA;;;{})(A;;FA;;;SY)", producer_sid()?)
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    descriptor_from_sddl(&format!("D:P(A;;FA;;;{})(A;;FA;;;SY)", producer_sid()?))
+}
+
+fn descriptor_from_sddl(sddl: &str) -> Result<PrivateDescriptor, CertificateError> {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
     let mut descriptor = ptr::null_mut();
     let mut length = 0_u32;
     let converted = unsafe {
@@ -123,7 +371,12 @@ struct PrivateOutput {
 }
 
 impl PrivateOutput {
+    #[cfg(test)]
     fn create(path: &Path) -> Result<Self, CertificateError> {
+        Self::create_with_scope(path, false)
+    }
+
+    fn create_with_scope(path: &Path, machine: bool) -> Result<Self, CertificateError> {
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -135,7 +388,18 @@ impl PrivateOutput {
             .map_err(|error| CertificateError::io("private-material-path-failed", error))?;
         let parents = pinned_parents(&path)
             .map_err(|error| CertificateError::io("private-material-parent-failed", error))?;
-        let descriptor = private_descriptor()?;
+        if machine {
+            verify_machine_acl(
+                path.parent()
+                    .ok_or_else(|| CertificateError::new("installation-key-path-invalid"))?,
+                MachineAcl::PrivateDirectory,
+            )?;
+        }
+        let descriptor = if machine {
+            machine_descriptor(MachineAcl::PrivateFile)?
+        } else {
+            private_descriptor()?
+        };
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -365,6 +629,77 @@ mod tests {
         PROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    #[test]
+    fn installation_owner_refuses_an_ordinary_user_even_with_an_exact_dacl() {
+        let descriptor = machine_descriptor(MachineAcl::PrivateFile).unwrap();
+        let mut configured_owner = ptr::null_mut();
+        let mut owner_defaulted = 0;
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorOwner(
+                    descriptor.0,
+                    &mut configured_owner,
+                    &mut owner_defaulted,
+                )
+            },
+            0
+        );
+        assert_ne!(
+            unsafe { IsWellKnownSid(configured_owner, WinBuiltinAdministratorsSid) },
+            0
+        );
+        for (sid_text, trusted) in [
+            ("S-1-5-18", true),
+            ("S-1-5-32-544", true),
+            ("S-1-5-21-111-222-333-1001", false),
+        ] {
+            let wide: Vec<u16> = sid_text.encode_utf16().chain(Some(0)).collect();
+            let mut sid = ptr::null_mut();
+            assert_ne!(
+                unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) },
+                0
+            );
+            assert_eq!(trusted_machine_owner(sid), trusted, "{sid_text}");
+            unsafe { LocalFree(sid as isize) };
+        }
+    }
+
+    #[test]
+    fn installation_dacl_accepts_only_exact_ntfs_renderings() {
+        for kind in [
+            MachineAcl::PublicDirectory,
+            MachineAcl::PrivateDirectory,
+            MachineAcl::PrivateFile,
+        ] {
+            let expected = machine_sddl(kind);
+            assert!(machine_dacl_matches(expected, kind));
+            assert!(machine_dacl_matches(
+                &expected.replacen("D:P", "D:PAI", 1),
+                kind
+            ));
+            assert!(!machine_dacl_matches(
+                &expected.replacen("D:P", "D:", 1),
+                kind
+            ));
+            assert!(!machine_dacl_matches(
+                &format!("{expected}(A;;FA;;;BU)"),
+                kind
+            ));
+        }
+        assert!(machine_dacl_matches(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
+        assert!(machine_dacl_matches(
+            "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)(A;OICIIO;GR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
+        assert!(!machine_dacl_matches(
+            "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FW;;;BU)(A;OICIIO;GR;;;BU)",
+            MachineAcl::PublicDirectory
+        ));
+    }
 
     #[test]
     fn issuer_private_dacl_names_exact_producer_without_owner_relative_access() {

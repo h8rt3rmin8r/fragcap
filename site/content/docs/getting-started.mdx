@@ -144,7 +144,7 @@ Resume rebuilds current authority and never reuses a prior plan or response. Pau
 fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-Review the complete plan: target and managed launch authority, exact loopback and routing policy, session CA and current-user trust action, sensitive artifacts, millisecond deadlines, fact writes, cleanup obligations, and refusal boundaries. No listener, bundle, trust, launch, Capture, or fact effect occurs until exact authorization. Output failure, target drift, plan mismatch, expiry, or pending prior-session recovery refuses rather than broadening scope.
+Review the complete plan: target and managed launch authority, exact loopback and routing policy, installation CA fingerprint and trust verification, sensitive artifacts, millisecond deadlines, fact writes, cleanup obligations, and refusal boundaries. S185 candidate builds require a healthy installation CA before session effects. No listener, bundle, launch, Capture, or fact effect occurs until exact authorization. Output failure, target drift, plan mismatch, expiry, or pending prior-session recovery refuses rather than broadening scope.
 
 When capture ends, fragcap first asks exact session-created route owners to
 close through their ordinary window controls. It watches their exits and the
@@ -181,4 +181,4 @@ Only run the second command to review named remediation. Exact owned recovery ob
 
 ## 9. Uninstall or start fresh
 
-Ordinary uninstall removes installer-owned program effects while preserving targets, writable stores, profiles, captures, settings, and bundles. Explicit fresh-start removal is irreversible and reconciles exact recorded current-user obligations before accepted data deletion. It does not follow links, broaden to custom paths, remove Npcap, or own another profile's CurrentUser trust. See [packaging and migration](/docs/guides/packaging-and-migration) for interactive, silent current-user, and preview-bound all-users workflows.
+For the S185 candidate, first installation deliberately removes identified pre-S185 Fragcap user and session state. Later ordinary uninstall removes installer-owned program effects while preserving new targets, writable stores, profiles, captures, settings, bundles, and the machine installation CA. Explicit `fragcap ca remove --fingerprint <SHA-256> --yes` removes that exact root and signer after review. See [packaging and migration](/docs/guides/packaging-and-migration) for the clean-break and later fresh-start workflows.

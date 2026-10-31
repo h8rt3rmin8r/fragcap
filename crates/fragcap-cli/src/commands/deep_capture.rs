@@ -29,8 +29,6 @@ use deep_capture_api::{
     calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
     CompatibilityObservation as Observation, Inspectability, ManifestOmissionReason,
 };
-#[cfg(windows)]
-use deep_capture_api::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
@@ -487,11 +485,6 @@ fn validate_ordinary_duration(args: &DeepCaptureArgs) -> Result<(), CliError> {
 
 fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
     provided.unwrap_or(maximum).min(maximum)
-}
-
-#[cfg(windows)]
-fn remaining_timeout(started: Instant, total: Duration) -> Duration {
-    total.saturating_sub(started.elapsed())
 }
 
 fn calibration_answer_is_affirmative(answer: &str) -> bool {
@@ -1054,6 +1047,10 @@ struct LibraryTrustAdapter {
 }
 
 impl deep_capture_api::TrustManager for LibraryTrustAdapter {
+    fn is_session_resource(&self) -> bool {
+        self.controlled
+    }
+
     fn acquire(
         &mut self,
         _plan: &deep_capture_api::SessionPlan,
@@ -1082,15 +1079,23 @@ impl deep_capture_api::TrustManager for LibraryTrustAdapter {
             library_stage_failure(deep_capture_api::Stage::Trust, "acquire", error)
         })?;
         self.runtime.borrow_mut().trust = Some(outcome);
-        Ok(Box::new(LibraryTrustLease { manager }))
+        Ok(Box::new(LibraryTrustLease {
+            manager,
+            session_resource: self.controlled,
+        }))
     }
 }
 
 struct LibraryTrustLease {
     manager: Box<dyn TrustManager>,
+    session_resource: bool,
 }
 
 impl deep_capture_api::TrustLease for LibraryTrustLease {
+    fn is_session_resource(&self) -> bool {
+        self.session_resource
+    }
+
     fn cleanup(&mut self, budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
         library_cleanup_resource(self.manager.cleanup(budget.remaining()))
     }
@@ -1531,6 +1536,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             state: "not-requested".to_string(),
             action: "none".to_string(),
             thumbprint: None,
+            fingerprint: None,
         });
         let fact_writes: Vec<FactWriteResult> = snapshot
             .fact_writes
@@ -1883,6 +1889,7 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     state: "not-requested".to_string(),
                     action: "none".to_string(),
                     thumbprint: None,
+                    fingerprint: None,
                 });
                 emitter.event(&Event::DeepCaptureTrust {
                     session_id: session_id.clone(),
@@ -2219,19 +2226,19 @@ fn build_authorization_plan(
         .collect::<Vec<_>>();
     let trust = if mode == deep_capture_api::SessionMode::ReachabilityCalibration {
         json!({
-            "action": "none",
-            "certificate_fingerprint_sha256": null,
-            "certificate_thumbprint_sha1": null,
-            "store": null,
+            "action": "verify installation CA; no TLS inspection",
+            "certificate_fingerprint_sha256": authority.sha256_fingerprint(),
+            "certificate_thumbprint_sha1": authority.sha1_thumbprint(),
+            "store": "LocalMachine/Root",
         })
     } else {
         json!({
-            "action": "ensure exact session CA, then remove if added by this session",
+            "action": "use retained installation CA; no session trust mutation",
             "certificate_fingerprint_sha256": authority.sha256_fingerprint(),
             "certificate_thumbprint_sha1": authority.sha1_thumbprint(),
-            "not_after": rfc3339_utc(authority_created + authority.lifetime()),
-            "not_before": rfc3339_utc(authority_created - Duration::from_secs(300)),
-            "store": "current-user Root",
+            "not_after": rfc3339_utc(authority.not_after()),
+            "not_before": rfc3339_utc(authority.not_before()),
+            "store": "LocalMachine/Root",
         })
     };
     let canonical = json!({
@@ -2265,7 +2272,7 @@ fn build_authorization_plan(
         "cleanup": [
             "request graceful close of exact session-owned applications, force still-owned processes after grace, and verify exit within the route-owner release deadline while the proxy remains active",
             "stop proxy and capture within their deadlines",
-            "remove current-user trust only when added by this session",
+            "retain installation CA trust across sessions and ordinary uninstall",
             "zero process-local private authority material when ownership ends",
             "retain truthful recovery records for any incomplete obligation"
         ],
@@ -2564,6 +2571,9 @@ pub(crate) fn run_with_outcome(
         .map(str::to_string)
         .or_else(|| args.id.map(|id| id.to_string()))
         .unwrap_or_default();
+    if !args.controlled_target {
+        crate::ca::load_for_deep_capture()?;
+    }
     let store = Rc::new(RefCell::new(open_local_store(args.local_db.as_deref())?));
     let restart = run_warm_restart(args, &store.borrow(), emitter)?;
     let pending_session_id = session_id();
@@ -2604,11 +2614,15 @@ pub(crate) fn run_with_outcome(
     )?);
     let client_identity = load_client_identity(args)?;
     let authority_created = SystemTime::now();
-    let prepared_authority = deep_capture_api::NativeProxyAdapter::prepare_authority(
-        authority_created,
-        SESSION_CA_LIFETIME,
-    )
-    .map_err(cli_error_from_library_refusal)?;
+    let prepared_authority = if args.controlled_target {
+        deep_capture_api::NativeProxyAdapter::prepare_authority(
+            authority_created,
+            SESSION_CA_LIFETIME,
+        )
+        .map_err(cli_error_from_library_refusal)?
+    } else {
+        crate::ca::load_for_deep_capture()?
+    };
     let authorization_plan = build_authorization_plan(
         AuthorizationPlanContext {
             recipient: &recipient,
@@ -2680,6 +2694,12 @@ pub(crate) fn run_with_outcome(
         return Err(CliError::usage(
             "the Deep Capture authorization plan expired before execution; prepare and authorize a fresh plan",
         ));
+    }
+    if !args.controlled_target {
+        let current = crate::ca::load_for_deep_capture()?;
+        if current.sha256_fingerprint() != prepared_authority.sha256_fingerprint() {
+            return Err(CliError::failure("installation CA changed after authorization; no effects were applied; run elevated `fragcap ca repair`"));
+        }
     }
     authorization_outcome(
         emitter,
@@ -3076,6 +3096,7 @@ struct TrustOutcome {
     state: String,
     action: String,
     thumbprint: Option<String>,
+    fingerprint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -3140,6 +3161,7 @@ impl TrustManager for ControlledTrustManager {
             state: "simulated-current-user".to_string(),
             action: "simulated-by-controlled-harness".to_string(),
             thumbprint: Some("controlled-thumbprint".to_string()),
+            fingerprint: None,
         })
     }
 
@@ -3157,11 +3179,9 @@ fn platform_trust_manager(
     der: Vec<u8>,
     thumbprint: String,
 ) -> Result<Box<dyn TrustManager>, CliError> {
-    Ok(Box::new(WindowsCurrentUserTrustManager {
+    Ok(Box::new(WindowsInstallationTrustManager {
         der,
         thumbprint,
-        store: NativeCertificateStore,
-        installed_this_session: false,
     }))
 }
 
@@ -3171,100 +3191,44 @@ fn platform_trust_manager(
     _thumbprint: String,
 ) -> Result<Box<dyn TrustManager>, CliError> {
     Err(CliError::failure(
-        "Deep Capture current-user CA trust is implemented only on Windows",
+        "Deep Capture installation CA trust is implemented only on Windows",
     ))
 }
 
 #[cfg(windows)]
-struct WindowsCurrentUserTrustManager {
+// WindowsCurrentUserTrustManager is the historical matrix marker. S185 replaces
+// its session-root mutation with installation trust verification; the frozen
+// v0.10.8 physical reference is not S185 installation evidence.
+struct WindowsInstallationTrustManager {
     der: Vec<u8>,
     thumbprint: String,
-    store: NativeCertificateStore,
-    installed_this_session: bool,
 }
 
 #[cfg(windows)]
-impl TrustManager for WindowsCurrentUserTrustManager {
+impl TrustManager for WindowsInstallationTrustManager {
     fn installed_this_session(&self) -> bool {
-        self.installed_this_session
+        false
     }
 
-    fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError> {
-        if !confirmed {
-            return Err(CliError::usage(
-                "Deep Capture CA trust mutation requires explicit confirmation",
-            ));
+    fn ensure_trusted(&mut self, _confirmed: bool) -> Result<TrustOutcome, CliError> {
+        let current = crate::ca::load_for_deep_capture()?;
+        if current.der() != self.der || current.sha1_thumbprint() != self.thumbprint {
+            return Err(CliError::failure("installation CA changed before proxy trust acquisition; run elevated `fragcap ca repair`"));
         }
-        let thumbprint = self.thumbprint.clone();
-        let before = self
-            .store
-            .observe(&self.der, &thumbprint)
-            .map_err(|error| {
-                CliError::failure(format!("cannot query current-user CA trust: {error}"))
-            })?;
-        if before == TrustState::PresentExact {
-            return Ok(TrustOutcome {
-                state: "current-user-trusted".to_string(),
-                action: "already-trusted".to_string(),
-                thumbprint: Some(thumbprint),
-            });
-        }
-        if before == TrustState::Mismatch {
-            return Err(CliError::failure(
-                "the authorized CA thumbprint resolves to different certificate bytes",
-            ));
-        }
-        let mutation = self
-            .store
-            .add_exact(&self.der, &thumbprint)
-            .map_err(|error| {
-                CliError::failure(format!("cannot install current-user CA trust: {error}"))
-            })?;
-        self.installed_this_session = mutation == TrustMutation::Added;
         Ok(TrustOutcome {
-            state: "current-user-trusted".to_string(),
-            action: if self.installed_this_session {
-                "installed-for-session"
-            } else {
-                "already-trusted"
-            }
-            .to_string(),
-            thumbprint: Some(thumbprint),
+            state: "installation-machine-trusted".to_string(),
+            action: "retained-installation-ca".to_string(),
+            thumbprint: Some(self.thumbprint.clone()),
+            fingerprint: Some(current.sha256_fingerprint().to_string()),
         })
     }
 
-    fn cleanup(&mut self, timeout: Duration) -> CleanupResource {
-        let started = Instant::now();
-        if !self.installed_this_session {
-            return CleanupResource::new(
-                "trust-entry",
-                "not-needed",
-                "the session did not install a current-user trust entry",
-            );
-        }
-        if remaining_timeout(started, timeout).is_zero() {
-            return CleanupResource::new("trust-entry", "failed", "cleanup deadline expired");
-        }
-        match self.store.remove_exact(&self.der, &self.thumbprint) {
-            Ok(TrustMutation::Removed | TrustMutation::AlreadyAbsent) => {
-                self.installed_this_session = false;
-                CleanupResource::new(
-                    "trust-entry",
-                    "succeeded",
-                    "session CA removed from the current-user Root store",
-                )
-            }
-            Ok(_) => CleanupResource::new(
-                "trust-entry",
-                "failed",
-                "native trust cleanup returned an unexpected mutation",
-            ),
-            Err(error) => CleanupResource::new(
-                "trust-entry",
-                "failed",
-                &format!("cannot remove current-user CA trust: {error}"),
-            ),
-        }
+    fn cleanup(&mut self, _timeout: Duration) -> CleanupResource {
+        CleanupResource::new(
+            "trust-entry",
+            "not-needed",
+            "installation CA remains trusted across sessions",
+        )
     }
 }
 
@@ -4751,6 +4715,7 @@ fn manifest_json(
             "state": ctx.trust.state,
             "action": ctx.trust.action,
             "thumbprint": ctx.trust.thumbprint,
+            "installation_ca_sha256": ctx.trust.fingerprint,
         },
         "launch": {
             "case": ctx.session.launch_case.as_str(),
@@ -5482,6 +5447,7 @@ mod tests {
             state: "not-requested".to_string(),
             action: "none".to_string(),
             thumbprint: None,
+            fingerprint: None,
         };
         let mut client = observation();
         client.correlation_state = deep_capture_api::CorrelationState::Matched;

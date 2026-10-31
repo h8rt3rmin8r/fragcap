@@ -181,6 +181,8 @@ pub enum Command {
     /// Report environment readiness.
     #[command(after_long_help = crate::workflow_help::DOCTOR_LONG_HELP)]
     Doctor(DoctorArgs),
+    /// Inspect or manage the installation-owned machine certificate authority.
+    Ca(CaArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
     /// source.
     Extcap(Box<ExtcapArgs>),
@@ -190,6 +192,50 @@ pub enum Command {
     FreshStart(FreshStartArgs),
     /// Validate JSON artifacts against the master schema, or print it.
     Schema(SchemaArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CaArgs {
+    #[command(subcommand)]
+    pub command: CaCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CaCommand {
+    /// Report read-only installation CA health.
+    Status,
+    /// Provision or reuse the machine CA with administrator elevation.
+    Install {
+        #[arg(long, hide = true)]
+        msi_transaction: Option<String>,
+    },
+    /// Installer rollback of resources created by one exact transaction.
+    #[command(hide = true)]
+    RollbackInstall {
+        #[arg(long)]
+        msi_transaction: String,
+    },
+    /// Disarm rollback after one successful MSI transaction.
+    #[command(hide = true)]
+    CommitInstall {
+        #[arg(long)]
+        msi_transaction: String,
+    },
+    /// Explicitly repair the installed machine CA with administrator elevation.
+    Repair {
+        /// Explicitly rotate a healthy CA after compromise or planned expiry.
+        #[arg(long)]
+        rotate: bool,
+    },
+    /// Remove the exact installed CA and signer with administrator elevation.
+    Remove {
+        /// Exact SHA-256 fingerprint from `fragcap ca status`.
+        #[arg(long)]
+        fingerprint: String,
+        /// Confirm machine-wide trust removal.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// Scope for an explicitly confirmed fresh-start cleanup.

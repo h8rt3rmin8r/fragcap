@@ -24,6 +24,7 @@ pub mod doctor;
 mod args;
 mod assemble;
 mod attach;
+mod ca;
 mod cli;
 mod color;
 mod commands;
@@ -160,11 +161,24 @@ pub fn run<I>(args: I) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
+    let args = args.into_iter().collect::<Vec<_>>();
     let stdout = io::stdout();
     let stderr = io::stderr();
     let mut authorization = StdinAuthorizationInput::new(io::stdin());
     let mut out = stdout.lock();
     let mut err = stderr.lock();
+    let status = ca::health();
+    if !status.ready() {
+        if args.iter().any(|arg| arg == "--json") {
+            let _ = writeln!(
+                err,
+                "{}",
+                serde_json::json!({"event":"fragcap.installation_ca_warning","type":"installation_ca_warning","state":status.state,"detail":status.detail,"store":"LocalMachine/Root","repair":"fragcap ca repair"})
+            );
+        } else {
+            let _ = writeln!(err, "fragcap: warning: {}", status.guidance());
+        }
+    }
     run_with_authorization(args, &mut authorization, &mut out, &mut err)
 }
 
@@ -268,6 +282,7 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
                 | "technologies"
                 | "steam"
                 | "doctor"
+                | "ca"
                 | "extcap"
                 | "catalog"
                 | "fresh-start"
@@ -308,6 +323,7 @@ fn dispatch(
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),
         Command::Doctor(args) => commands::doctor::run(&args, mode.json, out, emitter),
+        Command::Ca(args) => ca::run_command(args.command, mode.json, out),
         Command::FreshStart(args) => commands::fresh_start::run(&args, mode.json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, mode.json, out, emitter),

@@ -586,7 +586,11 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
         let ordinary_sessions = fs::symlink_metadata(&sessions)
             .ok()
             .is_some_and(|metadata| metadata.is_dir() && !is_redirected(&metadata));
-        if root.present && ordinary_sessions && !root_blocked.contains(&index) {
+        if root.present
+            && ordinary_sessions
+            && !root_blocked.contains(&index)
+            && inventory.scope != "s185-cutover"
+        {
             if inventory.scope == "all-users" {
                 recovery_blocked.insert(index);
                 outcomes.push(ItemOutcome {
@@ -848,6 +852,98 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
         }
     }
     outcomes
+}
+
+/// First S185 installation discards canonical pre-S185 user state. This path is
+/// invoked only by elevated CA provisioning, after the complete inventory has
+/// been validated and exact legacy roots have been removed from their user stores.
+#[cfg(windows)]
+pub(crate) fn cutover_all_users() -> Result<String, CliError> {
+    use fragcap::deep_capture::api::NativeCertificateStore;
+    let profiles = platform_profiles()
+        .map_err(|error| CliError::failure(format!("cutover profile inventory failed: {error}")))?;
+    let inventory = build_inventory("s185-cutover", &profiles)
+        .map_err(|error| CliError::failure(format!("cutover inventory failed: {error}")))?;
+    let mut roots = Vec::new();
+    for entry in &inventory.entries {
+        if !entry.relative.ends_with("manifest.json") || entry.directory {
+            continue;
+        }
+        let root = &inventory.roots[entry.root];
+        let path = root
+            .path
+            .join(entry.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let bytes = fs::read(&path).map_err(|error| {
+            CliError::failure(format!(
+                "cutover manifest unreadable: {}: {error}",
+                path.display()
+            ))
+        })?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(CliError::failure(format!(
+                "cutover manifest oversized: {}",
+                path.display()
+            )));
+        }
+        let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            CliError::failure(format!(
+                "cutover manifest invalid: {}: {error}",
+                path.display()
+            ))
+        })?;
+        if let Some(raw) = value
+            .get("trust")
+            .and_then(|trust| trust.get("thumbprint"))
+            .and_then(Value::as_str)
+        {
+            let thumbprint: String = raw
+                .chars()
+                .filter(|ch| !matches!(ch, ':' | '-' | ' '))
+                .map(|ch| ch.to_ascii_uppercase())
+                .collect();
+            if thumbprint.len() != 40 || !thumbprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(CliError::failure(format!(
+                    "cutover CA thumbprint invalid: {}",
+                    path.display()
+                )));
+            }
+            let pair = (root.profile.clone(), thumbprint);
+            if !roots.contains(&pair) {
+                roots.push(pair);
+            }
+        }
+    }
+    let store = NativeCertificateStore;
+    for (sid, thumbprint) in &roots {
+        store
+            .remove_legacy_user_root(sid, thumbprint)
+            .map_err(|error| {
+                CliError::failure(format!(
+                    "cutover legacy trust removal failed for {sid}: {error}"
+                ))
+            })?;
+    }
+    let outcomes = execute_inventory(&inventory, &mut io::sink());
+    if outcomes
+        .iter()
+        .any(|item| !matches!(item.status, "removed" | "absent"))
+    {
+        return Err(CliError::failure(
+            "cutover could not remove every inventoried canonical Fragcap resource",
+        ));
+    }
+    let after = build_inventory("s185-cutover", &profiles)
+        .map_err(|error| CliError::failure(format!("cutover readback failed: {error}")))?;
+    if after.roots.iter().any(|root| root.present) || !after.entries.is_empty() {
+        return Err(CliError::failure(
+            "cutover readback found remaining pre-S185 state",
+        ));
+    }
+    Ok(format!(
+        "removed {} canonical entries and {} exact legacy roots",
+        inventory.entries.len(),
+        roots.len()
+    ))
 }
 
 fn validate_deletion_ancestors(root: &Path, target: &Path) -> io::Result<()> {

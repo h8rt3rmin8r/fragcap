@@ -114,16 +114,105 @@ impl<S: CertificateStore> TrustController<S> {
 pub struct NativeCertificateStore;
 
 impl NativeCertificateStore {
+    /// Remove a pre-S185 session root from an exact Windows user SID only after
+    /// its certificate matches the historical Fragcap CA subject and CA shape.
+    pub fn remove_legacy_user_root(
+        &self,
+        sid: &str,
+        thumbprint: &str,
+    ) -> Result<TrustMutation, TrustError> {
+        native_remove_legacy_user_root(sid, thumbprint)
+    }
+    pub fn observe_machine(&self, der: &[u8], thumbprint: &str) -> Result<TrustState, TrustError> {
+        native_observe_machine(der, thumbprint)
+    }
+
+    pub fn add_machine_exact(
+        &self,
+        der: &[u8],
+        thumbprint: &str,
+    ) -> Result<TrustMutation, TrustError> {
+        native_add_machine(der, thumbprint)
+    }
+
+    pub fn remove_machine_exact(
+        &self,
+        der: &[u8],
+        thumbprint: &str,
+    ) -> Result<TrustMutation, TrustError> {
+        native_remove_machine(der, thumbprint)
+    }
+
     /// Remove a legacy owned entry identified by its recorded thumbprint.
     ///
-    /// New sessions use [`CertificateStore::remove_exact`] with certificate
-    /// bytes as well. This path exists for doctor cleanup of older manifests.
+    /// This path exists only for Doctor cleanup of pre-S185 manifests.
     pub fn remove_current_user_thumbprint(
         &self,
         thumbprint: &str,
     ) -> Result<TrustMutation, TrustError> {
         native_remove_thumbprint(thumbprint)
     }
+}
+
+#[cfg(windows)]
+fn native_remove_legacy_user_root(
+    sid: &str,
+    thumbprint: &str,
+) -> Result<TrustMutation, TrustError> {
+    crate::windows::trust::remove_legacy_user_root(sid, thumbprint)
+}
+#[cfg(not(windows))]
+fn native_remove_legacy_user_root(_: &str, _: &str) -> Result<TrustMutation, TrustError> {
+    Err(TrustError::new(
+        "trust-platform-unavailable",
+        "remove",
+        CURRENT_USER_ROOT,
+        None,
+        "Windows only",
+    ))
+}
+
+#[cfg(windows)]
+fn native_observe_machine(der: &[u8], thumbprint: &str) -> Result<TrustState, TrustError> {
+    crate::windows::trust::observe_machine(der, thumbprint)
+}
+#[cfg(not(windows))]
+fn native_observe_machine(_: &[u8], _: &str) -> Result<TrustState, TrustError> {
+    Err(TrustError::new(
+        "trust-platform-unavailable",
+        "observe",
+        LOCAL_MACHINE_ROOT,
+        None,
+        "Windows only",
+    ))
+}
+#[cfg(windows)]
+fn native_add_machine(der: &[u8], thumbprint: &str) -> Result<TrustMutation, TrustError> {
+    crate::windows::trust::add_machine(der, thumbprint)
+}
+#[cfg(not(windows))]
+fn native_add_machine(_: &[u8], _: &str) -> Result<TrustMutation, TrustError> {
+    Err(TrustError::new(
+        "trust-platform-unavailable",
+        "add",
+        LOCAL_MACHINE_ROOT,
+        None,
+        "Windows only",
+    ))
+}
+#[cfg(windows)]
+fn native_remove_machine(der: &[u8], thumbprint: &str) -> Result<TrustMutation, TrustError> {
+    crate::windows::trust::remove_machine(der, thumbprint)
+}
+#[cfg(not(windows))]
+fn native_remove_machine(_: &[u8], _: &str) -> Result<TrustMutation, TrustError> {
+    Err(TrustError::new(
+        "trust-platform-unavailable",
+        "remove",
+        LOCAL_MACHINE_ROOT,
+        None,
+        "Windows only",
+    ))
 }
 
 impl CertificateStore for NativeCertificateStore {

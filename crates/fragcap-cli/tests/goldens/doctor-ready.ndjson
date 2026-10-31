@@ -16,7 +16,7 @@
 {"section":"Deep Capture","name":"proxy backend","detail":"fragcap-native 0.8.0","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"IPv4 loopback listener","detail":"exact ephemeral bind to 127.0.0.1 succeeded","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"IPv6 loopback listener","detail":"exact ephemeral bind to ::1 succeeded","status":"ok","scope":"deep_capture"}
-{"section":"Deep Capture","name":"local CA trust","detail":"no fragcap Deep Capture CA trust found","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"pre-S185 session CA residue","detail":"no old per-session CA trust found","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"analyzer key log","detail":"TLS key-log path is visible to this session","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"native inventory","detail":"no native Deep Capture session residue found","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"session storage","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions (absent)","status":"ok","scope":"deep_capture"}

@@ -457,6 +457,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "windows-sys 0.36.1",
+ "x509-parser",
  "zeroize",
 ]
 

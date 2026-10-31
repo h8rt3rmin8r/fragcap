@@ -465,8 +465,8 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
     checks.push(match &dc.ca {
         DeepCaptureCa::Absent => Check::ok(
             DEEP_CAPTURE,
-            "local CA trust",
-            "no fragcap Deep Capture CA trust found",
+            "pre-S185 session CA residue",
+            "no old per-session CA trust found",
         ),
         DeepCaptureCa::CurrentUser { thumbprint } => Check::ok(
             DEEP_CAPTURE,

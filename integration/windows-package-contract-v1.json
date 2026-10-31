@@ -24,10 +24,10 @@
   "checksum_sidecars": ["portable-zip", "windows-msi", "standalone-catalog"],
   "prohibited_tokens": ["mitmdump", "mitmproxy", "npcap", "openssl", "packet.dll", "python", "wpcap.dll"],
   "pe_imports": {
-    "ordinary": ["advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "bcrypt.dll", "bcryptprimitives.dll", "crypt32.dll", "iphlpapi.dll", "kernel32.dll", "ntdll.dll", "shell32.dll", "user32.dll", "version.dll", "ws2_32.dll", "wtsapi32.dll"],
+    "ordinary": ["advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "bcrypt.dll", "bcryptprimitives.dll", "crypt32.dll", "iphlpapi.dll", "kernel32.dll", "ntdll.dll", "ole32.dll", "shell32.dll", "user32.dll", "version.dll", "ws2_32.dll", "wtsapi32.dll"],
     "delayed": ["wpcap.dll"]
   },
-  "installer_effects": ["defender-exclusion-if-created", "installed-files", "product-registration", "system-path-entry"],
+  "installer_effects": ["defender-exclusion-if-created", "installation-ca-persistent", "installed-files", "product-registration", "system-path-entry"],
   "user_owned_fixtures": ["capture", "deep-capture-bundle", "extcap-registration", "local-database", "preexisting-defender-exclusion", "writable-catalog"],
   "lifecycle_cases": [
     {"id": "clean-install", "timeout_seconds": 600, "terminal": "passed"},

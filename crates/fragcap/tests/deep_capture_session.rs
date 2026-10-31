@@ -421,6 +421,39 @@ impl TrustLease for TrustRun {
     }
 }
 
+struct InstallationTrust(Ledger);
+impl TrustManager for InstallationTrust {
+    fn is_session_resource(&self) -> bool {
+        false
+    }
+    fn acquire(
+        &mut self,
+        _: &SessionPlan,
+        _: &ProxyRoute,
+        _: Budget,
+    ) -> Result<Box<dyn TrustLease>, StageFailure> {
+        self.0.borrow_mut().push("installation-trust.verify".into());
+        Ok(Box::new(InstallationTrustRun(self.0.clone())))
+    }
+}
+struct InstallationTrustRun(Ledger);
+impl TrustLease for InstallationTrustRun {
+    fn is_session_resource(&self) -> bool {
+        false
+    }
+    fn retain_for_unresolved_owner(&self) -> bool {
+        false
+    }
+    fn cleanup(&mut self, _: Budget) -> CleanupResult {
+        self.0.borrow_mut().push("installation-trust.retain".into());
+        CleanupResult {
+            resource: "trust-entry".into(),
+            status: CleanupStatus::NotNeeded,
+            reason: "installation root remains trusted".into(),
+        }
+    }
+}
+
 struct Routing(Ledger, ChildEnvironmentRouting);
 
 impl RoutingAdapter for Routing {
@@ -1248,6 +1281,32 @@ fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
         .expect("release attempt");
     assert!(calls.iter().position(|call| call == "capture.run.failed") < Some(release));
     assert!(Some(release) < calls.iter().position(|call| call == "proxy.stop"));
+}
+
+#[test]
+fn unresolved_route_owner_retains_installation_trust_without_a_session_trust_obligation() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.trust = Box::new(InstallationTrust(ledger.clone()));
+    environment.capture = Box::new(FailingCapture(ledger.clone(), true));
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session(environment)
+        .run_to_completion(authorization);
+    assert!(!report.is_complete());
+    assert!(report
+        .snapshot
+        .cleanup
+        .iter()
+        .any(|result| result.resource == "route-owner" && result.status == CleanupStatus::Failed));
+    assert!(report.snapshot.cleanup.iter().any(
+        |result| result.resource == "trust-entry" && result.status == CleanupStatus::NotNeeded
+    ));
+    let calls = ledger.borrow();
+    assert!(calls.iter().any(|call| call == "installation-trust.verify"));
+    assert!(calls.iter().any(|call| call == "installation-trust.retain"));
+    assert!(!calls.iter().any(|call| call == "trust.cleanup"));
 }
 
 #[test]

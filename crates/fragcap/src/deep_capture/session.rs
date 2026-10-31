@@ -423,51 +423,60 @@ impl DeepCaptureSession<'_> {
         if self.plan.trust_ca {
             let budget = self.remaining_budget(started, self.plan.deadlines.launch);
             let trust_target = format!("sha1:{}", route.ca_sha1_thumbprint());
-            if !self.record_resource(
-                "trust-entry",
-                ResourceKind::Trust,
-                &trust_target,
-                "remove-current-user-root-by-exact-thumbprint",
-                ResourceState::Pending,
-                "trust mutation must follow this durable obligation",
-            ) {
+            let session_resource = self.adapters.trust.is_session_resource();
+            if session_resource
+                && !self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &trust_target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::Pending,
+                    "trust mutation must follow this durable obligation",
+                )
+            {
                 self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
             if !self.check_boundary("trust-entry", BoundarySide::Before) {
-                self.record_resource(
-                    "trust-entry",
-                    ResourceKind::Trust,
-                    &trust_target,
-                    "remove-current-user-root-by-exact-thumbprint",
-                    ResourceState::NotApplied,
-                    "controlled failure before trust invocation",
-                );
-                self.transition(LifecycleState::Stopped);
-                return Ok(());
-            }
-            if self.cancellation.is_requested() {
-                self.record_resource(
-                    "trust-entry",
-                    ResourceKind::Trust,
-                    &trust_target,
-                    "remove-current-user-root-by-exact-thumbprint",
-                    ResourceState::NotApplied,
-                    "cancellation won before trust invocation",
-                );
-                self.observe_cancellation();
-                return Ok(());
-            }
-            match self.adapters.trust.acquire(&self.plan, &route, budget) {
-                Ok(lease) => {
+                if session_resource {
                     self.record_resource(
                         "trust-entry",
                         ResourceKind::Trust,
                         &trust_target,
                         "remove-current-user-root-by-exact-thumbprint",
-                        ResourceState::Applied,
-                        "current-user trust entry acquired",
+                        ResourceState::NotApplied,
+                        "controlled failure before trust invocation",
                     );
+                }
+                self.transition(LifecycleState::Stopped);
+                return Ok(());
+            }
+            if self.cancellation.is_requested() {
+                if session_resource {
+                    self.record_resource(
+                        "trust-entry",
+                        ResourceKind::Trust,
+                        &trust_target,
+                        "remove-current-user-root-by-exact-thumbprint",
+                        ResourceState::NotApplied,
+                        "cancellation won before trust invocation",
+                    );
+                }
+                self.observe_cancellation();
+                return Ok(());
+            }
+            match self.adapters.trust.acquire(&self.plan, &route, budget) {
+                Ok(lease) => {
+                    if session_resource {
+                        self.record_resource(
+                            "trust-entry",
+                            ResourceKind::Trust,
+                            &trust_target,
+                            "remove-current-user-root-by-exact-thumbprint",
+                            ResourceState::Applied,
+                            "current-user trust entry acquired",
+                        );
+                    }
                     self.trust = Some(lease);
                     self.trust_target = Some(trust_target);
                     if !self.check_boundary("trust-entry", BoundarySide::After) {
@@ -480,14 +489,16 @@ impl DeepCaptureSession<'_> {
                     });
                 }
                 Err(error) => {
-                    self.record_resource(
-                        "trust-entry",
-                        ResourceKind::Trust,
-                        &trust_target,
-                        "remove-current-user-root-by-exact-thumbprint",
-                        ResourceState::Failed,
-                        &error.detail,
-                    );
+                    if session_resource {
+                        self.record_resource(
+                            "trust-entry",
+                            ResourceKind::Trust,
+                            &trust_target,
+                            "remove-current-user-root-by-exact-thumbprint",
+                            ResourceState::Failed,
+                            &error.detail,
+                        );
+                    }
                     self.failures.push(error);
                     self.transition(LifecycleState::Stopped);
                     return Ok(());
@@ -1342,7 +1353,7 @@ impl DeepCaptureSession<'_> {
                     status: CleanupStatus::Failed,
                     reason: reason.into(),
                 });
-            } else {
+            } else if trust.is_session_resource() {
                 self.record_resource(
                     "trust-entry",
                     ResourceKind::Trust,
@@ -1360,6 +1371,12 @@ impl DeepCaptureSession<'_> {
                     "remove-current-user-root-by-exact-thumbprint",
                     &result,
                 );
+                self.record_cleanup(result);
+            } else {
+                // The installation CA is verified for this run but remains a
+                // machine resource. No session journal may authorize removal.
+                let result =
+                    trust.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
                 self.record_cleanup(result);
             }
         } else if !self
