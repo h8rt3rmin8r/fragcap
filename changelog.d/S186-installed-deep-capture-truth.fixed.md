@@ -1,2 +1,0 @@
-<!-- spec-impact: 17.2.1, 19.6, 27.3 -->
-Ordinary Windows users no longer receive a false installation CA repair warning when the public root is healthy and the signer is correctly restricted. HTTPS CONNECT now recognizes equivalent inner authorities without an explicit default port, reports genuine cross-authority requests and header timeouts distinctly, and keeps HTTPS compatibility tied to completed HTTPS evidence.
