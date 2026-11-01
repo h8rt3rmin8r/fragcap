@@ -3,9 +3,11 @@ title: Doctor and troubleshooting
 description: Read environment readiness, distinguish retained history from recoverable residue, and review exact remediation.
 ---
 
-Published baseline: [v0.10.10](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10).
+Published baseline: [v0.10.11](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.11).
 
 v0.10.10 adds a read-only installation CA check at startup and in Doctor. `fragcap ca status` reports public `LocalMachine/Root` state without decrypting the signer. Deep Capture performs a separate signing proof before effects. A missing or unhealthy CA names its state and directs elevated `fragcap ca repair`; ordinary Capture remains available. Doctor recovery does not remove the installation root.
+
+v0.10.11 reports the public installation CA as healthy for an ordinary account when its exact public identity and root are present, even when private signer metadata correctly denies that account access. Deep Capture still requires a privileged signing proof before effects.
 
 ## Read first, repair separately
 
