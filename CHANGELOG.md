@@ -10,6 +10,22 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.11] - 2026-10-31
+
+### Fixed
+
+Ordinary Windows users no longer receive a false installation CA repair warning when the public root is healthy and the signer is correctly restricted. HTTPS CONNECT now recognizes equivalent inner authorities without an explicit default port, reports genuine cross-authority requests and header timeouts distinctly, and keeps HTTPS compatibility tied to completed HTTPS evidence.
+
+Current documentation and frozen replay authority now identify the independently verified v0.10.10 files and all ten published crates. Installation CA provisioning, first-install cleanup of identified pre-S185 state, managed route release and ordinary observation timing are described as shipped, while v0.10.9 limitations remain historical.
+
+### Decisions
+
+**2026-10-31** Public installation CA health now means the public identity and exact machine root are observable; it never stands in for the privileged signing proof. An HTTPS CONNECT tunnel uses the effective HTTPS default port for inner requests, while a distinct inner authority remains unsupported because reusing the already verified CONNECT upstream would assign traffic to the wrong destination identity.
+
+2026-10-31: Advance current v0.10.10 publication markers, documentation coverage, the frozen review candidate and six exact asset authorities only after merged source, annotated tag, all four tagged jobs, normal protected registry approval, six independently downloaded files and ten non-yanked registry archives reconcile. Retarget the published replay label to these verified bytes. Preserve the v0.8.0 predecessor, unsigned policy, historical evidence and unperformed independent whole-product review status. Hosted clean-install certification does not claim a local installed-product run or real-title Deep Capture success.
+
+2026-10-31: The v0.10.11 release bump changes only eleven first-party package versions across the three governed dependency graphs. Rebind their measured digests and unsafe-review inventory without changing third-party packages, feature edges, package and edge counts, review expiry, or exceptions. Synchronize the nine first-party identities in each isolated fuzz and native-performance lockfile; their third-party resolutions remain unchanged. The independent-review record remains an empty not-started template for the new product version.
+
 ## [0.10.10] - 2026-10-31
 
 ### Fixed
@@ -2512,6 +2528,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.11]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.11
 [0.10.10]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10
 [0.10.9]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9
 [0.10.8]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.8
