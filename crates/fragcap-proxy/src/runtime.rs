@@ -18,7 +18,8 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::{timeout, Instant};
 
 use crate::http1::{
-    read_authenticated_request, read_request, serve_http, HttpRun, ObservationContext,
+    read_authenticated_request, read_request_in_context, serve_http, HttpRequestContext, HttpRun,
+    ObservationContext,
 };
 use crate::tls::{
     accept_client_tls, client_server_config, connect_verified_tls, upstream_client_config_for_alpn,
@@ -934,7 +935,13 @@ async fn connection_task(
                 ConnectionOutcome::Completed(run)
             };
         }
-        let inner = match read_request(&mut client_tls, config.protocol_limits()).await {
+        let inner = match read_request_in_context(
+            &mut client_tls,
+            config.protocol_limits(),
+            HttpRequestContext::HttpsTunnel,
+        )
+        .await
+        {
             Ok(Some(request)) if !request.is_connect() => request,
             Ok(Some(_)) => {
                 return ConnectionOutcome::Failed(HttpRun {
@@ -999,7 +1006,7 @@ async fn connection_task(
                     if requested != expected {
                         return Err(ProtocolError::new(
                             "tls-tunnel-authority-mismatch",
-                            "inner HTTP authority differs from CONNECT authority",
+                            "inner HTTP authority differs from CONNECT; cross-authority forwarding is unsupported on this verified tunnel",
                         ));
                     }
                     match existing {
@@ -2482,10 +2489,10 @@ mod tests {
         observed.resources.failure_detail_capacity = 2;
         for id in 1..=6 {
             let failure = if id == 6 {
-                ProtocolError::timeout("http-idle-timeout")
+                ProtocolError::timeout("http-header-timeout")
             } else {
                 ProtocolError::new(
-                    "http-header-malformed",
+                    "tls-tunnel-authority-mismatch",
                     "private detail must not be projected",
                 )
             };
@@ -2515,6 +2522,14 @@ mod tests {
         assert_eq!(observed.connection_diagnostics.len(), 2);
         assert_eq!(observed.resources.connection_details_dropped_oldest, 4);
         assert_eq!(observed.resources.failure_details_dropped_oldest, 4);
+        assert_eq!(
+            observed.connection_diagnostics[0].code,
+            Some("tls-tunnel-authority-mismatch")
+        );
+        assert_eq!(
+            observed.connection_diagnostics[1].code,
+            Some("http-header-timeout")
+        );
     }
 
     #[test]

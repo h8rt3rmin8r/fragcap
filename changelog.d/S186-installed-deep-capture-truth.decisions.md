@@ -1,0 +1,2 @@
+<!-- spec-impact: 17.2.1, 19.6, 27.3 -->
+**2026-10-31** Public installation CA health now means the public identity and exact machine root are observable; it never stands in for the privileged signing proof. An HTTPS CONNECT tunnel uses the effective HTTPS default port for inner requests, while a distinct inner authority remains unsupported because reusing the already verified CONNECT upstream would assign traffic to the wrong destination identity.

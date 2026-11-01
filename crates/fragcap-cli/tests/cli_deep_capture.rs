@@ -1030,6 +1030,24 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert!(app.contains("\"protocol\":\"http/1.1\""));
     assert!(app.contains("\"type\":\"tls.negotiation\""));
     assert!(app.contains("\"inspectability\":\"full\""));
+    let secure_request = application_records
+        .iter()
+        .find(|record| {
+            record["proxy_connection_id"] == 2
+                && record["type"] == "http.metadata"
+                && record["kind"] == "request"
+        })
+        .expect("completed HTTPS application request");
+    assert_eq!(secure_request["url"]["encoding"], "base64");
+    assert!(secure_request["url"]["value"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("aHR0cHM6Ly9sb2NhbGhvc3Q6")));
+    assert!(application_records.iter().any(|record| {
+        record["proxy_connection_id"] == 2
+            && record["type"] == "http.metadata"
+            && record["kind"] == "response"
+            && record["status"] == 200
+    }));
     assert!(application_records[1..application_records.len() - 1]
         .iter()
         .any(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
@@ -1045,6 +1063,15 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert!(har["log"]["entries"]
         .as_array()
         .is_some_and(|entries| !entries.is_empty()));
+    assert!(har["log"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| {
+            entry["request"]["url"].as_str().is_some_and(|url| {
+                url.starts_with("https://localhost:") && url.ends_with("/secure")
+            }) && entry["response"]["status"] == 200
+        }));
     assert!(har["log"]["entries"]
         .as_array()
         .unwrap()
@@ -1099,6 +1126,20 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
 
     let cleanup: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("cleanup.json")).unwrap()).unwrap();
+    let proxy_lifecycle: Vec<serde_json::Value> =
+        std::fs::read_to_string(bundle.join("proxy.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    assert_eq!(proxy_lifecycle.first().unwrap()["type"], "lifecycle.header");
+    assert_eq!(proxy_lifecycle.last().unwrap()["type"], "lifecycle.trailer");
+    assert!(proxy_lifecycle.iter().any(|record| {
+        record["type"] == "proxy.protocol-terminal" && record["fields"]["connection_id"] == 2
+    }));
+    assert!(proxy_lifecycle
+        .iter()
+        .any(|record| record["type"] == "proxy.drain" && record["fields"]["status"] == "complete"));
     assert!(cleanup["resources"]
         .as_array()
         .unwrap()

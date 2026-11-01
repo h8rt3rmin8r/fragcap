@@ -26,6 +26,7 @@ fn real_entry_checks_ca_before_help_version_and_non_deep_commands() {
         vec!["--version"],
         vec!["--json", "--version"],
         vec!["--json", "ca", "status"],
+        vec!["targets", "discover", "--help"],
     ] {
         let output = invoke(&args);
         assert!(output.status.success(), "{args:?}");
@@ -43,5 +44,12 @@ fn real_entry_checks_ca_before_help_version_and_non_deep_commands() {
             assert!(diagnostic.contains(&format!("installation CA {state}")));
             assert!(diagnostic.contains("fragcap ca repair"));
         }
+    }
+    let doctor = invoke(&["--json", "doctor"]);
+    assert!(!doctor.stdout.is_empty());
+    if state == "ready" {
+        assert!(!String::from_utf8(doctor.stderr)
+            .unwrap()
+            .contains("installation_ca_warning"));
     }
 }

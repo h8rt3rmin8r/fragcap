@@ -354,13 +354,21 @@ fn health_at(
     root: &Path,
     observe: impl FnOnce(&[u8], &str) -> Result<TrustState, fragcap::deep_capture::api::TrustError>,
 ) -> Health {
+    health_at_with_signer_probe(root, observe, protected_signer_presence)
+}
+
+fn health_at_with_signer_probe(
+    root: &Path,
+    observe: impl FnOnce(&[u8], &str) -> Result<TrustState, fragcap::deep_capture::api::TrustError>,
+    signer_probe: impl FnOnce(&Path) -> Result<Option<bool>, String>,
+) -> Health {
     let identity_path = identity_path(root);
     let key_path = key_path(root);
     let identity_present = match ordinary_file_presence(&identity_path) {
         Ok(present) => present,
         Err(detail) => return Health::new("unreadable", detail, None),
     };
-    let key_present = match ordinary_file_presence(&key_path) {
+    let key_present = match signer_probe(&key_path) {
         Ok(present) => present,
         Err(detail) => return Health::new("unreadable", detail, None),
     };
@@ -372,37 +380,24 @@ fn health_at(
         return Health::new("mismatch", "S185 cutover receipt missing", None);
     }
     if !identity_present {
-        return if key_present {
-            Health::new("mismatch", "key exists without public identity", None)
-        } else {
-            Health::new("not-provisioned", "no installation identity", None)
+        return match key_present {
+            Some(true) => Health::new("mismatch", "key exists without public identity", None),
+            Some(false) => Health::new("not-provisioned", "no installation identity", None),
+            None => Health::new(
+                "unreadable",
+                "public identity absent and protected signer cannot be inspected",
+                None,
+            ),
         };
     }
     let identity = match Identity::read(&identity_path) {
         Ok(identity) => identity,
         Err(error) => return Health::new("unreadable", error.message(), None),
     };
-    if !key_present {
+    if key_present == Some(false) {
         return Health::new(
             "missing-key",
             "protected signer absent",
-            Some(identity.fingerprint),
-        );
-    }
-    let key_info = match std::fs::symlink_metadata(&key_path) {
-        Ok(info) => info,
-        Err(error) => {
-            return Health::new(
-                "unreadable",
-                format!("protected signer inaccessible: {error}"),
-                Some(identity.fingerprint),
-            )
-        }
-    };
-    if !key_info.is_file() || key_info.file_type().is_symlink() {
-        return Health::new(
-            "unreadable",
-            "protected signer is not an ordinary file",
             Some(identity.fingerprint),
         );
     }
@@ -417,7 +412,11 @@ fn health_at(
     match observe(&identity.der, &identity.thumbprint) {
         Ok(TrustState::PresentExact) => Health::new(
             "ready",
-            "public trust and protected key resource present; signing unverified",
+            if key_present == Some(true) {
+                "public trust and protected key resource present; signing unverified"
+            } else {
+                "public trust exact; protected signer inaccessible to this account; signing unverified"
+            },
             Some(identity.fingerprint),
         ),
         Ok(TrustState::Absent) => Health::new(
@@ -436,6 +435,22 @@ fn health_at(
             Some(identity.fingerprint),
         ),
         Err(error) => Health::new("unreadable", error.to_string(), Some(identity.fingerprint)),
+    }
+}
+
+fn protected_signer_presence(path: &Path) -> Result<Option<bool>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(info) if info.is_file() && !info.file_type().is_symlink() => Ok(Some(true)),
+        Ok(_) => Err(format!(
+            "protected signer is not an ordinary file: {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(false)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
+        Err(error) => Err(format!(
+            "protected signer inaccessible: {}: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -1136,6 +1151,22 @@ mod tests {
         assert_eq!(observed(TrustState::PresentWrongStore).state, "mismatch");
         assert_eq!(observed(TrustState::Mismatch).state, "mismatch");
         assert_eq!(observed(TrustState::PresentExact).state, "ready");
+        let denied_signer = health_at_with_signer_probe(
+            &directory,
+            |_, _| Ok(TrustState::PresentExact),
+            |_| Ok(None),
+        );
+        assert_eq!(denied_signer.state, "ready");
+        assert_eq!(
+            denied_signer.fingerprint.as_deref(),
+            Some(authority.sha256_fingerprint())
+        );
+        assert!(denied_signer.detail.contains("signing unverified"));
+        assert_eq!(
+            health_at_with_signer_probe(&directory, |_, _| Ok(TrustState::Absent), |_| Ok(None))
+                .state,
+            "missing-cert"
+        );
         std::fs::remove_file(identity_path(&directory)).unwrap();
         let expired = NativeProxyAdapter::generate_installation_authority(
             2,
