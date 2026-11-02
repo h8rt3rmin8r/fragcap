@@ -1,2 +1,0 @@
-<!-- spec-impact: 17.2.1, 27.3 -->
-Deep Capture now preserves explicit two-minute calibration, ten-minute ordinary observation, and five-minute managed-launch requests without silent shortening, and reports requested and effective timing in plans, terminal output, and manifests. Cold Steam targets can declare ordered publisher stages with exact shutdown scope; process traces retain managed descendants, and native proxy connections report independently verified process-instance ownership or an explicit evidence gap.
