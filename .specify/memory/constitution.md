@@ -1,4 +1,13 @@
 <!--
+Sync Impact Report (1.8.0, 2026-11-01)
+- Version change: 1.7.0 -> 1.8.0 (MINOR: adds an installed-product field-test governance section)
+- Added section: Installed-Product Field Tests
+- Added rule: an installed-product test uses Fragcap's default target and session storage, retention, and cleanup unless the owner explicitly agrees to an exact path exception before use; agent working files are transient and separate from native evidence.
+- Reason: issue #539 records agent-created audit and scratch locations that obscured default behavior and left private material behind. Packaged-host path redirection also makes nominal environment paths insufficient evidence of the effective canonical location.
+- Templates: no changes required; the Constitution Check reads this document directly.
+- Runtime guidance: AGENTS.md, CONTRIBUTING.md, and the historical Steam proxy measurement protocol reconciled.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.7.0, 2026-10-31)
 - Version change: 1.6.0 -> 1.7.0 (MINOR: P-1 materially expands the explicit
   installation trust lifecycle)
@@ -490,6 +499,16 @@ endings, no trailing whitespace, and a single trailing newline. No em-dashes and
 no en-dashes anywhere, including code comments; use commas, parentheses, or
 standard hyphens.
 
+## Installed-Product Field Tests
+
+An instruction to test an installed product authorizes Fragcap's native outputs at its documented defaults. An agent MUST exercise the shipped default target stores, generated session bundles, retention, and cleanup when claiming the default installed journey. It MUST NOT choose a separate audit, report, download, helper, or build-scratch location, or leave test-specific working files, without the owner's explicit, path-specific authorization. It MUST NOT silently supply `--bundle`, store-path flags, `FRAGCAP_SESSION_DIR`, profile-root overrides, redirected application-data roots, or equivalent custom storage for convenience. A technically required exception needs the owner's agreement to the exact path and behavioral difference before use; that run cannot establish that the default journey works.
+
+Agent-authored conclusions and working notes belong in the conversation and, when a concrete finding warrants it, a detailed privacy-scrubbed GitHub issue. Command transcripts, duplicate logs, downloads, helper scripts, and build scratch are transient and do not belong in Fragcap's native data directories or an agent-created sidecar. Retain native session artifacts and state according to Fragcap's declared retention and recovery rules, plus only separate files the owner explicitly names for retention.
+
+Before deleting or relocating older material, distinguish native captures and bundles from agent scratch, verify exact canonical paths and inactive ownership or recovery obligations, and preserve manifests, journals, recipient access, and Doctor's inventory. Use a supported product operation where one exists. If native output cannot be safely relocated, report that limit rather than moving it. Never destroy the only evidence of an unresolved session. If an approval control rejects cleanup, report the remaining material and the rejection; do not switch mechanisms to evade it.
+
+An installed-test handoff MUST name the effective canonical target-store, session-registry, and native bundle locations, actual retained artifact names, cleanup performed, and material that could not be removed. Nominal `%APPDATA%` and `%LOCALAPPDATA%` values alone are insufficient when a packaged host redirects writes into its `LocalCache` tree. If an exact effective location cannot be proven, mark that part of default-path acceptance unverified rather than guessing. Public issues omit private target identity and traffic. Reviewers MUST reject a custom-path run as proof of default placement, retention, or cleanup, while keeping its separately observed behavior available as appropriately scoped evidence.
+
 ## Governance
 
 This constitution supersedes all other practices. Where it conflicts with a
@@ -518,4 +537,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 1.7.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-10-31
+**Version**: 1.8.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-01

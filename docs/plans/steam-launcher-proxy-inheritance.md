@@ -4,6 +4,8 @@
 **Date:** 2026-08-24.\
 **Audience:** maintainers, reviewers, future Deep Capture slice authors.
 
+**Current installed-test rule:** The `captures/recon/` layout below records the pre-product research protocol for issue #215. It does not authorize an agent to create that directory or any other audit sidecar for an installed-product field test. Current installed acceptance follows the default-store, generated-bundle, retention, cleanup, and effective-path rules in the constitution and `CONTRIBUTING.md`; an explicitly authorized custom path cannot prove the default journey.
+
 This document defines how fragcap will measure whether target-scoped proxy routing works across Steam and publisher-launcher handoffs, and how to avoid confusing observed routing with proven environment inheritance. It does not implement Deep Capture, add a proxy backend, or require any trust-store change. Its job is to turn the launch-path uncertainty into committable, privacy-preserving evidence.
 
 ## Decision
@@ -23,7 +25,7 @@ Every measured title receives a neutral alias before any artifact is written for
 | Public IP address or hostname | `<remote-endpoint-a>`, `<remote-endpoint-b>` |
 | Private LAN address | `<local-address>` |
 
-A private alias map may exist locally inside `captures/recon/` while the work is active, because that directory is gitignored. It must not be copied into `docs/`, `specs/`, `changelog.d/`, issue bodies, PR bodies, or review comments.
+For this historical research, a private alias map could exist locally inside `captures/recon/` while the work was active, because that directory was gitignored. This historical allowance does not apply to installed-product field testing. The map must not be copied into `docs/`, `specs/`, `changelog.d/`, issue bodies, PR bodies, or review comments.
 
 ## Public documentation baseline
 
@@ -81,7 +83,7 @@ The same title may cover more than one case. The report should prefer a small nu
 
 Each run has three evidence levels.
 
-| Level | Storage | Contents | Commit status |
+| Historical level | Storage | Contents | Commit status |
 | --- | --- | --- | --- |
 | Raw | `captures/recon/<session>/` | Captures, socket logs, ETW process logs, local proxy logs, raw command lines, raw endpoints | Never committed |
 | Private summary | `captures/recon/<session>/PRIVATE.md` | Real title mapping, operator notes, raw path notes, unresolved sensitive context | Never committed |
