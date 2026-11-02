@@ -395,7 +395,7 @@ fn synthesize_publisher_profile(entry: &TargetEntry) -> Result<Profile, CliError
     Profile::parse(&profile.to_string()).map_err(CliError::from)
 }
 
-/// Build the exact two-stage identity used by an owned cold platform launch.
+/// Build the exact ordered identity used by an owned cold platform launch.
 ///
 /// The terminal client retains every resolved identity predicate and gains the
 /// owned platform ancestry requirement. It is declared first so a client that
@@ -437,12 +437,55 @@ pub(crate) fn synthesize_platform_profile(
             serde_json::Value::String(command_line.to_string()),
         );
     }
+    let platform_executable = platform.root().executable();
+    let declared = platform.stages();
+    if let Some(terminal) = declared.last() {
+        let resolved_image = identity.exe().map(|exe| exe.as_str());
+        if resolved_image
+            .is_some_and(|exe| !exe.eq_ignore_ascii_case(&terminal.image_name().to_string_lossy()))
+        {
+            return Err(CliError::usage("the declared Steam client differs from the install-resolved client; no launch effects were applied"));
+        }
+        client_predicates.insert(
+            "path_regex".into(),
+            serde_json::Value::String(exact_path_regex(terminal.executable())),
+        );
+    }
     client_predicates.insert(
         "descends_from".into(),
-        serde_json::Value::String("platform".into()),
+        serde_json::Value::String(
+            declared
+                .last()
+                .and_then(|stage| stage.parent_role())
+                .unwrap_or("platform")
+                .into(),
+        ),
     );
-
-    let platform_executable = platform.root().executable();
+    let mut stages = vec![serde_json::json!({
+        "role": "client",
+        "lifecycle": "session",
+        "terminal": true,
+        "match": client_predicates,
+    })];
+    for stage in declared.iter().rev().filter(|stage| !stage.is_terminal()) {
+        stages.push(serde_json::json!({
+            "role": stage.role(),
+            "lifecycle": "session",
+            "match": {
+                "exe": stage.image_name().to_string_lossy(),
+                "path_regex": exact_path_regex(stage.executable()),
+                "descends_from": stage.parent_role().unwrap_or("platform"),
+            },
+        }));
+    }
+    stages.push(serde_json::json!({
+        "role": "platform",
+        "lifecycle": "service",
+        "match": {
+            "exe": platform_executable.file_name().expect("canonical platform executable has a file name").to_string_lossy(),
+            "path_regex": exact_path_regex(platform_executable),
+        },
+    }));
     let profile = serde_json::json!({
         "schema": 1,
         "kind": "profile",
@@ -453,22 +496,7 @@ pub(crate) fn synthesize_platform_profile(
             "platform": platform.platform(),
             "app_id": platform.application_id(),
         },
-        "stage": [
-            {
-                "role": "client",
-                "lifecycle": "session",
-                "terminal": true,
-                "match": client_predicates,
-            },
-            {
-                "role": "platform",
-                "lifecycle": "service",
-                "match": {
-                    "exe": platform_executable.file_name().expect("canonical platform executable has a file name").to_string_lossy(),
-                    "path_regex": exact_path_regex(platform_executable),
-                },
-            },
-        ],
+        "stage": stages,
     });
     Profile::parse(&profile.to_string()).map_err(CliError::from)
 }
@@ -1610,6 +1638,74 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
         );
+    }
+
+    #[test]
+    fn platform_profile_retains_exact_publisher_chain_under_steam() {
+        use fragcap::managed_launch::{
+            DirectExecutableLaunch, PlatformClientLaunch, PlatformDispatch,
+        };
+        use fragcap::targets::{ClassificationSource, TargetClassification};
+        let root = scratch("steam-publisher-profile");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["Steam.exe", "Publisher.exe", "Helper.exe", "Game.exe"] {
+            std::fs::write(root.join(name), b"fixture").unwrap();
+        }
+        let target = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "steam-publisher".into(),
+            name: "Steam Publisher".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: Some("steam:42".into()),
+            launch_entries: Some(serde_json::json!([
+                {"executable":"Publisher.exe","role":"launcher"},
+                {"executable":"Helper.exe","role":"bootstrap"},
+                {"executable":"Game.exe","role":"client"}
+            ])),
+            install_root: Some(root.to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(root.join("Steam.exe"), root.clone(), Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_target_stages(&target)
+        .unwrap();
+        let source = Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"heuristic-unverified","game":{"id":"target","name":"Target","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe"}}]}"#).unwrap();
+        let profile = synthesize_platform_profile(&source, &platform).unwrap();
+        assert_eq!(
+            profile
+                .stages()
+                .iter()
+                .map(|stage| stage.role())
+                .collect::<Vec<_>>(),
+            ["client", "bootstrap", "launcher", "platform"]
+        );
+        assert_eq!(
+            profile.stages()[0].predicates().descends_from(),
+            Some("bootstrap")
+        );
+        assert_eq!(
+            profile.stages()[1].predicates().descends_from(),
+            Some("launcher")
+        );
+        assert_eq!(
+            profile.stages()[2].predicates().descends_from(),
+            Some("platform")
+        );
+        assert!(profile.stages()[0].predicates().path_regex().is_some());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // Slice S059. The observe-mode profile validates and has the two-stage shape

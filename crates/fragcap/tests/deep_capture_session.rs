@@ -354,7 +354,7 @@ impl CaptureRunner for LateObservationCapture {
         _: &AppliedRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
-        *self.0.borrow_mut() = Duration::from_secs(11);
+        *self.0.borrow_mut() = Duration::from_secs(16);
         Ok(CaptureRunResult {
             observations: Vec::new(),
             interrupted: false,
@@ -1138,20 +1138,22 @@ fn config() -> SessionConfig {
 }
 
 #[test]
-fn ordinary_observation_preserves_four_minutes_and_refuses_a_hidden_cap() {
+fn explicit_long_observation_and_launch_refuse_only_above_reviewed_ceilings() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let mut request = config();
     request.mode = SessionMode::Capture;
     request.calibration_protocol = None;
-    request.deadlines.observation = Duration::from_secs(240);
+    request.deadlines.observation = Duration::from_secs(600);
+    request.deadlines.launch = Duration::from_secs(300);
     let prepared = DeepCapture::preflight(request.clone(), &mut environment).unwrap();
     assert_eq!(
         prepared.plan().deadlines.observation,
-        Duration::from_secs(240)
+        Duration::from_secs(600)
     );
+    assert_eq!(prepared.plan().deadlines.launch, Duration::from_secs(300));
 
-    request.deadlines.observation = Duration::from_secs(301);
+    request.deadlines.observation = Duration::from_secs(601);
     ledger.borrow_mut().clear();
     let mut environment = adapters(&ledger);
     let refusal = DeepCapture::preflight(request, &mut environment).unwrap_err();
@@ -1159,6 +1161,17 @@ fn ordinary_observation_preserves_four_minutes_and_refuses_a_hidden_cap() {
     assert!(
         ledger.borrow().is_empty(),
         "invalid duration reached an adapter"
+    );
+
+    let mut request = config();
+    request.deadlines.launch = Duration::from_secs(301);
+    ledger.borrow_mut().clear();
+    let mut environment = adapters(&ledger);
+    let refusal = DeepCapture::preflight(request, &mut environment).unwrap_err();
+    assert_eq!(refusal.code, "launch-bound");
+    assert!(
+        ledger.borrow().is_empty(),
+        "invalid launch reached an adapter"
     );
 }
 

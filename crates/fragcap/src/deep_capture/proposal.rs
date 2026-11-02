@@ -392,10 +392,17 @@ fn derive_topology(target: &TargetEntry) -> Result<DerivedTopology, CalibrationP
                 candidates,
             ));
         }
-        if launches.len() != 1 || launches[0].role().is_some_and(|role| role != "client") {
+        if launches.len() == 1 && launches[0].role().is_none_or(|role| role == "client") {
+            return Ok(DerivedTopology {
+                kind: CalibrationTopologyKind::Steam,
+                images: unique_images(std::iter::once("steam.exe".to_string()).chain(images)),
+                cold_case: CompatibilityLaunchCase::SteamProtocolCold,
+            });
+        }
+        if validate_publisher_chain(&launches).is_err() {
             return Err(limitation(
                 CalibrationProposalLimitationKind::AmbiguousLaunchDeclaration,
-                "a Steam calibration proposal requires one exact client declaration",
+                "a Steam calibration proposal requires one exact client or an ordered publisher chain",
                 candidates,
             ));
         }
@@ -817,6 +824,34 @@ mod tests {
             }
         ));
         assert!(steam.steps.is_empty());
+    }
+
+    #[test]
+    fn steam_publisher_roles_remain_a_cold_steam_topology() {
+        let steam = request(target(
+            Some("steam:123"),
+            json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Helper.exe", "role": "bootstrap" },
+                { "executable": "Game.exe", "role": "client" }
+            ]),
+        ));
+        let proposal = propose_calibration(&steam);
+        assert_eq!(proposal.topology, Some(CalibrationTopologyKind::Steam));
+        assert!(matches!(
+            proposal.readiness,
+            CalibrationLaunchReadiness::Ready {
+                launch_case: CompatibilityLaunchCase::SteamProtocolCold,
+                ..
+            }
+        ));
+        let warm = propose_calibration(
+            &steam.with_process_snapshot(CalibrationProcessSnapshot::complete(["HELPER.EXE"])),
+        );
+        assert!(matches!(
+            warm.readiness,
+            CalibrationLaunchReadiness::OperatorAction { .. }
+        ));
     }
 
     #[test]

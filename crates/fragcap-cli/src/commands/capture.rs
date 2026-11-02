@@ -27,7 +27,7 @@
 //!   name (the capability the retired `watch` carried).
 
 use fragcap::profile::FidelityTier;
-use fragcap::targets::{resolved_client_launch, Store};
+use fragcap::targets::{resolved_client_launch, Store, TargetEntry};
 use fragcap::{CaptureScope, FlowRegistry};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -52,6 +52,7 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
 pub(crate) struct PreparedCapture {
     profile: fragcap::Profile,
     promotion: Option<Promotion>,
+    stored_target: Option<TargetEntry>,
     config: assemble::EffectiveConfig,
     proxy_acquisition: Option<fragcap::deep_capture::LoopbackEndpoint>,
 }
@@ -182,6 +183,12 @@ fn managed_launch_authority(launch: Option<&fragcap::managed_launch::ManagedLaun
             "kind": "platform",
             "platform": platform.platform(),
             "root": direct_launch_authority(platform.root()),
+            "stages": platform.stages().iter().map(|stage| json!({
+                "executable": stage.executable().display().to_string(),
+                "parent_role": stage.parent_role(),
+                "role": stage.role(),
+                "terminal": stage.is_terminal(),
+            })).collect::<Vec<_>>(),
         }),
         Some(ManagedLaunch::Direct(direct)) => json!({
             "kind": "direct",
@@ -257,6 +264,7 @@ pub(crate) fn prepare(
     Ok(PreparedCapture {
         profile,
         promotion,
+        stored_target: stored_entry,
         config,
         proxy_acquisition: None,
     })
@@ -280,8 +288,12 @@ pub(crate) fn prepare_owned_platform(
             "owned platform preparation requires a stored Steam managed launch",
         ));
     }
+    let target = prepared.stored_target.as_ref().ok_or_else(|| {
+        CliError::usage("owned platform preparation requires a stored Steam target")
+    })?;
     let platform = SteamPlatformAdapter::discover()
         .and_then(|adapter| adapter.prepare(&prepared.profile))
+        .and_then(|platform| platform.with_target_stages(target))
         .map_err(|error| CliError::usage(error.to_string()))?;
     prepared.profile = target_resolve::synthesize_platform_profile(&prepared.profile, &platform)?;
     prepared.config.launch = Some(ManagedLaunch::Platform(platform));
@@ -328,6 +340,7 @@ fn run_prepared_outcome(
     let PreparedCapture {
         profile,
         promotion,
+        stored_target: _,
         mut config,
         proxy_acquisition,
     } = prepared;
