@@ -10,6 +10,26 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.12] - 2026-11-02
+
+### Changed
+
+Deep Capture now preserves explicit two-minute calibration, ten-minute ordinary observation, and five-minute managed-launch requests without silent shortening, and reports requested and effective timing in plans, terminal output, and manifests. Cold Steam targets can declare ordered publisher stages with exact shutdown scope; process traces retain managed descendants, and native proxy connections report independently verified process-instance ownership or an explicit evidence gap.
+
+Contributor guidance now requires installed-product field tests to use Fragcap's default data and session locations, report effective canonical paths, and keep temporary agent files separate from native retained evidence.
+
+### Fixed
+
+Current documentation and frozen replay authority now identify the independently verified v0.10.11 files and all ten published crates. Ordinary-user installation CA health, HTTPS CONNECT default-port authority and timeout diagnoses, and HTTPS compatibility evidence are described as shipped, while v0.10.10 limitations remain historical.
+
+### Decisions
+
+**2026-11-01** S187 combines #540 and #541 because longer observation must remain aligned with managed-launch authority and release evidence. The 30-second launch and 60-second calibration defaults remain, while explicit launch and observation ceilings are five and ten minutes. Capture gets a separate five-second return allowance in both modes. Steam publisher roles are declared before effects; undeclared descendants remain observed exit obligations without process-control rights. Inception-time socket table evidence is bound to one process generation and exact launch ancestry after process collection, independently of packet-flow correlation. A bounded independent collector handles the socket-table read so an accept cannot stall the single proxy runtime worker; full, unavailable, or unfinished collection stays explicit. Missing or ambiguous data cannot become a final-client claim. The isolated installed-binary timing fixture uses the certification account's actual default paths and retains no public private-path data. Real-title compatibility and first-second protocol failures remain unverified under #542.
+
+2026-11-01: Advance current v0.10.11 publication markers, documentation coverage, the frozen review candidate and six exact asset authorities only after merged source, annotated tag, all ten post-merge main workflows, all four tagged jobs, normal protected registry approval, six independently downloaded files and ten non-yanked registry archives reconcile. Retarget the published replay label to these verified bytes. Preserve the v0.8.0 predecessor, unsigned policy, historical evidence and unperformed independent whole-product review status. Hosted clean-install certification does not claim a local installed-product run or real-title Deep Capture success.
+
+2026-11-02: The v0.10.12 release bump changes only eleven first-party package versions across the three governed dependency graphs. Rebind their measured digests and unsafe-review inventory without changing third-party packages, feature edges, package and edge counts, review expiry, or exceptions. Synchronize the nine first-party identities in each isolated fuzz and native-performance lockfile; their third-party resolutions remain unchanged. The independent-review record remains an empty not-started template for the new product version.
+
 ## [0.10.11] - 2026-10-31
 
 ### Fixed
@@ -2528,6 +2548,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.12]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.12
 [0.10.11]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.11
 [0.10.10]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10
 [0.10.9]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.9
