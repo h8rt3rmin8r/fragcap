@@ -3724,10 +3724,7 @@ fn run_real_capture(
         if outcome.exit == Exit::SUCCESS {
             Ok(())
         } else {
-            Err(CliError::failure(format!(
-                "packet capture ended with exit code {}",
-                outcome.exit.code()
-            )))
+            Err(CliError::failure(capture_failure_message(&outcome)))
         }
     });
     (
@@ -3737,6 +3734,39 @@ fn run_real_capture(
         interrupted,
         retained_target_packets,
     )
+}
+
+fn capture_failure_message(outcome: &crate::orchestrator::CaptureOutcome) -> String {
+    let Some(
+        reason @ (fragcap::StopReason::AcquisitionTimeout
+        | fragcap::StopReason::AmbiguousStageMatch
+        | fragcap::StopReason::PlatformExitedBeforeClient
+        | fragcap::StopReason::EscapedPlatformClient
+        | fragcap::StopReason::PlatformDispatchFailed
+        | fragcap::StopReason::PlatformStartFailed
+        | fragcap::StopReason::ProcessWatcherLost),
+    ) = outcome.stop_reason
+    else {
+        return format!(
+            "packet capture ended with exit code {}",
+            outcome.exit.code()
+        );
+    };
+    let reason_code = format!("{reason:?}").to_ascii_lowercase();
+    let mut message = format!("packet capture stopped: {reason_code}");
+    if reason == fragcap::StopReason::AcquisitionTimeout
+        && !outcome.process_evidence.stage_path_limitations.is_empty()
+    {
+        let reasons = outcome
+            .process_evidence
+            .stage_path_limitations
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        message.push_str(&format!("; managed stage identity unverified ({reasons})"));
+    }
+    message
 }
 
 fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::CaptureProcessEvidence {
@@ -5075,6 +5105,33 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn acquisition_failure_names_the_reason_and_stage_limitation() {
+        use fragcap::deep_capture as dc;
+        let mut process_evidence = fragcap::deep_capture::CaptureProcessEvidence::default();
+        process_evidence.note_stage_limitation(dc::StagePathLimitation::PathUnavailable);
+        let outcome = crate::orchestrator::CaptureOutcome {
+            exit: crate::exit::Exit::FAILURE,
+            observed_holder: None,
+            stop_reason: Some(fragcap::StopReason::AcquisitionTimeout),
+            process_evidence,
+            process_release_watch: None,
+            retained_packets: 0,
+        };
+        let message = super::capture_failure_message(&outcome);
+        assert!(message.contains("acquisitiontimeout"), "{message}");
+        assert!(message.contains("stage-path-unavailable"), "{message}");
+        let sink_failed_after_duration = crate::orchestrator::CaptureOutcome {
+            stop_reason: Some(fragcap::StopReason::DurationReached),
+            process_evidence: fragcap::deep_capture::CaptureProcessEvidence::default(),
+            ..outcome
+        };
+        assert_eq!(
+            super::capture_failure_message(&sink_failed_after_duration),
+            "packet capture ended with exit code 1"
+        );
+    }
+
     #[test]
     fn real_capture_receives_an_inner_duration_with_finite_return_budget() {
         use crate::cli::{Cli, Command};

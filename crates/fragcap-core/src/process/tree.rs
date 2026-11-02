@@ -84,6 +84,7 @@ pub struct ProcessNode {
     parent: Option<NodeId>,
     ancestry: Ancestry,
     image: Arc<str>,
+    verified_path: Option<Arc<str>>,
     command_line: CommandLine,
     started: Option<Timestamp>,
     exited: Option<Timestamp>,
@@ -118,6 +119,12 @@ impl ProcessNode {
     /// The image text as observed, which may be only a file name.
     pub fn image(&self) -> &str {
         &self.image
+    }
+
+    /// A separately verified executable path joined to this creation event.
+    /// The original event image remains available through [`Self::image`].
+    pub fn verified_path(&self) -> Option<&str> {
+        self.verified_path.as_deref()
     }
 
     /// The image file name, derived from the observed text.
@@ -203,6 +210,17 @@ impl ProcessTree {
 
     /// Fold one observed event.
     pub fn apply(&mut self, event: ProcessEvent) {
+        self.apply_with_verified_path(event, None);
+    }
+
+    /// Fold an event with an optional path already verified against its exact
+    /// process generation by the caller. The tree records provenance but never
+    /// queries the operating system or infers a path from a command line.
+    pub fn apply_with_verified_path(
+        &mut self,
+        event: ProcessEvent,
+        verified_path: Option<Arc<str>>,
+    ) {
         match event {
             ProcessEvent::Started {
                 pid,
@@ -210,7 +228,14 @@ impl ProcessTree {
                 image,
                 command_line,
                 at,
-            } => self.apply_started(ProcessId(pid), ProcessId(parent), image, command_line, at),
+            } => self.apply_started(
+                ProcessId(pid),
+                ProcessId(parent),
+                image,
+                verified_path,
+                command_line,
+                at,
+            ),
             ProcessEvent::Exited { pid, at } => self.apply_exited(ProcessId(pid), at),
         }
     }
@@ -274,6 +299,7 @@ impl ProcessTree {
                 parent,
                 ancestry,
                 image: Arc::clone(&r.image),
+                verified_path: None,
                 command_line: r.command_line.clone(),
                 started: r.started,
                 exited: None,
@@ -297,6 +323,7 @@ impl ProcessTree {
         pid: ProcessId,
         parent_pid: ProcessId,
         image: Arc<str>,
+        verified_path: Option<Arc<str>>,
         command_line: CommandLine,
         at: Timestamp,
     ) {
@@ -328,6 +355,7 @@ impl ProcessTree {
                     Ancestry::Unresolved
                 };
                 n.image = image;
+                n.verified_path = verified_path;
                 n.command_line = command_line;
                 n.started = Some(at);
                 return;
@@ -352,6 +380,7 @@ impl ProcessTree {
             parent,
             ancestry,
             image,
+            verified_path,
             command_line,
             started: Some(at),
             exited: None,
@@ -656,6 +685,23 @@ mod tests {
         let n = t.node(NodeId(0)).unwrap();
         assert_eq!(n.image_name(), "eso64.exe");
         assert_eq!(n.image(), "C:\\Program Files\\Zenimax\\eso64.exe");
+    }
+
+    #[test]
+    fn verified_path_is_separate_from_the_observed_image_and_pid_generation() {
+        let mut tree = ProcessTree::new();
+        tree.apply_with_verified_path(
+            ProcessEvent::started(17, 2, "Game.exe", "C:\\untrusted\\Game.exe", at(10)),
+            Some(Arc::from("C:\\Games\\Game.exe")),
+        );
+        exit(&mut tree, 17, 20);
+        start(&mut tree, 17, 2, "Game.exe", 30);
+        let first = tree.node(NodeId(0)).unwrap();
+        let second = tree.node(NodeId(1)).unwrap();
+        assert_eq!(first.image(), "Game.exe");
+        assert_eq!(first.verified_path(), Some("C:\\Games\\Game.exe"));
+        assert_eq!(second.image(), "Game.exe");
+        assert_eq!(second.verified_path(), None);
     }
 
     #[test]

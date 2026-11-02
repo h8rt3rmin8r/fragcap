@@ -9,6 +9,7 @@ use fragcap_core::{
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::managed_shutdown::ProcessIdentity;
 
@@ -16,6 +17,86 @@ use crate::managed_shutdown::ProcessIdentity;
 pub struct ManagedProcessInstance {
     pub event_at: Timestamp,
     pub identity: ProcessIdentity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagePathLimitation {
+    PathUnavailable,
+    CreationMismatch,
+    ImageMismatch,
+    AccountSessionMismatch,
+    PathMismatch,
+    StageMatchUnverified,
+}
+
+impl StagePathLimitation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PathUnavailable => "stage-path-unavailable",
+            Self::CreationMismatch => "stage-creation-mismatch",
+            Self::ImageMismatch => "stage-image-mismatch",
+            Self::AccountSessionMismatch => "stage-account-session-mismatch",
+            Self::PathMismatch => "stage-path-mismatch",
+            Self::StageMatchUnverified => "stage-match-unverified",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedEventObservation {
+    pub source_retained: bool,
+    pub verified_path: Option<Arc<str>>,
+    pub limitation: Option<StagePathLimitation>,
+}
+
+const MAX_STAGE_EVENT_LAG_NANOS: i128 = 1_000_000_000;
+
+fn path_spelling(path: &str) -> String {
+    let ordinary = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    ordinary.replace('/', "\\")
+}
+
+fn image_name(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
+fn case_equal(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
+fn verify_stage_path_values(
+    event: &ProcessEvent,
+    observed_pid: u32,
+    created_unix_nanos: i128,
+    path: &std::path::Path,
+    same_user_session: bool,
+    shutdown_scope: &[PathBuf],
+) -> Result<Arc<str>, StagePathLimitation> {
+    let ProcessEvent::Started { pid, image, at, .. } = event else {
+        return Err(StagePathLimitation::CreationMismatch);
+    };
+    let lag = i128::from(at.as_nanos()) - created_unix_nanos;
+    if *pid != observed_pid || !(0..=MAX_STAGE_EVENT_LAG_NANOS).contains(&lag) {
+        return Err(StagePathLimitation::CreationMismatch);
+    }
+    if !same_user_session {
+        return Err(StagePathLimitation::AccountSessionMismatch);
+    }
+    let path = path_spelling(&path.to_string_lossy());
+    if !case_equal(image_name(&path), image_name(image)) {
+        return Err(StagePathLimitation::ImageMismatch);
+    }
+    if !shutdown_scope
+        .iter()
+        .any(|expected| case_equal(&path, &path_spelling(&expected.to_string_lossy())))
+    {
+        return Err(StagePathLimitation::PathMismatch);
+    }
+    Ok(Arc::from(path))
 }
 
 /// Maximum raw process events retained by one capture run.
@@ -59,6 +140,7 @@ pub struct CaptureProcessEvidence {
     pub launch_identity: Option<ProcessIdentity>,
     pub stage_transitions: Vec<StageTransition>,
     pub stage_transitions_unretained: u64,
+    pub stage_path_limitations: BTreeMap<&'static str, u64>,
     pub watcher_report: Option<WatcherReport>,
     pub unparseable_events: u64,
     pub rundown_ignored: u64,
@@ -86,6 +168,7 @@ impl Default for CaptureProcessEvidence {
             launch_identity: None,
             stage_transitions: Vec::new(),
             stage_transitions_unretained: 0,
+            stage_path_limitations: BTreeMap::new(),
             watcher_report: None,
             unparseable_events: 0,
             rundown_ignored: 0,
@@ -101,17 +184,47 @@ impl Default for CaptureProcessEvidence {
 
 impl CaptureProcessEvidence {
     pub fn observe(&mut self, event: &ProcessEvent) -> bool {
+        self.observe_managed(event).source_retained
+    }
+
+    pub fn note_stage_limitation(&mut self, limitation: StagePathLimitation) {
+        let count = self
+            .stage_path_limitations
+            .entry(limitation.as_str())
+            .or_default();
+        *count = count.saturating_add(1);
+    }
+
+    pub fn observe_managed(&mut self, event: &ProcessEvent) -> ManagedEventObservation {
+        let mut verified_path = None;
+        let mut limitation = None;
         if let ProcessEvent::Started { pid, image, at, .. } = event {
-            let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
-            let declared = self.shutdown_scope.iter().any(|path| {
-                path.file_name().is_some_and(|expected| {
-                    expected.to_string_lossy().to_lowercase() == name.to_lowercase()
-                })
-            });
+            let name = image_name(image);
+            let declared = self
+                .shutdown_scope
+                .iter()
+                .any(|path| case_equal(image_name(&path.to_string_lossy()), name));
             if declared {
+                let needs_verified_path = !image.contains(['\\', '/']);
                 if self.managed_instances.len() >= 64 {
                     self.managed_instance_limit_reached = true;
-                } else if let Ok(identity) = ProcessIdentity::observe(*pid) {
+                }
+                if let Ok(identity) = ProcessIdentity::observe(*pid) {
+                    if needs_verified_path {
+                        let same_user_session = ProcessIdentity::current()
+                            .is_ok_and(|current| identity.same_user_session(&current));
+                        match verify_stage_path_values(
+                            event,
+                            identity.pid,
+                            identity.created_unix_nanos(),
+                            &identity.path,
+                            same_user_session,
+                            &self.shutdown_scope,
+                        ) {
+                            Ok(path) => verified_path = Some(path),
+                            Err(reason) => limitation = Some(reason),
+                        }
+                    }
                     let same_path = self.shutdown_scope.iter().any(|path| {
                         path.to_string_lossy().to_lowercase()
                             == identity.path.to_string_lossy().to_lowercase()
@@ -119,21 +232,31 @@ impl CaptureProcessEvidence {
                     let event_nanos = i128::from(at.nanos_since(Timestamp::from_nanos(0)));
                     let close_to_event =
                         (identity.created_unix_nanos() - event_nanos).abs() <= 5_000_000_000;
-                    if same_path && close_to_event {
+                    if self.managed_instances.len() < 64 && same_path && close_to_event {
                         self.managed_instances.push(ManagedProcessInstance {
                             event_at: *at,
                             identity,
                         });
                     }
+                } else if needs_verified_path {
+                    limitation = Some(StagePathLimitation::PathUnavailable);
                 }
             }
         }
-        if self.events.len() < self.event_limit {
+        if let Some(reason) = limitation {
+            self.note_stage_limitation(reason);
+        }
+        let source_retained = if self.events.len() < self.event_limit {
             self.events.push(event.clone());
             true
         } else {
             self.events_unretained = self.events_unretained.saturating_add(1);
             false
+        };
+        ManagedEventObservation {
+            source_retained,
+            verified_path,
+            limitation,
         }
     }
 
@@ -422,6 +545,9 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     sequence += 1;
 
     let mut limitations = BTreeMap::<&'static str, u64>::new();
+    for (reason, count) in &evidence.stage_path_limitations {
+        limitations.insert(*reason, *count);
+    }
     if !managed_root_proven {
         limitations.insert("managed-descendant-projection-unavailable", 1);
     }
@@ -764,6 +890,138 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_bound_path_rejects_reused_pid_wrong_path_and_missing_authority() {
+        let event = ProcessEvent::started(
+            41,
+            7,
+            "Game.exe",
+            "C:\\untrusted\\Game.exe",
+            Timestamp::from_nanos(10_000_000_000),
+        );
+        let scope = [PathBuf::from("C:\\Games\\Game.exe")];
+        let good = verify_stage_path_values(&event, 41, 9_999_000_000, &scope[0], true, &scope);
+        assert_eq!(good.unwrap().as_ref(), "C:\\Games\\Game.exe");
+        assert_eq!(
+            verify_stage_path_values(&event, 41, 10_000_000_001, &scope[0], true, &scope),
+            Err(StagePathLimitation::CreationMismatch),
+        );
+        assert_eq!(
+            verify_stage_path_values(&event, 41, 8_000_000_000, &scope[0], true, &scope),
+            Err(StagePathLimitation::CreationMismatch),
+        );
+        assert_eq!(
+            verify_stage_path_values(&event, 42, 9_999_000_000, &scope[0], true, &scope),
+            Err(StagePathLimitation::CreationMismatch),
+        );
+        assert_eq!(
+            verify_stage_path_values(
+                &event,
+                41,
+                9_999_000_000,
+                &PathBuf::from("C:\\Other\\Game.exe"),
+                true,
+                &scope,
+            ),
+            Err(StagePathLimitation::PathMismatch),
+        );
+        assert_eq!(
+            verify_stage_path_values(&event, 41, 9_999_000_000, &scope[0], false, &scope),
+            Err(StagePathLimitation::AccountSessionMismatch),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn current_process_query_proves_a_basename_start_without_using_its_command_line() {
+        let identity = ProcessIdentity::current().unwrap();
+        let name = image_name(&identity.path.to_string_lossy()).to_string();
+        let at = Timestamp::from_nanos(
+            i64::try_from(identity.created_unix_nanos() + 1_000_000).unwrap(),
+        );
+        let event = ProcessEvent::started(identity.pid, 1, &name, "C:\\wrong\\image.exe", at);
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![identity.path.clone()],
+            ..Default::default()
+        };
+        let observed = evidence.observe_managed(&event);
+        assert!(observed.source_retained);
+        assert_eq!(observed.limitation, None);
+        assert_eq!(
+            observed.verified_path.as_deref(),
+            Some(path_spelling(&identity.path.to_string_lossy()).as_str())
+        );
+        assert_eq!(evidence.events[0], event);
+        assert_eq!(evidence.managed_instances.len(), 1);
+
+        let mut wrong = CaptureProcessEvidence {
+            shutdown_scope: vec![identity.path.with_file_name("elsewhere").join(&name)],
+            ..Default::default()
+        };
+        let outcome = wrong.observe_managed(&event);
+        assert_eq!(outcome.limitation, Some(StagePathLimitation::PathMismatch));
+        assert!(outcome.verified_path.is_none());
+    }
+
+    #[test]
+    fn unavailable_managed_candidate_is_counted_without_a_stage_match() {
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![PathBuf::from("C:\\Games\\Game.exe")],
+            ..Default::default()
+        };
+        let observed = evidence.observe_managed(&ProcessEvent::started(
+            u32::MAX,
+            1,
+            "Game.exe",
+            "C:\\Games\\Game.exe",
+            Timestamp::from_nanos(10),
+        ));
+        assert_eq!(
+            observed.limitation,
+            Some(StagePathLimitation::PathUnavailable)
+        );
+        assert_eq!(observed.verified_path, None);
+        assert_eq!(evidence.stage_path_limitations["stage-path-unavailable"], 1);
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: None,
+            target_handle: "synthetic",
+            launch_case: "platform-cold",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        assert!(trace.jsonl.contains("stage-path-unavailable"));
+        assert!(trace.summary.limitations >= 1);
+    }
+
+    #[test]
+    fn managed_candidate_and_exact_path_preserve_unicode_case_matching() {
+        let declared = PathBuf::from("C:\\Games\\ÉGame.exe");
+        let event = ProcessEvent::started(u32::MAX, 1, "égame.exe", "", Timestamp::from_nanos(10));
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![declared.clone()],
+            ..Default::default()
+        };
+        let observation = evidence.observe_managed(&event);
+        assert_eq!(
+            observation.limitation,
+            Some(StagePathLimitation::PathUnavailable)
+        );
+        assert_eq!(evidence.stage_path_limitations["stage-path-unavailable"], 1);
+        assert_eq!(
+            verify_stage_path_values(
+                &event,
+                u32::MAX,
+                9,
+                &PathBuf::from("c:\\games\\égame.exe"),
+                true,
+                &[declared],
+            ),
+            Ok(Arc::from("c:\\games\\égame.exe"))
+        );
+    }
     use fragcap_core::{Attribution, Fidelity, FlowId, FlowObservation, ProcessRecord};
 
     #[test]

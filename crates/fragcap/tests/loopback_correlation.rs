@@ -153,7 +153,7 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
     for ip in ["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()] {
         let (proxy, endpoints) = real_exchanges(ip);
         let profile = Profile::parse(
-            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"fixture","name":"Fixture","platform":"steam","app_id":"42"},"stage":[{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_regex":"(?i)^C:\\\\Steam\\\\steam\\.exe$"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"client.exe","descends_from":"platform"}}]}"#,
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"fixture","name":"Fixture","platform":"steam","app_id":"42"},"stage":[{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_regex":"(?i)^C:\\\\Steam\\\\steam\\.exe$"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"client.exe","path_regex":"(?i)^C:\\\\Games\\\\client\\.exe$","descends_from":"platform"}}]}"#,
         )
         .unwrap();
         let config = SessionConfig {
@@ -168,10 +168,13 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
             ProcessEvent::started(PLATFORM, 7, "steam.exe", "fixture", at(6)),
             ProcessEvent::started(CLIENT, PLATFORM, "client.exe", "fixture", at(9)),
         ];
-        for event in &starts {
-            session.on_process_event(event.clone());
-        }
+        session.on_process_event(starts[0].clone());
+        session.on_process_event_with_verified_path(
+            starts[1].clone(),
+            Some("C:\\Games\\client.exe".into()),
+        );
         assert_eq!(session.role_bindings().len(), 2);
+        assert_eq!(session.tree().nodes().last().unwrap().image(), "client.exe");
         let mut rows = Vec::new();
         let mut packets = VecDeque::new();
         // The same exact client flow has an earlier packet outside the armed
@@ -260,6 +263,36 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
         assert_eq!(pcap.matches("pid=42;").count(), 2);
         assert_eq!(pcap.matches("pid=43;").count(), 2);
         assert!(!pcap.contains("pid=99;"));
+        if let Some(tshark) = std::env::var_os("FRAGCAP_TSHARK_EXE") {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("owned.fcapng");
+            std::fs::write(&path, pcap_bytes.contents()).unwrap();
+            let mut command = std::process::Command::new(tshark);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let output = command
+                .args([
+                    "-r",
+                    path.to_str().unwrap(),
+                    "-T",
+                    "fields",
+                    "-e",
+                    "frame.comment",
+                ])
+                .output()
+                .expect("unmodified TShark reads the controlled pcapng");
+            assert!(
+                output.status.success(),
+                "TShark: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let comments = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(comments.matches("pid=43;").count(), 2, "{comments}");
+            assert_eq!(comments.matches("pid=42;").count(), 2, "{comments}");
+        }
         let summaries = registry.summaries();
         assert_eq!(summaries.len(), 2);
         for summary in &summaries {

@@ -406,6 +406,7 @@ fn capture_prerecorded(
         let summary = build_summary(false, &session, &CaptureStats::default(), None);
         emitter.summary(&summary);
         let mut outcome = CaptureOutcome::bare(Exit::FAILURE);
+        outcome.stop_reason = session.stop_reason();
         process_evidence.terminal_state = "failed".to_string();
         process_evidence.stop_reason = session
             .stop_reason()
@@ -1041,6 +1042,7 @@ fn capture_live(
             } else {
                 Exit::FAILURE
             });
+        outcome.stop_reason = session.stop_reason();
         outcome.process_evidence = process_evidence.clone();
         outcome.process_release_watch = release_watch;
         return Ok(outcome);
@@ -1558,15 +1560,44 @@ fn apply_event(
     emitter: &mut Emitter,
     process_evidence: &mut CaptureProcessEvidence,
 ) {
-    let source_retained = process_evidence.observe(&event);
+    let observation = process_evidence.observe_managed(&event);
+    let source_retained = observation.source_retained;
     let event_at = event.at();
+    let event_pid = event.pid();
+    let event_started = matches!(event, ProcessEvent::Started { .. });
     let exited_pid = match &event {
         ProcessEvent::Exited { pid, .. } => Some(*pid),
         _ => None,
     };
     let image = assemble::image_name(&event);
 
-    session.on_process_event(event);
+    session.on_process_event_with_verified_path(event, observation.verified_path.clone());
+
+    if event_started && observation.verified_path.is_some() {
+        let bound_stage = session
+            .tree()
+            .resolve(fragcap::ProcessId(event_pid), event_at)
+            .and_then(|id| session.tree().node(id))
+            .and_then(|node| node.stage());
+        if bound_stage.is_none() {
+            let reason = fragcap::deep_capture::StagePathLimitation::StageMatchUnverified;
+            process_evidence.note_stage_limitation(reason);
+            if process_evidence.stage_path_limitations.get(reason.as_str()) == Some(&1) {
+                emitter.warn(&format!(
+                    "managed stage identity unverified: {} (pid {event_pid})",
+                    reason.as_str()
+                ));
+            }
+        }
+    }
+    if let Some(reason) = observation.limitation {
+        if process_evidence.stage_path_limitations.get(reason.as_str()) == Some(&1) {
+            emitter.warn(&format!(
+                "managed stage identity unverified: {} (pid {event_pid})",
+                reason.as_str()
+            ));
+        }
+    }
 
     let bindings = session.role_bindings();
     let current: HashMap<u32, String> = bindings
@@ -1903,6 +1934,79 @@ mod tests {
             std::time::Instant::now() - std::time::Duration::from_secs(60),
         );
         assert_eq!(session.stop_reason(), Some(StopReason::AcquisitionTimeout));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn orchestrator_binds_a_basename_only_managed_client_from_its_real_process_identity() {
+        use crate::emit::{Emitter, Format, Verbosity};
+        use fragcap::deep_capture::CaptureProcessEvidence;
+        use fragcap::managed_shutdown::ProcessIdentity;
+        use fragcap::{CaptureSession, ProcessEvent, SessionConfig, SessionState};
+        use std::collections::HashMap;
+
+        let identity = ProcessIdentity::current().unwrap();
+        let canonical = identity.path.to_string_lossy();
+        let ordinary = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+        let image = ordinary.rsplit(['\\', '/']).next().unwrap();
+        let expression = format!("(?i)^{}$", regex::escape(ordinary));
+        let profile = fragcap::Profile::parse(&serde_json::json!({
+            "schema": 1,
+            "kind": "profile",
+            "fidelity": "verified",
+            "game": {"id": "synthetic", "name": "Synthetic", "platform": "steam", "app_id": "42"},
+            "stage": [
+                {"role": "client", "lifecycle": "session", "terminal": true, "match": {"exe": image, "path_regex": expression, "descends_from": "platform"}},
+                {"role": "platform", "lifecycle": "service", "match": {"exe": "Steam.exe", "path_contains": "Steam.exe"}}
+            ]
+        }).to_string()).unwrap();
+        let mut session = CaptureSession::new(
+            profile,
+            SessionConfig {
+                exact_stage_ownership: true,
+                ..Default::default()
+            },
+        );
+        let created = i64::try_from(identity.created_unix_nanos()).unwrap();
+        let root_at = Timestamp::from_nanos(created - 1_000_000);
+        let client_at = Timestamp::from_nanos(created + 1_000_000);
+        let root_pid = u32::MAX - 1;
+        session.require_owned_platform_root("C:\\Fixture\\Steam.exe");
+        session.arm_owned_platform_root(root_pid, 1, root_at, root_at);
+        session.attach(Timestamp::from_nanos(0));
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![identity.path.clone()],
+            ..Default::default()
+        };
+        let mut bound = HashMap::new();
+        let mut output = Vec::new();
+        let mut emitter = Emitter::new(&mut output, Format::Json, Verbosity::Normal);
+        super::apply_event(
+            ProcessEvent::started(root_pid, 1, "Steam.exe", "", root_at),
+            &mut session,
+            &mut bound,
+            &mut emitter,
+            &mut evidence,
+        );
+        assert_eq!(session.role_bindings().len(), 1);
+        super::apply_event(
+            ProcessEvent::started(
+                identity.pid,
+                root_pid,
+                image,
+                "untrusted command line",
+                client_at,
+            ),
+            &mut session,
+            &mut bound,
+            &mut emitter,
+            &mut evidence,
+        );
+        assert_eq!(session.state(), SessionState::Capturing);
+        assert_eq!(session.role_bindings().len(), 2);
+        assert_eq!(session.tree().nodes().last().unwrap().image(), image);
+        assert!(evidence.stage_path_limitations.is_empty());
+        assert!(String::from_utf8(output).unwrap().contains("stage.matched"));
     }
 
     #[cfg(all(feature = "etw", windows))]

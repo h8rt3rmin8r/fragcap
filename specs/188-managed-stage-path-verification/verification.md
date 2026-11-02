@@ -1,0 +1,16 @@
+# S188 verification ledger
+
+## 2026-11-02 local candidate
+
+- `cargo xtask ci`: passed on Windows, including format, clippy, workspace tests, lint, dependency and license checks, supply chain, package contract, wrappers, documentation, spec revision, native conformance, performance authority, and the retained Windows integration registry.
+- `cargo test -j 1 -p fragcap-cli --features live,socket-table,etw --lib`: 440 passed, three existing tier-2 tests ignored. The local build used the pinned Npcap SDK import library from `target/npcap-sdk-1.16/Lib/x64`.
+- `orchestrator_binds_a_basename_only_managed_client_from_its_real_process_identity`: passed on Windows. The production event fold queried the running test process and bound a basename event to an exact synthesized client stage under a synthetic owned Steam root. This test did not run ETW or Npcap.
+- `simple_steam_client_requires_the_exact_verified_path` and `platform_profile_retains_exact_publisher_chain_under_steam`: passed. They exercise the synthesized profile through `CaptureSession`, including exact path, absent path, wrong path, escaped parent, ambiguous second client, and missing publisher intermediary.
+- `event_bound_path_rejects_reused_pid_wrong_path_and_missing_authority`, `current_process_query_proves_a_basename_start_without_using_its_command_line`, and `unavailable_managed_candidate_is_counted_without_a_stage_match`: passed. They cover directional creation-time, PID reuse, path, account/session, and process-trace limitation authority.
+- `managed_candidate_and_exact_path_preserve_unicode_case_matching`: passed after the first Codex review identified an ASCII-only candidate-name comparison. The managed candidate filter and exact path proof now retain the prior Unicode lowercase comparison.
+- `both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth`: passed with `FRAGCAP_TSHARK_EXE=C:\Program Files\Wireshark\tshark.exe`. Real loopback sockets supplied endpoints; declared frames traversed the scoped gate and pcapng writer; unmodified TShark read two client-owned and two platform-owned packet comments in each IPv4 and IPv6 run. The frames were declared fixtures, not Npcap observations.
+- `acquisition_failure_names_the_reason_and_stage_limitation` and `acquisition_timeout_keeps_its_reason_and_runs_final_cleanup`: passed. They cover top-level reason formatting and the composed failure path with partial outcome, capture stop, proxy stop/cleanup, and manifest finalization.
+
+## Evidence still required before #547 can be closed
+
+The repository has no existing isolated CI row that combines a synthetic cold Steam launch, basename-only live ETW events, an installed Npcap driver, actual target-owned frame capture, and unmodified TShark readback. The S188 tests above establish the event join, stage acquisition, scoped packet gate, and analyzer readback in separate controlled seams. They do not establish the required single production-path Windows run or the full composed partial packet/proxy/manifest/cleanup readback in one timeout run. T010, T013, T014, and T016 remain open pending that evidence. A private installed-title retest and release publication are separate from this repository-controlled gate.
