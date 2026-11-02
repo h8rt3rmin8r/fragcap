@@ -1641,6 +1641,124 @@ mod tests {
     }
 
     #[test]
+    fn simple_steam_client_requires_the_exact_verified_path() {
+        use fragcap::managed_launch::{
+            DirectExecutableLaunch, PlatformClientLaunch, PlatformDispatch,
+        };
+        use fragcap::targets::{ClassificationSource, TargetClassification};
+
+        let root = scratch("steam-client-path");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["Steam.exe", "Game.exe"] {
+            std::fs::write(root.join(name), b"fixture").unwrap();
+        }
+        let target = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "steam-client".into(),
+            name: "Steam Client".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: Some("steam:42".into()),
+            launch_entries: Some(serde_json::json!([
+                {"executable":"Game.exe","role":"client"}
+            ])),
+            install_root: Some(root.to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(root.join("Steam.exe"), root.clone(), Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_target_stages(&target)
+        .unwrap();
+        let source = Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"heuristic-unverified","game":{"id":"target","name":"Target","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe"}}]}"#).unwrap();
+        let profile = synthesize_platform_profile(&source, &platform).unwrap();
+        let mut session = fragcap::CaptureSession::new(
+            profile.clone(),
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            },
+        );
+        let ts = |n| fragcap::Timestamp::from_nanos(n);
+        session.require_owned_platform_root(&process_path_spelling(platform.root().executable()));
+        session.arm_owned_platform_root(10, 1, ts(1), ts(3));
+        session.attach(ts(0));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            10,
+            1,
+            "Steam.exe",
+            "",
+            ts(2),
+        ));
+        let client_event = |pid, parent| {
+            fragcap::ProcessEvent::started(pid, parent, "Game.exe", "untrusted command line", ts(4))
+        };
+        session.on_process_event_with_verified_path(
+            client_event(11, 10),
+            Some("C:\\Other\\Game.exe".into()),
+        );
+        session.on_process_event(client_event(12, 10));
+        assert_eq!(session.role_bindings().len(), 1);
+        assert_eq!(session.state(), fragcap::SessionState::Watching);
+        session.on_process_event_with_verified_path(
+            client_event(13, 99),
+            Some(process_path_spelling(platform.stages()[0].executable()).into()),
+        );
+        assert_eq!(
+            session.stop_reason(),
+            Some(fragcap::StopReason::EscapedPlatformClient)
+        );
+
+        let mut session = fragcap::CaptureSession::new(
+            profile.clone(),
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            },
+        );
+        session.require_owned_platform_root(&process_path_spelling(platform.root().executable()));
+        session.arm_owned_platform_root(10, 1, ts(1), ts(3));
+        session.attach(ts(0));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            10,
+            1,
+            "Steam.exe",
+            "",
+            ts(2),
+        ));
+        session.on_process_event_with_verified_path(
+            client_event(14, 10),
+            Some(process_path_spelling(platform.stages()[0].executable()).into()),
+        );
+        assert_eq!(session.state(), fragcap::SessionState::Capturing);
+        assert_eq!(session.role_bindings().len(), 2);
+        assert_eq!(session.tree().nodes().last().unwrap().image(), "Game.exe");
+        session.on_process_event_with_verified_path(
+            client_event(15, 10),
+            Some(process_path_spelling(platform.stages()[0].executable()).into()),
+        );
+        assert_eq!(
+            session.stop_reason(),
+            Some(fragcap::StopReason::AmbiguousStageMatch)
+        );
+        assert_eq!(session.role_bindings().len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn platform_profile_retains_exact_publisher_chain_under_steam() {
         use fragcap::managed_launch::{
             DirectExecutableLaunch, PlatformClientLaunch, PlatformDispatch,
@@ -1705,6 +1823,87 @@ mod tests {
             Some("platform")
         );
         assert!(profile.stages()[0].predicates().path_regex().is_some());
+        let mut session = fragcap::CaptureSession::new(
+            profile.clone(),
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            },
+        );
+        let ts = |n| fragcap::Timestamp::from_nanos(n);
+        session.require_owned_platform_root(&process_path_spelling(platform.root().executable()));
+        session.arm_owned_platform_root(10, 1, ts(1), ts(3));
+        session.attach(ts(0));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            10,
+            1,
+            "Steam.exe",
+            "",
+            ts(2),
+        ));
+        assert_eq!(session.role_bindings().len(), 1);
+        for (pid, parent, name, path) in [
+            (11, 10, "Publisher.exe", &platform.stages()[0]),
+            (12, 11, "Helper.exe", &platform.stages()[1]),
+            (13, 12, "Game.exe", &platform.stages()[2]),
+        ] {
+            session.on_process_event_with_verified_path(
+                fragcap::ProcessEvent::started(
+                    pid,
+                    parent,
+                    name,
+                    "untrusted command line",
+                    ts(pid as i64),
+                ),
+                Some(process_path_spelling(path.executable()).into()),
+            );
+        }
+        assert_eq!(session.state(), fragcap::SessionState::Capturing);
+        assert_eq!(session.role_bindings().len(), 4);
+        assert_eq!(session.tree().nodes().last().unwrap().image(), "Game.exe");
+
+        let mut missing_intermediary = fragcap::CaptureSession::new(
+            profile,
+            fragcap::SessionConfig {
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            },
+        );
+        missing_intermediary
+            .require_owned_platform_root(&process_path_spelling(platform.root().executable()));
+        missing_intermediary.arm_owned_platform_root(10, 1, ts(1), ts(3));
+        missing_intermediary.attach(ts(0));
+        missing_intermediary.on_process_event(fragcap::ProcessEvent::started(
+            10,
+            1,
+            "Steam.exe",
+            "",
+            ts(2),
+        ));
+        missing_intermediary.on_process_event(fragcap::ProcessEvent::started(
+            11,
+            10,
+            "Publisher.exe",
+            "untrusted command line",
+            ts(11),
+        ));
+        for (pid, parent, name, path) in [
+            (12, 11, "Helper.exe", &platform.stages()[1]),
+            (13, 12, "Game.exe", &platform.stages()[2]),
+        ] {
+            missing_intermediary.on_process_event_with_verified_path(
+                fragcap::ProcessEvent::started(pid, parent, name, "", ts(pid as i64)),
+                Some(process_path_spelling(path.executable()).into()),
+            );
+        }
+        assert_eq!(missing_intermediary.role_bindings().len(), 1);
+        missing_intermediary.on_tick(ts(10_000_000_000));
+        assert_eq!(
+            missing_intermediary.stop_reason(),
+            Some(fragcap::StopReason::AcquisitionTimeout)
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

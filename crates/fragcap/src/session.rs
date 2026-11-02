@@ -437,6 +437,17 @@ impl CaptureSession {
     /// bind a start, handle a bound exit. The event carries its own timestamp;
     /// wall-clock bounds are checked in [`on_tick`](CaptureSession::on_tick).
     pub fn on_process_event(&mut self, event: ProcessEvent) {
+        self.on_process_event_with_verified_path(event, None);
+    }
+
+    /// Fold an event with a separately verified executable path from the
+    /// managed event-to-process join. Ordinary Capture passes no path and
+    /// retains its original passive matching behavior.
+    pub fn on_process_event_with_verified_path(
+        &mut self,
+        event: ProcessEvent,
+        verified_path: Option<Arc<str>>,
+    ) {
         if !self.is_active() {
             return;
         }
@@ -444,7 +455,7 @@ impl CaptureSession {
         let pid = event.pid();
         let is_start = matches!(event, ProcessEvent::Started { .. });
         let is_exit = matches!(event, ProcessEvent::Exited { .. });
-        self.tree.apply(event);
+        self.tree.apply_with_verified_path(event, verified_path);
 
         if is_start {
             self.match_and_bind(pid, at);

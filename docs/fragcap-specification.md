@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.108-draft \
+**Version:** 0.1.109-draft \
 **Applies-To:** 0.10.12 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-10-23 \
+**Date:** 2026-11-02 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -196,6 +196,7 @@ enforcement.
 | 0.1.106-draft | 2026-11-01 | Codex | Reconciles public v0.10.11 from exact merged S186 source after four successful tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; local installed-product, real-title, and independent whole-product review remain unverified. Updates sections 1, 22.7, 25.2, and 27.3. |
 | 0.1.107-draft | 2026-11-01 | Codex | S187 extends explicit finite calibration and ordinary Deep Capture timing, governs ordered Steam publisher stages, retains bounded managed descendants, and adds inception-time socket and process-instance evidence under #540 and #541. Updates sections 17.2.1 and 27.3 without changing published v0.10.11. |
 | 0.1.108-draft | 2026-11-02 | Codex | Reconciles public v0.10.12 from exact merged S187 source after ten successful main workflows, four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; local installed-product, real-title, and independent whole-product review remain unverified. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.109-draft | 2026-11-02 | Codex | S188 repairs #547 by binding a basename-only managed stage to a separately queried canonical executable path only when PID, directional creation time, account/session, declared path, and existing ordered ancestry agree. It retains the observed ETW image, named limitations, and the top-level acquisition timeout reason. Updates sections 10.3 and 27.3 without changing the published v0.10.12 identity. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1443,6 +1444,22 @@ extended-path spelling normalization. A prelaunch snapshot or same-named
 foreign process cannot acquire this owned-root authority. The raw event image
 remains in process evidence; platform binding alone does not establish the
 final client or its proxy reachability.
+
+For a declared managed client or publisher stage whose ETW start supplies only a
+basename, exact path matching reads a separate query-only canonical executable
+path from that process object. The path is eligible only when its PID and image
+agree with the event, its creation time is no later than the event and within
+one second, its account and session agree with the current operator, and it is
+one of the prepared exact stage paths. The tree retains the event image and
+attaches the verified path to that process generation; the path predicate uses
+the verified value while the executable-name predicate still uses the observed
+image. An inaccessible or exited process, wrong path, later PID generation,
+or unverified account/session creates a named process-trace limitation and no
+path-based stage match. Existing stage ancestry still governs binding, including
+the owned Steam root and each declared publisher intermediary. A failed final
+acquisition keeps `acquisitiontimeout` as its terminal reason in the composed
+Deep Capture result; packet, proxy, manifest, and cleanup evidence each retain
+their own observed state.
 
 ### 10.4 Lifecycle Classes
 
@@ -5099,6 +5116,8 @@ S185 (`specs/185-clean-break-installation-ca`) supersedes the historical session
 S186 (`specs/186-installed-deep-capture-truth`) follows published v0.10.10 and addresses #534 and #535 together as observed installed-product defects. An ordinary user can report exact public CA health while signer metadata remains inaccessible by design; privileged sign/verify stays the pre-effect authority. Tunneled HTTP/1.1 and HTTP/2 use the effective HTTPS default port, retain exact raw request and URL identity, and refuse genuine unsupported cross-authority forwarding without weakening separate upstream TLS verification. Header timeout remains a separate terminal cause, and HTTP-only success cannot promote HTTPS compatibility. Controlled protocol, CLI, and actual ordinary-account ACL evidence qualify source behavior; real-title success remains an unverified independent claim.
 
 S187 (`specs/187-slow-launcher-session-ownership`) follows merged S186 and the standalone #539 governance change, addressing #540 and #541 together. Explicit 120-second calibration, 600-second ordinary observation, and 300-second launch wait are preserved through plan, runtime, terminal, and manifest without silent truncation. Cold Steam targets can carry ordered publisher stages into exact pre-effect shutdown scope. Managed-descendant birth and exit projection, independent inception-time socket/process ownership, and bounded release with late helper obligations keep observation and control authority distinct. A controlled installed-binary timing fixture uses the isolated runner account's documented default store and session paths with canonical readback; it does not demonstrate a real game or explain #542. No dependency or storage schema changes. The implementation shipped in v0.10.12; real-title compatibility and #542 remain unverified.
+
+S188 (`specs/188-managed-stage-path-verification`) follows published v0.10.12 and repairs #547. A basename-only managed start can meet its exact path predicate only with a separate canonical process-object path joined to the same PID, creation event, account, session, and declared stage. Ordered Steam and publisher ancestry remain exact; unavailable, stale, wrong-path, or escaped evidence cannot bind a stage. The original event image, bounded limitation codes, typed acquisition timeout, and independent artifact outcomes remain visible. Controlled Windows source and package gates establish the scope recorded in the S188 verification report; a private installed-title retest and release publication remain separate. No dependency or storage schema changes.
 
 v0.10.10 publishes S184 and S185 from merged PR #532 at `00d98c1c0fa0770eb7f3d38346247a35942915e9`; annotated tag v0.10.10 selects that exact source. All nine post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; no public MSI was installed on the operator workstation in this session, no real title was exercised, and independent whole-product review remains unperformed.
 

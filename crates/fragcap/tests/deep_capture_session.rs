@@ -808,7 +808,7 @@ impl RoutingAdapter for FailingRouting {
     }
 }
 
-struct FailingCapture(Ledger, bool);
+struct FailingCapture(Ledger, bool, &'static str);
 impl CaptureRunner for FailingCapture {
     fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
         if self.1 {
@@ -847,7 +847,7 @@ impl CaptureRunner for FailingCapture {
         self.0.borrow_mut().push("capture.run.failed".into());
         Err(StageFailure::new(
             Stage::Capture,
-            "capture-failed",
+            self.2,
             "controlled capture failure",
         ))
     }
@@ -1267,7 +1267,7 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
 fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
-    environment.capture = Box::new(FailingCapture(ledger.clone(), true));
+    environment.capture = Box::new(FailingCapture(ledger.clone(), true, "capture-failed"));
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
     let authorization = Authorization::approved(prepared.plan().id.clone());
     let report = prepared
@@ -1301,7 +1301,7 @@ fn unresolved_route_owner_retains_installation_trust_without_a_session_trust_obl
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.trust = Box::new(InstallationTrust(ledger.clone()));
-    environment.capture = Box::new(FailingCapture(ledger.clone(), true));
+    environment.capture = Box::new(FailingCapture(ledger.clone(), true, "capture-failed"));
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
     let authorization = Authorization::approved(prepared.plan().id.clone());
     let report = prepared
@@ -2039,7 +2039,7 @@ fn route_failure_still_cleans_trust_and_proxy_without_launching() {
 fn capture_failure_still_stops_and_finalizes() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
-    environment.capture = Box::new(FailingCapture(ledger.clone(), false));
+    environment.capture = Box::new(FailingCapture(ledger.clone(), false, "capture-failed"));
     let report = run_with(environment);
     assert!(report
         .snapshot
@@ -2051,6 +2051,25 @@ fn capture_failure_still_stops_and_finalizes() {
         .borrow()
         .iter()
         .any(|call| call == "artifact.manifest"));
+}
+
+#[test]
+fn acquisition_timeout_keeps_its_reason_and_runs_final_cleanup() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.capture = Box::new(FailingCapture(ledger.clone(), false, "acquisitiontimeout"));
+    let report = run_with(environment);
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Partial);
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "acquisitiontimeout"));
+    let calls = ledger.borrow();
+    assert!(calls.iter().any(|call| call == "capture.stop"));
+    assert!(calls.iter().any(|call| call == "proxy.stop"));
+    assert!(calls.iter().any(|call| call == "proxy.cleanup"));
+    assert!(calls.iter().any(|call| call == "artifact.manifest"));
 }
 
 #[test]

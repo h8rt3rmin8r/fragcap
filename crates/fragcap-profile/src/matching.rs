@@ -170,18 +170,19 @@ fn predicates_hold(
 /// stage matching and by the observation identity of [`first_live_match`], so
 /// the two agree on what "image and path" means.
 fn image_and_path_hold(pred: &MatchPredicates, node: &ProcessNode) -> bool {
+    let path = node.verified_path().unwrap_or_else(|| node.image());
     if let Some(exe) = pred.exe() {
         if !exe.matches(node.image_name()) {
             return false;
         }
     }
     if let Some(sub) = pred.path_contains() {
-        if !contains_ignore_case(node.image(), sub) {
+        if !contains_ignore_case(path, sub) {
             return false;
         }
     }
     if let Some(re) = pred.path_regex() {
-        if !re.regex().is_match(node.image()) {
+        if !re.regex().is_match(path) {
             return false;
         }
     }
@@ -302,6 +303,39 @@ mod tests {
         ));
         bind_stages(&p, &mut t);
         assert_eq!(role_of(&t, ids(&t)[0]).as_deref(), Some("client"));
+    }
+
+    #[test]
+    fn basename_start_uses_only_a_separately_verified_exact_path() {
+        let profile = profile(
+            r#"{"role":"client","lifecycle":"session","match":{"exe":"Game.exe","path_regex":"(?i)^C:\\\\Games\\\\Game\\.exe$"}}"#,
+        );
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            10,
+            1,
+            "Game.exe",
+            "C:\\Games\\Game.exe",
+            at(1),
+        ));
+        assert!(stage_for(&profile, &tree, tree.nodes().next().unwrap().id()).is_none());
+        let mut verified = ProcessTree::new();
+        verified.apply_with_verified_path(
+            ProcessEvent::started(10, 1, "Game.exe", "C:\\wrong\\Game.exe", at(1)),
+            Some("C:\\Games\\Game.exe".into()),
+        );
+        assert_eq!(
+            stage_for(&profile, &verified, verified.nodes().next().unwrap().id())
+                .unwrap()
+                .role(),
+            "client"
+        );
+        let mut wrong = ProcessTree::new();
+        wrong.apply_with_verified_path(
+            ProcessEvent::started(10, 1, "Game.exe", "C:\\Games\\Game.exe", at(1)),
+            Some("C:\\Other\\Game.exe".into()),
+        );
+        assert!(stage_for(&profile, &wrong, wrong.nodes().next().unwrap().id()).is_none());
     }
 
     #[test]
