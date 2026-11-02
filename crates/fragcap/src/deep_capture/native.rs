@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(all(windows, feature = "socket-table"))]
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -15,7 +17,12 @@ use fragcap_proxy::{
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
-use fragcap_core::{Fidelity, FlowKey, FlowRegistry, Proto};
+#[cfg(any(test, all(windows, feature = "socket-table")))]
+use fragcap_attr::SocketTable;
+#[cfg(all(windows, feature = "socket-table"))]
+use fragcap_attr::{IpHelperTable, SocketTableSource};
+use fragcap_core::{Fidelity, FlowKey, FlowRegistry, ProcessEvent, Proto, Timestamp};
+use fragcap_proxy::ConnectionDescriptor;
 
 pub use fragcap_proxy::{
     CertificateStore, NativeCertificateStore, TrustController, TrustError, TrustMutation,
@@ -201,14 +208,173 @@ impl NativeListenerReservation {
     }
 }
 
+#[cfg(all(windows, feature = "socket-table"))]
+const SOCKET_INCEPTION_QUEUE_CAPACITY: usize = 128;
+
+#[cfg(all(windows, feature = "socket-table"))]
+enum SocketInceptionRequest {
+    Lookup {
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+        result: Arc<Mutex<super::ConnectionInception>>,
+    },
+    Flush(mpsc::Sender<()>),
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+#[derive(Debug)]
+struct SocketInceptionCollector {
+    sender: Option<mpsc::SyncSender<SocketInceptionRequest>>,
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+impl SocketInceptionCollector {
+    fn new(
+        mut lookup: impl FnMut(ConnectionDescriptor, u64) -> super::ConnectionInception + Send + 'static,
+    ) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(SOCKET_INCEPTION_QUEUE_CAPACITY);
+        let spawned = std::thread::Builder::new()
+            .name("fragcap-socket-inception".to_string())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    match request {
+                        SocketInceptionRequest::Lookup {
+                            descriptor,
+                            opened_at_ns,
+                            result,
+                        } => {
+                            *result.lock().expect("inception result lock") =
+                                lookup(descriptor, opened_at_ns);
+                        }
+                        SocketInceptionRequest::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+        Self {
+            sender: spawned.ok().map(|_| sender),
+        }
+    }
+
+    fn request(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Arc<Mutex<super::ConnectionInception>> {
+        let result = Arc::new(Mutex::new(super::ConnectionInception {
+            reason: "socket-collector-pending",
+            ..Default::default()
+        }));
+        let Some(sender) = &self.sender else {
+            result.lock().expect("inception result lock").reason = "socket-collector-unavailable";
+            return result;
+        };
+        let request = SocketInceptionRequest::Lookup {
+            descriptor,
+            opened_at_ns,
+            result: Arc::clone(&result),
+        };
+        if let Err(error) = sender.try_send(request) {
+            result.lock().expect("inception result lock").reason = match error {
+                mpsc::TrySendError::Full(_) => "socket-collector-saturated",
+                mpsc::TrySendError::Disconnected(_) => "socket-collector-unavailable",
+            };
+        }
+        result
+    }
+
+    fn flush(&self, budget: Duration) {
+        let Some(sender) = &self.sender else { return };
+        let (done_send, done_receive) = mpsc::channel();
+        if sender
+            .try_send(SocketInceptionRequest::Flush(done_send))
+            .is_ok()
+        {
+            let _ = done_receive.recv_timeout(budget.min(Duration::from_millis(250)));
+        }
+    }
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+impl Default for SocketInceptionCollector {
+    fn default() -> Self {
+        let mut source = IpHelperTable::default();
+        Self::new(move |descriptor, opened_at_ns| match source.read() {
+            Ok(table) => select_inception_socket_owner(&table, descriptor, opened_at_ns),
+            Err(_) => super::ConnectionInception {
+                reason: "socket-table-read-failed",
+                ..Default::default()
+            },
+        })
+    }
+}
+
 /// Session-owned bridge between packet truth and native proxy observations.
 #[derive(Clone, Debug, Default)]
 pub struct NativeObservationContext {
     flow_registry: Arc<FlowRegistry>,
     controlled_process_id: Arc<AtomicU32>,
+    process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
+    #[cfg(all(windows, feature = "socket-table"))]
+    socket_collector: Arc<SocketInceptionCollector>,
 }
 
 impl NativeObservationContext {
+    /// Retain already observed process events for the final connection-instance join.
+    pub fn record_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
+        *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
+    }
+
+    fn socket_inception(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Arc<Mutex<super::ConnectionInception>> {
+        #[cfg(all(windows, feature = "socket-table"))]
+        {
+            self.socket_collector.request(descriptor, opened_at_ns)
+        }
+        #[cfg(not(all(windows, feature = "socket-table")))]
+        {
+            let _ = (descriptor, opened_at_ns);
+            Arc::new(Mutex::new(super::ConnectionInception {
+                reason: "socket-table-unavailable",
+                ..Default::default()
+            }))
+        }
+    }
+
+    fn finish_inception_collection(&self, budget: Duration) {
+        #[cfg(all(windows, feature = "socket-table"))]
+        self.socket_collector.flush(budget);
+        #[cfg(not(all(windows, feature = "socket-table")))]
+        let _ = budget;
+    }
+
+    fn connection_owner(
+        &self,
+        window: &ApplicationConnectionWindow,
+    ) -> super::ConnectionOwnerEvidence {
+        let inception = *window.inception.lock().expect("inception result lock");
+        if inception.state != "exact" {
+            return super::ConnectionOwnerEvidence {
+                state: inception.state.into(),
+                reason: inception.reason.into(),
+                ..Default::default()
+            };
+        }
+        let evidence = self.process_evidence.lock().expect("process evidence lock");
+        let Some(evidence) = evidence.as_ref() else {
+            return super::ConnectionOwnerEvidence {
+                state: "unavailable".into(),
+                reason: "process-events-unavailable".into(),
+                ..Default::default()
+            };
+        };
+        bind_inception_process(evidence, inception, window.opened_at_ns)
+    }
+
     /// The registry ordinary Capture must populate for this session.
     pub fn flow_registry(&self) -> Arc<FlowRegistry> {
         Arc::clone(&self.flow_registry)
@@ -406,16 +572,20 @@ impl ProxyBackend for NativeProxyAdapter {
                 StageFailure::new(Stage::ProxyStart, "controlled-lab-failed", error)
             })?;
         let correlation_context = self.observation_context.clone();
+        let inception_context = self.observation_context.clone();
         let controlled = plan.controlled;
         let target_id = plan.target.id;
         let mut application_artifact = self
             .application_artifact
             .as_ref()
             .map(|path| {
-                super::ApplicationArtifactLease::open_correlated(
+                super::ApplicationArtifactLease::open_correlated_with_inception(
                     path,
                     &plan.session_id,
                     super::DEFAULT_APPLICATION_EVENT_QUEUE_CAPACITY,
+                    Arc::new(move |descriptor, at| {
+                        inception_context.socket_inception(descriptor, at)
+                    }),
                     Arc::new(move |descriptor| {
                         let (
                             flow_id,
@@ -456,6 +626,9 @@ impl ProxyBackend for NativeProxyAdapter {
                             packet_observations_unretained,
                             state: Some(state.as_str().to_string()),
                             reason: Some(reason),
+                            connection_owner: Some(
+                                correlation_context.connection_owner(descriptor),
+                            ),
                         }
                     }),
                 )
@@ -864,6 +1037,8 @@ impl ProxyLease for NativeProxyLease {
         let mut result = cleanup_result("native-proxy-listener", &report);
         self.account_final_classification_loss();
         if report.is_clean() {
+            self.observation_context
+                .finish_inception_collection(budget.remaining());
             if let Some(artifact) = self.application_artifact.as_mut() {
                 if let Err(error) = artifact.finish() {
                     result.status = CleanupStatus::Failed;
@@ -909,6 +1084,8 @@ impl ProxyLease for NativeProxyLease {
             });
         }
         if let Some(mut artifact) = self.application_artifact.take() {
+            self.observation_context
+                .finish_inception_collection(budget.remaining());
             let status = artifact.finish();
             if status.is_ok() {
                 self.application_classification_summary = artifact.classification_summary();
@@ -970,6 +1147,180 @@ type NativeCorrelation = (
     CorrelationState,
     String,
 );
+
+#[cfg(any(test, all(windows, feature = "socket-table")))]
+fn select_inception_socket_owner(
+    table: &SocketTable,
+    descriptor: ConnectionDescriptor,
+    opened_at_ns: u64,
+) -> super::ConnectionInception {
+    let Ok(opened) = i64::try_from(opened_at_ns) else {
+        return super::ConnectionInception {
+            reason: "connection-time-unrepresentable",
+            ..Default::default()
+        };
+    };
+    let mut matches = table.entries().iter().filter(|entry| {
+        entry.proto == Proto::Tcp
+            && entry.local == descriptor.client_peer
+            && entry.remote == Some(descriptor.proxy_local)
+            && entry.created.is_some_and(|at| at.as_nanos() <= opened)
+    });
+    let Some(owner) = matches.next() else {
+        return super::ConnectionInception {
+            reason: "client-socket-not-in-table",
+            ..Default::default()
+        };
+    };
+    if matches.next().is_some() {
+        return super::ConnectionInception {
+            state: "ambiguous",
+            reason: "multiple-client-socket-owners",
+            pid: None,
+            socket_created_at_ns: None,
+        };
+    }
+    super::ConnectionInception {
+        state: "exact",
+        reason: "ip-helper-client-socket",
+        pid: Some(owner.pid),
+        socket_created_at_ns: owner.created.map(Timestamp::as_nanos),
+    }
+}
+
+fn active_process_start(
+    events: &[ProcessEvent],
+    pid: u32,
+    at: Timestamp,
+) -> Option<(u32, String, Timestamp)> {
+    let mut latest: Option<(u32, &str, Timestamp)> = None;
+    let mut tied = false;
+    for event in events {
+        let ProcessEvent::Started {
+            pid: found,
+            parent,
+            image,
+            at: created,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if *found != pid || *created > at {
+            continue;
+        }
+        match latest {
+            None => {
+                latest = Some((*parent, image, *created));
+                tied = false;
+            }
+            Some((_, _, previous)) if *created > previous => {
+                latest = Some((*parent, image, *created));
+                tied = false;
+            }
+            Some((_, _, previous)) if *created == previous => tied = true,
+            _ => {}
+        }
+    }
+    let latest = latest?;
+    if tied
+        || events.iter().any(|event| {
+            matches!(event, ProcessEvent::Exited { pid: exited, at: ended }
+            if *exited == pid && *ended >= latest.2 && *ended <= at)
+        })
+    {
+        return None;
+    }
+    Some((latest.0, latest.1.to_string(), latest.2))
+}
+
+fn bind_inception_process(
+    evidence: &super::CaptureProcessEvidence,
+    inception: super::ConnectionInception,
+    opened_at_ns: u64,
+) -> super::ConnectionOwnerEvidence {
+    let unavailable = |reason: &str| super::ConnectionOwnerEvidence {
+        state: "unavailable".into(),
+        reason: reason.into(),
+        ..Default::default()
+    };
+    if evidence.events_unretained > 0
+        || evidence.unparseable_events > 0
+        || evidence.watcher_ended
+        || evidence
+            .watcher_report
+            .as_ref()
+            .is_none_or(|report| report.lost_anything())
+    {
+        return unavailable("process-event-authority-incomplete");
+    }
+    let Some(((pid, socket_created_ns), (root_pid, launch_at))) = inception
+        .pid
+        .zip(inception.socket_created_at_ns)
+        .zip(evidence.launch_pid.zip(evidence.launch_at))
+    else {
+        return unavailable("socket-or-launch-instance-unavailable");
+    };
+    let Ok(opened_ns) = i64::try_from(opened_at_ns) else {
+        return unavailable("connection-time-invalid");
+    };
+    if socket_created_ns > opened_ns {
+        return unavailable("socket-created-after-accept");
+    }
+    let opened = Timestamp::from_nanos(opened_ns);
+    let Some((_, image, started)) = active_process_start(
+        &evidence.events,
+        pid,
+        Timestamp::from_nanos(socket_created_ns),
+    ) else {
+        return unavailable("socket-owner-process-instance-unavailable");
+    };
+    if active_process_start(&evidence.events, pid, opened)
+        .is_none_or(|(_, _, current)| current != started)
+    {
+        return unavailable("socket-owner-generation-changed-before-accept");
+    }
+    let mut current_pid = pid;
+    let mut current_at = started;
+    let mut proven = false;
+    for _ in 0..=64 {
+        let Some((parent, _, generation)) =
+            active_process_start(&evidence.events, current_pid, current_at)
+        else {
+            break;
+        };
+        if current_pid == root_pid {
+            proven = generation.nanos_since(launch_at).abs() <= 1_000_000_000;
+            break;
+        }
+        if parent == current_pid || parent == 0 {
+            break;
+        }
+        current_pid = parent;
+        current_at = generation;
+    }
+    if !proven {
+        return unavailable("socket-owner-managed-ancestry-unproven");
+    }
+    let role = evidence
+        .stage_transitions
+        .iter()
+        .find(|transition| {
+            transition.pid == pid
+                && transition.at >= started
+                && transition.at <= opened
+                && transition.kind == super::StageTransitionKind::Matched
+        })
+        .map(|transition| transition.role.clone());
+    super::ConnectionOwnerEvidence {
+        state: "exact".into(),
+        reason: "socket-and-process-generation-proved".into(),
+        pid: Some(pid),
+        process_instance_id: Some(format!("process-{pid}-{}", started.as_nanos())),
+        process_image: Some(image),
+        role,
+    }
+}
 
 fn correlate_connection_window(
     registry: &FlowRegistry,
@@ -1430,6 +1781,153 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 mod tests {
     use super::*;
 
+    #[cfg(all(windows, feature = "socket-table"))]
+    #[test]
+    fn inception_collector_never_waits_for_socket_enumeration_on_accept() {
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (release_send, release_receive) = mpsc::channel();
+        let collector = SocketInceptionCollector::new(move |_, _| {
+            let _ = entered_send.send(());
+            let _ = release_receive.recv();
+            super::super::ConnectionInception {
+                state: "exact",
+                reason: "test-socket-owner",
+                pid: Some(71),
+                socket_created_at_ns: Some(12),
+            }
+        });
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        };
+        let first = collector.request(descriptor, 15);
+        entered_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        for _ in 0..SOCKET_INCEPTION_QUEUE_CAPACITY {
+            let pending = collector.request(descriptor, 15);
+            assert_eq!(pending.lock().unwrap().reason, "socket-collector-pending");
+        }
+        let saturated = collector.request(descriptor, 15);
+        assert_eq!(
+            saturated.lock().unwrap().reason,
+            "socket-collector-saturated"
+        );
+        release_send.send(()).unwrap();
+        entered_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(first.lock().unwrap().pid, Some(71));
+    }
+
+    #[test]
+    fn connection_inception_selects_only_one_exact_client_socket() {
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: client,
+            proxy_local: proxy,
+        };
+        let entry = fragcap_attr::SocketTableEntry::tcp(client, proxy, 71)
+            .created_at(Timestamp::from_nanos(12));
+        let table = SocketTable::new(
+            Timestamp::from_nanos(15),
+            vec![
+                fragcap_attr::SocketTableEntry::tcp(proxy, client, 9)
+                    .created_at(Timestamp::from_nanos(10)),
+                entry,
+            ],
+        );
+        let exact = select_inception_socket_owner(&table, descriptor, 15);
+        assert_eq!(
+            (exact.state, exact.pid, exact.socket_created_at_ns),
+            ("exact", Some(71), Some(12))
+        );
+
+        let too_early = select_inception_socket_owner(&table, descriptor, 11);
+        assert_eq!(
+            (too_early.state, too_early.reason),
+            ("unavailable", "client-socket-not-in-table")
+        );
+        let ambiguous = SocketTable::new(
+            Timestamp::from_nanos(15),
+            vec![
+                entry,
+                fragcap_attr::SocketTableEntry::tcp(client, proxy, 72)
+                    .created_at(Timestamp::from_nanos(13)),
+            ],
+        );
+        assert_eq!(
+            select_inception_socket_owner(&ambiguous, descriptor, 15).state,
+            "ambiguous"
+        );
+    }
+
+    #[test]
+    fn connection_owner_requires_exact_process_generation_and_managed_ancestry() {
+        let mut evidence = super::super::CaptureProcessEvidence {
+            launch_pid: Some(10),
+            launch_at: Some(Timestamp::from_nanos(1)),
+            watcher_report: Some(fragcap_core::WatcherReport::default()),
+            ..Default::default()
+        };
+        evidence.events.extend([
+            ProcessEvent::started(10, 1, "steam.exe", "steam", Timestamp::from_nanos(1)),
+            ProcessEvent::started(20, 10, "dispatch.exe", "dispatch", Timestamp::from_nanos(2)),
+            ProcessEvent::started(
+                30,
+                20,
+                "publisher.exe",
+                "publisher",
+                Timestamp::from_nanos(3),
+            ),
+            ProcessEvent::started(71, 30, "helper.exe", "helper", Timestamp::from_nanos(4)),
+            ProcessEvent::started(72, 99, "helper.exe", "unrelated", Timestamp::from_nanos(4)),
+        ]);
+        let exact = super::super::ConnectionInception {
+            state: "exact",
+            reason: "ip-helper-client-socket",
+            pid: Some(71),
+            socket_created_at_ns: Some(12),
+        };
+        let owner = bind_inception_process(&evidence, exact, 15);
+        assert_eq!(
+            (
+                owner.state.as_str(),
+                owner.pid,
+                owner.process_instance_id.as_deref()
+            ),
+            ("exact", Some(71), Some("process-71-4"))
+        );
+        let unrelated = bind_inception_process(
+            &evidence,
+            super::super::ConnectionInception {
+                pid: Some(72),
+                ..exact
+            },
+            15,
+        );
+        assert_eq!(
+            (unrelated.state.as_str(), unrelated.reason.as_str()),
+            ("unavailable", "socket-owner-managed-ancestry-unproven")
+        );
+        evidence.events.push(ProcessEvent::Exited {
+            pid: 71,
+            at: Timestamp::from_nanos(13),
+        });
+        assert_eq!(
+            bind_inception_process(&evidence, exact, 15).reason,
+            "socket-owner-generation-changed-before-accept"
+        );
+        evidence.events_unretained = 1;
+        assert_eq!(
+            bind_inception_process(&evidence, exact, 15).reason,
+            "process-event-authority-incomplete"
+        );
+    }
+
     #[test]
     fn semantic_result_timestamp_has_exact_cutoff_and_unknown_is_ineligible() {
         assert_eq!(
@@ -1752,6 +2250,7 @@ mod tests {
                 },
                 opened_at_ns: 10,
                 closed_at_ns: None,
+                inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
             },
         );
 
@@ -1884,6 +2383,7 @@ mod tests {
                     packet_observations_unretained: result.6,
                     state: Some(result.7.as_str().to_string()),
                     reason: Some(result.8),
+                    connection_owner: None,
                 }
             }),
         )

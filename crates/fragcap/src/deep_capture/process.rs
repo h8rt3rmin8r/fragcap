@@ -212,6 +212,26 @@ fn instance_at(instances: &[Instance], pid: u32, at: Timestamp) -> Option<&Insta
         .max_by_key(|instance| instance.created)
 }
 
+fn unique_instance_at(instances: &[Instance], pid: u32, at: Timestamp) -> Option<&Instance> {
+    let mut matches = instances
+        .iter()
+        .filter(|instance| instance.pid == pid && instance.covers(at));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn launch_instance(instances: &[Instance], pid: u32, at: Timestamp) -> Option<&Instance> {
+    let mut matches = instances.iter().filter(|instance| {
+        instance.pid == pid
+            && instance.creation_observed
+            && instance
+                .created
+                .is_some_and(|created| created.nanos_since(at).abs() <= 1_000_000_000)
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
 fn image_basename(value: &str) -> &str {
     value.rsplit(['\\', '/']).next().unwrap_or(value)
 }
@@ -321,6 +341,32 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         }
     }
 
+    let mut managed_ids = BTreeSet::new();
+    if let Some(root) = evidence
+        .launch_pid
+        .zip(evidence.launch_at)
+        .and_then(|(pid, at)| launch_instance(&instances, pid, at))
+    {
+        managed_ids.insert(root.id());
+    }
+    let managed_root_proven = !managed_ids.is_empty();
+    loop {
+        let before = managed_ids.len();
+        for instance in &instances {
+            let Some(created) = instance.created else {
+                continue;
+            };
+            if let Some(parent) = unique_instance_at(&instances, instance.parent, created) {
+                if managed_ids.contains(&parent.id()) {
+                    managed_ids.insert(instance.id());
+                }
+            }
+        }
+        if managed_ids.len() == before {
+            break;
+        }
+    }
+
     let mut seeds = BTreeSet::new();
     if let Some(pid) = evidence.launch_pid {
         seeds.insert(pid);
@@ -352,7 +398,8 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             break;
         }
     }
-    instances.retain(|instance| seeds.contains(&instance.pid));
+    instances
+        .retain(|instance| seeds.contains(&instance.pid) || managed_ids.contains(&instance.id()));
     instances.sort_by_key(|instance| (instance.created, instance.pid));
 
     let mut output = String::new();
@@ -366,20 +413,25 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             "target_id": input.target_id, "target_handle": input.target_handle,
             "launch_case": input.launch_case, "event_limit": evidence.event_limit,
             "snapshot_authority": if evidence.startup_snapshot.is_empty() { "unavailable" } else { "query-only" },
-            "watcher_authority": if evidence.watcher_report.is_some() { "etw" } else { "unavailable" }
+            "watcher_authority": if evidence.watcher_report.is_some() { "etw" } else { "unavailable" },
+            "projection": "managed-descendants-and-declared-evidence",
+            "unrelated_process_events": "omitted-by-scope"
         }),
         sequence,
     );
     sequence += 1;
 
     let mut limitations = BTreeMap::<&'static str, u64>::new();
+    if !managed_root_proven {
+        limitations.insert("managed-descendant-projection-unavailable", 1);
+    }
     if evidence.launch_pid.is_none() {
         limitations.insert("launch-pid-unavailable", 1);
     } else if evidence.launch_at.is_none()
         || evidence
             .launch_pid
             .zip(evidence.launch_at)
-            .and_then(|(pid, at)| instance_at(&instances, pid, at))
+            .and_then(|(pid, at)| launch_instance(&instances, pid, at))
             .is_none()
     {
         limitations.insert("launch-generation-unavailable", 1);
@@ -389,7 +441,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         &mut records,
         json!({
             "type": "launch.receipt", "session_id": input.session_id, "pid": evidence.launch_pid,
-            "process_instance_id": evidence.launch_pid.and_then(|pid| evidence.launch_at.and_then(|at| instance_at(&instances, pid, at).map(Instance::id))),
+            "process_instance_id": evidence.launch_pid.and_then(|pid| evidence.launch_at.and_then(|at| launch_instance(&instances, pid, at).map(Instance::id))),
             "at_nanos": evidence.launch_at.map(Timestamp::as_nanos)
         }),
         sequence,
@@ -400,7 +452,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     for instance in &instances {
         let parent_id = instance
             .created
-            .and_then(|at| instance_at(&instances, instance.parent, at).map(Instance::id));
+            .and_then(|at| unique_instance_at(&instances, instance.parent, at).map(Instance::id));
         if instance.parent != 0 && parent_id.is_none() && Some(instance.pid) != evidence.launch_pid
         {
             *limitations
@@ -423,6 +475,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 "process_instance_id": instance.id(), "parent_instance_id": parent_id,
                 "image": instance.image, "command_line": instance.command_line,
                 "at_nanos": instance.created.map(Timestamp::as_nanos),
+                "managed_descendant": managed_ids.contains(&instance.id()),
                 "ancestry_authority": if instance.snapshot { "query-snapshot" } else { "creation-event" }
             }),
         ));
@@ -742,6 +795,69 @@ mod tests {
         assert!(trace.jsonl.contains("process-7-10"));
         assert!(trace.jsonl.contains("process-7-30"));
         assert!(read_process_trace(&trace.jsonl).is_some());
+    }
+
+    #[test]
+    fn managed_descendant_projection_keeps_unseeded_helpers_without_claiming_reused_pid() {
+        let evidence = CaptureProcessEvidence {
+            launch_pid: Some(7),
+            launch_at: Some(Timestamp::from_nanos(11)),
+            events: vec![
+                ProcessEvent::started(7, 1, "steam.exe", "root", Timestamp::from_nanos(10)),
+                ProcessEvent::started(8, 7, "shim.exe", "shim", Timestamp::from_nanos(12)),
+                ProcessEvent::started(
+                    9,
+                    8,
+                    "publisher.exe",
+                    "publisher",
+                    Timestamp::from_nanos(13),
+                ),
+                ProcessEvent::Exited {
+                    pid: 8,
+                    at: Timestamp::from_nanos(20),
+                },
+                ProcessEvent::started(8, 99, "shim.exe", "unrelated", Timestamp::from_nanos(30)),
+                ProcessEvent::started(
+                    10,
+                    8,
+                    "helper.exe",
+                    "unrelated-child",
+                    Timestamp::from_nanos(31),
+                ),
+            ],
+            terminal_state: "partial".to_string(),
+            ..CaptureProcessEvidence::default()
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "steam-protocol-cold",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        let rows = trace
+            .jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        for id in ["process-8-12", "process-9-13"] {
+            assert!(
+                rows.iter().any(
+                    |row| row["process_instance_id"] == id && row["managed_descendant"] == true
+                ),
+                "{id}"
+            );
+        }
+        assert!(!rows
+            .iter()
+            .any(|row| row["process_instance_id"] == "process-8-30"
+                && row["managed_descendant"] == true));
+        assert!(!rows
+            .iter()
+            .any(|row| row["process_instance_id"] == "process-10-31"
+                && row["managed_descendant"] == true));
     }
 
     #[test]

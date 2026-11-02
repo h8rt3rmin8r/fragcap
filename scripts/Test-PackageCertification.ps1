@@ -489,10 +489,13 @@ Param(
             [switch]$ObserveTreeAndNetwork,
 
             [Parameter(Mandatory=$false)]
-            [switch]$AuthorizeDeepCapturePlan
+            [switch]$AuthorizeDeepCapturePlan,
+            [Parameter(Mandatory=$false)]
+            [ValidateRange(1, 600)]
+            [int]$TimeoutSeconds = 60
         )
         $observedPath = if ($ObserveTreeAndNetwork) { $Executable } else { $null }
-        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds 60 -Environment $Environment -ObservedExecutablePath $observedPath -AuthorizeDeepCapturePlan:$AuthorizeDeepCapturePlan
+        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds $TimeoutSeconds -Environment $Environment -ObservedExecutablePath $observedPath -AuthorizeDeepCapturePlan:$AuthorizeDeepCapturePlan
         if ($AllowedExitCodes -notcontains $result.ExitCode) { throw "fragcap $($Arguments -join ' ') exited $($result.ExitCode): $($result.Stderr)" }
         return $result
     }
@@ -601,6 +604,65 @@ Param(
             return [ordered]@{ surface = $Surface; executable_sha256 = Get-Sha256 -Path $Executable; backend = 'fragcap-native'; network = 'loopback-only'; firewall_containment = 'outbound-non-loopback-blocked'; process_observation = 'complete'; structured_reachability = 'proxy-started-and-reached-client'; session_evidence = $sessionEvidence; socket_observation = $socketObservation; cleanup = 'reconciled'; complete = $true }
         } finally {
             if ($script:TopLevelCmdlet.ShouldProcess($firewallRuleName, "Remove $Surface package-certification smoke firewall rule")) {
+                Remove-NetFirewallRule -Name $firewallRuleName -ErrorAction Stop
+                [void]$script:SmokeFirewallRules.Remove($firewallRuleName)
+            }
+        }
+    }
+
+    function Invoke-InstalledSlowTiming {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)][string]$Executable
+        )
+        # This case runs only on the isolated certification account. Read its
+        # real documented defaults back instead of supplying path overrides.
+        $roaming = [System.Environment]::GetFolderPath('ApplicationData')
+        $local = [System.Environment]::GetFolderPath('LocalApplicationData')
+        if ([string]::IsNullOrEmpty($roaming) -or [string]::IsNullOrEmpty($local) -or
+            [System.IO.Path]::GetFullPath($env:APPDATA) -ine [System.IO.Path]::GetFullPath($roaming) -or
+            [System.IO.Path]::GetFullPath($env:LOCALAPPDATA) -ine [System.IO.Path]::GetFullPath($local)) {
+            throw 'installed slow timing requires the runner account actual default data paths'
+        }
+        $dataRoot = Join-Path $roaming 'fragcap'
+        if (Test-Path -LiteralPath $dataRoot) { throw 'installed slow timing requires an absent default data root' }
+        $environment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = $roaming; LOCALAPPDATA = $local; FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable; FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS = '50000'; FRAGCAP_CONTROLLED_TARGET_HOLD_MS = '70000'; FRAGCAP_SESSION_DIR = $null; FRAGCAP_CATALOG_DB = $null; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
+        $targetHandle = 'package_certification'
+        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', 'Package Certification', '--anchor', 'package:certification', '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
+        $expectedDb = Join-Path $dataRoot 'local.db'
+        $expectedSessions = Join-Path $dataRoot 'sessions'
+        if ((Resolve-Path -LiteralPath $expectedDb -ErrorAction Stop).Path -ine [System.IO.Path]::GetFullPath($expectedDb)) { throw 'installed slow timing local store did not resolve to the documented default' }
+        $firewallRuleName = "fragcap-package-certification-slow-$([guid]::NewGuid().ToString('N'))"
+        if (-not $script:TopLevelCmdlet.ShouldProcess($Executable, 'Block non-loopback installed slow-session traffic')) { throw 'installed slow timing network containment was not established' }
+        [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
+        [void]$script:SmokeFirewallRules.Add($firewallRuleName)
+        try {
+            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
+            if ($run.ElapsedSeconds -lt 120 -or $run.ElapsedSeconds -gt 165) { throw 'installed slow timing did not retain the two-minute observation span' }
+            $records = @($run.Stderr -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 32 -ErrorAction Stop })
+            $plan = @($records | Where-Object { $_.event -ceq 'deep_capture.authorization_plan' })
+            $terminal = @($records | Where-Object { $_.event -ceq 'deep_capture.complete' })
+            if ($plan.Count -ne 1 -or $terminal.Count -ne 1) { throw 'installed slow timing lacked one plan and terminal record' }
+            $effective = $plan[0].plan.deadlines_milliseconds
+            $requested = $plan[0].plan.requested_deadlines_milliseconds
+            if ($requested.launch -ne 120000 -or $effective.launch -ne 120000 -or $requested.observation -ne 120000 -or $effective.observation -ne 120000 -or $effective.capture_return_allowance -ne 5000) { throw 'installed slow timing authorization bounds differ from the requested values' }
+            if ($terminal[0].status -cne 'complete' -or $terminal[0].launch_duration_ms -ne 120000 -or $terminal[0].observation_duration_ms -ne 120000) { throw 'installed slow timing terminal bounds or outcome differ from the plan' }
+            $bundle = [string]$plan[0].plan.artifacts.bundle
+            $canonicalBundle = (Resolve-Path -LiteralPath $bundle -ErrorAction Stop).Path
+            $canonicalSessions = (Resolve-Path -LiteralPath $expectedSessions -ErrorAction Stop).Path
+            if (-not $canonicalBundle.StartsWith("$canonicalSessions\", [System.StringComparison]::OrdinalIgnoreCase)) { throw 'installed slow timing bundle escaped the documented default sessions root' }
+            $manifest = Get-Content -Raw -LiteralPath (Join-Path $canonicalBundle 'manifest.json') | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+            $cleanup = Get-Content -Raw -LiteralPath (Join-Path $canonicalBundle 'cleanup.json') | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+            if ($manifest.state -cne 'complete' -or $manifest.deadlines_milliseconds.effective_observation -ne 120000 -or $manifest.deadlines_milliseconds.effective_launch -ne 120000) { throw 'installed slow timing manifest did not finalize the exact bounds' }
+            if (-not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'capture.fcapng')) -or -not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'application.jsonl')) -or -not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'process-trace.jsonl'))) { throw 'installed slow timing bundle omitted a required artifact' }
+            $unreconciled = @($cleanup.resources | Where-Object { @('succeeded', 'not-needed') -cnotcontains $_.status -and -not ($_.resource -ceq 'bundle-evidence' -and $_.status -ceq 'retained') })
+            if ($cleanup.status -cne 'succeeded' -or $unreconciled.Count -ne 0) { throw "installed slow timing cleanup did not reconcile all resources: $(@($unreconciled | ForEach-Object { "$($_.resource)=$($_.status)" }) -join ',')" }
+            if (@($cleanup.resources | Where-Object { $_.resource -ceq 'native-proxy-listener' -and $_.status -ceq 'succeeded' }).Count -ne 1) { throw 'installed slow timing did not release its exact proxy listener' }
+            $failures = @(Get-SmokePredicateFailures -Observation $run.Observation -FirewallInstalled $true)
+            if ($failures.Count -ne 0) { throw "installed slow timing containment failed: $($failures -join ',')" }
+            Write-ShruggieLog 'Installed two-minute session used the account default store and session root, then finalized exact artifacts and cleanup.' -Level Success -Source SlowTiming
+        } finally {
+            if ($script:TopLevelCmdlet.ShouldProcess($firewallRuleName, 'Remove installed slow-session firewall rule')) {
                 Remove-NetFirewallRule -Name $firewallRuleName -ErrorAction Stop
                 [void]$script:SmokeFirewallRules.Remove($firewallRuleName)
             }
@@ -832,6 +894,7 @@ Param(
         $msiRoamingRoot = Join-Path $env:APPDATA 'fragcap'
         $msiLocalRoot = Join-Path $env:LOCALAPPDATA 'fragcap'
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
+        if ($RequireInstallationCa) { Invoke-InstalledSlowTiming -Executable $installedExecutable }
         [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
         [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
         [System.IO.File]::WriteAllText((Join-Path $msiRoamingRoot 'settings.json'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))

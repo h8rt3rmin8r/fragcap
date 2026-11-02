@@ -315,6 +315,8 @@ struct ChannelSink {
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
     connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
+    inception:
+        Arc<dyn Fn(ConnectionDescriptor, u64) -> Arc<Mutex<ConnectionInception>> + Send + Sync>,
 }
 
 impl ApplicationEventSink for ChannelSink {
@@ -325,6 +327,7 @@ impl ApplicationEventSink for ChannelSink {
         // bounded event queue so pressure cannot erase the only descriptor for
         // an accepted connection.
         if let ApplicationEventKind::ConnectionOpen(descriptor) = &event.kind {
+            let inception = (self.inception)(*descriptor, event.timestamp_ns);
             let mut connections = self
                 .connections
                 .lock()
@@ -338,6 +341,7 @@ impl ApplicationEventSink for ChannelSink {
                         descriptor: *descriptor,
                         opened_at_ns: event.timestamp_ns,
                         closed_at_ns: None,
+                        inception,
                     },
                 );
             } else {
@@ -495,15 +499,48 @@ pub struct ApplicationCorrelation {
     pub packet_observations_unretained: u64,
     pub state: Option<String>,
     pub reason: Option<String>,
+    pub connection_owner: Option<ConnectionOwnerEvidence>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionOwnerEvidence {
+    pub state: String,
+    pub reason: String,
+    pub pid: Option<u32>,
+    pub process_instance_id: Option<String>,
+    pub process_image: Option<String>,
+    pub role: Option<String>,
+}
+
+/// Socket ownership requested when the proxy accepts a connection. A bounded
+/// collector may finish the lookup after the accept loop has continued.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectionInception {
+    pub state: &'static str,
+    pub reason: &'static str,
+    pub pid: Option<u32>,
+    pub socket_created_at_ns: Option<i64>,
+}
+
+impl Default for ConnectionInception {
+    fn default() -> Self {
+        Self {
+            state: "unavailable",
+            reason: "socket-owner-not-observed",
+            pid: None,
+            socket_created_at_ns: None,
+        }
+    }
 }
 
 /// The proxy-side lifetime used to reconcile one accepted connection against
 /// packet evidence after capture has stopped.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ApplicationConnectionWindow {
     pub descriptor: ConnectionDescriptor,
     pub opened_at_ns: u64,
     pub closed_at_ns: Option<u64>,
+    pub inception: Arc<Mutex<ConnectionInception>>,
 }
 
 impl ApplicationArtifactLease {
@@ -539,6 +576,28 @@ impl ApplicationArtifactLease {
         )
     }
 
+    pub fn open_correlated_with_inception(
+        path: impl Into<PathBuf>,
+        session_id: impl Into<String>,
+        capacity: usize,
+        inception: Arc<
+            dyn Fn(ConnectionDescriptor, u64) -> Arc<Mutex<ConnectionInception>> + Send + Sync,
+        >,
+        correlation: Arc<
+            dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
+        >,
+    ) -> io::Result<Self> {
+        Self::open_correlated_with_inception_and_writer_hooks(
+            path,
+            session_id,
+            capacity,
+            DEFAULT_APPLICATION_QUEUE_RETAINED_BYTES_CAPACITY,
+            inception,
+            correlation,
+            (|| {}, || {}),
+        )
+    }
+
     fn open_correlated_with_writer_hooks(
         path: impl Into<PathBuf>,
         session_id: impl Into<String>,
@@ -550,6 +609,34 @@ impl ApplicationArtifactLease {
         writer_start: impl FnOnce() + Send + 'static,
         writer_ready: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
+        Self::open_correlated_with_inception_and_writer_hooks(
+            path,
+            session_id,
+            capacity,
+            retained_bytes_capacity,
+            Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
+            correlation,
+            (writer_start, writer_ready),
+        )
+    }
+
+    fn open_correlated_with_inception_and_writer_hooks(
+        path: impl Into<PathBuf>,
+        session_id: impl Into<String>,
+        capacity: usize,
+        retained_bytes_capacity: u64,
+        inception: Arc<
+            dyn Fn(ConnectionDescriptor, u64) -> Arc<Mutex<ConnectionInception>> + Send + Sync,
+        >,
+        correlation: Arc<
+            dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
+        >,
+        writer_hooks: (
+            impl FnOnce() + Send + 'static,
+            impl FnOnce() + Send + 'static,
+        ),
+    ) -> io::Result<Self> {
+        let (writer_start, writer_ready) = writer_hooks;
         let path = path.into();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -578,6 +665,7 @@ impl ApplicationArtifactLease {
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
+            inception,
         });
         let worker_account = Arc::clone(&account);
         let worker_classification_summary = Arc::clone(&classification_summary);
@@ -1260,6 +1348,14 @@ fn correlation_record(
         "packet_observations_unretained": value.packet_observations_unretained,
         "correlation_state": value.state.unwrap_or_else(|| "unavailable".to_string()),
         "correlation_reason": value.reason.unwrap_or_else(|| "correlation-context-unavailable".to_string()),
+        "connection_owner": value.connection_owner.map(|owner| json!({
+            "state": owner.state,
+            "reason": owner.reason,
+            "pid": owner.pid,
+            "process_instance_id": owner.process_instance_id,
+            "process_image": owner.process_image,
+            "role": owner.role,
+        })),
     })
 }
 
@@ -2713,6 +2809,36 @@ fn trailer_reconciles(records: &[Value]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_client_connection_owner_does_not_promote_withheld_packet_evidence() {
+        let record = correlation_record(
+            "session",
+            1,
+            2,
+            ApplicationCorrelation {
+                state: Some("unavailable".into()),
+                reason: Some("packet-scope-withheld".into()),
+                connection_owner: Some(ConnectionOwnerEvidence {
+                    state: "exact".into(),
+                    reason: "socket-and-process-generation-proved".into(),
+                    pid: Some(71),
+                    process_instance_id: Some("process-71-4".into()),
+                    process_image: Some("publisher.exe".into()),
+                    role: Some("launcher".into()),
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(record["correlation_state"], "unavailable");
+        assert_eq!(record["correlation_reason"], "packet-scope-withheld");
+        assert!(record["process_id"].is_null());
+        assert_eq!(
+            record["connection_owner"]["process_instance_id"],
+            "process-71-4"
+        );
+        assert_eq!(record["connection_owner"]["role"], "launcher");
+    }
     use fragcap_proxy::{
         ApplicationEvent, ApplicationEventKind, BodyDirection, ProtocolVersion, StreamTerminal,
         StreamingEvent, StreamingOutcome,
@@ -3036,6 +3162,7 @@ mod tests {
             retired: Arc::new(AtomicBool::new(true)),
             account: Arc::clone(&account),
             connections: Arc::new(Mutex::new(BTreeMap::new())),
+            inception: Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
         };
         let disposition = sink.try_emit(ApplicationEvent::now(
             "session",
@@ -3068,6 +3195,7 @@ mod tests {
             retired: Arc::new(AtomicBool::new(false)),
             account: Arc::clone(&account),
             connections: Arc::new(Mutex::new(BTreeMap::new())),
+            inception: Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
         };
         let event = ApplicationEvent::now(
             "session",
@@ -3107,6 +3235,7 @@ mod tests {
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::new(Mutex::new(BTreeMap::new())),
+            inception: Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
         };
         assert_eq!(
             sink.try_emit(ApplicationEvent::now(
@@ -3568,6 +3697,7 @@ mod tests {
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
+            inception: Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
         };
         assert_eq!(
             sink.try_emit(ApplicationEvent::now(
@@ -3656,6 +3786,7 @@ mod tests {
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
+            inception: Arc::new(|_, _| Arc::new(Mutex::new(ConnectionInception::default()))),
         };
         for connection_id in 1..=(MAX_CONNECTION_WINDOWS as u64 + 1) {
             let descriptor = ConnectionDescriptor {

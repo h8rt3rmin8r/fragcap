@@ -354,6 +354,9 @@ pub enum Event {
         manifest: String,
         status: String,
         cleanup_status: String,
+        requested_launch_duration_ms: Option<u64>,
+        launch_duration_ms: u64,
+        requested_observation_duration_ms: Option<u64>,
         observation_duration_ms: u64,
         capture_return_allowance_ms: u64,
         inspectable: u64,
@@ -1211,6 +1214,9 @@ impl Event {
                 manifest,
                 status,
                 cleanup_status,
+                requested_launch_duration_ms,
+                launch_duration_ms,
+                requested_observation_duration_ms,
                 observation_duration_ms,
                 capture_return_allowance_ms,
                 inspectable,
@@ -1232,6 +1238,12 @@ impl Event {
                 write_json_string(status, &mut line);
                 line.push_str(",\"cleanup_status\":");
                 write_json_string(cleanup_status, &mut line);
+                line.push_str(",\"requested_launch_duration_ms\":");
+                line.push_str(&serde_json::to_string(requested_launch_duration_ms).unwrap());
+                line.push_str(",\"launch_duration_ms\":");
+                line.push_str(&launch_duration_ms.to_string());
+                line.push_str(",\"requested_observation_duration_ms\":");
+                line.push_str(&serde_json::to_string(requested_observation_duration_ms).unwrap());
                 line.push_str(",\"observation_duration_ms\":");
                 line.push_str(&observation_duration_ms.to_string());
                 line.push_str(",\"capture_return_allowance_ms\":");

@@ -104,6 +104,16 @@ pub fn shutdown_paths(
             .map(|stage| stage.executable().to_path_buf())
             .collect()),
         ManagedLaunch::Platform(platform) => {
+            if !platform.stages().is_empty() {
+                return Ok(std::iter::once(platform.root().executable().to_path_buf())
+                    .chain(
+                        platform
+                            .stages()
+                            .iter()
+                            .map(|stage| stage.executable().to_path_buf()),
+                    )
+                    .collect());
+            }
             let clients: Vec<_> = entry_windows_launch_entries(target)
                 .into_iter()
                 .filter(|entry| entry.role().is_none_or(|role| role == "client"))
@@ -202,6 +212,7 @@ pub struct PlatformClientLaunch {
     platform: String,
     root: DirectExecutableLaunch,
     dispatch: PlatformDispatch,
+    stages: Vec<PublisherStage>,
 }
 
 impl PlatformClientLaunch {
@@ -220,7 +231,35 @@ impl PlatformClientLaunch {
             platform,
             root,
             dispatch,
+            stages: Vec::new(),
         })
+    }
+
+    /// Freeze exact declared target stages before any platform launch effect.
+    pub fn with_target_stages(mut self, target: &TargetEntry) -> Result<Self, LaunchConfigError> {
+        let launches = entry_windows_launch_entries(target);
+        self.stages = match launches.as_slice() {
+            [client] if client.role().is_none_or(|role| role == "client") => {
+                let root = install_root(target, client.executable())?;
+                vec![PublisherStage {
+                    role: "client".into(),
+                    executable: resolve_executable(&root, client.executable())?,
+                    parent_role: Some("platform".into()),
+                    terminal: true,
+                }]
+            }
+            [_, ..] => {
+                let mut stages = prepare_publisher_launch(target, &launches)?.stages;
+                stages[0].parent_role = Some("platform".into());
+                stages
+            }
+            [] => return Err(LaunchConfigError::MissingClient),
+        };
+        Ok(self)
+    }
+
+    pub fn stages(&self) -> &[PublisherStage] {
+        &self.stages
     }
 
     pub fn platform(&self) -> &str {
@@ -1114,6 +1153,46 @@ mod tests {
         };
         assert!(diagnostics.iter().any(|item| item.contains("first")));
         assert!(diagnostics.iter().any(|item| item.contains("duplicated")));
+    }
+
+    #[test]
+    fn steam_platform_prepares_all_declared_publisher_shutdown_paths() {
+        let root = unique_dir("steam-publisher-stages");
+        fs::create_dir_all(&root).unwrap();
+        for name in ["Steam.exe", "Publisher.exe", "Helper.exe", "Game.exe"] {
+            fs::write(root.join(name), b"fixture").unwrap();
+        }
+        let entry = target(
+            &root,
+            json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Helper.exe", "role": "bootstrap" },
+                { "executable": "Game.exe", "role": "client" }
+            ]),
+        );
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(root.join("Steam.exe"), root.clone(), Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_target_stages(&entry)
+        .unwrap();
+        assert_eq!(
+            platform
+                .stages()
+                .iter()
+                .map(PublisherStage::role)
+                .collect::<Vec<_>>(),
+            ["launcher", "bootstrap", "client"]
+        );
+        assert_eq!(platform.stages()[0].parent_role(), Some("platform"));
+        let paths = shutdown_paths(&entry, &ManagedLaunch::Platform(platform)).unwrap();
+        assert_eq!(paths.len(), 4);
+        assert_eq!(paths[2], root.join("Helper.exe").canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

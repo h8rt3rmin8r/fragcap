@@ -449,12 +449,8 @@ struct CalibrationDeadlines {
 impl CalibrationDeadlines {
     fn from_args(args: &DeepCaptureArgs) -> Self {
         Self {
-            launch: bounded_timeout(args.wait, CALIBRATION_LAUNCH_TIMEOUT),
-            observation: if args.calibrate.is_some() {
-                bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT)
-            } else {
-                args.duration.unwrap_or(CALIBRATION_OBSERVATION_TIMEOUT)
-            },
+            launch: args.wait.unwrap_or(CALIBRATION_LAUNCH_TIMEOUT),
+            observation: args.duration.unwrap_or(CALIBRATION_OBSERVATION_TIMEOUT),
             route_owner_release: ROUTE_OWNER_RELEASE_TIMEOUT,
             shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
             cleanup: CALIBRATION_CLEANUP_TIMEOUT,
@@ -470,21 +466,23 @@ impl CalibrationDeadlines {
     }
 }
 
-fn validate_ordinary_duration(args: &DeepCaptureArgs) -> Result<(), CliError> {
-    if args.calibrate.is_none()
-        && args.duration.is_some_and(|duration| {
-            duration.is_zero() || duration > fragcap::deep_capture::MAX_ORDINARY_OBSERVATION
-        })
+fn validate_requested_deadlines(args: &DeepCaptureArgs) -> Result<(), CliError> {
+    if args.duration.is_some_and(|duration| {
+        duration.is_zero() || duration > fragcap::deep_capture::MAX_ORDINARY_OBSERVATION
+    }) {
+        return Err(CliError::usage(
+            "Deep Capture --duration must be greater than zero and at most 10m; no session effects were applied",
+        ));
+    }
+    if args
+        .wait
+        .is_some_and(|wait| wait.is_zero() || wait > fragcap::deep_capture::MAX_MANAGED_LAUNCH_WAIT)
     {
         return Err(CliError::usage(
-            "ordinary Deep Capture --duration must be greater than zero and at most 5m; no session effects were applied",
+            "Deep Capture --wait must be greater than zero and at most 5m; no session effects were applied",
         ));
     }
     Ok(())
-}
-
-fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
-    provided.unwrap_or(maximum).min(maximum)
 }
 
 fn calibration_answer_is_affirmative(answer: &str) -> bool {
@@ -1250,6 +1248,8 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 Arc::clone(&registry),
                 &mut self.emitter.borrow_mut(),
             );
+        self.observation_context
+            .record_process_evidence(&process_evidence);
         {
             let mut runtime = self.runtime.borrow_mut();
             runtime.process_evidence = Some(process_evidence);
@@ -1288,6 +1288,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         {
             let outcome = shutdown::release(process, budget, watch);
             watch.finish_into(process);
+            self.observation_context.record_process_evidence(process);
             outcome
         } else {
             shutdown::missing_evidence()
@@ -1421,6 +1422,8 @@ struct LibraryArtifactAdapter<'e, 'w> {
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     deadlines: CalibrationDeadlines,
+    requested_launch: Option<Duration>,
+    requested_observation: Option<Duration>,
     family: DeepCaptureProxyFamilyArg,
     protocol: Option<CompatibilityProtocol>,
     routing: Option<deep_capture_api::RoutingPlan>,
@@ -1605,6 +1608,8 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             calibration,
             calibration_outcome: outcome,
             deadlines: self.deadlines,
+            requested_launch: self.requested_launch,
+            requested_observation: self.requested_observation,
             fact_writes: &fact_writes,
         };
         let write_result = write_bundle(&context, &mut self.emitter.borrow_mut());
@@ -2055,18 +2060,21 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     manifest: "manifest.json".to_string(),
                     status: status.to_string(),
                     cleanup_status: cleanup_status.to_string(),
+                    requested_launch_duration_ms: self
+                        .args
+                        .wait
+                        .map(CalibrationDeadlines::milliseconds),
+                    launch_duration_ms: CalibrationDeadlines::milliseconds(report.deadlines.launch),
+                    requested_observation_duration_ms: self
+                        .args
+                        .duration
+                        .map(CalibrationDeadlines::milliseconds),
                     observation_duration_ms: CalibrationDeadlines::milliseconds(
                         report.deadlines.observation,
                     ),
-                    capture_return_allowance_ms: if report.mode
-                        == deep_capture_api::SessionMode::Capture
-                    {
-                        CalibrationDeadlines::milliseconds(
-                            fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE,
-                        )
-                    } else {
-                        0
-                    },
+                    capture_return_allowance_ms: CalibrationDeadlines::milliseconds(
+                        fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE,
+                    ),
                     inspectable: *classification_summary
                         .by_inspectability
                         .get("full")
@@ -2280,11 +2288,13 @@ fn build_authorization_plan(
             "cleanup": CalibrationDeadlines::milliseconds(deadlines.cleanup),
             "launch": CalibrationDeadlines::milliseconds(deadlines.launch),
             "observation": CalibrationDeadlines::milliseconds(deadlines.observation),
-            "capture_return_allowance": if mode == deep_capture_api::SessionMode::Capture {
-                CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE)
-            } else { 0 },
+            "capture_return_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
             "route_owner_release": CalibrationDeadlines::milliseconds(deadlines.route_owner_release),
             "shutdown": CalibrationDeadlines::milliseconds(deadlines.shutdown),
+        },
+        "requested_deadlines_milliseconds": {
+            "launch": args.wait.map(CalibrationDeadlines::milliseconds),
+            "observation": args.duration.map(CalibrationDeadlines::milliseconds),
         },
         "facts": {
             "authority": "append-only directly observed compatibility facts",
@@ -2540,7 +2550,7 @@ pub(crate) fn run_with_outcome(
             "TLS calibration requires one concrete protocol, not routing",
         ));
     }
-    validate_ordinary_duration(args)?;
+    validate_requested_deadlines(args)?;
     let deadlines = CalibrationDeadlines::from_args(args);
     if calibration == Some(CalibrationPhase::Reachability) && (args.har || args.key_log) {
         return Err(CliError::usage(
@@ -2820,6 +2830,8 @@ pub(crate) fn run_with_outcome(
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             deadlines,
+            requested_launch: args.wait,
+            requested_observation: args.duration,
             family: args.proxy_family,
             protocol: selected_protocol,
             routing: None,
@@ -2984,13 +2996,12 @@ pub(crate) fn run_with_outcome(
             crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
         ));
     emitter.borrow_mut().terminal_human(&format!(
-        "Authorized observation: {} ms; Capture return allowance: {} ms\n",
+        "Requested launch: {}; effective launch: {} ms; requested observation: {}; effective observation: {} ms; Capture return allowance: {} ms\n",
+        args.wait.map(|value| format!("{} ms", CalibrationDeadlines::milliseconds(value))).unwrap_or_else(|| "default".to_string()),
+        CalibrationDeadlines::milliseconds(report.snapshot.deadlines.launch),
+        args.duration.map(|value| format!("{} ms", CalibrationDeadlines::milliseconds(value))).unwrap_or_else(|| "default".to_string()),
         CalibrationDeadlines::milliseconds(report.snapshot.deadlines.observation),
-        if report.snapshot.mode == deep_capture_api::SessionMode::Capture {
-            CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE)
-        } else {
-            0
-        },
+        CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
     ));
     let observation_windows = runtime
         .borrow()
@@ -3920,6 +3931,36 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
             "controlled target stopped at the requested test checkpoint",
         ));
     }
+    if let Some(delay_ms) = std::env::var("FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        // The installed-package fixture uses this hidden mode as a real
+        // launcher-to-client tree. Only the child makes the final request after
+        // the delay; the parent has already exercised the early routed path.
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        let mut child = std::process::Command::new(std::env::current_exe().map_err(|error| {
+            CliError::failure(format!("cannot locate the controlled client: {error}"))
+        })?);
+        child
+            .arg("__controlled-target")
+            .env_remove("FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        child.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let status = child
+            .status()
+            .map_err(|error| CliError::failure(format!("controlled client failed: {error}")))?;
+        return if status.success() {
+            Ok(Exit::SUCCESS)
+        } else {
+            Err(CliError::failure(format!(
+                "controlled client exited with status {status}"
+            )))
+        };
+    }
     if let Some(milliseconds) = std::env::var("FRAGCAP_CONTROLLED_TARGET_HOLD_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -3973,6 +4014,8 @@ struct BundleContext<'a> {
     calibration: Option<CalibrationPhase>,
     calibration_outcome: Option<CalibrationOutcome>,
     deadlines: CalibrationDeadlines,
+    requested_launch: Option<Duration>,
+    requested_observation: Option<Duration>,
     fact_writes: &'a [FactWriteResult],
 }
 
@@ -4702,6 +4745,13 @@ fn manifest_json(
         },
         "started_at": rfc3339_utc(ctx.session.started_at),
         "stopped_at": rfc3339_utc(SystemTime::now()),
+        "deadlines_milliseconds": {
+            "requested_launch": ctx.requested_launch.map(CalibrationDeadlines::milliseconds),
+            "effective_launch": CalibrationDeadlines::milliseconds(ctx.deadlines.launch),
+            "requested_observation": ctx.requested_observation.map(CalibrationDeadlines::milliseconds),
+            "effective_observation": CalibrationDeadlines::milliseconds(ctx.deadlines.observation),
+            "capture_return_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
+        },
         "proxy": {
             "backend": ctx.session.backend.name,
             "version": ctx.session.backend.version,
@@ -5482,6 +5532,8 @@ mod tests {
                 shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
                 cleanup: CALIBRATION_CLEANUP_TIMEOUT,
             },
+            requested_launch: None,
+            requested_observation: None,
             fact_writes: &[],
         };
         let trace = fragcap::deep_capture::ProcessTraceSummary {
@@ -5684,19 +5736,34 @@ mod tests {
     }
 
     #[test]
-    fn calibration_deadlines_preserve_shorter_values_and_cap_longer_ones() {
-        assert_eq!(
-            bounded_timeout(Some(Duration::from_secs(7)), CALIBRATION_LAUNCH_TIMEOUT),
-            Duration::from_secs(7)
-        );
-        assert_eq!(
-            bounded_timeout(Some(Duration::from_secs(90)), CALIBRATION_LAUNCH_TIMEOUT),
-            CALIBRATION_LAUNCH_TIMEOUT
-        );
-        assert_eq!(
-            bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
-            CALIBRATION_OBSERVATION_TIMEOUT
-        );
+    fn calibration_deadlines_preserve_explicit_longer_values() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--calibrate",
+            "reachability",
+            "--launch-case",
+            "direct-exe-cold",
+            "--calibration-protocol",
+            "routing",
+            "--duration",
+            "2m",
+            "--wait",
+            "2m",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Deep Capture");
+        };
+        let deadlines = CalibrationDeadlines::from_args(&args);
+        assert_eq!(deadlines.launch, Duration::from_secs(120));
+        assert_eq!(deadlines.observation, Duration::from_secs(120));
+        assert!(validate_requested_deadlines(&args).is_ok());
     }
 
     #[test]
@@ -5740,7 +5807,7 @@ mod tests {
             "0s",
         ])
         .is_err());
-        for (value, accepted) in [("4m", true), ("5m", true), ("6m", false)] {
+        for (value, accepted) in [("4m", true), ("5m", true), ("10m", true), ("11m", false)] {
             let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
                 "fragcap",
                 "deep-capture",
@@ -5755,7 +5822,33 @@ mod tests {
                 panic!("expected Deep Capture");
             };
             assert_eq!(
-                validate_ordinary_duration(&args).is_ok(),
+                validate_requested_deadlines(&args).is_ok(),
+                accepted,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_launch_wait_above_five_minutes_refuses_before_effects() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        for (value, accepted) in [("2m", true), ("5m", true), ("6m", false)] {
+            let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+                "fragcap",
+                "deep-capture",
+                "target",
+                "--launch",
+                "--wait",
+                value,
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected Deep Capture");
+            };
+            assert_eq!(
+                validate_requested_deadlines(&args).is_ok(),
                 accepted,
                 "{value}"
             );

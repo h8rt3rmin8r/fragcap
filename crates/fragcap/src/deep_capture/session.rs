@@ -5,7 +5,6 @@ use std::time::Duration;
 use super::*;
 use crate::targets::CompatibilityProtocol;
 
-const MAX_LAUNCH: Duration = Duration::from_secs(120);
 const MAX_ROUTE_OWNER_RELEASE: Duration = Duration::from_secs(300);
 const MAX_SHUTDOWN: Duration = Duration::from_secs(30);
 const MAX_CLEANUP: Duration = Duration::from_secs(60);
@@ -45,19 +44,10 @@ pub struct DeepCapture;
 impl DeepCapture {
     /// Resolve one immutable session plan without starting any external effect.
     pub fn preflight(
-        mut config: SessionConfig,
+        config: SessionConfig,
         adapters: &mut AdapterSet<'_>,
     ) -> Result<PreparedSession, PreflightRefusal> {
         validate_config(&config)?;
-        if config.mode == SessionMode::Capture
-            && (config.deadlines.observation.is_zero()
-                || config.deadlines.observation > MAX_ORDINARY_OBSERVATION)
-        {
-            return Err(PreflightRefusal::new(
-                "ordinary-observation-bound",
-                "ordinary Deep Capture observation must be greater than zero and at most five minutes",
-            ));
-        }
         let target = adapters.targets.resolve(&config)?;
         if config
             .launch_case
@@ -77,7 +67,6 @@ impl DeepCapture {
         adapters.routing.prepare(&target, &routing)?;
         let session_id = adapters.identifiers.next_id("session")?;
         let plan_id = PlanId::new(adapters.identifiers.next_id("plan")?);
-        config.deadlines = cap_deadlines(config.deadlines);
         let plan = SessionPlan {
             id: plan_id,
             session_id,
@@ -731,12 +720,7 @@ impl DeepCaptureSession<'_> {
             self.observe_cancellation();
             return Ok(());
         }
-        let observation_budget = self.plan.deadlines.observation
-            + if self.plan.mode == SessionMode::Capture {
-                CAPTURE_RETURN_ALLOWANCE
-            } else {
-                Duration::ZERO
-            };
+        let observation_budget = self.plan.deadlines.observation + CAPTURE_RETURN_ALLOWANCE;
         let budget = self.remaining_budget(started, observation_budget);
         let capture_result = self.adapters.capture.run(
             &self.capture,
@@ -1828,6 +1812,7 @@ impl Drop for DeepCaptureSession<'_> {
 }
 
 fn validate_config(config: &SessionConfig) -> Result<(), PreflightRefusal> {
+    validate_deadlines(config)?;
     if config.target.trim().is_empty() {
         return Err(PreflightRefusal::new(
             "target-empty",
@@ -1870,14 +1855,50 @@ fn validate_config(config: &SessionConfig) -> Result<(), PreflightRefusal> {
     Ok(())
 }
 
-fn cap_deadlines(deadlines: Deadlines) -> Deadlines {
-    Deadlines {
-        launch: deadlines.launch.min(MAX_LAUNCH),
-        observation: deadlines.observation.min(MAX_ORDINARY_OBSERVATION),
-        route_owner_release: deadlines.route_owner_release.min(MAX_ROUTE_OWNER_RELEASE),
-        shutdown: deadlines.shutdown.min(MAX_SHUTDOWN),
-        cleanup: deadlines.cleanup.min(MAX_CLEANUP),
+fn validate_deadlines(config: &SessionConfig) -> Result<(), PreflightRefusal> {
+    let deadlines = config.deadlines;
+    for (value, maximum, code, name) in [
+        (
+            deadlines.launch,
+            MAX_MANAGED_LAUNCH_WAIT,
+            "launch-bound",
+            "launch",
+        ),
+        (
+            deadlines.observation,
+            MAX_ORDINARY_OBSERVATION,
+            if config.mode == SessionMode::Capture {
+                "ordinary-observation-bound"
+            } else {
+                "calibration-observation-bound"
+            },
+            "observation",
+        ),
+        (
+            deadlines.route_owner_release,
+            MAX_ROUTE_OWNER_RELEASE,
+            "route-owner-release-bound",
+            "route-owner release",
+        ),
+        (
+            deadlines.shutdown,
+            MAX_SHUTDOWN,
+            "shutdown-bound",
+            "shutdown",
+        ),
+        (deadlines.cleanup, MAX_CLEANUP, "cleanup-bound", "cleanup"),
+    ] {
+        if value.is_zero() || value > maximum {
+            return Err(PreflightRefusal::new(
+                code,
+                format!(
+                    "{name} deadline must be greater than zero and at most {} seconds",
+                    maximum.as_secs()
+                ),
+            ));
+        }
     }
+    Ok(())
 }
 
 fn facts_from_observations(

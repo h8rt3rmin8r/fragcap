@@ -850,6 +850,47 @@ mod tests {
         assert_eq!(outcome.result.status, CleanupStatus::Released);
     }
 
+    #[test]
+    fn absent_client_releases_but_late_client_after_root_exit_remains_an_obligation() {
+        let root = child();
+        let mut evidence = child_evidence(&root);
+        let at = evidence.launch_at.unwrap();
+        let exited_at = fragcap::Timestamp::from_nanos(at.as_nanos() + 1);
+        evidence.managed_instances[0]
+            .identity
+            .force_close()
+            .unwrap();
+        let started = Instant::now();
+        while !evidence.managed_instances[0].identity.exited().unwrap()
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(evidence.managed_instances[0].identity.exited().unwrap());
+        evidence.events.push(ProcessEvent::Exited {
+            pid: root.0.id(),
+            at: exited_at,
+        });
+        let absent = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_eq!(absent.result.status, CleanupStatus::Released);
+
+        let late_at = fragcap::Timestamp::from_nanos(at.as_nanos() + 2);
+        evidence.events.push(ProcessEvent::started(
+            999_996,
+            root.0.id(),
+            "game.exe",
+            "",
+            late_at,
+        ));
+        let late = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_eq!(late.result.status, CleanupStatus::Failed);
+        assert!(late.result.reason.contains("game.exe"));
+        assert!(owner_exit_prerequisite(&evidence)
+            .unwrap()
+            .iter()
+            .any(|(pid, _)| *pid == 999_996));
+    }
+
     #[cfg(feature = "etw")]
     #[test]
     fn late_helper_during_grace_blocks_route_release() {

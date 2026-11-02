@@ -337,11 +337,12 @@ pub struct Deadlines {
     pub cleanup: Duration,
 }
 
-/// Maximum accepted ordinary Deep Capture observation. Callers must reject
-/// longer requests before authorization rather than silently shortening them.
-pub const MAX_ORDINARY_OBSERVATION: Duration = Duration::from_secs(300);
+/// Maximum accepted managed launch wait. Callers reject longer requests before effects.
+pub const MAX_MANAGED_LAUNCH_WAIT: Duration = Duration::from_secs(300);
+/// Maximum accepted calibration or ordinary Deep Capture observation.
+pub const MAX_ORDINARY_OBSERVATION: Duration = Duration::from_secs(600);
 
-/// Finite completion time after the requested ordinary Capture observation.
+/// Finite completion time after the requested observation for every mode.
 /// This allowance never reduces the operator's authorized observation span.
 pub const CAPTURE_RETURN_ALLOWANCE: Duration = Duration::from_secs(5);
 

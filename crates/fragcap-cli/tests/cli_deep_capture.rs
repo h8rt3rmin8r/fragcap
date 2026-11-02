@@ -665,6 +665,59 @@ fn controlled_calibration_runs_reachability_then_tls() {
 }
 
 #[test]
+fn controlled_slow_launcher_routes_before_and_after_client_creation() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("slow-chain");
+    seed_target(&local, false);
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS", "50");
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_HOLD_MS", "75");
+    let (code, _, events) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--calibration-protocol",
+        "routing",
+        "--launch-case",
+        "direct-exe-warm",
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
+        "--authorize-stdin",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_HOLD_MS");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+    assert_eq!(code, 0, "events: {events}");
+    let records = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
+    let connections = records
+        .lines()
+        .filter(|line| line.contains("\"type\":\"application.correlation\""))
+        .count();
+    assert!(
+        connections >= 2,
+        "launcher and delayed client must both reach the proxy: {records}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["state"], "complete");
+}
+
+#[test]
 fn malformed_proxy_bypass_refuses_before_session_effects() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
