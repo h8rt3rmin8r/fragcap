@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "product_version": "0.10.12",
-  "tag": "v0.10.12",
-  "source_revision": "f09ec47cf40c9c4a6b47e350121dc234881b309b",
-  "lockfile_sha256": "99f33d277d9c9ea356a25fe4856a05dc4d65d46cf964c0c21fc14b09f5de9a7e",
-  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.12",
-  "release_run_id": 41400765832,
+  "product_version": "0.10.13",
+  "tag": "v0.10.13",
+  "source_revision": "af58732b3fb1f9dc4e3a4eaeb69e3cdd10502942",
+  "lockfile_sha256": "559252fbf75a906c18411be2cc986985b0a80b982f234feae8e83cc57c9c0ab8",
+  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13",
+  "release_run_id": 41477596588,
   "target": "x86_64-pc-windows-msvc",
   "features": [
     "etw",
@@ -17,44 +17,44 @@
     {
       "role": "standalone-catalog",
       "filename": "catalog.db",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/catalog.db",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/catalog.db",
       "size_bytes": 90112,
       "sha256": "d1da331be8e1c33b58f53b35e6a331755bfbc315d75be811214cc83488104fff"
     },
     {
       "role": "standalone-catalog-checksum",
       "filename": "catalog.db.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/catalog.db.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/catalog.db.sha256",
       "size_bytes": 77,
       "sha256": "bc7cf4fb3499d1fdc605d23e1bc51b904273d7eada20a959a7b140d756293901"
     },
     {
       "role": "portable-zip",
-      "filename": "fragcap-0.10.12-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/fragcap-0.10.12-x86_64-pc-windows-msvc.zip",
-      "size_bytes": 7351474,
-      "sha256": "621caf4168de92953d883fe6e918cfcbe9939079c5f538cc7ef127307ca74bc3"
+      "filename": "fragcap-0.10.13-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/fragcap-0.10.13-x86_64-pc-windows-msvc.zip",
+      "size_bytes": 7358915,
+      "sha256": "002b26e05743185f7a5d33e07d507a7b0182d3e1d197311896316d69d10fb743"
     },
     {
       "role": "portable-zip-checksum",
-      "filename": "fragcap-0.10.12-x86_64-pc-windows-msvc.zip.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/fragcap-0.10.12-x86_64-pc-windows-msvc.zip.sha256",
+      "filename": "fragcap-0.10.13-x86_64-pc-windows-msvc.zip.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/fragcap-0.10.13-x86_64-pc-windows-msvc.zip.sha256",
       "size_bytes": 109,
-      "sha256": "4b4cf15877656942b4fac749682c32fc5b8193d3d280ff3198d30fde49011367"
+      "sha256": "9cf4b97e2d31703f10287363aa6251fb7b4a0bf83b2f01fe34f97fbb9b04fff9"
     },
     {
       "role": "windows-msi",
-      "filename": "fragcap-0.10.12-x86_64.msi",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/fragcap-0.10.12-x86_64.msi",
-      "size_bytes": 7614464,
-      "sha256": "65573ccd48a2d5f19d53a35de40a518be28c0d51c87e440f4bf5a194a22c7866"
+      "filename": "fragcap-0.10.13-x86_64.msi",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/fragcap-0.10.13-x86_64.msi",
+      "size_bytes": 7618560,
+      "sha256": "8718ae42c18a0d553de824b4207f606c21d03b2b6f611bab04323947f5d7def1"
     },
     {
       "role": "windows-msi-checksum",
-      "filename": "fragcap-0.10.12-x86_64.msi.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.12/fragcap-0.10.12-x86_64.msi.sha256",
+      "filename": "fragcap-0.10.13-x86_64.msi.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.10.13/fragcap-0.10.13-x86_64.msi.sha256",
       "size_bytes": 93,
-      "sha256": "9ac91ef765ae0058f1f3f99bfe36eb643743bc66ced1e38f94a65e4545c43f0b"
+      "sha256": "7a796ac91b6e01f9f167c72e1538ac1580072f49df4d8f252382ce95113b63e4"
     }
   ],
   "predecessor": {
