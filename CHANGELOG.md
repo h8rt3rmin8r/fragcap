@@ -10,6 +10,22 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.13] - 2026-11-02
+
+### Fixed
+
+Fix managed Deep Capture stage acquisition when ETW reports an executable basename by joining a query-only canonical path to the same process creation event and declared stage. Preserve exact Steam and publisher ancestry, name unverified identity limitations, and surface `acquisitiontimeout` in the composed CLI result.
+
+Current documentation and frozen replay authority now identify the independently verified v0.10.12 files and all ten published crates. Longer explicit Deep Capture observation and managed-launch timing, declared cold Steam publisher stages, and process-instance ownership evidence are described as shipped, while v0.10.11 limitations remain historical.
+
+### Decisions
+
+**2026-11-02** Basename-only managed start events retain their observed image while a separately queried canonical path may satisfy exact stage matching only after PID, basename, account, session, declared path, and directional one-second creation-time join agree. Stage binding preserves declared Steam and publisher ancestry without conferring shutdown rights, and failed acquisition keeps its typed terminal reason separate from packet, proxy, manifest, and cleanup evidence.
+
+2026-11-02: Advance current v0.10.12 publication markers, documentation coverage, the frozen review candidate and six exact asset authorities only after merged source, annotated tag, all ten post-merge main workflows, all four tagged jobs, normal protected registry approval, six independently downloaded files and ten non-yanked registry archives reconcile. Retarget the published replay label to these verified bytes. Preserve the v0.8.0 predecessor, unsigned policy, historical evidence and unperformed independent whole-product review status. Hosted clean-install certification does not claim a local installed-product run or real-title Deep Capture success.
+
+**2026-11-02** The v0.10.13 release bump changes only eleven first-party package versions across the three governed dependency graphs and rebinds their measured digests and unsafe-review inventory without changing third-party packages, graph counts, review expiry, or exceptions. The two isolated lockfiles, native conformance identities, golden corpus, and not-started independent-review template move to 0.10.13; the combined live ETW and Npcap acceptance for #547 remains open.
+
 ## [0.10.12] - 2026-11-02
 
 ### Changed
@@ -2548,6 +2564,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.13]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13
 [0.10.12]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.12
 [0.10.11]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.11
 [0.10.10]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.10

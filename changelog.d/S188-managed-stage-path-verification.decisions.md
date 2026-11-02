@@ -1,2 +1,0 @@
-<!-- spec-impact: 10.3, 27.3 -->
-**2026-11-02** Basename-only managed start events retain their observed image while a separately queried canonical path may satisfy exact stage matching only after PID, basename, account, session, declared path, and directional one-second creation-time join agree. Stage binding preserves declared Steam and publisher ancestry without conferring shutdown rights, and failed acquisition keeps its typed terminal reason separate from packet, proxy, manifest, and cleanup evidence.
