@@ -1138,6 +1138,12 @@ fail, say so and include the output. If a step was skipped, say that. Reporting
 an unverified success is worse than reporting a known failure, because it
 removes the operator's ability to trust any other report.
 
+## Installed-product field-test discipline
+
+A request to test an installed Fragcap build authorizes its native outputs at documented defaults, not an agent-selected audit tree. Use the shipped default target stores and generated session bundle, and exercise native retention and cleanup without silently setting `--bundle`, store-path flags, `FRAGCAP_SESSION_DIR`, profile-root overrides, or alternate application-data roots. Do not create or leave test-specific reports, transcripts, duplicate logs, downloads, helpers, or build scratch at a chosen local path without the owner's explicit, path-specific authorization. If a different path is technically necessary, disclose the exact path and changed behavior and obtain agreement before using it; that result cannot prove the default installed journey.
+
+Keep conclusions in the conversation and concrete privacy-scrubbed findings in GitHub issues. Retain native session evidence under the product's own rules, remove transient agent files after use, and never move or delete native bundles or captures without proving exact path, inactive ownership, and settled recovery obligations. Use supported product cleanup when available; preserve path-bound owner records, manifests, journals, recipient access, and Doctor inventory. Report a refused cleanup instead of trying another deletion mechanism. In the handoff, name the effective canonical store, session-registry, and bundle paths, actual retained artifact names, cleanup performed, and any residual; mark an unproven location unverified. A packaged agent host can redirect writes into `LocalCache` even when `%APPDATA%` and `%LOCALAPPDATA%` look ordinary. Reviewers must not accept a custom-path run as evidence of default placement or retention. See the worked default-path example in `CONTRIBUTING.md`.
+
 ## Deciding versus asking
 
 Default to deciding: enumerate the alternatives, evaluate them against the
