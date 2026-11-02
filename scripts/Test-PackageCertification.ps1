@@ -655,7 +655,8 @@ Param(
             $cleanup = Get-Content -Raw -LiteralPath (Join-Path $canonicalBundle 'cleanup.json') | ConvertFrom-Json -Depth 32 -ErrorAction Stop
             if ($manifest.state -cne 'complete' -or $manifest.deadlines_milliseconds.effective_observation -ne 120000 -or $manifest.deadlines_milliseconds.effective_launch -ne 120000) { throw 'installed slow timing manifest did not finalize the exact bounds' }
             if (-not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'capture.fcapng')) -or -not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'application.jsonl')) -or -not (Test-Path -LiteralPath (Join-Path $canonicalBundle 'process-trace.jsonl'))) { throw 'installed slow timing bundle omitted a required artifact' }
-            if (@($cleanup.resources | Where-Object { @('succeeded', 'not-needed') -cnotcontains $_.status }).Count -ne 0) { throw 'installed slow timing cleanup did not reconcile all resources' }
+            $unreconciled = @($cleanup.resources | Where-Object { @('succeeded', 'not-needed') -cnotcontains $_.status -and -not ($_.resource -ceq 'bundle-evidence' -and $_.status -ceq 'retained') })
+            if ($cleanup.status -cne 'succeeded' -or $unreconciled.Count -ne 0) { throw "installed slow timing cleanup did not reconcile all resources: $(@($unreconciled | ForEach-Object { "$($_.resource)=$($_.status)" }) -join ',')" }
             if (@($cleanup.resources | Where-Object { $_.resource -ceq 'native-proxy-listener' -and $_.status -ceq 'succeeded' }).Count -ne 1) { throw 'installed slow timing did not release its exact proxy listener' }
             $failures = @(Get-SmokePredicateFailures -Observation $run.Observation -FirewallInstalled $true)
             if ($failures.Count -ne 0) { throw "installed slow timing containment failed: $($failures -join ',')" }

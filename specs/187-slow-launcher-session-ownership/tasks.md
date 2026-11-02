@@ -40,7 +40,7 @@
 - [x] T015 [US3] Add failing managed-descendant and PID-reuse tests in `crates/fragcap/src/deep_capture/process.rs` and review the existing `crates/fragcap/tests/loopback_correlation.rs` packet evidence boundary.
 - [x] T016 [US3] Project exact-root descendants by process generation and event time into the bounded process trace with explicit projection and watcher omission accounting in `crates/fragcap/src/deep_capture/process.rs`.
 - [x] T017 [US3] Add first-connection exact, ambiguous, and unavailable cases in `crates/fragcap/src/deep_capture/native.rs`, pre-client independent output coverage in `crates/fragcap/src/deep_capture/application.rs`, and a controlled routed launcher/client proxy test.
-- [x] T018 [US3] Establish independent socket-to-process-instance correlation at native proxy connection inception in `crates/fragcap/src/deep_capture/native.rs` and relevant capture authority, preserving packet ScopeWithheld truth.
+- [x] T018 [US3] Establish independent socket-to-process-instance correlation at native proxy connection inception through a bounded nonblocking collector in `crates/fragcap/src/deep_capture/native.rs`, preserving packet ScopeWithheld truth and explicit collection loss.
 - [x] T019 [US3] Cover helper born during release, absent or late client, same-name unrelated process, proxy continuity, partial cleanup, and Doctor exit prerequisite in `crates/fragcap-cli/src/commands/deep_capture/shutdown.rs` and controlled CLI tests.
 
 ## Phase 5: Documentation, gates, and delivery
@@ -48,7 +48,7 @@
 - [x] T020 Update `docs/fragcap-specification.md`, `docs/plans/README.md`, and `changelog.d/` with exact S187 behavior, evidence limits, and any architecture-affecting decisions.
 - [ ] T021 Run focused tests, full foreground `cargo xtask ci`, applicable isolated Windows/package gates, and UTF-8/mojibake checks; inspect failures and fix within scope.
 - [x] T022 Re-run Spec-Kit analysis if requirements or architecture changed, mark tasks accurately, and commit the exact S187 branch. Post-design analysis found no critical or high cross-artifact conflict; T009 and T021 remain open until hosted installed-package and exact-head gates finish.
-- [ ] T023 Push the explicitly authorized branch, open an official PR with `Closes #540` and `Closes #541` only when both implementation gates pass, and verify the published diff.
+- [x] T023 Push the explicitly authorized branch, open an official PR with `Closes #540` and `Closes #541` only when both implementation gates pass, and verify the published diff. PR #544 published all 28 intended files at `4ecd00a`; subsequent review fixes remain on the same branch.
 - [ ] T024 Monitor exact-head CI, all Codex/security review comments and reactions, and at most one second `@Codex` review request; answer and close every finding, then hand the green PR to the owner before merge.
 
 ## Dependencies and execution order

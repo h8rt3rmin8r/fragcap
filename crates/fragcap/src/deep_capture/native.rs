@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(all(windows, feature = "socket-table"))]
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -206,6 +208,108 @@ impl NativeListenerReservation {
     }
 }
 
+#[cfg(all(windows, feature = "socket-table"))]
+const SOCKET_INCEPTION_QUEUE_CAPACITY: usize = 128;
+
+#[cfg(all(windows, feature = "socket-table"))]
+enum SocketInceptionRequest {
+    Lookup {
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+        result: Arc<Mutex<super::ConnectionInception>>,
+    },
+    Flush(mpsc::Sender<()>),
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+#[derive(Debug)]
+struct SocketInceptionCollector {
+    sender: Option<mpsc::SyncSender<SocketInceptionRequest>>,
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+impl SocketInceptionCollector {
+    fn new(
+        mut lookup: impl FnMut(ConnectionDescriptor, u64) -> super::ConnectionInception + Send + 'static,
+    ) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(SOCKET_INCEPTION_QUEUE_CAPACITY);
+        let spawned = std::thread::Builder::new()
+            .name("fragcap-socket-inception".to_string())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    match request {
+                        SocketInceptionRequest::Lookup {
+                            descriptor,
+                            opened_at_ns,
+                            result,
+                        } => {
+                            *result.lock().expect("inception result lock") =
+                                lookup(descriptor, opened_at_ns);
+                        }
+                        SocketInceptionRequest::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+        Self {
+            sender: spawned.ok().map(|_| sender),
+        }
+    }
+
+    fn request(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Arc<Mutex<super::ConnectionInception>> {
+        let result = Arc::new(Mutex::new(super::ConnectionInception {
+            reason: "socket-collector-pending",
+            ..Default::default()
+        }));
+        let Some(sender) = &self.sender else {
+            result.lock().expect("inception result lock").reason = "socket-collector-unavailable";
+            return result;
+        };
+        let request = SocketInceptionRequest::Lookup {
+            descriptor,
+            opened_at_ns,
+            result: Arc::clone(&result),
+        };
+        if let Err(error) = sender.try_send(request) {
+            result.lock().expect("inception result lock").reason = match error {
+                mpsc::TrySendError::Full(_) => "socket-collector-saturated",
+                mpsc::TrySendError::Disconnected(_) => "socket-collector-unavailable",
+            };
+        }
+        result
+    }
+
+    fn flush(&self, budget: Duration) {
+        let Some(sender) = &self.sender else { return };
+        let (done_send, done_receive) = mpsc::channel();
+        if sender
+            .try_send(SocketInceptionRequest::Flush(done_send))
+            .is_ok()
+        {
+            let _ = done_receive.recv_timeout(budget.min(Duration::from_millis(250)));
+        }
+    }
+}
+
+#[cfg(all(windows, feature = "socket-table"))]
+impl Default for SocketInceptionCollector {
+    fn default() -> Self {
+        let mut source = IpHelperTable::default();
+        Self::new(move |descriptor, opened_at_ns| match source.read() {
+            Ok(table) => select_inception_socket_owner(&table, descriptor, opened_at_ns),
+            Err(_) => super::ConnectionInception {
+                reason: "socket-table-read-failed",
+                ..Default::default()
+            },
+        })
+    }
+}
+
 /// Session-owned bridge between packet truth and native proxy observations.
 #[derive(Clone, Debug, Default)]
 pub struct NativeObservationContext {
@@ -213,7 +317,7 @@ pub struct NativeObservationContext {
     controlled_process_id: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "socket-table"))]
-    socket_table: Arc<Mutex<IpHelperTable>>,
+    socket_collector: Arc<SocketInceptionCollector>,
 }
 
 impl NativeObservationContext {
@@ -226,33 +330,33 @@ impl NativeObservationContext {
         &self,
         descriptor: ConnectionDescriptor,
         opened_at_ns: u64,
-    ) -> super::ConnectionInception {
+    ) -> Arc<Mutex<super::ConnectionInception>> {
         #[cfg(all(windows, feature = "socket-table"))]
         {
-            let mut source = self.socket_table.lock().expect("socket table lock");
-            match source.read() {
-                Ok(table) => select_inception_socket_owner(&table, descriptor, opened_at_ns),
-                Err(_) => super::ConnectionInception {
-                    reason: "socket-table-read-failed",
-                    ..Default::default()
-                },
-            }
+            self.socket_collector.request(descriptor, opened_at_ns)
         }
         #[cfg(not(all(windows, feature = "socket-table")))]
         {
             let _ = (descriptor, opened_at_ns);
-            super::ConnectionInception {
+            Arc::new(Mutex::new(super::ConnectionInception {
                 reason: "socket-table-unavailable",
                 ..Default::default()
-            }
+            }))
         }
+    }
+
+    fn finish_inception_collection(&self, budget: Duration) {
+        #[cfg(all(windows, feature = "socket-table"))]
+        self.socket_collector.flush(budget);
+        #[cfg(not(all(windows, feature = "socket-table")))]
+        let _ = budget;
     }
 
     fn connection_owner(
         &self,
         window: &ApplicationConnectionWindow,
     ) -> super::ConnectionOwnerEvidence {
-        let inception = window.inception;
+        let inception = *window.inception.lock().expect("inception result lock");
         if inception.state != "exact" {
             return super::ConnectionOwnerEvidence {
                 state: inception.state.into(),
@@ -933,6 +1037,8 @@ impl ProxyLease for NativeProxyLease {
         let mut result = cleanup_result("native-proxy-listener", &report);
         self.account_final_classification_loss();
         if report.is_clean() {
+            self.observation_context
+                .finish_inception_collection(budget.remaining());
             if let Some(artifact) = self.application_artifact.as_mut() {
                 if let Err(error) = artifact.finish() {
                     result.status = CleanupStatus::Failed;
@@ -978,6 +1084,8 @@ impl ProxyLease for NativeProxyLease {
             });
         }
         if let Some(mut artifact) = self.application_artifact.take() {
+            self.observation_context
+                .finish_inception_collection(budget.remaining());
             let status = artifact.finish();
             if status.is_ok() {
                 self.application_classification_summary = artifact.classification_summary();
@@ -1673,6 +1781,46 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 mod tests {
     use super::*;
 
+    #[cfg(all(windows, feature = "socket-table"))]
+    #[test]
+    fn inception_collector_never_waits_for_socket_enumeration_on_accept() {
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (release_send, release_receive) = mpsc::channel();
+        let collector = SocketInceptionCollector::new(move |_, _| {
+            let _ = entered_send.send(());
+            let _ = release_receive.recv();
+            super::super::ConnectionInception {
+                state: "exact",
+                reason: "test-socket-owner",
+                pid: Some(71),
+                socket_created_at_ns: Some(12),
+            }
+        });
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        };
+        let first = collector.request(descriptor, 15);
+        entered_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        for _ in 0..SOCKET_INCEPTION_QUEUE_CAPACITY {
+            let pending = collector.request(descriptor, 15);
+            assert_eq!(pending.lock().unwrap().reason, "socket-collector-pending");
+        }
+        let saturated = collector.request(descriptor, 15);
+        assert_eq!(
+            saturated.lock().unwrap().reason,
+            "socket-collector-saturated"
+        );
+        release_send.send(()).unwrap();
+        entered_receive
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(first.lock().unwrap().pid, Some(71));
+    }
+
     #[test]
     fn connection_inception_selects_only_one_exact_client_socket() {
         let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
@@ -2102,7 +2250,7 @@ mod tests {
                 },
                 opened_at_ns: 10,
                 closed_at_ns: None,
-                inception: super::super::ConnectionInception::default(),
+                inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
             },
         );
 
