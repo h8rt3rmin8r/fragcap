@@ -64,6 +64,10 @@ fn image_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
+fn case_equal(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
 fn verify_stage_path_values(
     event: &ProcessEvent,
     observed_pid: u32,
@@ -83,12 +87,12 @@ fn verify_stage_path_values(
         return Err(StagePathLimitation::AccountSessionMismatch);
     }
     let path = path_spelling(&path.to_string_lossy());
-    if !image_name(&path).eq_ignore_ascii_case(image_name(image)) {
+    if !case_equal(image_name(&path), image_name(image)) {
         return Err(StagePathLimitation::ImageMismatch);
     }
     if !shutdown_scope
         .iter()
-        .any(|expected| path.eq_ignore_ascii_case(&path_spelling(&expected.to_string_lossy())))
+        .any(|expected| case_equal(&path, &path_spelling(&expected.to_string_lossy())))
     {
         return Err(StagePathLimitation::PathMismatch);
     }
@@ -199,7 +203,7 @@ impl CaptureProcessEvidence {
             let declared = self
                 .shutdown_scope
                 .iter()
-                .any(|path| image_name(&path.to_string_lossy()).eq_ignore_ascii_case(name));
+                .any(|path| case_equal(image_name(&path.to_string_lossy()), name));
             if declared {
                 let needs_verified_path = !image.contains(['\\', '/']);
                 if self.managed_instances.len() >= 64 {
@@ -990,6 +994,33 @@ mod tests {
         });
         assert!(trace.jsonl.contains("stage-path-unavailable"));
         assert!(trace.summary.limitations >= 1);
+    }
+
+    #[test]
+    fn managed_candidate_and_exact_path_preserve_unicode_case_matching() {
+        let declared = PathBuf::from("C:\\Games\\ÉGame.exe");
+        let event = ProcessEvent::started(u32::MAX, 1, "égame.exe", "", Timestamp::from_nanos(10));
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![declared.clone()],
+            ..Default::default()
+        };
+        let observation = evidence.observe_managed(&event);
+        assert_eq!(
+            observation.limitation,
+            Some(StagePathLimitation::PathUnavailable)
+        );
+        assert_eq!(evidence.stage_path_limitations["stage-path-unavailable"], 1);
+        assert_eq!(
+            verify_stage_path_values(
+                &event,
+                u32::MAX,
+                9,
+                &PathBuf::from("c:\\games\\égame.exe"),
+                true,
+                &[declared],
+            ),
+            Ok(Arc::from("c:\\games\\égame.exe"))
+        );
     }
     use fragcap_core::{Attribution, Fidelity, FlowId, FlowObservation, ProcessRecord};
 
