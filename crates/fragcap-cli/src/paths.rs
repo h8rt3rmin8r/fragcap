@@ -237,7 +237,6 @@ pub fn default_local_db_path() -> Option<PathBuf> {
 }
 
 /// The current user's shared persistent root, outside AppData virtualization.
-#[cfg(windows)]
 pub fn storage_root() -> std::io::Result<PathBuf> {
     if let Some(root) = env::var_os(STORAGE_ROOT_ENV) {
         let root = PathBuf::from(root);
@@ -249,14 +248,16 @@ pub fn storage_root() -> std::io::Result<PathBuf> {
             "FRAGCAP_STORAGE_ROOT must be absolute",
         ));
     }
-    current_profile_path().map(|path| path.join(".fragcap"))
-}
-
-#[cfg(not(windows))]
-pub fn storage_root() -> std::io::Result<PathBuf> {
-    env::var_os("HOME")
-        .map(|path| PathBuf::from(path).join(".fragcap"))
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is unavailable"))
+    #[cfg(windows)]
+    {
+        current_profile_path().map(|path| path.join(".fragcap"))
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME")
+            .map(|path| PathBuf::from(path).join(".fragcap"))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is unavailable"))
+    }
 }
 
 /// The Windows profile path is resolved from the current token, not from a
@@ -320,6 +321,9 @@ pub fn default_roaming_data_root() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
+        if env::var_os(STORAGE_ROOT_ENV).is_some() {
+            return storage_root().ok().map(|base| base.join("roaming"));
+        }
         env::var_os("APPDATA").map(|base| PathBuf::from(base).join("fragcap"))
     }
 }
@@ -332,6 +336,9 @@ pub fn default_local_data_root() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
+        if env::var_os(STORAGE_ROOT_ENV).is_some() {
+            return storage_root().ok().map(|base| base.join("local"));
+        }
         env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("fragcap"))
     }
 }
