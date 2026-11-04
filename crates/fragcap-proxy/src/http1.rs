@@ -88,6 +88,10 @@ pub struct ProtocolError {
     pub authentication_refused: bool,
     pub policy_refused: bool,
     pub timed_out: bool,
+    pub tls_alert: Option<String>,
+    pub transport_category: Option<&'static str>,
+    pub os_error_code: Option<i32>,
+    pub boundary: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,7 +124,16 @@ impl ProtocolError {
             authentication_refused: false,
             policy_refused: false,
             timed_out: false,
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
+            boundary: None,
         }
+    }
+
+    pub(crate) fn at_boundary(mut self, boundary: &'static str) -> Self {
+        self.boundary = Some(boundary);
+        self
     }
 
     pub(crate) fn authentication(error: ProxyAuthorizationError) -> Self {
@@ -138,6 +151,16 @@ impl ProtocolError {
     pub(crate) fn timeout(code: &'static str) -> Self {
         let mut value = Self::new(code, code);
         value.timed_out = true;
+        value.transport_category = Some("timeout");
+        value
+    }
+
+    pub(crate) fn io(code: &'static str, error: std::io::Error) -> Self {
+        let (tls_alert, transport_category, os_error_code) = crate::upstream::diagnostic_io(&error);
+        let mut value = Self::new(code, error.to_string());
+        value.tls_alert = tls_alert;
+        value.transport_category = Some(transport_category);
+        value.os_error_code = os_error_code;
         value
     }
 }
@@ -681,7 +704,9 @@ where
             let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
             let send_started_at = Instant::now();
             let head = encode_request(&request);
-            write_bounded(&mut upstream, &head, limits.idle_timeout).await?;
+            write_bounded(&mut upstream, &head, limits.idle_timeout)
+                .await
+                .map_err(|error| error.at_boundary("upstream"))?;
             let request_head_sent_at = Instant::now();
 
             let mut early_final = None;
@@ -707,6 +732,8 @@ where
                             request.framing,
                             limits,
                             &mut request_body,
+                            "client-facing",
+                            "upstream",
                         )
                         .await?;
                         break;
@@ -731,6 +758,8 @@ where
                                 request.framing,
                                 limits,
                                 &mut request_body,
+                                "client-facing",
+                                "upstream",
                             )
                             .await?;
                             break;
@@ -748,6 +777,8 @@ where
                     request.framing,
                     limits,
                     &mut request_body,
+                    "client-facing",
+                    "upstream",
                 )
                 .await?;
             }
@@ -917,6 +948,8 @@ where
             response.framing,
             limits,
             &mut response_body,
+            "upstream",
+            "client-facing",
         )
         .await;
         let streaming_outcome = body_result
@@ -1614,7 +1647,7 @@ where
             let read = stream
                 .read(&mut byte)
                 .await
-                .map_err(|error| ProtocolError::new("http-head-read-failed", error.to_string()))?;
+                .map_err(|error| ProtocolError::io("http-head-read-failed", error))?;
             if read == 0 {
                 return if result.is_empty() {
                     Ok(None)
@@ -1652,15 +1685,20 @@ where
     W: AsyncWrite + Unpin,
 {
     let raw = read_head(upstream, limits.max_header_bytes, limits.idle_timeout)
-        .await?
+        .await
+        .map_err(|error| error.at_boundary("upstream"))?
         .ok_or_else(|| {
             ProtocolError::new(
                 "upstream-response-eof",
                 "upstream closed before a response head",
             )
+            .at_boundary("upstream")
         })?;
-    let response = parse_response(&raw, limits, request_method)?;
-    write_bounded(client, &response.raw, limits.idle_timeout).await?;
+    let response = parse_response(&raw, limits, request_method)
+        .map_err(|error| error.at_boundary("upstream"))?;
+    write_bounded(client, &response.raw, limits.idle_timeout)
+        .await
+        .map_err(|error| error.at_boundary("client-facing"))?;
     Ok(response)
 }
 
@@ -1670,6 +1708,8 @@ async fn relay_body<R, W>(
     framing: Framing,
     limits: &ProtocolLimits,
     observer: &mut BodyEmitter,
+    reader_boundary: &'static str,
+    writer_boundary: &'static str,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
@@ -1678,28 +1718,55 @@ where
     match framing {
         Framing::None => Ok(()),
         Framing::Fixed(length) => {
-            relay_exact(reader, writer, length, limits.idle_timeout, observer, false).await
+            relay_exact(
+                reader,
+                writer,
+                length,
+                limits.idle_timeout,
+                observer,
+                false,
+                reader_boundary,
+                writer_boundary,
+            )
+            .await
         }
-        Framing::Chunked => relay_chunked(reader, writer, limits, observer).await,
+        Framing::Chunked => {
+            relay_chunked(
+                reader,
+                writer,
+                limits,
+                observer,
+                reader_boundary,
+                writer_boundary,
+            )
+            .await
+        }
         Framing::CloseDelimited => {
             let mut buffer = vec![0_u8; 16 * 1024];
             loop {
                 let read = timeout(limits.idle_timeout, reader.read(&mut buffer))
                     .await
-                    .map_err(|_| ProtocolError::timeout("http-body-idle-timeout"))?
+                    .map_err(|_| {
+                        ProtocolError::timeout("http-body-idle-timeout")
+                            .at_boundary(reader_boundary)
+                    })?
                     .map_err(|error| {
-                        ProtocolError::new("http-body-read-failed", error.to_string())
+                        ProtocolError::io("http-body-read-failed", error)
+                            .at_boundary(reader_boundary)
                     })?;
                 if read == 0 {
                     return Ok(());
                 }
                 observer.emit_content(&buffer[..read], false);
-                write_bounded(writer, &buffer[..read], limits.idle_timeout).await?;
+                write_bounded(writer, &buffer[..read], limits.idle_timeout)
+                    .await
+                    .map_err(|error| error.at_boundary(writer_boundary))?;
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn relay_exact<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -1707,6 +1774,8 @@ async fn relay_exact<R, W>(
     budget: std::time::Duration,
     observer: &mut BodyEmitter,
     transfer_decoded: bool,
+    reader_boundary: &'static str,
+    writer_boundary: &'static str,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
@@ -1717,15 +1786,22 @@ where
         let wanted = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
         let read = timeout(budget, reader.read(&mut buffer[..wanted]))
             .await
-            .map_err(|_| ProtocolError::timeout("http-body-idle-timeout"))?
-            .map_err(|error| ProtocolError::new("http-body-read-failed", error.to_string()))?;
+            .map_err(|_| {
+                ProtocolError::timeout("http-body-idle-timeout").at_boundary(reader_boundary)
+            })?
+            .map_err(|error| {
+                ProtocolError::io("http-body-read-failed", error).at_boundary(reader_boundary)
+            })?;
         if read == 0 {
             return Err(ProtocolError::new(
                 "http-body-early-eof",
                 "peer closed before the declared message body ended",
-            ));
+            )
+            .at_boundary(reader_boundary));
         }
-        write_bounded(writer, &buffer[..read], budget).await?;
+        write_bounded(writer, &buffer[..read], budget)
+            .await
+            .map_err(|error| error.at_boundary(writer_boundary))?;
         observer.emit_content(&buffer[..read], transfer_decoded);
         remaining -= read as u64;
     }
@@ -1737,21 +1813,30 @@ async fn relay_chunked<R, W>(
     writer: &mut W,
     limits: &ProtocolLimits,
     observer: &mut BodyEmitter,
+    reader_boundary: &'static str,
+    writer_boundary: &'static str,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     loop {
-        let line = read_line(reader, 8 * 1024, limits.idle_timeout).await?;
-        write_bounded(writer, &line, limits.idle_timeout).await?;
+        let line = read_line(reader, 8 * 1024, limits.idle_timeout)
+            .await
+            .map_err(|error| error.at_boundary(reader_boundary))?;
+        write_bounded(writer, &line, limits.idle_timeout)
+            .await
+            .map_err(|error| error.at_boundary(writer_boundary))?;
         let _ = observer.emit_raw(&line);
-        let length = parse_chunk_size(&line)?;
+        let length = parse_chunk_size(&line).map_err(|error| error.at_boundary(reader_boundary))?;
         if length == 0 {
             loop {
-                let trailer =
-                    read_line(reader, limits.max_header_bytes, limits.idle_timeout).await?;
-                write_bounded(writer, &trailer, limits.idle_timeout).await?;
+                let trailer = read_line(reader, limits.max_header_bytes, limits.idle_timeout)
+                    .await
+                    .map_err(|error| error.at_boundary(reader_boundary))?;
+                write_bounded(writer, &trailer, limits.idle_timeout)
+                    .await
+                    .map_err(|error| error.at_boundary(writer_boundary))?;
                 let _ = observer.emit_raw(&trailer);
                 if trailer == b"\r\n" {
                     return Ok(());
@@ -1759,15 +1844,30 @@ where
                 observer.emit_trailer(&trailer);
             }
         }
-        relay_exact(reader, writer, length, limits.idle_timeout, observer, true).await?;
-        let end = read_line(reader, 2, limits.idle_timeout).await?;
+        relay_exact(
+            reader,
+            writer,
+            length,
+            limits.idle_timeout,
+            observer,
+            true,
+            reader_boundary,
+            writer_boundary,
+        )
+        .await?;
+        let end = read_line(reader, 2, limits.idle_timeout)
+            .await
+            .map_err(|error| error.at_boundary(reader_boundary))?;
         if end != b"\r\n" {
             return Err(ProtocolError::new(
                 "http-chunk-terminator-invalid",
                 "chunk data has no CRLF terminator",
-            ));
+            )
+            .at_boundary(reader_boundary));
         }
-        write_bounded(writer, &end, limits.idle_timeout).await?;
+        write_bounded(writer, &end, limits.idle_timeout)
+            .await
+            .map_err(|error| error.at_boundary(writer_boundary))?;
         let _ = observer.emit_raw(&end);
     }
 }
@@ -1829,7 +1929,7 @@ where
     timeout(budget, writer.write_all(bytes))
         .await
         .map_err(|_| ProtocolError::timeout("http-write-timeout"))?
-        .map_err(|error| ProtocolError::new("http-write-failed", error.to_string()))
+        .map_err(|error| ProtocolError::io("http-write-failed", error))
 }
 
 fn stamp_observation_evidence(observation: &mut ProxyObservation) {

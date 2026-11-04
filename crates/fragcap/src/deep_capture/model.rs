@@ -411,6 +411,43 @@ pub struct CaptureRunResult {
     pub interrupted: bool,
 }
 
+/// One measured lifecycle interval. Remaining time is measured when the interval ends.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhaseTiming {
+    pub phase: &'static str,
+    pub status: &'static str,
+    pub budget: Duration,
+    pub elapsed: Option<Duration>,
+    pub remaining: Option<Duration>,
+}
+
+impl PhaseTiming {
+    pub fn not_started(phase: &'static str, budget: Duration) -> Self {
+        Self {
+            phase,
+            status: "not-started",
+            budget,
+            elapsed: None,
+            remaining: None,
+        }
+    }
+
+    pub fn ended(
+        phase: &'static str,
+        budget: Duration,
+        elapsed: Duration,
+        status: &'static str,
+    ) -> Self {
+        Self {
+            phase,
+            status,
+            budget,
+            elapsed: Some(elapsed),
+            remaining: Some(budget.saturating_sub(elapsed)),
+        }
+    }
+}
+
 /// Immutable action plan reviewed by the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionPlan {
@@ -928,5 +965,10 @@ pub enum DeepCaptureEvent {
         sequence: u64,
         session_id: String,
         diagnostics: Box<super::TerminalDiagnostics>,
+    },
+    PhaseTiming {
+        sequence: u64,
+        session_id: String,
+        timing: Vec<PhaseTiming>,
     },
 }

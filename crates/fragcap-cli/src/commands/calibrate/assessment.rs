@@ -5,7 +5,8 @@
 use fragcap::deep_capture::api::{
     terminal_calibration_outcome_in_windows, ArtifactStatus, CalibrationOutcome, CalibrationPhase,
     CleanupStatus, CompatibilityProtocol, CorrelationState, EvidenceWindow, FactWriteResult,
-    FactWriteStatus, ProxyDiagnostics, SessionOutcome, TerminalDiagnostics, TerminalReport,
+    FactWriteStatus, PhaseTiming, ProxyDiagnostics, SessionOutcome, TerminalDiagnostics,
+    TerminalReport,
 };
 use fragcap::deep_capture::{CaptureProcessEvidence, StageTransitionKind};
 use serde_json::{json, Value};
@@ -36,6 +37,7 @@ pub(crate) struct AttemptAssessment {
     pub(crate) earliest_boundary: &'static str,
     pub(crate) outcome: CalibrationOutcome,
     pub(crate) proxy: Option<ProxyDiagnostics>,
+    pub(crate) phase_timing: Vec<PhaseTiming>,
     pub(crate) observation_records: u64,
     pub(crate) owner_release_records: u64,
     pub(crate) unavailable_window_records: u64,
@@ -58,6 +60,11 @@ pub(crate) struct AttemptAssessment {
 }
 
 impl AttemptAssessment {
+    pub(crate) fn with_phase_timing(mut self, timing: &[PhaseTiming]) -> Self {
+        self.phase_timing = timing.to_vec();
+        self
+    }
+
     pub(crate) fn from_report(
         report: &TerminalReport,
         phase: CalibrationPhase,
@@ -128,6 +135,7 @@ impl AttemptAssessment {
             earliest_boundary: "unavailable",
             outcome,
             proxy: diagnostics.and_then(|value| value.proxy.clone()),
+            phase_timing: Vec::new(),
             observation_records: 0,
             owner_release_records: 0,
             unavailable_window_records: 0,
@@ -240,6 +248,12 @@ impl AttemptAssessment {
             "schema_version": 1, "verdict": self.verdict, "reason": self.reason,
             "outcome": self.outcome.to_string(), "earliest_boundary": self.earliest_boundary,
             "proxy": proxy, "retained_target_packets": self.retained_target_packets,
+            "phase_timing": self.phase_timing.iter().map(|timing| (timing.phase.to_string(), json!({
+                "status": timing.status,
+                "budget_ms": timing.budget.as_millis(),
+                "elapsed_ms": timing.elapsed.map(|value| value.as_millis()),
+                "remaining_ms": timing.remaining.map(|value| value.as_millis()),
+            }))).collect::<serde_json::Map<String, Value>>(),
             "evidence_windows": {
                 "observation_records": self.observation_records, "owner_release_records": self.owner_release_records,
                 "unavailable_records": self.unavailable_window_records,
@@ -296,8 +310,21 @@ fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
             "unavailable": proxy.causes.unavailable,
         },
         "connections": proxy.connections.iter().map(|record| json!({
+            "schema_version": record.schema_version,
             "connection_id": record.connection_id, "terminal": record.terminal,
             "category": record.cause.map(|cause| cause.as_str()), "code": record.code,
+            "stages": record.stages.iter().map(|stage| json!({
+                "stage": stage.stage, "reached_ms": stage.reached_ms,
+                "completed_ms": stage.completed_ms,
+            })).collect::<Vec<_>>(),
+            "last_reached": record.last_reached,
+            "last_completed": record.last_completed,
+            "boundary": record.boundary,
+            "tls_alert": record.tls_alert,
+            "transport_category": record.transport_category,
+            "os_error_code": record.os_error_code,
+            "header_timeout_phase": record.header_timeout_phase,
+            "completed_exchanges": record.completed_exchanges,
         })).collect::<Vec<_>>(),
     })
 }
@@ -497,6 +524,29 @@ mod tests {
         fact.fragcap_version = Some(current.fragcap_version.clone());
         fact.target_version = current.target_version.clone();
         fact
+    }
+
+    #[test]
+    fn calibration_projection_retains_measured_phase_time() {
+        let result = report();
+        let timing = vec![PhaseTiming::ended(
+            "acquisition",
+            std::time::Duration::from_secs(180),
+            std::time::Duration::from_millis(138_250),
+            "completed",
+        )];
+        let assessment = AttemptAssessment::from_report(
+            &result,
+            CalibrationPhase::Reachability,
+            CompatibilityProtocol::Routing,
+            None,
+            None,
+            Some(&diagnostics(Vec::new())),
+        )
+        .with_phase_timing(&timing);
+        let value = assessment.json();
+        assert_eq!(value["phase_timing"]["acquisition"]["elapsed_ms"], 138_250);
+        assert_eq!(value["phase_timing"]["acquisition"]["remaining_ms"], 41_750);
     }
 
     fn report() -> TerminalReport {

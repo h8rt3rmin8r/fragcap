@@ -6,7 +6,7 @@
 //! session. Proxy protocol, trust identity, and lifecycle policy stay below this
 //! boundary.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::IsTerminal;
@@ -1041,6 +1041,7 @@ impl deep_capture_api::SessionClock for LibraryClockAdapter {
 struct LibraryRuntime {
     output_access: Option<fragcap::deep_capture::BundleAccessVerification>,
     diagnostics: Option<deep_capture_api::TerminalDiagnostics>,
+    phase_timing: Vec<deep_capture_api::PhaseTiming>,
     managed_launch_attempted: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
     process_release_watch: Option<crate::orchestrator::ProcessReleaseWatch>,
@@ -1179,6 +1180,8 @@ struct LibraryCaptureAdapter<'a, 'e, 'w> {
     observation_context: deep_capture_api::NativeObservationContext,
     mode: deep_capture_api::SessionMode,
     route_owner_steps: Vec<Value>,
+    phase_timing: Vec<deep_capture_api::PhaseTiming>,
+    capture_deadlines: deep_capture_api::Deadlines,
 }
 
 impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
@@ -1189,6 +1192,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         endpoint: deep_capture_api::LoopbackEndpoint,
     ) -> Result<deep_capture_api::PreparedCapture, deep_capture_api::PreflightRefusal> {
         self.mode = config.mode;
+        self.capture_deadlines = config.deadlines;
         if !self.args.controlled_target && self.prepared.borrow().is_none() {
             return Err(deep_capture_api::PreflightRefusal::new(
                 "capture-authority-missing",
@@ -1236,15 +1240,38 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             };
             let runtime = Rc::clone(&self.runtime);
             let context = self.observation_context.clone();
+            let acquired_at = Rc::new(Cell::new(None));
+            let acquired_for_callback = Rc::clone(&acquired_at);
             let process_id = run_controlled_target_harness(
                 route,
                 phase,
                 budget.remaining(),
                 move |process_id| {
                     context.record_controlled_process_id(process_id);
+                    acquired_for_callback.set(Some(adapter_started.elapsed()));
                 },
-            )
-            .map_err(|error| {
+            );
+            if let Some(acquisition_elapsed) = acquired_at.get() {
+                self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+                    "acquisition",
+                    self.capture_deadlines.launch,
+                    acquisition_elapsed,
+                    "completed",
+                ));
+                self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+                    "observation",
+                    self.capture_deadlines.observation,
+                    adapter_started
+                        .elapsed()
+                        .saturating_sub(acquisition_elapsed),
+                    if process_id.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                ));
+            }
+            let process_id = process_id.map_err(|error| {
                 library_stage_failure(deep_capture_api::Stage::Capture, "controlled-target", error)
             })?;
             runtime.borrow_mut().process_evidence = Some(controlled_process_evidence(process_id));
@@ -1253,45 +1280,101 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 interrupted: false,
             });
         }
-        let (mut capture_args, mut prepared) =
-            self.prepared.borrow_mut().take().ok_or_else(|| {
-                deep_capture_api::StageFailure::new(
+        let preparation = (|| {
+            let (mut capture_args, mut prepared) =
+                self.prepared.borrow_mut().take().ok_or_else(|| {
+                    deep_capture_api::StageFailure::new(
+                        deep_capture_api::Stage::Capture,
+                        "capture-not-prepared",
+                        "ordinary Capture preparation was not retained",
+                    )
+                })?;
+            prepared
+                .with_launch_environment(route.environment())
+                .map_err(|error| {
+                    library_stage_failure(
+                        deep_capture_api::Stage::Launch,
+                        "launch-route-environment",
+                        error,
+                    )
+                })?;
+            let duration = bound_real_capture_duration(
+                &capture_args,
+                budget.remaining().saturating_sub(adapter_started.elapsed()),
+            )?;
+            let effective_duration = prepared.bound_duration(duration);
+            if effective_duration != duration {
+                return Err(deep_capture_api::StageFailure::new(
                     deep_capture_api::Stage::Capture,
-                    "capture-not-prepared",
-                    "ordinary Capture preparation was not retained",
-                )
-            })?;
-        prepared
-            .with_launch_environment(route.environment())
-            .map_err(|error| {
-                library_stage_failure(
-                    deep_capture_api::Stage::Launch,
-                    "launch-route-environment",
-                    error,
-                )
-            })?;
-        let duration = bound_real_capture_duration(
-            &capture_args,
-            budget.remaining().saturating_sub(adapter_started.elapsed()),
-        )?;
-        let effective_duration = prepared.bound_duration(duration);
-        if effective_duration != duration {
-            return Err(deep_capture_api::StageFailure::new(
-                deep_capture_api::Stage::Capture,
-                "prepared-duration-shorter-than-authorized",
-                "prepared Capture duration is shorter than the authorized observation interval",
-            ));
-        }
-        capture_args.duration = Some(effective_duration);
+                    "prepared-duration-shorter-than-authorized",
+                    "prepared Capture duration is shorter than the authorized observation interval",
+                ));
+            }
+            capture_args.duration = Some(effective_duration);
+            Ok((capture_args, prepared))
+        })();
+        let (capture_args, prepared) = match preparation {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+                    "capture-preparation",
+                    fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE,
+                    adapter_started.elapsed(),
+                    "failed",
+                ));
+                return Err(error);
+            }
+        };
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
-        let (result, process_evidence, process_release_watch, interrupted, retained_target_packets) =
-            run_real_capture(
-                &capture_args,
-                prepared,
-                Arc::clone(&registry),
-                &mut self.emitter.borrow_mut(),
-            );
+        let outer_prepare_elapsed = adapter_started.elapsed();
+        let RealCaptureResult {
+            result,
+            process_evidence,
+            process_release_watch,
+            interrupted,
+            retained_target_packets,
+            capture_timing,
+            capture_statuses,
+            capture_preparation_completed,
+        } = run_real_capture(
+            &capture_args,
+            prepared,
+            Arc::clone(&registry),
+            &mut self.emitter.borrow_mut(),
+        );
+        self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+            "capture-preparation",
+            fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE,
+            outer_prepare_elapsed.saturating_add(capture_timing[0].unwrap_or_default()),
+            if capture_preparation_completed {
+                "completed"
+            } else {
+                "failed"
+            },
+        ));
+        for ((phase, budget), elapsed) in [
+            ("acquisition", self.capture_deadlines.launch),
+            ("observation", self.capture_deadlines.observation),
+            (
+                "capture-return",
+                fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE,
+            ),
+        ]
+        .into_iter()
+        .zip(capture_timing.into_iter().skip(1).zip(capture_statuses))
+        {
+            if let (Some(elapsed), Some(recorded_status)) = elapsed {
+                let status = if elapsed > budget {
+                    "failed"
+                } else {
+                    recorded_status
+                };
+                self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+                    phase, budget, elapsed, status,
+                ));
+            }
+        }
         self.observation_context
             .record_process_evidence(&process_evidence);
         {
@@ -1310,6 +1393,10 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             observations: Vec::new(),
             interrupted,
         })
+    }
+
+    fn take_phase_timing(&mut self) -> Vec<deep_capture_api::PhaseTiming> {
+        std::mem::take(&mut self.phase_timing)
     }
 
     fn release_route_owners(
@@ -1485,6 +1572,10 @@ struct LibraryArtifactAdapter<'e, 'w> {
 }
 
 impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
+    fn phase_timing(&mut self, timing: &[deep_capture_api::PhaseTiming]) {
+        self.runtime.borrow_mut().phase_timing = timing.to_vec();
+    }
+
     fn validate_destination(
         &mut self,
         path: &Path,
@@ -1665,6 +1756,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             requested_launch: self.requested_launch,
             requested_observation: self.requested_observation,
             fact_writes: &fact_writes,
+            phase_timing: &runtime.phase_timing,
         };
         let write_result = write_bundle(&context, &mut self.emitter.borrow_mut());
         let roles = [
@@ -1999,6 +2091,9 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     ),
                 });
             }
+            deep_capture_api::DeepCaptureEvent::PhaseTiming { timing, .. } => {
+                self.runtime.borrow_mut().phase_timing = timing.clone();
+            }
             deep_capture_api::DeepCaptureEvent::Observation {
                 session_id,
                 observation,
@@ -2129,6 +2224,7 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     capture_return_allowance_ms: CalibrationDeadlines::milliseconds(
                         fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE,
                     ),
+                    phase_timing: phase_timing_json(&self.runtime.borrow().phase_timing),
                     inspectable: *classification_summary
                         .by_inspectability
                         .get("full")
@@ -2196,6 +2292,28 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     classification_summary.by_detection.get("failed").unwrap_or(&0),
                     classification_summary.unclassified_lost,
                 ));
+                for timing in &self.runtime.borrow().phase_timing {
+                    emitter.progress(&format!(
+                        "Phase {}: {}, budget={} ms, elapsed={}, remaining={}",
+                        timing.phase,
+                        timing.status,
+                        CalibrationDeadlines::milliseconds(timing.budget),
+                        timing
+                            .elapsed
+                            .map(CalibrationDeadlines::milliseconds)
+                            .map_or_else(
+                                || "unavailable".to_string(),
+                                |value| format!("{value} ms")
+                            ),
+                        timing
+                            .remaining
+                            .map(CalibrationDeadlines::milliseconds)
+                            .map_or_else(
+                                || "unavailable".to_string(),
+                                |value| format!("{value} ms")
+                            ),
+                    ));
+                }
             }
             _ => {}
         }
@@ -2885,6 +3003,8 @@ pub(crate) fn run_with_outcome(
             observation_context,
             mode,
             route_owner_steps: Vec::new(),
+            phase_timing: Vec::new(),
+            capture_deadlines: deep_capture_api::Deadlines::default(),
         }),
         facts: Box::new(LibraryFactAdapter {
             store: Rc::clone(&store),
@@ -3012,16 +3132,18 @@ pub(crate) fn run_with_outcome(
         .run_to_completion(authorization);
     let assessment = calibration.map(|phase| {
         let runtime = runtime.borrow();
-        let mut assessment = crate::commands::calibrate::assessment::AttemptAssessment::from_report(
-            &report,
-            phase,
-            args.calibration_protocol
-                .map(calibration_protocol)
-                .expect("calibration protocol validated"),
-            runtime.process_evidence.as_ref(),
-            runtime.retained_target_packets,
-            runtime.diagnostics.as_ref(),
-        );
+        let mut assessment =
+            crate::commands::calibrate::assessment::AttemptAssessment::from_report(
+                &report,
+                phase,
+                args.calibration_protocol
+                    .map(calibration_protocol)
+                    .expect("calibration protocol validated"),
+                runtime.process_evidence.as_ref(),
+                runtime.retained_target_packets,
+                runtime.diagnostics.as_ref(),
+            )
+            .with_phase_timing(&runtime.phase_timing);
         assessment.process_completeness =
             session_ux::artifact_process_completeness(&report.artifacts);
         let mut value = assessment.json();
@@ -3755,23 +3877,30 @@ fn owned_platform_wait(current: Option<Duration>, launch_deadline: Duration) -> 
     Some(current.map_or(launch_deadline, |value| value.min(launch_deadline)))
 }
 
+struct RealCaptureResult {
+    result: Result<(), CliError>,
+    process_evidence: fragcap::deep_capture::CaptureProcessEvidence,
+    process_release_watch: Option<crate::orchestrator::ProcessReleaseWatch>,
+    interrupted: bool,
+    retained_target_packets: Option<u64>,
+    capture_timing: [Option<Duration>; 4],
+    capture_statuses: [Option<&'static str>; 3],
+    capture_preparation_completed: bool,
+}
+
 fn run_real_capture(
     capture_args: &CaptureArgs,
     prepared: capture::PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
     emitter: &mut Emitter,
-) -> (
-    Result<(), CliError>,
-    fragcap::deep_capture::CaptureProcessEvidence,
-    Option<crate::orchestrator::ProcessReleaseWatch>,
-    bool,
-    Option<u64>,
-) {
+) -> RealCaptureResult {
+    let mut timing = crate::orchestrator::CaptureTiming::default();
     let mut result = capture::run_prepared_with_flow_registry(
         capture_args,
         emitter,
         prepared,
         Arc::clone(&flow_registry),
+        &mut timing,
     );
     let process_release_watch = result
         .as_mut()
@@ -3785,6 +3914,8 @@ fn run_real_capture(
         .map(|outcome| outcome.process_evidence.clone())
         .unwrap_or_default();
     let retained_target_packets = result.as_ref().ok().map(|outcome| outcome.retained_packets);
+    let capture_timing = timing.intervals();
+    let capture_statuses = timing.phase_statuses();
     let result = result.and_then(|outcome| {
         if outcome.exit == Exit::SUCCESS {
             Ok(())
@@ -3792,13 +3923,16 @@ fn run_real_capture(
             Err(CliError::failure(capture_failure_message(&outcome)))
         }
     });
-    (
+    RealCaptureResult {
         result,
         process_evidence,
         process_release_watch,
         interrupted,
         retained_target_packets,
-    )
+        capture_timing,
+        capture_statuses,
+        capture_preparation_completed: timing.capture_prepare_completed,
+    }
 }
 
 fn capture_failure_message(outcome: &crate::orchestrator::CaptureOutcome) -> String {
@@ -4113,6 +4247,7 @@ struct BundleContext<'a> {
     requested_launch: Option<Duration>,
     requested_observation: Option<Duration>,
     fact_writes: &'a [FactWriteResult],
+    phase_timing: &'a [deep_capture_api::PhaseTiming],
 }
 
 fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), CliError> {
@@ -4593,6 +4728,25 @@ fn cleanup_json(session_id: &str, cleanup: &CleanupReport) -> Result<String, Cli
     .map_err(|e| CliError::failure(e.to_string()))
 }
 
+fn phase_timing_json(timings: &[deep_capture_api::PhaseTiming]) -> Value {
+    Value::Object(
+        timings
+            .iter()
+            .map(|timing| {
+                (
+                    timing.phase.to_string(),
+                    json!({
+                        "status": timing.status,
+                        "budget_ms": CalibrationDeadlines::milliseconds(timing.budget),
+                        "elapsed_ms": timing.elapsed.map(CalibrationDeadlines::milliseconds),
+                        "remaining_ms": timing.remaining.map(CalibrationDeadlines::milliseconds),
+                    }),
+                )
+            })
+            .collect(),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn manifest_json(
     ctx: &BundleContext<'_>,
@@ -4859,6 +5013,7 @@ fn manifest_json(
             "capture_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.capture_attempt_ceiling()),
             "total_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.total_attempt_ceiling()),
         },
+        "phase_timing": phase_timing_json(ctx.phase_timing),
         "proxy": {
             "backend": ctx.session.backend.name,
             "version": ctx.session.backend.version,
@@ -5194,6 +5349,10 @@ mod tests {
             process_evidence,
             process_release_watch: None,
             retained_packets: 0,
+            capture_prepare_elapsed: None,
+            acquisition_elapsed: None,
+            observation_elapsed: None,
+            capture_return_elapsed: None,
         };
         let message = super::capture_failure_message(&outcome);
         assert!(message.contains("acquisitiontimeout"), "{message}");
@@ -5671,6 +5830,7 @@ mod tests {
             requested_launch: None,
             requested_observation: None,
             fact_writes: &[],
+            phase_timing: &[],
         };
         let trace = fragcap::deep_capture::ProcessTraceSummary {
             finalization: "complete",

@@ -358,6 +358,7 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // still carries the loss accounting). The FIFO is opened at assembly, so
         // a mid-capture failure is a consumer disconnect, not a bad path.
         true,
+        None,
     )
     .map(|outcome| outcome.exit)
 }

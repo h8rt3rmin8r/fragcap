@@ -467,12 +467,95 @@ fn connect_fails_closed_for_wrong_name_and_untrusted_upstream() {
             .failures
             .iter()
             .any(|failure| failure.code == "certificate-validation"));
+        let detail = &report.observation.connection_diagnostics[0];
+        assert_eq!(detail.schema_version, 1);
+        assert_eq!(detail.boundary, Some("upstream-tls"));
+        assert_eq!(
+            detail.last_reached,
+            fragcap_proxy::ConnectionStage::UpstreamTls
+        );
+        assert!(detail.stages.iter().any(|stage| stage.stage
+            == fragcap_proxy::ConnectionStage::ClientTls
+            && stage.completed_ms.is_some()));
+        assert!(report
+            .observation
+            .application
+            .iter()
+            .any(|item| item
+                .tls
+                .as_ref()
+                .is_some_and(|tls| tls.boundary == fragcap_proxy::TlsBoundary::Client
+                    && tls.version.is_some())));
         assert!(!report
             .observation
             .application
             .iter()
             .any(|item| { item.protocol == "https" && item.inspectability == "full" }));
     }
+}
+
+#[test]
+fn client_certificate_alert_retains_client_tls_failure_boundary() {
+    let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s190-client-alert")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(
+        client,
+        "CONNECT {address} HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\n\r\n",
+        auth.as_str()
+    )
+    .unwrap();
+    assert_eq!(
+        read_head(&mut client),
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    let server_name =
+        ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into());
+    let connection = rustls::ClientConnection::new(Arc::new(client_config), server_name).unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, client);
+    assert!(tls.write_all(b"GET / HTTP/1.1\r\n\r\n").is_err());
+    drop(tls);
+    let report = lease.cleanup(Duration::from_secs(2));
+    let detail = &report.observation.connection_diagnostics[0];
+    assert_eq!(detail.boundary, Some("client-tls"));
+    assert_eq!(
+        detail.last_reached,
+        fragcap_proxy::ConnectionStage::ClientTls
+    );
+    assert_eq!(detail.transport_category, Some("tls-alert"));
+    assert!(detail.tls_alert.is_some());
+    assert_eq!(
+        report
+            .observation
+            .resources
+            .connection_details_dropped_oldest,
+        0
+    );
 }
 
 #[test]

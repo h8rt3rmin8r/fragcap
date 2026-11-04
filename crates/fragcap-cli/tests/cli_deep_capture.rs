@@ -1011,6 +1011,18 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert_eq!(manifest["state"], "complete");
     assert_eq!(manifest["target"]["handle"], "sample-target");
     assert_eq!(manifest["cleanup"]["status"], "succeeded");
+    assert_eq!(completion["phase_timing"], manifest["phase_timing"]);
+    assert_eq!(manifest["phase_timing"]["startup"]["status"], "completed");
+    assert_eq!(
+        manifest["phase_timing"]["observation"]["status"],
+        "completed"
+    );
+    assert_eq!(
+        manifest["phase_timing"]["capture-preparation"]["status"],
+        "not-started"
+    );
+    assert!(manifest["phase_timing"]["observation"]["elapsed_ms"].is_number());
+    assert!(manifest["phase_timing"]["observation"]["remaining_ms"].is_number());
     assert_eq!(manifest["trust"]["state"], "simulated-current-user");
     assert!(
         manifest["artifacts"]
@@ -1038,6 +1050,24 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
+    let proxy = std::fs::read_to_string(bundle.join("proxy.jsonl")).unwrap();
+    let proxy_records: Vec<serde_json::Value> = proxy
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let diagnostic_ids: Vec<u64> = proxy_records
+        .iter()
+        .filter(|record| record["type"] == "proxy.connection-diagnostic")
+        .filter_map(|record| record["fields"]["connection_id"].as_u64())
+        .collect();
+    assert!(!diagnostic_ids.is_empty());
+    assert!(proxy_records
+        .iter()
+        .any(|record| record["type"] == "proxy.diagnostic-accounting"
+            && record["fields"]["retained"] == diagnostic_ids.len()));
+    assert!(diagnostic_ids.iter().all(|id| application_records
+        .iter()
+        .any(|record| record["proxy_connection_id"] == *id || record["connection_id"] == *id)));
     assert_eq!(
         application_records.first().unwrap()["type"],
         "application.header"

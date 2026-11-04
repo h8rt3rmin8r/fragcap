@@ -226,6 +226,11 @@ pub trait CaptureRunner {
         budget: Budget,
     ) -> Result<super::CaptureRunResult, StageFailure>;
 
+    /// Measured capture subphases, also available after a failed run.
+    fn take_phase_timing(&mut self) -> Vec<super::PhaseTiming> {
+        Vec::new()
+    }
+
     /// Observe normal exit of a launched process that may retain the session route.
     fn release_route_owners(&mut self, budget: Budget) -> CleanupResult;
     /// Typed, bounded route-owner decisions produced by the preceding release.
@@ -336,6 +341,8 @@ pub trait ArtifactSink {
     fn prepare(&mut self, _plan: &super::SessionPlan) -> Result<(), StageFailure> {
         Ok(())
     }
+    /// Give the bundle writer the terminal measurements independently of event delivery.
+    fn phase_timing(&mut self, _timing: &[super::PhaseTiming]) {}
     fn finalize(&mut self, bundle: &Path, snapshot: &TerminalSnapshot) -> Vec<ArtifactResult>;
     /// Refresh projections that depend on lifecycle authorities settled by
     /// `finalize`. Implementations that do not derive such projections need no

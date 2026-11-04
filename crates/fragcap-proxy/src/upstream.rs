@@ -410,6 +410,9 @@ pub struct UpstreamError {
     pub stage: UpstreamStage,
     pub code: &'static str,
     pub detail: String,
+    pub tls_alert: Option<String>,
+    pub transport_category: Option<&'static str>,
+    pub os_error_code: Option<i32>,
 }
 
 /// Explicit operator-owned client identity for one upstream TLS configuration.
@@ -481,6 +484,9 @@ impl UpstreamError {
             stage,
             code,
             detail: code.to_string(),
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
         }
     }
 
@@ -489,8 +495,50 @@ impl UpstreamError {
             stage,
             code,
             detail: detail.into(),
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
         }
     }
+
+    fn with_io(stage: UpstreamStage, code: &'static str, error: std::io::Error) -> Self {
+        let (tls_alert, transport_category, os_error_code) = diagnostic_io(&error);
+        Self {
+            stage,
+            code,
+            detail: error.to_string(),
+            tls_alert,
+            transport_category: Some(transport_category),
+            os_error_code,
+        }
+    }
+}
+
+pub(crate) fn diagnostic_io(error: &std::io::Error) -> (Option<String>, &'static str, Option<i32>) {
+    let alert = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<rustls::Error>())
+        .and_then(|source| match source {
+            rustls::Error::AlertReceived(alert) => Some(format!("{alert:?}")),
+            _ => None,
+        });
+    let category = if alert.is_some() {
+        "tls-alert"
+    } else {
+        match error.kind() {
+            std::io::ErrorKind::ConnectionReset => "connection-reset",
+            std::io::ErrorKind::ConnectionAborted => "connection-aborted",
+            std::io::ErrorKind::BrokenPipe => "broken-pipe",
+            std::io::ErrorKind::UnexpectedEof => "unexpected-eof",
+            std::io::ErrorKind::TimedOut => "timeout",
+            std::io::ErrorKind::ConnectionRefused => "connection-refused",
+            std::io::ErrorKind::NetworkUnreachable => "network-unreachable",
+            std::io::ErrorKind::HostUnreachable => "host-unreachable",
+            std::io::ErrorKind::InvalidData => "invalid-data",
+            _ => "other-io",
+        }
+    };
+    (alert, category, error.raw_os_error())
 }
 
 impl fmt::Display for UpstreamError {
@@ -640,7 +688,23 @@ pub async fn connect_upstream(
     policy: &DestinationPolicy,
     budgets: UpstreamBudgets,
 ) -> Result<BoundedUpstreamStream, UpstreamError> {
-    connect_upstream_cancellable(authority, policy, budgets, &UpstreamCancellation::default()).await
+    connect_upstream_observed(authority, policy, budgets, || {}).await
+}
+
+pub(crate) async fn connect_upstream_observed(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    tcp_started: impl FnOnce(),
+) -> Result<BoundedUpstreamStream, UpstreamError> {
+    connect_upstream_cancellable_observed(
+        authority,
+        policy,
+        budgets,
+        &UpstreamCancellation::default(),
+        tcp_started,
+    )
+    .await
 }
 
 pub async fn resolve_allowed_udp(
@@ -657,6 +721,16 @@ pub async fn connect_upstream_cancellable(
     budgets: UpstreamBudgets,
     cancellation: &UpstreamCancellation,
 ) -> Result<BoundedUpstreamStream, UpstreamError> {
+    connect_upstream_cancellable_observed(authority, policy, budgets, cancellation, || {}).await
+}
+
+async fn connect_upstream_cancellable_observed(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    cancellation: &UpstreamCancellation,
+    tcp_started: impl FnOnce(),
+) -> Result<BoundedUpstreamStream, UpstreamError> {
     if cancellation.is_cancelled() {
         return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
     }
@@ -667,6 +741,7 @@ pub async fn connect_upstream_cancellable(
         result = resolve_allowed_candidates(authority, policy, budgets.dns) => result,
     }?;
     let addresses = interleave_families(allowed);
+    tcp_started();
     race_candidates(
         addresses,
         budgets.connect,
@@ -851,7 +926,7 @@ fn connect_error(error: std::io::Error) -> UpstreamError {
         std::io::ErrorKind::HostUnreachable => "host-unreachable",
         _ => "connect-failed",
     };
-    UpstreamError::with_detail(UpstreamStage::Tcp, code, error.to_string())
+    UpstreamError::with_io(UpstreamStage::Tcp, code, error)
 }
 
 #[cfg(test)]
@@ -1120,7 +1195,7 @@ async fn connect_tls_over_upstream_cancellable(
     .map_err(|error| {
         let class =
             classify_tls_io_error(&error, false, config.client_auth_cert_resolver.has_certs());
-        UpstreamError::with_detail(UpstreamStage::Tls, class.code(), error.to_string())
+        UpstreamError::with_io(UpstreamStage::Tls, class.code(), error)
     })?;
     Ok(BoundedTlsUpstreamStream {
         stream: tls,
@@ -1168,6 +1243,18 @@ pub fn tls_client_config_with_roots_and_identity(
 #[cfg(test)]
 mod tls_refusal_tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_distinguish_tls_alert_from_bare_reset() {
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert_eq!(diagnostic_io(&reset), (None, "connection-reset", None));
+        let alert = std::io::Error::other(rustls::Error::AlertReceived(
+            rustls::AlertDescription::BadCertificate,
+        ));
+        let (description, category, _) = diagnostic_io(&alert);
+        assert_eq!(description.as_deref(), Some("BadCertificate"));
+        assert_eq!(category, "tls-alert");
+    }
 
     fn io(error: rustls::Error) -> std::io::Error {
         std::io::Error::other(error)

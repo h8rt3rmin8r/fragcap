@@ -94,6 +94,72 @@ pub struct CaptureOutcome {
     pub process_release_watch: Option<ProcessReleaseWatch>,
     /// Packets retained by the target window, separate from packets merely read.
     pub retained_packets: u64,
+    /// Monotonic live-driver intervals, absent for offline replay.
+    pub capture_prepare_elapsed: Option<std::time::Duration>,
+    pub acquisition_elapsed: Option<std::time::Duration>,
+    pub observation_elapsed: Option<std::time::Duration>,
+    pub capture_return_elapsed: Option<std::time::Duration>,
+}
+
+#[derive(Default)]
+pub struct CaptureTiming {
+    pub capture_prepare_elapsed: Option<std::time::Duration>,
+    pub capture_prepare_completed: bool,
+    pub acquisition_elapsed: Option<std::time::Duration>,
+    pub observation_elapsed: Option<std::time::Duration>,
+    pub capture_return_elapsed: Option<std::time::Duration>,
+    pub acquisition_status: Option<&'static str>,
+    pub observation_status: Option<&'static str>,
+    pub capture_return_status: Option<&'static str>,
+}
+
+impl CaptureTiming {
+    pub fn intervals(&self) -> [Option<std::time::Duration>; 4] {
+        [
+            self.capture_prepare_elapsed,
+            self.acquisition_elapsed,
+            self.observation_elapsed,
+            self.capture_return_elapsed,
+        ]
+    }
+
+    pub fn phase_statuses(&self) -> [Option<&'static str>; 3] {
+        [
+            self.acquisition_status,
+            self.observation_status,
+            self.capture_return_status,
+        ]
+    }
+
+    fn record_outcome(&mut self, outcome: &CaptureOutcome) {
+        self.acquisition_elapsed = outcome.acquisition_elapsed;
+        self.observation_elapsed = outcome.observation_elapsed;
+        self.capture_return_elapsed = outcome.capture_return_elapsed;
+        self.acquisition_status = None;
+        self.observation_status = None;
+        self.capture_return_status = None;
+        if outcome.acquisition_elapsed.is_some() {
+            self.acquisition_status = Some(if outcome.observation_elapsed.is_some() {
+                "completed"
+            } else if outcome.stop_reason == Some(StopReason::Interrupt) {
+                "interrupted"
+            } else {
+                "failed"
+            });
+        }
+        if outcome.observation_elapsed.is_some() {
+            self.observation_status = Some(if outcome.exit != Exit::SUCCESS {
+                "failed"
+            } else if outcome.stop_reason == Some(StopReason::Interrupt) {
+                "interrupted"
+            } else {
+                "completed"
+            });
+        }
+        if outcome.capture_return_elapsed.is_some() {
+            self.capture_return_status = Some("completed");
+        }
+    }
 }
 
 impl CaptureOutcome {
@@ -107,6 +173,10 @@ impl CaptureOutcome {
             process_evidence: CaptureProcessEvidence::default(),
             process_release_watch: None,
             retained_packets: 0,
+            capture_prepare_elapsed: None,
+            acquisition_elapsed: None,
+            observation_elapsed: None,
+            capture_return_elapsed: None,
         }
     }
 }
@@ -210,6 +280,7 @@ pub fn capture(
     fire_interrupt: bool,
     allowed_roles: Option<Vec<String>>,
     sink_failure_is_clean: bool,
+    timing: Option<&mut CaptureTiming>,
 ) -> Result<CaptureOutcome, CliError> {
     let mut session_config = config.session_config();
     session_config.managed_client_handoff =
@@ -285,17 +356,23 @@ pub fn capture(
     // chosen driver to consume.
     let events = std::mem::replace(&mut components.events, EventStream::Prerecorded(Vec::new()));
     match events {
-        EventStream::Prerecorded(events) => capture_prerecorded(
-            session,
-            config,
-            components,
-            events,
-            emitter,
-            interrupt,
-            fire_interrupt,
-            sink_failure_is_clean,
-            &mut process_evidence,
-        ),
+        EventStream::Prerecorded(events) => {
+            let result = capture_prerecorded(
+                session,
+                config,
+                components,
+                events,
+                emitter,
+                interrupt,
+                fire_interrupt,
+                sink_failure_is_clean,
+                &mut process_evidence,
+            );
+            if let (Some(timing), Ok(outcome)) = (timing, &result) {
+                timing.record_outcome(outcome);
+            }
+            result
+        }
         #[cfg(all(feature = "etw", windows))]
         EventStream::Live(rx) => capture_live(
             session,
@@ -307,6 +384,7 @@ pub fn capture(
             fire_interrupt,
             sink_failure_is_clean,
             &mut process_evidence,
+            timing,
         ),
     }
 }
@@ -552,6 +630,10 @@ fn capture_prerecorded(
         process_evidence: process_evidence.clone(),
         process_release_watch: None,
         retained_packets: summary.retained,
+        capture_prepare_elapsed: None,
+        acquisition_elapsed: None,
+        observation_elapsed: None,
+        capture_return_elapsed: None,
     })
 }
 
@@ -798,6 +880,7 @@ fn capture_live(
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
     process_evidence: &mut CaptureProcessEvidence,
+    timing: Option<&mut CaptureTiming>,
 ) -> Result<CaptureOutcome, CliError> {
     use std::time::{Duration, Instant};
 
@@ -905,6 +988,8 @@ fn capture_live(
                 }
             }
             Err(e) => {
+                let acquisition_elapsed = started.elapsed();
+                let capture_return_started = Instant::now();
                 // The pipeline is already running from arm. Stop and join it so the
                 // sinks finalize and no output file is left unclosed, drop the watcher
                 // to end the live receiver, and surface the run's loss accounting,
@@ -923,6 +1008,12 @@ fn capture_live(
                 session.finalize();
                 let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
                 emitter.summary(&summary);
+                if let Some(timing) = timing {
+                    timing.acquisition_elapsed = Some(acquisition_elapsed);
+                    timing.capture_return_elapsed = Some(capture_return_started.elapsed());
+                    timing.acquisition_status = Some("failed");
+                    timing.capture_return_status = Some("completed");
+                }
                 return Err(CliError::failure(e.to_string()));
             }
         }
@@ -1003,6 +1094,7 @@ fn capture_live(
         }
     }
 
+    let acquisition_elapsed = started.elapsed();
     if !session.acquired() {
         // No target was acquired. The pipeline has been running from arm, so it
         // is stopped and joined before reporting; its watch-time frames are in
@@ -1062,9 +1154,16 @@ fn capture_live(
         outcome.stop_reason = session.stop_reason();
         outcome.process_evidence = process_evidence.clone();
         outcome.process_release_watch = release_watch;
+        outcome.acquisition_elapsed = Some(acquisition_elapsed);
+        outcome.capture_return_elapsed =
+            Some(started.elapsed().saturating_sub(acquisition_elapsed));
+        if let Some(timing) = timing {
+            timing.record_outcome(&outcome);
+        }
         return Ok(outcome);
     }
 
+    let observation_started = Instant::now();
     // Acquired: open the window from the acquiring event's capture instant, so a
     // frame captured before it (a buffered pre-acquisition frame) stays a
     // watch-time discard even though the window is now open (review of PR #26).
@@ -1149,6 +1248,8 @@ fn capture_live(
         &mut display,
         process_evidence,
     );
+    let observation_elapsed = observation_started.elapsed();
+    let return_started = Instant::now();
 
     // The pipeline observed the stop and returns; its tee channel closes and the
     // packet forwarder ends. A terminal-stage exit closed the window at its own
@@ -1199,7 +1300,7 @@ fn capture_live(
         .stop_reason
         .map(|reason| format!("{reason:?}").to_ascii_lowercase());
     process_evidence.watcher_ended = summary.stop_reason == Some(StopReason::ProcessWatcherLost);
-    Ok(CaptureOutcome {
+    let outcome = CaptureOutcome {
         exit: final_exit(
             !report.sink_failures.is_empty(),
             sink_failure_is_clean,
@@ -1210,7 +1311,15 @@ fn capture_live(
         process_evidence: process_evidence.clone(),
         process_release_watch,
         retained_packets: summary.retained,
-    })
+        capture_prepare_elapsed: None,
+        acquisition_elapsed: Some(acquisition_elapsed),
+        observation_elapsed: Some(observation_elapsed),
+        capture_return_elapsed: Some(return_started.elapsed()),
+    };
+    if let Some(timing) = timing {
+        timing.record_outcome(&outcome);
+    }
+    Ok(outcome)
 }
 
 /// The live driver loop over the merged channel.
@@ -1899,6 +2008,29 @@ mod tests {
     use fragcap::ProcessEvent;
     use fragcap::{StageId, StopReason, Timestamp};
     use std::sync::Arc;
+
+    #[test]
+    fn completed_acquisition_keeps_its_status_when_observation_ends_early() {
+        let mut outcome = super::CaptureOutcome::bare(super::Exit::SUCCESS);
+        outcome.acquisition_elapsed = Some(std::time::Duration::from_secs(5));
+        outcome.observation_elapsed = Some(std::time::Duration::from_secs(2));
+        outcome.capture_return_elapsed = Some(std::time::Duration::from_millis(50));
+        outcome.stop_reason = Some(StopReason::Interrupt);
+        let mut timing = super::CaptureTiming::default();
+        timing.record_outcome(&outcome);
+        assert_eq!(
+            timing.phase_statuses(),
+            [Some("completed"), Some("interrupted"), Some("completed")]
+        );
+
+        outcome.exit = super::Exit::FAILURE;
+        outcome.stop_reason = None;
+        timing.record_outcome(&outcome);
+        assert_eq!(
+            timing.phase_statuses(),
+            [Some("completed"), Some("failed"), Some("completed")]
+        );
+    }
 
     #[test]
     fn replay_deadline_clock_is_relative_even_with_epoch_and_reordered_packets() {
