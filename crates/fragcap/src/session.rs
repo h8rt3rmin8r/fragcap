@@ -876,9 +876,12 @@ impl CaptureSession {
             return;
         }
         // All matched non-service processes have exited and no non-service stage
-        // is still awaited. A live service does not gate this (decision D-6).
+        // is still awaited. A provisional managed client is still awaiting its
+        // exact successor even if an intermediate launcher has also exited.
+        // A live service does not affect this ordinary stop rule (decision D-6).
         if !self.observe_until_explicit_stop
             && self.state == SessionState::Capturing
+            && self.provisional_client.is_none()
             && self.pending_nonservice.is_empty()
             && self.live_nonservice == 0
         {
