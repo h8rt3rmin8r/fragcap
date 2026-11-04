@@ -103,6 +103,55 @@ fn connect_tcp_refusal_retains_upstream_boundary_and_stage() {
 }
 
 #[test]
+fn stalled_origin_response_reports_upstream_header_timeout() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        read_head(&mut stream);
+        std::thread::sleep(Duration::from_millis(300));
+    });
+    let limits = ProtocolLimits {
+        idle_timeout: Duration::from_millis(100),
+        ..ProtocolLimits::default()
+    };
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(
+        client,
+        "GET http://{address}/stall HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\n\r\n",
+        auth.as_str()
+    )
+    .unwrap();
+    let mut ignored = Vec::new();
+    let _ = client.read_to_end(&mut ignored);
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    let detail = &report.observation.connection_diagnostics[0];
+    assert_eq!(detail.code, Some("http-header-timeout"));
+    assert_eq!(detail.boundary, Some("upstream"));
+    assert_eq!(detail.transport_category, Some("timeout"));
+}
+
+#[test]
 fn forwards_absolute_form_and_preserves_informational_response() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin_address = origin.local_addr().unwrap();

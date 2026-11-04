@@ -309,8 +309,9 @@ pub(crate) fn run_prepared_with_flow_registry(
     emitter: &mut Emitter,
     prepared: PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
+    timing: &mut orchestrator::CaptureTiming,
 ) -> Result<orchestrator::CaptureOutcome, CliError> {
-    run_prepared_outcome(args, emitter, prepared, Some(flow_registry))
+    run_prepared_outcome(args, emitter, prepared, Some(flow_registry), Some(timing))
 }
 
 fn run_inner(
@@ -328,7 +329,7 @@ fn run_prepared(
     prepared: PreparedCapture,
     flow_registry: Option<Arc<FlowRegistry>>,
 ) -> Result<Exit, CliError> {
-    run_prepared_outcome(args, emitter, prepared, flow_registry).map(|outcome| outcome.exit)
+    run_prepared_outcome(args, emitter, prepared, flow_registry, None).map(|outcome| outcome.exit)
 }
 
 fn run_prepared_outcome(
@@ -336,6 +337,7 @@ fn run_prepared_outcome(
     emitter: &mut Emitter,
     prepared: PreparedCapture,
     flow_registry: Option<Arc<FlowRegistry>>,
+    mut timing: Option<&mut orchestrator::CaptureTiming>,
 ) -> Result<orchestrator::CaptureOutcome, CliError> {
     let PreparedCapture {
         profile,
@@ -364,8 +366,14 @@ fn run_prepared_outcome(
         config.scope = CaptureScope::All;
     }
     let capture_prepare_started = Instant::now();
-    let mut components =
-        assemble::components_with_proxy_acquisition(&args.offline, &config, proxy_acquisition)?;
+    let components_result =
+        assemble::components_with_proxy_acquisition(&args.offline, &config, proxy_acquisition);
+    let capture_prepare_elapsed = capture_prepare_started.elapsed();
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.capture_prepare_elapsed = Some(capture_prepare_elapsed);
+        timing.capture_prepare_completed = components_result.is_ok();
+    }
+    let mut components = components_result?;
     components.flow_registry = flow_registry;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a
@@ -375,7 +383,6 @@ fn run_prepared_outcome(
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
-    let capture_prepare_elapsed = capture_prepare_started.elapsed();
     let mut outcome = orchestrator::capture(
         profile,
         &config,
@@ -386,6 +393,7 @@ fn run_prepared_outcome(
         allowed_roles,
         // A sink failure is an unrecoverable end for `capture`, not a clean stop.
         false,
+        timing,
     )?;
     outcome.capture_prepare_elapsed = Some(capture_prepare_elapsed);
 

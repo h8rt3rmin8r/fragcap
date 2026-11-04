@@ -1280,36 +1280,51 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 interrupted: false,
             });
         }
-        let (mut capture_args, mut prepared) =
-            self.prepared.borrow_mut().take().ok_or_else(|| {
-                deep_capture_api::StageFailure::new(
+        let preparation = (|| {
+            let (mut capture_args, mut prepared) =
+                self.prepared.borrow_mut().take().ok_or_else(|| {
+                    deep_capture_api::StageFailure::new(
+                        deep_capture_api::Stage::Capture,
+                        "capture-not-prepared",
+                        "ordinary Capture preparation was not retained",
+                    )
+                })?;
+            prepared
+                .with_launch_environment(route.environment())
+                .map_err(|error| {
+                    library_stage_failure(
+                        deep_capture_api::Stage::Launch,
+                        "launch-route-environment",
+                        error,
+                    )
+                })?;
+            let duration = bound_real_capture_duration(
+                &capture_args,
+                budget.remaining().saturating_sub(adapter_started.elapsed()),
+            )?;
+            let effective_duration = prepared.bound_duration(duration);
+            if effective_duration != duration {
+                return Err(deep_capture_api::StageFailure::new(
                     deep_capture_api::Stage::Capture,
-                    "capture-not-prepared",
-                    "ordinary Capture preparation was not retained",
-                )
-            })?;
-        prepared
-            .with_launch_environment(route.environment())
-            .map_err(|error| {
-                library_stage_failure(
-                    deep_capture_api::Stage::Launch,
-                    "launch-route-environment",
-                    error,
-                )
-            })?;
-        let duration = bound_real_capture_duration(
-            &capture_args,
-            budget.remaining().saturating_sub(adapter_started.elapsed()),
-        )?;
-        let effective_duration = prepared.bound_duration(duration);
-        if effective_duration != duration {
-            return Err(deep_capture_api::StageFailure::new(
-                deep_capture_api::Stage::Capture,
-                "prepared-duration-shorter-than-authorized",
-                "prepared Capture duration is shorter than the authorized observation interval",
-            ));
-        }
-        capture_args.duration = Some(effective_duration);
+                    "prepared-duration-shorter-than-authorized",
+                    "prepared Capture duration is shorter than the authorized observation interval",
+                ));
+            }
+            capture_args.duration = Some(effective_duration);
+            Ok((capture_args, prepared))
+        })();
+        let (capture_args, prepared) = match preparation {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
+                    "capture-preparation",
+                    fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE,
+                    adapter_started.elapsed(),
+                    "failed",
+                ));
+                return Err(error);
+            }
+        };
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
         let outer_prepare_elapsed = adapter_started.elapsed();
@@ -1320,6 +1335,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             interrupted,
             retained_target_packets,
             capture_timing,
+            capture_preparation_completed,
         } = run_real_capture(
             &capture_args,
             prepared,
@@ -1330,7 +1346,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             "capture-preparation",
             fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE,
             outer_prepare_elapsed.saturating_add(capture_timing[0].unwrap_or_default()),
-            if capture_timing[0].is_some() {
+            if capture_preparation_completed {
                 "completed"
             } else {
                 "failed"
@@ -3871,6 +3887,7 @@ struct RealCaptureResult {
     interrupted: bool,
     retained_target_packets: Option<u64>,
     capture_timing: [Option<Duration>; 4],
+    capture_preparation_completed: bool,
 }
 
 fn run_real_capture(
@@ -3879,11 +3896,13 @@ fn run_real_capture(
     flow_registry: Arc<FlowRegistry>,
     emitter: &mut Emitter,
 ) -> RealCaptureResult {
+    let mut timing = crate::orchestrator::CaptureTiming::default();
     let mut result = capture::run_prepared_with_flow_registry(
         capture_args,
         emitter,
         prepared,
         Arc::clone(&flow_registry),
+        &mut timing,
     );
     let process_release_watch = result
         .as_mut()
@@ -3897,14 +3916,7 @@ fn run_real_capture(
         .map(|outcome| outcome.process_evidence.clone())
         .unwrap_or_default();
     let retained_target_packets = result.as_ref().ok().map(|outcome| outcome.retained_packets);
-    let capture_timing = result.as_ref().ok().map_or([None; 4], |outcome| {
-        [
-            outcome.capture_prepare_elapsed,
-            outcome.acquisition_elapsed,
-            outcome.observation_elapsed,
-            outcome.capture_return_elapsed,
-        ]
-    });
+    let capture_timing = timing.intervals();
     let result = result.and_then(|outcome| {
         if outcome.exit == Exit::SUCCESS {
             Ok(())
@@ -3919,6 +3931,7 @@ fn run_real_capture(
         interrupted,
         retained_target_packets,
         capture_timing,
+        capture_preparation_completed: timing.capture_prepare_completed,
     }
 }
 

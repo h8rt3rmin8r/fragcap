@@ -688,7 +688,23 @@ pub async fn connect_upstream(
     policy: &DestinationPolicy,
     budgets: UpstreamBudgets,
 ) -> Result<BoundedUpstreamStream, UpstreamError> {
-    connect_upstream_cancellable(authority, policy, budgets, &UpstreamCancellation::default()).await
+    connect_upstream_observed(authority, policy, budgets, || {}).await
+}
+
+pub(crate) async fn connect_upstream_observed(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    tcp_started: impl FnOnce(),
+) -> Result<BoundedUpstreamStream, UpstreamError> {
+    connect_upstream_cancellable_observed(
+        authority,
+        policy,
+        budgets,
+        &UpstreamCancellation::default(),
+        tcp_started,
+    )
+    .await
 }
 
 pub async fn resolve_allowed_udp(
@@ -705,6 +721,16 @@ pub async fn connect_upstream_cancellable(
     budgets: UpstreamBudgets,
     cancellation: &UpstreamCancellation,
 ) -> Result<BoundedUpstreamStream, UpstreamError> {
+    connect_upstream_cancellable_observed(authority, policy, budgets, cancellation, || {}).await
+}
+
+async fn connect_upstream_cancellable_observed(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    cancellation: &UpstreamCancellation,
+    tcp_started: impl FnOnce(),
+) -> Result<BoundedUpstreamStream, UpstreamError> {
     if cancellation.is_cancelled() {
         return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
     }
@@ -715,6 +741,7 @@ pub async fn connect_upstream_cancellable(
         result = resolve_allowed_candidates(authority, policy, budgets.dns) => result,
     }?;
     let addresses = interleave_families(allowed);
+    tcp_started();
     race_candidates(
         addresses,
         budgets.connect,

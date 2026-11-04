@@ -625,7 +625,13 @@ async fn connection_task(
         trace_complete(&trace, crate::ConnectionStage::Authentication);
         trace_complete(&trace, crate::ConnectionStage::Protocol);
         if let Some(error) = run.failure.as_ref() {
-            trace_fail(&trace, failure_boundary(error.code), error);
+            trace_fail(
+                &trace,
+                error
+                    .boundary
+                    .unwrap_or_else(|| failure_boundary(error.code)),
+                error,
+            );
         }
         return if run.failure.is_some() {
             ConnectionOutcome::Failed(run)
@@ -726,15 +732,19 @@ async fn connection_task(
     };
     if first.is_connect() {
         let authority = first.authority().clone();
-        let upstream = match connect_upstream(&authority, policy, config.protocol.upstream).await {
+        let upstream = match crate::upstream::connect_upstream_observed(
+            &authority,
+            policy,
+            config.protocol.upstream,
+            || trace_reach(&trace, crate::ConnectionStage::UpstreamTcp),
+        )
+        .await
+        {
             Ok(upstream) => {
                 trace_complete(&trace, crate::ConnectionStage::UpstreamTcp);
                 upstream
             }
             Err(error) => {
-                if matches!(error.stage, crate::UpstreamStage::Tcp) {
-                    trace_reach(&trace, crate::ConnectionStage::UpstreamTcp);
-                }
                 let policy_refused = matches!(error.stage, crate::UpstreamStage::Policy);
                 let mut protocol = ProtocolError::new(error.code, error.detail);
                 protocol.policy_refused = policy_refused;
@@ -1249,7 +1259,13 @@ async fn connection_task(
             ],
         );
         if let Some(error) = run.failure.as_ref() {
-            trace_fail(&trace, failure_boundary(error.code), error);
+            trace_fail(
+                &trace,
+                error
+                    .boundary
+                    .unwrap_or_else(|| failure_boundary(error.code)),
+                error,
+            );
         }
         return if run.failure.is_some() {
             ConnectionOutcome::Failed(run)
@@ -1307,7 +1323,13 @@ async fn connection_task(
     )
     .await;
     if let Some(error) = run.failure.as_ref() {
-        trace_fail(&trace, failure_boundary(error.code), error);
+        trace_fail(
+            &trace,
+            error
+                .boundary
+                .unwrap_or_else(|| failure_boundary(error.code)),
+            error,
+        );
     }
     if run.failure.is_some() {
         ConnectionOutcome::Failed(run)

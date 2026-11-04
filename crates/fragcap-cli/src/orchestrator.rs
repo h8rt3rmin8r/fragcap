@@ -101,6 +101,32 @@ pub struct CaptureOutcome {
     pub capture_return_elapsed: Option<std::time::Duration>,
 }
 
+#[derive(Default)]
+pub struct CaptureTiming {
+    pub capture_prepare_elapsed: Option<std::time::Duration>,
+    pub capture_prepare_completed: bool,
+    pub acquisition_elapsed: Option<std::time::Duration>,
+    pub observation_elapsed: Option<std::time::Duration>,
+    pub capture_return_elapsed: Option<std::time::Duration>,
+}
+
+impl CaptureTiming {
+    pub fn intervals(&self) -> [Option<std::time::Duration>; 4] {
+        [
+            self.capture_prepare_elapsed,
+            self.acquisition_elapsed,
+            self.observation_elapsed,
+            self.capture_return_elapsed,
+        ]
+    }
+
+    fn record_outcome(&mut self, outcome: &CaptureOutcome) {
+        self.acquisition_elapsed = outcome.acquisition_elapsed;
+        self.observation_elapsed = outcome.observation_elapsed;
+        self.capture_return_elapsed = outcome.capture_return_elapsed;
+    }
+}
+
 impl CaptureOutcome {
     /// A run that acquired no target and observed nothing, carrying only its
     /// exit. The no-target-acquired paths return this.
@@ -219,6 +245,7 @@ pub fn capture(
     fire_interrupt: bool,
     allowed_roles: Option<Vec<String>>,
     sink_failure_is_clean: bool,
+    timing: Option<&mut CaptureTiming>,
 ) -> Result<CaptureOutcome, CliError> {
     let mut session_config = config.session_config();
     session_config.managed_client_handoff =
@@ -294,17 +321,23 @@ pub fn capture(
     // chosen driver to consume.
     let events = std::mem::replace(&mut components.events, EventStream::Prerecorded(Vec::new()));
     match events {
-        EventStream::Prerecorded(events) => capture_prerecorded(
-            session,
-            config,
-            components,
-            events,
-            emitter,
-            interrupt,
-            fire_interrupt,
-            sink_failure_is_clean,
-            &mut process_evidence,
-        ),
+        EventStream::Prerecorded(events) => {
+            let result = capture_prerecorded(
+                session,
+                config,
+                components,
+                events,
+                emitter,
+                interrupt,
+                fire_interrupt,
+                sink_failure_is_clean,
+                &mut process_evidence,
+            );
+            if let (Some(timing), Ok(outcome)) = (timing, &result) {
+                timing.record_outcome(outcome);
+            }
+            result
+        }
         #[cfg(all(feature = "etw", windows))]
         EventStream::Live(rx) => capture_live(
             session,
@@ -316,6 +349,7 @@ pub fn capture(
             fire_interrupt,
             sink_failure_is_clean,
             &mut process_evidence,
+            timing,
         ),
     }
 }
@@ -811,6 +845,7 @@ fn capture_live(
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
     process_evidence: &mut CaptureProcessEvidence,
+    timing: Option<&mut CaptureTiming>,
 ) -> Result<CaptureOutcome, CliError> {
     use std::time::{Duration, Instant};
 
@@ -918,6 +953,8 @@ fn capture_live(
                 }
             }
             Err(e) => {
+                let acquisition_elapsed = started.elapsed();
+                let capture_return_started = Instant::now();
                 // The pipeline is already running from arm. Stop and join it so the
                 // sinks finalize and no output file is left unclosed, drop the watcher
                 // to end the live receiver, and surface the run's loss accounting,
@@ -936,6 +973,10 @@ fn capture_live(
                 session.finalize();
                 let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
                 emitter.summary(&summary);
+                if let Some(timing) = timing {
+                    timing.acquisition_elapsed = Some(acquisition_elapsed);
+                    timing.capture_return_elapsed = Some(capture_return_started.elapsed());
+                }
                 return Err(CliError::failure(e.to_string()));
             }
         }
@@ -1079,6 +1120,9 @@ fn capture_live(
         outcome.acquisition_elapsed = Some(acquisition_elapsed);
         outcome.capture_return_elapsed =
             Some(started.elapsed().saturating_sub(acquisition_elapsed));
+        if let Some(timing) = timing {
+            timing.record_outcome(&outcome);
+        }
         return Ok(outcome);
     }
 
@@ -1219,7 +1263,7 @@ fn capture_live(
         .stop_reason
         .map(|reason| format!("{reason:?}").to_ascii_lowercase());
     process_evidence.watcher_ended = summary.stop_reason == Some(StopReason::ProcessWatcherLost);
-    Ok(CaptureOutcome {
+    let outcome = CaptureOutcome {
         exit: final_exit(
             !report.sink_failures.is_empty(),
             sink_failure_is_clean,
@@ -1234,7 +1278,11 @@ fn capture_live(
         acquisition_elapsed: Some(acquisition_elapsed),
         observation_elapsed: Some(observation_elapsed),
         capture_return_elapsed: Some(return_started.elapsed()),
-    })
+    };
+    if let Some(timing) = timing {
+        timing.record_outcome(&outcome);
+    }
+    Ok(outcome)
 }
 
 /// The live driver loop over the merged channel.
