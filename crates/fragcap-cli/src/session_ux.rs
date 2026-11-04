@@ -218,6 +218,53 @@ pub(crate) fn authorization_summary(plan: &Value, width: usize) -> String {
                 .to_string(),
         ),
         ("Launch case:".into(), label("/launch/observed_case")),
+        (
+            "Acquisition:".into(),
+            format!(
+                "{} ms from {}",
+                plan.pointer("/deadlines_milliseconds/launch")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                label("/phase_budget/acquisition_starts")
+            ),
+        ),
+        (
+            "Observation:".into(),
+            format!(
+                "{} ms from {}",
+                plan.pointer("/deadlines_milliseconds/observation")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                label("/phase_budget/observation_starts")
+            ),
+        ),
+        (
+            "Guaranteed if owned:".into(),
+            format!(
+                "{} ms",
+                plan.pointer("/phase_budget/guaranteed_observation_if_client_remains_owned_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ),
+        ),
+        (
+            "Capture attempt ceiling:".into(),
+            format!(
+                "{} ms",
+                plan.pointer("/phase_budget/capture_attempt_ceiling_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ),
+        ),
+        (
+            "Total phase ceiling:".into(),
+            format!(
+                "{} ms",
+                plan.pointer("/phase_budget/total_attempt_ceiling_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ),
+        ),
         ("Auto shutdown:".into(), label("/launch/process_control")),
         (
             "Unsaved progress:".into(),

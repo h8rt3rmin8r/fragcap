@@ -345,6 +345,9 @@ pub const MAX_ORDINARY_OBSERVATION: Duration = Duration::from_secs(600);
 /// Finite completion time after the requested observation for every mode.
 /// This allowance never reduces the operator's authorized observation span.
 pub const CAPTURE_RETURN_ALLOWANCE: Duration = Duration::from_secs(5);
+/// Finite pre-arm budget for opening live capture sources after authorization.
+/// Kept outside the client acquisition and post-acquisition observation clocks.
+pub const CAPTURE_PREPARE_ALLOWANCE: Duration = Duration::from_secs(30);
 
 impl Default for Deadlines {
     fn default() -> Self {

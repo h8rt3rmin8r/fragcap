@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.110-draft \
+**Version:** 0.1.111-draft \
 **Applies-To:** 0.10.13 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-11-02 \
+**Date:** 2026-11-04 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -52,7 +52,7 @@ without further design negotiation.
 
 Published baseline: [v0.10.13](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13).
 
-Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.13, published 2026-11-02 UTC from `af58732b3fb1f9dc4e3a4eaeb69e3cdd10502942`. The reviewed `docs/published-release.json` and fifteen current baseline markers bind actual publication independently from candidate version. S159 verifies v0.10.2 publication of S154 through S158 documentation, review-intake, deterministic certification and Windows observation corrections; S162 verifies v0.10.3 publication of S160 QUIC observation headroom and S161 interactive CLI input correction; S164 verifies v0.10.4 publication of S163 first-run calibration corrections; S166 verifies v0.10.5 publication of S165's managed route-owner lifetime correction. S172 verifies v0.10.6 publication of S167-S171 diagnostics, acquisition/correlation, recipient access, retention and dependency corrections. S174 verifies v0.10.7 publication of the S173 elevated-output correction, historical repair retirement and seven advisory patches. S180 verifies v0.10.8 publication of S175-S179 Capture, Deep Capture lifecycle and CLI corrections plus the rustls-webpki advisory fix. S183 verifies v0.10.9 publication of the corrected Tokio graph and S182 installed-product fixes. The v0.10.10 publication verifies S184 managed release and observation corrections plus S185 installation CA and first-install cleanup. The v0.10.11 publication verifies S186 ordinary-user CA health, HTTPS CONNECT authority, and compatibility-evidence corrections. The v0.10.12 publication verifies S187 extended observation and managed-launch timing, declared Steam publisher stages, and exact process-instance ownership evidence. The v0.10.13 publication verifies S188 basename-only managed-stage path proof and top-level acquisition timeout; the combined live ETW/Npcap regression for #547 remains open. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; failures observed in an active release become concrete defects against that release. Per-release scope is in section 27.3.
+Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.13, published 2026-11-02 UTC from `af58732b3fb1f9dc4e3a4eaeb69e3cdd10502942`. The reviewed `docs/published-release.json` and fifteen current baseline markers bind actual publication independently from candidate version. S159 verifies v0.10.2 publication of S154 through S158 documentation, review-intake, deterministic certification and Windows observation corrections; S162 verifies v0.10.3 publication of S160 QUIC observation headroom and S161 interactive CLI input correction; S164 verifies v0.10.4 publication of S163 first-run calibration corrections; S166 verifies v0.10.5 publication of S165's managed route-owner lifetime correction. S172 verifies v0.10.6 publication of S167-S171 diagnostics, acquisition/correlation, recipient access, retention and dependency corrections. S174 verifies v0.10.7 publication of the S173 elevated-output correction, historical repair retirement and seven advisory patches. S180 verifies v0.10.8 publication of S175-S179 Capture, Deep Capture lifecycle and CLI corrections plus the rustls-webpki advisory fix. S183 verifies v0.10.9 publication of the corrected Tokio graph and S182 installed-product fixes. The v0.10.10 publication verifies S184 managed release and observation corrections plus S185 installation CA and first-install cleanup. The v0.10.11 publication verifies S186 ordinary-user CA health, HTTPS CONNECT authority, and compatibility-evidence corrections. The v0.10.12 publication verifies S187 extended observation and managed-launch timing, declared Steam publisher stages, and exact process-instance ownership evidence. The v0.10.13 publication verifies S188 basename-only managed-stage path proof and top-level acquisition timeout; installed behavior is assessed after release, with any defect tracked as a GitHub issue. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; failures observed in an active release become concrete defects against that release. Per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -197,7 +197,8 @@ enforcement.
 | 0.1.107-draft | 2026-11-01 | Codex | S187 extends explicit finite calibration and ordinary Deep Capture timing, governs ordered Steam publisher stages, retains bounded managed descendants, and adds inception-time socket and process-instance evidence under #540 and #541. Updates sections 17.2.1 and 27.3 without changing published v0.10.11. |
 | 0.1.108-draft | 2026-11-02 | Codex | Reconciles public v0.10.12 from exact merged S187 source after ten successful main workflows, four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; local installed-product, real-title, and independent whole-product review remain unverified. Updates sections 1, 22.7, 25.2, and 27.3. |
 | 0.1.109-draft | 2026-11-02 | Codex | S188 repairs #547 by binding a basename-only managed stage to a separately queried canonical executable path only when PID, directional creation time, account/session, declared path, and existing ordered ancestry agree. It retains the observed ETW image, named limitations, and the top-level acquisition timeout reason. Updates sections 10.3 and 27.3 without changing the published v0.10.12 identity. |
-| 0.1.110-draft | 2026-11-02 | Codex | Reconciles public v0.10.13 from exact merged S188 source after ten successful main workflows, four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; combined live #547 regression, local installed-product, real-title, and independent whole-product review remain unverified. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.110-draft | 2026-11-02 | Codex | Reconciles public v0.10.13 from exact merged S188 source after ten successful main workflows, four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; local installed-product, real-title, and independent whole-product behavior were not observed in that release process. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.111-draft | 2026-11-04 | Codex | S189 defines managed client handoff continuity and separates client acquisition from post-acquisition observation. It requires instance-bound stage and packet evidence, the already shipped S188 #547 correction, topology-aware preauthorization budgets, and truthful incomplete outcomes. Updates sections 10, 17, 25, and 27.3; public v0.10.13 identity remains unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1535,6 +1536,14 @@ Every stop condition produces the same orderly shutdown: capture halts,
 the buffer drains, sinks flush and finish, and statistics are reported.
 An interrupt is a normal stop, not an abort, and yields a complete and
 valid capture file.
+
+Managed Deep Capture adds a distinct terminal-client handoff policy. A first
+client exit with a live causally owned descendant remains provisional during
+the finite acquisition wait. A later exact-path, exact-ancestry client may
+bind the same terminal role; an unproven or ambiguous process cannot. An
+incomplete handoff has its own terminal reason. Ordinary Capture retains the
+terminal-exit rule above. Packet role stamps are limited to the bound process
+instance's creation-to-exit interval, including when Windows reuses a PID.
 
 ## 11. Flow Attribution
 
@@ -3212,6 +3221,17 @@ that HAR may retain HTTP content, the client-facing TLS key log can decrypt
 captured traffic, and an operator-supplied client certificate and private key
 are sensitive identity material.
 
+Managed Deep Capture measures `--wait` from capture arm to verified terminal
+client acquisition and `--duration` from that acquisition. A proven handoff
+starts a full eligible interval for its exact successor within the finite
+attempt budget. Simple launches default to 30 seconds of acquisition and 60
+seconds of observation; declared multi-stage launches default to 180 and 120
+seconds. Supported explicit values remain exact. The authorization plan shows
+the effective values and phase origins before effects. Capture preparation and
+return, exact owner release, proxy shutdown, and cleanup have separate finite
+allowances. The live event clock is translated to the monotonic phase clock;
+process and packet evidence keep their original timestamps.
+
 `--proxy-bypass` is the only operator bypass input. Repeated values and
 comma-delimited tokens accept ASCII DNS domains, IP literals, canonical CIDRs,
 and optional ports on DNS or IP authorities. Bare and leading-dot DNS inputs
@@ -4531,6 +4551,10 @@ the test itself over loopback, and processes are spawned by the test.
 No game is required. Runs on a Windows runner with the capture driver
 installed.
 
+Installed-product behavior is observed after release. A defect found there
+returns as a GitHub issue with its observed evidence. S189 adds no separate
+pre-release live-run requirement for the S188 basename-path correction.
+
 Compatibility calibration adds a controlled target path to Tier 1. The target reports its own inherited proxy variables, sends synthetic loopback traffic, and can drive routing, TLS, partial-evidence, and cleanup outcomes through the production bundle and fact-store paths. This proves orchestration and contract behavior without a game account, capture driver, remote service, or real trust-store mutation. It does not prove how a real Steam or publisher launch behaves; that remains a private Tier 3 manual measurement whose public summary must be scrubbed.
 
 Published-package replay is a disposable hosted Windows evidence tier over immutable user-downloadable bytes rather than a locally rebuilt candidate. The workflow verifies all six v0.10.13 file sizes and digests before effects, then reuses package certification to run distinct portable and installed controlled native smoke under exact-program firewall containment. Report schema 4 preserves executable identity, exact ordered structured native proxy-start and same-session terminal reached-client evidence, distinct session identity digests across surfaces, zero unexpected process or non-loopback observations, bounded socket diagnostics and cleanup reconciliation for each surface. Rust validates the bounded event sequence, owns the predicate codes and projects the closed session summary before the PowerShell orchestrator builds the report. Socket polling remains negative evidence when it observes a violation but is not positive authority, because absence from a bounded polling snapshot does not establish absence from the execution. This is reproducible implementation-authored evidence, not independent whole-product acceptance. The S158 Windows observation correction and S160/S161/S163/S165/S168-S171/S173 corrections are included in the immutable candidate; independent whole-product review remains unperformed.
@@ -5095,7 +5119,7 @@ restated here. The scope of each release is:
 | v0.10.10 | 2026-10-31 | Machine-specific installation CA and first-install cleanup of identified pre-S185 state, managed route release, and ordinary Deep Capture observation timing | S184-S185; verified publication |
 | v0.10.11 | 2026-11-01 | Ordinary-user installation CA health, HTTPS CONNECT default-port authority and timeout diagnoses, and HTTPS compatibility evidence | S186; verified publication |
 | v0.10.12 | 2026-11-02 | Explicit longer Deep Capture observation and managed-launch timing, declared Steam publisher stages, retained managed descendants, and verified process-instance ownership or an evidence gap | S187; verified publication |
-| v0.10.13 | 2026-11-02 | Exact process-instance path proof for basename-only managed stages and top-level acquisition timeout, with combined live #547 regression still open | S188; verified publication |
+| v0.10.13 | 2026-11-02 | Exact process-instance path proof for basename-only managed stages and top-level acquisition timeout, with installed behavior to be observed after release | S188; verified publication |
 
 S162 publishes v0.10.3 from merged S160 and S161, including bounded QUIC observation headroom and interactive CLI input ownership. Candidate PR #440 was operator-merged, its exact source tagged, the protected registry job approved by the owner, and public files and all ten crate versions verified before current published-baseline records moved. Print Screen behavior is not claimed as corrected.
 
@@ -5119,7 +5143,9 @@ S186 (`specs/186-installed-deep-capture-truth`) follows published v0.10.10 and a
 
 S187 (`specs/187-slow-launcher-session-ownership`) follows merged S186 and the standalone #539 governance change, addressing #540 and #541 together. Explicit 120-second calibration, 600-second ordinary observation, and 300-second launch wait are preserved through plan, runtime, terminal, and manifest without silent truncation. Cold Steam targets can carry ordered publisher stages into exact pre-effect shutdown scope. Managed-descendant birth and exit projection, independent inception-time socket/process ownership, and bounded release with late helper obligations keep observation and control authority distinct. A controlled installed-binary timing fixture uses the isolated runner account's documented default store and session paths with canonical readback; it does not demonstrate a real game or explain #542. No dependency or storage schema changes. The implementation shipped in v0.10.12; real-title compatibility and #542 remain unverified.
 
-S188 (`specs/188-managed-stage-path-verification`) follows published v0.10.12 and repairs #547. A basename-only managed start can meet its exact path predicate only with a separate canonical process-object path joined to the same PID, creation event, account, session, and declared stage. Ordered Steam and publisher ancestry remain exact; unavailable, stale, wrong-path, or escaped evidence cannot bind a stage. The original event image, bounded limitation codes, typed acquisition timeout, and independent artifact outcomes remain visible. Controlled Windows source and package gates establish the scope recorded in the S188 verification report; a private installed-title retest and the combined live #547 regression remain separate. No dependency or storage schema changes.
+S188 (`specs/188-managed-stage-path-verification`) follows published v0.10.12 and repairs #547. A basename-only managed start can meet its exact path predicate only with a separate canonical process-object path joined to the same PID, creation event, account, session, and declared stage. Ordered Steam and publisher ancestry remain exact; unavailable, stale, wrong-path, or escaped evidence cannot bind a stage. The original event image, bounded limitation codes, typed acquisition timeout, and independent artifact outcomes remain visible. The S188 report records the scope of its source and package observations; installed behavior follows post-release issue reporting. No dependency or storage schema changes.
+
+S189 (`specs/189-managed-launch-observation-continuity`) follows published v0.10.13 and addresses #552 and #553 at the managed client handoff and observation-clock boundary. A first client exit with a live causally owned descendant remains provisional; a later exact successor can bind the terminal role within the finite acquisition wait. Packet role stamping uses process lifetimes rather than PID-only history. The managed packet window starts at verified terminal acquisition, and the full requested duration begins there, using a translated monotonic clock for live ETW events. Simple and multi-stage defaults are selected before authorization; accepted explicit values are not shortened afterward. Ordinary Capture retains arm-relative duration and terminal-exit behavior. S188's #547 source correction is already published; installed findings after release return as GitHub issues. No dependency or storage migration is added.
 
 v0.10.10 publishes S184 and S185 from merged PR #532 at `00d98c1c0fa0770eb7f3d38346247a35942915e9`; annotated tag v0.10.10 selects that exact source. All nine post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; no public MSI was installed on the operator workstation in this session, no real title was exercised, and independent whole-product review remains unperformed.
 
@@ -5127,7 +5153,7 @@ v0.10.11 publishes S186 from merged PR #537 at `9d7d45222893b32e50b8a4ed00eb85aa
 
 v0.10.12 publishes S187 from merged PR #545 at `f09ec47cf40c9c4a6b47e350121dc234881b309b`; annotated tag v0.10.12 selects that exact source. All ten post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; no public MSI was installed on the operator workstation in this session, no real title was exercised, and independent whole-product review remains unperformed.
 
-v0.10.13 publishes S188 from merged PR #549 at `af58732b3fb1f9dc4e3a4eaeb69e3cdd10502942`; annotated tag v0.10.13 selects that exact source. All ten post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; the combined live ETW/Npcap regression and composed timeout readback for #547, operator-workstation installation, real-title exercise, and independent whole-product review remain unverified.
+v0.10.13 publishes S188 from merged PR #549 at `af58732b3fb1f9dc4e3a4eaeb69e3cdd10502942`; annotated tag v0.10.13 selects that exact source. All ten post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; operator-workstation installation, real-title exercise, and independent whole-product review were not observed during that release process; later defects return as GitHub issues.
 
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 

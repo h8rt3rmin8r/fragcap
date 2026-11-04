@@ -720,7 +720,12 @@ impl DeepCaptureSession<'_> {
             self.observe_cancellation();
             return Ok(());
         }
-        let observation_budget = self.plan.deadlines.observation + CAPTURE_RETURN_ALLOWANCE;
+        // Capture owns both managed-client acquisition and the observation
+        // interval that begins after it. The outer deadline must cover both.
+        let observation_budget = self.plan.deadlines.launch
+            + self.plan.deadlines.observation
+            + CAPTURE_PREPARE_ALLOWANCE
+            + CAPTURE_RETURN_ALLOWANCE;
         let budget = self.remaining_budget(started, observation_budget);
         let capture_result = self.adapters.capture.run(
             &self.capture,
