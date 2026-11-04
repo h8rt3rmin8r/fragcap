@@ -691,7 +691,7 @@ Param(
         }
         $doctor = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'doctor') -Environment $altered -AllowedExitCodes @(0, 1)
         $rows = @($doctor.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop })
-        $local = @($rows | Where-Object { $_.name -ceq 'local storage' })
+        $local = @($rows | Where-Object { $null -ne $_.PSObject.Properties['name'] -and $_.name -ceq 'local storage' })
         if ($local.Count -ne 1 -or $local[0].storage.selected -ine $expected -or $local[0].storage.existence -cne 'present' -or $local[0].storage.redirected -ne $false -or -not ([string]$local[0].storage.effective).EndsWith('\.fragcap\roaming\local.db', [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'opened-handle Doctor destination disagrees with the independent default-store readback'
         }
