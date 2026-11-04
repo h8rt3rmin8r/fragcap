@@ -105,11 +105,28 @@ pub struct TerminalDiagnostics {
 
 /// A bounded terminal connection record containing only a stable code and identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyStageRecord {
+    pub stage: String,
+    pub reached_ms: u64,
+    pub completed_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyConnectionDiagnostic {
+    pub schema_version: u32,
     pub connection_id: u64,
     pub terminal: String,
     pub cause: Option<ProxyFailureCategory>,
     pub code: Option<String>,
+    pub stages: Vec<ProxyStageRecord>,
+    pub last_reached: String,
+    pub last_completed: String,
+    pub boundary: Option<String>,
+    pub tls_alert: Option<String>,
+    pub transport_category: Option<String>,
+    pub os_error_code: Option<i32>,
+    pub header_timeout_phase: Option<String>,
+    pub completed_exchanges: u64,
 }
 
 /// Native aggregate counters and independently bounded per-connection evidence.
@@ -163,10 +180,28 @@ impl ProxyDiagnostics {
                 .connection_diagnostics
                 .iter()
                 .map(|record| ProxyConnectionDiagnostic {
+                    schema_version: record.schema_version,
                     connection_id: record.connection_id,
                     terminal: record.terminal.to_string(),
                     cause: record.cause,
                     code: record.code.map(str::to_string),
+                    stages: record
+                        .stages
+                        .iter()
+                        .map(|stage| ProxyStageRecord {
+                            stage: stage.stage.as_str().to_string(),
+                            reached_ms: stage.reached_ms,
+                            completed_ms: stage.completed_ms,
+                        })
+                        .collect(),
+                    last_reached: record.last_reached.as_str().to_string(),
+                    last_completed: record.last_completed.as_str().to_string(),
+                    boundary: record.boundary.map(str::to_string),
+                    tls_alert: record.tls_alert.clone(),
+                    transport_category: record.transport_category.map(str::to_string),
+                    os_error_code: record.os_error_code,
+                    header_timeout_phase: record.header_timeout_phase.map(str::to_string),
+                    completed_exchanges: record.completed_exchanges,
                 })
                 .collect(),
             connection_details_lost: value.resources.connection_details_dropped_oldest,

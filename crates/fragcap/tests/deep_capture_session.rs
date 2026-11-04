@@ -331,6 +331,53 @@ impl CaptureRunner for TimedCapture {
     }
 }
 
+struct PhaseCapture {
+    timing: Vec<PhaseTiming>,
+    failed: bool,
+    interrupted: bool,
+}
+
+impl CaptureRunner for PhaseCapture {
+    fn prepare(
+        &mut self,
+        _: &SessionConfig,
+        _: &PreparedTarget,
+        _: LoopbackEndpoint,
+    ) -> Result<PreparedCapture, PreflightRefusal> {
+        Ok(PreparedCapture {
+            token: "phase-capture".into(),
+        })
+    }
+    fn run(
+        &mut self,
+        _: &PreparedCapture,
+        _: &AppliedRoute,
+        _: Budget,
+    ) -> Result<CaptureRunResult, StageFailure> {
+        if self.failed {
+            Err(StageFailure::new(
+                Stage::Capture,
+                "acquisitiontimeout",
+                "controlled no-client result",
+            ))
+        } else {
+            Ok(CaptureRunResult {
+                observations: Vec::new(),
+                interrupted: self.interrupted,
+            })
+        }
+    }
+    fn take_phase_timing(&mut self) -> Vec<PhaseTiming> {
+        std::mem::take(&mut self.timing)
+    }
+    fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
+        released("route-owner")
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        released("capture")
+    }
+}
+
 struct LateObservationCapture(Rc<RefCell<Duration>>);
 impl CaptureRunner for LateObservationCapture {
     fn release_route_owners(&mut self, _: Budget) -> CleanupResult {
@@ -625,6 +672,17 @@ impl EventSink for Events {
             _ => "future",
         };
         self.0.borrow_mut().push(format!("event.{kind}"));
+        Ok(())
+    }
+}
+
+struct TimingEvents(Ledger, Rc<RefCell<Vec<PhaseTiming>>>);
+impl EventSink for TimingEvents {
+    fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
+        Events(Rc::clone(&self.0)).emit(event)?;
+        if let DeepCaptureEvent::PhaseTiming { timing, .. } = event {
+            *self.1.borrow_mut() = timing.clone();
+        }
         Ok(())
     }
 }
@@ -1208,6 +1266,11 @@ fn malformed_bypass_refuses_before_listener_selection() {
 fn controlled_consumer_runs_complete_lifecycle_without_cli() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
+    let observed_timing = Rc::new(RefCell::new(Vec::new()));
+    environment.events = Box::new(TimingEvents(
+        Rc::clone(&ledger),
+        Rc::clone(&observed_timing),
+    ));
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
     assert_eq!(
         prepared.plan().artifacts,
@@ -1223,6 +1286,20 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         .run_to_completion(authorization);
 
     assert!(report.is_complete());
+    let timing = observed_timing.borrow();
+    assert_eq!(timing.len(), 8);
+    let startup = timing
+        .iter()
+        .find(|phase| phase.phase == "startup")
+        .unwrap();
+    assert_eq!(startup.status, "completed");
+    assert_eq!(startup.elapsed, Some(Duration::ZERO));
+    let observation = timing
+        .iter()
+        .find(|phase| phase.phase == "observation")
+        .unwrap();
+    assert_eq!(observation.status, "not-started");
+    assert_eq!(observation.elapsed, None);
     assert_eq!(report.snapshot.observations.len(), 1);
     let classification = report.snapshot.classification_summary();
     assert_eq!(classification.observations, 1);
@@ -1261,6 +1338,106 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         calls.iter().position(|call| call == "event.trust-acquired")
             < calls.iter().position(|call| call == "launch.start")
     );
+}
+
+#[test]
+fn phase_timing_preserves_subsecond_elapsed_and_remaining() {
+    let phase = PhaseTiming::ended(
+        "acquisition",
+        Duration::from_secs(2),
+        Duration::from_millis(1234),
+        "completed",
+    );
+    assert_eq!(phase.elapsed, Some(Duration::from_millis(1234)));
+    assert_eq!(phase.remaining, Some(Duration::from_millis(766)));
+    let absent = PhaseTiming::not_started("observation", Duration::from_secs(10));
+    assert_eq!(absent.elapsed, None);
+    assert_eq!(absent.remaining, None);
+}
+
+#[test]
+fn capture_phase_measurements_survive_late_no_client_and_interrupted_outcomes() {
+    for (failed, interrupted, acquisition, observation) in [
+        (
+            false,
+            false,
+            Duration::from_secs(138),
+            Some((Duration::from_secs(120), "completed")),
+        ),
+        (true, false, Duration::from_secs(180), None),
+        (
+            false,
+            true,
+            Duration::from_secs(2),
+            Some((Duration::from_secs(5), "interrupted")),
+        ),
+    ] {
+        let ledger = Rc::new(RefCell::new(Vec::new()));
+        let mut environment = adapters(&ledger);
+        let observed_timing = Rc::new(RefCell::new(Vec::new()));
+        environment.events = Box::new(TimingEvents(
+            Rc::clone(&ledger),
+            Rc::clone(&observed_timing),
+        ));
+        let mut timing = vec![PhaseTiming::ended(
+            "acquisition",
+            Duration::from_secs(180),
+            acquisition,
+            if failed { "failed" } else { "completed" },
+        )];
+        if let Some((elapsed, status)) = observation {
+            timing.push(PhaseTiming::ended(
+                "observation",
+                Duration::from_secs(120),
+                elapsed,
+                status,
+            ));
+        }
+        environment.capture = Box::new(PhaseCapture {
+            timing,
+            failed,
+            interrupted,
+        });
+        let mut configured = config();
+        configured.deadlines.launch = Duration::from_secs(180);
+        configured.deadlines.observation = Duration::from_secs(120);
+        let prepared = DeepCapture::preflight(configured, &mut environment).unwrap();
+        let authorization = Authorization::approved(prepared.plan().id.clone());
+        let report = prepared
+            .into_session(environment)
+            .run_to_completion(authorization);
+        if interrupted {
+            assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+        } else if failed {
+            assert_ne!(report.snapshot.outcome, SessionOutcome::Complete);
+        }
+        let timing = observed_timing.borrow();
+        let acquisition_record = timing
+            .iter()
+            .find(|phase| phase.phase == "acquisition")
+            .unwrap();
+        assert_eq!(acquisition_record.elapsed, Some(acquisition));
+        assert_eq!(
+            acquisition_record.remaining,
+            Some(Duration::from_secs(180) - acquisition)
+        );
+        let observation_record = timing
+            .iter()
+            .find(|phase| phase.phase == "observation")
+            .unwrap();
+        assert_eq!(
+            observation_record.status,
+            observation.map_or("not-started", |(_, status)| status)
+        );
+        assert_eq!(
+            observation_record.elapsed,
+            observation.map(|(elapsed, _)| elapsed)
+        );
+        assert_eq!(
+            observation_record.remaining,
+            observation.map(|(elapsed, _)| Duration::from_secs(120) - elapsed)
+        );
+    }
 }
 
 #[test]

@@ -199,6 +199,7 @@ enforcement.
 | 0.1.109-draft | 2026-11-02 | Codex | S188 repairs #547 by binding a basename-only managed stage to a separately queried canonical executable path only when PID, directional creation time, account/session, declared path, and existing ordered ancestry agree. It retains the observed ETW image, named limitations, and the top-level acquisition timeout reason. Updates sections 10.3 and 27.3 without changing the published v0.10.12 identity. |
 | 0.1.110-draft | 2026-11-02 | Codex | Reconciles public v0.10.13 from exact merged S188 source after ten successful main workflows, four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked downloaded crate archives. Current markers and frozen review candidate advance together; local installed-product, real-title, and independent whole-product behavior were not observed in that release process. Updates sections 1, 22.7, 25.2, and 27.3. |
 | 0.1.111-draft | 2026-11-04 | Codex | S189 defines managed client handoff continuity and separates client acquisition from post-acquisition observation. It requires instance-bound stage and packet evidence, the already shipped S188 #547 correction, topology-aware preauthorization budgets, and truthful incomplete outcomes. Updates sections 10, 17, 25, and 27.3; public v0.10.13 identity remains unchanged. |
+| 0.1.112-draft | 2026-11-04 | Codex | S190 adds bounded per-connection native proxy stage and failure evidence plus measured phase elapsed and remaining time for #551 and the outstanding reporting part of #553. It preserves exact process-ownership authority and loss accounting. Updates sections 13.7 and 27.3; public v0.10.13 identity remains unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2080,6 +2081,20 @@ The cleanup stream owns obligation creation, acquisition, attempt, adapter resul
 retention, and recovery-journal linkage. Both streams keep complete newline-framed
 crash prefixes and require one reconciling trailer for completion. Partial writer
 failure and queue pressure remain explicit and cannot block forwarding.
+
+Each retained native connection has an additive version-one diagnostic record
+with its accepted connection ID, bounded reached and completed stages, last
+reached and last completed stage, stable terminal code, observed failure
+boundary, optional TLS alert, sanitized transport category or numeric OS code,
+and completed HTTP exchange count. A separate accounting record names retained,
+lost, and unavailable diagnostic details. Client TLS completion is retained
+before upstream TLS is attempted, so a later origin trust failure cannot erase
+the earlier client fact. Header timeout identifies whether it preceded the
+first request or followed completed HTTP work. The same connection ID joins
+request evidence and, when independently proven, exact process-instance
+correlation in `application.jsonl`. Missing or ambiguous ownership remains
+explicit. Compact diagnostics omit raw authority, payload, credentials, and
+private certificate material.
 
 `resource-journal.jsonl` is the synchronized ownership authority.
 `cleanup.json` is a derived compatibility projection of a completed
@@ -5146,6 +5161,8 @@ S187 (`specs/187-slow-launcher-session-ownership`) follows merged S186 and the s
 S188 (`specs/188-managed-stage-path-verification`) follows published v0.10.12 and repairs #547. A basename-only managed start can meet its exact path predicate only with a separate canonical process-object path joined to the same PID, creation event, account, session, and declared stage. Ordered Steam and publisher ancestry remain exact; unavailable, stale, wrong-path, or escaped evidence cannot bind a stage. The original event image, bounded limitation codes, typed acquisition timeout, and independent artifact outcomes remain visible. The S188 report records the scope of its source and package observations; installed behavior follows post-release issue reporting. No dependency or storage schema changes.
 
 S189 (`specs/189-managed-launch-observation-continuity`) follows published v0.10.13 and addresses #552 and #553 at the managed client handoff and observation-clock boundary. A first client exit with a live causally owned descendant remains provisional; a later exact successor can bind the terminal role within the finite acquisition wait. Packet role stamping uses process lifetimes rather than PID-only history. Native proxy observations from connections opened before the enduring client are classified as pre-client or provisional and cannot become positive calibration facts. The managed packet window starts at verified terminal acquisition, and the full requested duration begins there, using a translated monotonic clock for live ETW events. Simple and multi-stage defaults are selected before authorization; accepted explicit values are not shortened afterward. Ordinary Capture retains arm-relative duration and terminal-exit behavior. S188's #547 source correction is already published; installed findings after release return as GitHub issues. No dependency or storage migration is added.
+
+S190 (`specs/190-session-causal-diagnostics`) adds native proxy connection-stage and cause records for #551 and measured lifecycle phase reporting for the remaining #553 requirement. The proxy retains client-facing and upstream failure boundaries independently from completed stages and keeps completed HTTP exchanges when a later idle read times out. The bounded diagnostic stream reconciles retained, lost, and unavailable records and shares the accepted connection ID with existing request and exact process-instance correlation. The terminal event, calibration assessment, and manifest report each started phase's monotonic elapsed and unused authorized budget in milliseconds; phases without an observed start report `not-started` with null elapsed and remaining. The startup, acquisition, observation, owner release, shared shutdown and drain, and cleanup clocks retain their existing finite authorization semantics. No dependency or storage migration is added. Installed-product findings after release return as GitHub issues.
 
 v0.10.10 publishes S184 and S185 from merged PR #532 at `00d98c1c0fa0770eb7f3d38346247a35942915e9`; annotated tag v0.10.10 selects that exact source. All nine post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; no public MSI was installed on the operator workstation in this session, no real title was exercised, and independent whole-product review remains unperformed.
 

@@ -759,6 +759,7 @@ impl ProxyBackend for NativeProxyAdapter {
             observations_lost: 0,
             classification_loss_accounted: 0,
             diagnostics: None,
+            diagnostics_appended: false,
             observation_ended_at_ns: None,
             application_classification_summary: None,
             stop_authority: None,
@@ -810,10 +811,50 @@ struct NativeProxyLease {
     application_classification_summary: Option<ClassificationSummary>,
     stop_authority: Option<NativeStopAuthority>,
     diagnostics: Option<super::ProxyDiagnostics>,
+    diagnostics_appended: bool,
     observation_ended_at_ns: Option<u64>,
 }
 
 impl NativeProxyLease {
+    fn append_connection_diagnostics(&mut self) -> std::io::Result<()> {
+        if self.diagnostics_appended {
+            return Ok(());
+        }
+        let (Some(lifecycle), Some(diagnostics)) = (&self.proxy_lifecycle, &self.diagnostics)
+        else {
+            return Ok(());
+        };
+        self.diagnostics_appended = true;
+        for record in &diagnostics.connections {
+            lifecycle.connection_diagnostic(serde_json::json!({
+                "schema_version": record.schema_version,
+                "connection_id": record.connection_id,
+                "terminal": record.terminal,
+                "category": record.cause.map(|cause| cause.as_str()),
+                "code": record.code,
+                "stages": record.stages.iter().map(|stage| serde_json::json!({
+                    "stage": stage.stage,
+                    "reached_ms": stage.reached_ms,
+                    "completed_ms": stage.completed_ms,
+                })).collect::<Vec<_>>(),
+                "last_reached": record.last_reached,
+                "last_completed": record.last_completed,
+                "boundary": record.boundary,
+                "tls_alert": record.tls_alert,
+                "transport_category": record.transport_category,
+                "os_error_code": record.os_error_code,
+                "header_timeout_phase": record.header_timeout_phase,
+                "completed_exchanges": record.completed_exchanges,
+            }))?;
+        }
+        lifecycle.diagnostic_accounting(serde_json::json!({
+            "schema_version": 1,
+            "retained": diagnostics.connections.len(),
+            "lost": diagnostics.connection_details_lost,
+            "unavailable": diagnostics.connection_details_unavailable,
+        }))
+    }
+
     fn account_final_classification_loss(&mut self) {
         if let Some(artifact) = self.application_artifact.as_ref() {
             let newly_lost = self
@@ -1066,6 +1107,11 @@ impl ProxyLease for NativeProxyLease {
                     self.application_classification_summary = artifact.classification_summary();
                 }
             }
+            let diagnostic_result = self.append_connection_diagnostics();
+            if let Err(error) = diagnostic_result {
+                result.status = CleanupStatus::Failed;
+                result.reason = format!("proxy diagnostic write failed: {error}");
+            }
             if let Some(lifecycle) = self.proxy_lifecycle.as_mut() {
                 if let Err(error) = lifecycle.finish() {
                     result.status = CleanupStatus::Failed;
@@ -1122,19 +1168,23 @@ impl ProxyLease for NativeProxyLease {
                 ),
             });
         }
+        let diagnostic_result = self.append_connection_diagnostics();
         if let Some(mut lifecycle) = self.proxy_lifecycle.take() {
             let result = lifecycle.finish();
             results.push(CleanupResult {
                 resource: "proxy-lifecycle-writer".to_string(),
-                status: if result.is_ok() {
+                status: if result.is_ok() && diagnostic_result.is_ok() {
                     CleanupStatus::Released
                 } else {
                     CleanupStatus::Failed
                 },
-                reason: result.err().map_or_else(
-                    || "proxy lifecycle writer completed".to_string(),
-                    |error| error.to_string(),
-                ),
+                reason: diagnostic_result
+                    .err()
+                    .or_else(|| result.err())
+                    .map_or_else(
+                        || "proxy lifecycle writer completed".to_string(),
+                        |error| error.to_string(),
+                    ),
             });
         }
         if let Some(mut lab) = self.controlled_lab.take() {
@@ -2504,6 +2554,7 @@ mod tests {
             application_classification_summary: None,
             stop_authority: None,
             diagnostics: None,
+            diagnostics_appended: false,
             observation_ended_at_ns: None,
         }
     }

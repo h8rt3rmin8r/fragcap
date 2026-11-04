@@ -94,6 +94,11 @@ pub struct CaptureOutcome {
     pub process_release_watch: Option<ProcessReleaseWatch>,
     /// Packets retained by the target window, separate from packets merely read.
     pub retained_packets: u64,
+    /// Monotonic live-driver intervals, absent for offline replay.
+    pub capture_prepare_elapsed: Option<std::time::Duration>,
+    pub acquisition_elapsed: Option<std::time::Duration>,
+    pub observation_elapsed: Option<std::time::Duration>,
+    pub capture_return_elapsed: Option<std::time::Duration>,
 }
 
 impl CaptureOutcome {
@@ -107,6 +112,10 @@ impl CaptureOutcome {
             process_evidence: CaptureProcessEvidence::default(),
             process_release_watch: None,
             retained_packets: 0,
+            capture_prepare_elapsed: None,
+            acquisition_elapsed: None,
+            observation_elapsed: None,
+            capture_return_elapsed: None,
         }
     }
 }
@@ -552,6 +561,10 @@ fn capture_prerecorded(
         process_evidence: process_evidence.clone(),
         process_release_watch: None,
         retained_packets: summary.retained,
+        capture_prepare_elapsed: None,
+        acquisition_elapsed: None,
+        observation_elapsed: None,
+        capture_return_elapsed: None,
     })
 }
 
@@ -1003,6 +1016,7 @@ fn capture_live(
         }
     }
 
+    let acquisition_elapsed = started.elapsed();
     if !session.acquired() {
         // No target was acquired. The pipeline has been running from arm, so it
         // is stopped and joined before reporting; its watch-time frames are in
@@ -1062,9 +1076,13 @@ fn capture_live(
         outcome.stop_reason = session.stop_reason();
         outcome.process_evidence = process_evidence.clone();
         outcome.process_release_watch = release_watch;
+        outcome.acquisition_elapsed = Some(acquisition_elapsed);
+        outcome.capture_return_elapsed =
+            Some(started.elapsed().saturating_sub(acquisition_elapsed));
         return Ok(outcome);
     }
 
+    let observation_started = Instant::now();
     // Acquired: open the window from the acquiring event's capture instant, so a
     // frame captured before it (a buffered pre-acquisition frame) stays a
     // watch-time discard even though the window is now open (review of PR #26).
@@ -1149,6 +1167,8 @@ fn capture_live(
         &mut display,
         process_evidence,
     );
+    let observation_elapsed = observation_started.elapsed();
+    let return_started = Instant::now();
 
     // The pipeline observed the stop and returns; its tee channel closes and the
     // packet forwarder ends. A terminal-stage exit closed the window at its own
@@ -1210,6 +1230,10 @@ fn capture_live(
         process_evidence: process_evidence.clone(),
         process_release_watch,
         retained_packets: summary.retained,
+        capture_prepare_elapsed: None,
+        acquisition_elapsed: Some(acquisition_elapsed),
+        observation_elapsed: Some(observation_elapsed),
+        capture_return_elapsed: Some(return_started.elapsed()),
     })
 }
 

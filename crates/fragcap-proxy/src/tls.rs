@@ -90,7 +90,13 @@ pub(crate) async fn accept_client_tls(
         .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
         .map_err(|error| {
             let class = crate::classify_tls_io_error(&error, true, false);
-            ProtocolError::new(class.code(), error.to_string())
+            let (tls_alert, transport_category, os_error_code) =
+                crate::upstream::diagnostic_io(&error);
+            let mut protocol = ProtocolError::new(class.code(), error.to_string());
+            protocol.tls_alert = tls_alert;
+            protocol.transport_category = Some(transport_category);
+            protocol.os_error_code = os_error_code;
+            protocol
         })?;
     if let (AuthorityHost::Dns(expected), Some(observed)) =
         (authority.host(), tls.get_ref().1.server_name())

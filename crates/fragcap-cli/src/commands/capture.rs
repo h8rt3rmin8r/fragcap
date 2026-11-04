@@ -31,7 +31,7 @@ use fragcap::targets::{resolved_client_launch, Store, TargetEntry};
 use fragcap::{CaptureScope, FlowRegistry};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::assemble;
 use crate::attach;
@@ -363,6 +363,7 @@ fn run_prepared_outcome(
         ));
         config.scope = CaptureScope::All;
     }
+    let capture_prepare_started = Instant::now();
     let mut components =
         assemble::components_with_proxy_acquisition(&args.offline, &config, proxy_acquisition)?;
     components.flow_registry = flow_registry;
@@ -374,7 +375,8 @@ fn run_prepared_outcome(
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
-    let outcome = orchestrator::capture(
+    let capture_prepare_elapsed = capture_prepare_started.elapsed();
+    let mut outcome = orchestrator::capture(
         profile,
         &config,
         components,
@@ -385,6 +387,7 @@ fn run_prepared_outcome(
         // A sink failure is an unrecoverable end for `capture`, not a clean stop.
         false,
     )?;
+    outcome.capture_prepare_elapsed = Some(capture_prepare_elapsed);
 
     // Capture-time promotion (slice S059): if this was an unresolved target and the
     // run observed a dominant socket holder, rewrite the stored launch chain to that

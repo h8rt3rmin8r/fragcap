@@ -3,7 +3,7 @@
 use std::cmp::min;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex as StdMutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant as StdInstant};
 
@@ -422,6 +422,124 @@ enum ConnectionOutcome {
     AuthenticationRefused(ProtocolError),
 }
 
+#[derive(Clone, Debug)]
+struct ConnectionTrace {
+    started: StdInstant,
+    stages: Vec<crate::ConnectionStageRecord>,
+    boundary: Option<&'static str>,
+    tls_alert: Option<String>,
+    transport_category: Option<&'static str>,
+    os_error_code: Option<i32>,
+}
+
+impl Default for ConnectionTrace {
+    fn default() -> Self {
+        Self {
+            started: StdInstant::now(),
+            stages: vec![crate::ConnectionStageRecord {
+                stage: crate::ConnectionStage::Accept,
+                reached_ms: 0,
+                completed_ms: Some(0),
+            }],
+            boundary: None,
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
+        }
+    }
+}
+
+impl ConnectionTrace {
+    fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+
+    fn reach(&mut self, stage: crate::ConnectionStage) {
+        if self.stages.iter().any(|record| record.stage == stage) {
+            return;
+        }
+        self.stages.push(crate::ConnectionStageRecord {
+            stage,
+            reached_ms: self.elapsed_ms(),
+            completed_ms: None,
+        });
+    }
+
+    fn complete(&mut self, stage: crate::ConnectionStage) {
+        self.reach(stage);
+        let elapsed = self.elapsed_ms();
+        if let Some(record) = self.stages.iter_mut().find(|record| record.stage == stage) {
+            record.completed_ms = Some(elapsed);
+        }
+    }
+
+    fn fail(
+        &mut self,
+        boundary: &'static str,
+        tls_alert: Option<String>,
+        transport_category: Option<&'static str>,
+        os_error_code: Option<i32>,
+    ) {
+        self.boundary = Some(boundary);
+        self.tls_alert = tls_alert;
+        self.transport_category = transport_category;
+        self.os_error_code = os_error_code;
+    }
+
+    fn into_diagnostic(
+        mut self,
+        connection_id: u64,
+        terminal: &'static str,
+        code: Option<&'static str>,
+    ) -> crate::ConnectionDiagnostic {
+        let last_reached = self
+            .stages
+            .last()
+            .map_or(crate::ConnectionStage::Accept, |record| record.stage);
+        let last_completed = self
+            .stages
+            .iter()
+            .rev()
+            .find(|record| record.completed_ms.is_some())
+            .map_or(crate::ConnectionStage::Accept, |record| record.stage);
+        self.reach(crate::ConnectionStage::Terminal);
+        self.complete(crate::ConnectionStage::Terminal);
+        crate::ConnectionDiagnostic {
+            schema_version: 1,
+            connection_id,
+            terminal,
+            cause: code.map(crate::ConnectionFailureCategory::from_code),
+            code,
+            stages: self.stages,
+            last_reached,
+            last_completed,
+            boundary: self.boundary,
+            tls_alert: self.tls_alert,
+            transport_category: self.transport_category,
+            os_error_code: self.os_error_code,
+            header_timeout_phase: None,
+            completed_exchanges: 0,
+        }
+    }
+}
+
+fn trace_reach(trace: &StdMutex<ConnectionTrace>, stage: crate::ConnectionStage) {
+    trace.lock().expect("connection trace lock").reach(stage);
+}
+
+fn trace_complete(trace: &StdMutex<ConnectionTrace>, stage: crate::ConnectionStage) {
+    trace.lock().expect("connection trace lock").complete(stage);
+}
+
+fn trace_fail(trace: &StdMutex<ConnectionTrace>, boundary: &'static str, error: &ProtocolError) {
+    trace.lock().expect("connection trace lock").fail(
+        boundary,
+        error.tls_alert.clone(),
+        error.transport_category,
+        error.os_error_code,
+    );
+}
+
 #[derive(Clone)]
 struct RuntimeServices {
     endpoint: std::net::SocketAddr,
@@ -450,6 +568,7 @@ async fn connection_task(
     services: RuntimeServices,
     identity: ConnectionIdentity,
     _permit: OwnedSemaphorePermit,
+    trace: Arc<StdMutex<ConnectionTrace>>,
 ) -> ConnectionOutcome {
     let config = &services.config;
     let capability = &services.capability;
@@ -462,6 +581,7 @@ async fn connection_task(
         value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
     };
     if socks5 {
+        trace_reach(&trace, crate::ConnectionStage::Authentication);
         let run = crate::socks5::serve_socks5(
             stream,
             capability,
@@ -489,12 +609,23 @@ async fn connection_task(
             .as_ref()
             .is_some_and(|error| error.authentication_refused)
         {
+            if let Some(error) = run.failure.as_ref() {
+                trace_fail(&trace, "client-facing", error);
+            }
             return ConnectionOutcome::AuthenticationRefused(
                 run.failure.expect("authentication refusal has an error"),
             );
         }
         if run.accounting.socks_auth_succeeded == 0 {
+            if let Some(error) = run.failure.as_ref() {
+                trace_fail(&trace, "client-facing", error);
+            }
             return ConnectionOutcome::PreAuthenticationFailed(run);
+        }
+        trace_complete(&trace, crate::ConnectionStage::Authentication);
+        trace_complete(&trace, crate::ConnectionStage::Protocol);
+        if let Some(error) = run.failure.as_ref() {
+            trace_fail(&trace, failure_boundary(error.code), error);
         }
         return if run.failure.is_some() {
             ConnectionOutcome::Failed(run)
@@ -507,6 +638,7 @@ async fn connection_task(
         value = has_http2_preface(&stream, config.protocol.header_timeout) => value,
     };
     if cleartext_http2 {
+        trace_reach(&trace, crate::ConnectionStage::Authentication);
         let run = crate::http2::serve_cleartext_http2(
             stream,
             capability.clone(),
@@ -521,10 +653,14 @@ async fn connection_task(
         )
         .await;
         if let Some(error) = run.failure.as_ref() {
+            trace_fail(&trace, "client-facing", error);
             if error.authentication_refused {
                 return ConnectionOutcome::AuthenticationRefused(error.clone());
             }
             let authenticated = run.authenticated;
+            if authenticated {
+                trace_complete(&trace, crate::ConnectionStage::Authentication);
+            }
             let run = HttpRun {
                 observations: Vec::new(),
                 accounting: run.accounting,
@@ -536,12 +672,15 @@ async fn connection_task(
                 ConnectionOutcome::PreAuthenticationFailed(run)
             };
         }
+        trace_complete(&trace, crate::ConnectionStage::Authentication);
+        trace_complete(&trace, crate::ConnectionStage::Protocol);
         return ConnectionOutcome::Completed(HttpRun {
             observations: Vec::new(),
             accounting: run.accounting,
             failure: None,
         });
     }
+    trace_reach(&trace, crate::ConnectionStage::Authentication);
     let first = tokio::select! {
         _ = shutdown.changed() => {
             return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
@@ -553,32 +692,64 @@ async fn connection_task(
         result = read_authenticated_request(&mut stream, capability, config.protocol_limits()) => result,
     };
     let first = match first {
-        Ok(Some(first)) => first,
+        Ok(Some(first)) => {
+            trace_complete(&trace, crate::ConnectionStage::Authentication);
+            trace_complete(&trace, crate::ConnectionStage::Authority);
+            first
+        }
         Ok(None) => {
+            trace_fail(
+                &trace,
+                "client-facing",
+                &ProtocolError::new(
+                    "proxy-auth-required",
+                    "client closed before proxy authorization",
+                ),
+            );
             return ConnectionOutcome::AuthenticationRefused(ProtocolError::new(
                 "proxy-auth-required",
                 "client closed before proxy authorization",
-            ))
+            ));
         }
         Err(error) if error.authentication_refused => {
-            return ConnectionOutcome::AuthenticationRefused(error)
+            trace_fail(&trace, "client-facing", &error);
+            return ConnectionOutcome::AuthenticationRefused(error);
         }
         Err(error) => {
+            trace_fail(&trace, "client-facing", &error);
             return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
                 observations: Vec::new(),
                 accounting: Default::default(),
                 failure: Some(error),
-            })
+            });
         }
     };
     if first.is_connect() {
         let authority = first.authority().clone();
         let upstream = match connect_upstream(&authority, policy, config.protocol.upstream).await {
-            Ok(upstream) => upstream,
+            Ok(upstream) => {
+                trace_complete(&trace, crate::ConnectionStage::UpstreamTcp);
+                upstream
+            }
             Err(error) => {
+                if matches!(error.stage, crate::UpstreamStage::Tcp) {
+                    trace_reach(&trace, crate::ConnectionStage::UpstreamTcp);
+                }
                 let policy_refused = matches!(error.stage, crate::UpstreamStage::Policy);
                 let mut protocol = ProtocolError::new(error.code, error.detail);
                 protocol.policy_refused = policy_refused;
+                protocol.tls_alert = error.tls_alert;
+                protocol.transport_category = error.transport_category;
+                protocol.os_error_code = error.os_error_code;
+                trace_fail(
+                    &trace,
+                    if policy_refused {
+                        "policy"
+                    } else {
+                        "upstream-tcp"
+                    },
+                    &protocol,
+                );
                 return ConnectionOutcome::Failed(HttpRun {
                     observations: vec![connect_observation(
                         &config.session_id,
@@ -598,19 +769,20 @@ async fn connection_task(
                 });
             }
         };
+        trace_reach(&trace, crate::ConnectionStage::TunnelResponse);
         if let Err(error) = stream
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
         {
+            let protocol = ProtocolError::io("connect-response-failed", error);
+            trace_fail(&trace, "client-facing", &protocol);
             return ConnectionOutcome::Failed(HttpRun {
                 observations: Vec::new(),
                 accounting: Default::default(),
-                failure: Some(ProtocolError::new(
-                    "connect-response-failed",
-                    error.to_string(),
-                )),
+                failure: Some(protocol),
             });
         }
+        trace_complete(&trace, crate::ConnectionStage::TunnelResponse);
         let connect_accepted =
             connect_observation(&config.session_id, connection_id, peer, local, &first, None);
         let server_config = {
@@ -642,12 +814,14 @@ async fn connection_task(
                 }
             }
         };
+        trace_reach(&trace, crate::ConnectionStage::ClientTls);
         let mut client_tls =
             match accept_client_tls(stream, &authority, server_config, config.protocol_limits())
                 .await
             {
                 Ok(stream) => stream,
                 Err(error) => {
+                    trace_fail(&trace, "client-tls", &error);
                     return ConnectionOutcome::Failed(HttpRun {
                         observations: vec![
                             connect_accepted.clone(),
@@ -671,6 +845,7 @@ async fn connection_task(
                     });
                 }
             };
+        trace_complete(&trace, crate::ConnectionStage::ClientTls);
         let client_tls_facts = tls_negotiation(
             crate::TlsBoundary::Client,
             &authority,
@@ -685,19 +860,31 @@ async fn connection_task(
             client_tls_facts.clone(),
             None,
         );
+        crate::application::emit(
+            &services.application_sink,
+            crate::ApplicationEvent::now(
+                &config.session_id,
+                connection_id,
+                None,
+                None,
+                crate::ApplicationEventKind::TlsNegotiation(client_tls_facts.clone()),
+            ),
+        );
         let client_alpn = client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+        trace_reach(&trace, crate::ConnectionStage::Protocol);
         let selected_protocol = match crate::protocol::negotiated_protocol(client_alpn.as_deref()) {
-            Ok(protocol) => protocol,
+            Ok(protocol) => {
+                trace_complete(&trace, crate::ConnectionStage::Protocol);
+                protocol
+            }
             Err(code) => {
+                trace_fail(
+                    &trace,
+                    "protocol",
+                    &ProtocolError::new(code, "unsupported application protocol"),
+                );
                 return ConnectionOutcome::Failed(HttpRun {
-                    observations: vec![connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        Some(code),
-                    )],
+                    observations: vec![connect_accepted.clone(), client_tls_observed.clone()],
                     accounting: crate::ProtocolAccounting {
                         requests: 1,
                         connect_requests: 1,
@@ -715,6 +902,7 @@ async fn connection_task(
             || upstream_client_config_without_alpn(&services.tls_client_config),
             |alpn| upstream_client_config_for_alpn(&services.tls_client_config, alpn.clone()),
         );
+        trace_reach(&trace, crate::ConnectionStage::UpstreamTls);
         let mut upstream = match crate::upstream::connect_tls_over_upstream(
             &authority,
             upstream,
@@ -723,18 +911,29 @@ async fn connection_task(
         )
         .await
         {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                trace_complete(&trace, crate::ConnectionStage::UpstreamTls);
+                stream
+            }
             Err(error) => {
-                let protocol = ProtocolError::new(error.code, error.detail);
+                let mut protocol = ProtocolError::new(error.code, error.detail);
+                protocol.tls_alert = error.tls_alert;
+                protocol.transport_category = error.transport_category;
+                protocol.os_error_code = error.os_error_code;
+                trace_fail(&trace, "upstream-tls", &protocol);
                 return ConnectionOutcome::Failed(HttpRun {
-                    observations: vec![connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        Some(protocol.code),
-                    )],
+                    observations: vec![
+                        connect_accepted.clone(),
+                        client_tls_observed.clone(),
+                        tls_observation(
+                            &config.session_id,
+                            connection_id,
+                            peer,
+                            local,
+                            tls_negotiation(crate::TlsBoundary::Upstream, &authority, None, None),
+                            Some(protocol.code),
+                        ),
+                    ],
                     accounting: crate::ProtocolAccounting {
                         requests: 1,
                         connect_requests: 1,
@@ -763,15 +962,13 @@ async fn connection_task(
             Some(_) => false,
         };
         if !alpn_matches {
+            trace_fail(
+                &trace,
+                "protocol",
+                &ProtocolError::new("tls-alpn-mismatch", "client and origin ALPN differ"),
+            );
             return ConnectionOutcome::Failed(HttpRun {
-                observations: vec![connect_observation(
-                    &config.session_id,
-                    connection_id,
-                    peer,
-                    local,
-                    &first,
-                    Some("tls-alpn-mismatch"),
-                )],
+                observations: vec![connect_accepted.clone(), client_tls_observed.clone()],
                 accounting: crate::ProtocolAccounting {
                     requests: 1,
                     connect_requests: 1,
@@ -798,16 +995,6 @@ async fn connection_task(
             local,
             upstream_tls.clone(),
             None,
-        );
-        crate::application::emit(
-            &services.application_sink,
-            crate::ApplicationEvent::now(
-                &config.session_id,
-                connection_id,
-                None,
-                None,
-                crate::ApplicationEventKind::TlsNegotiation(client_tls_facts.clone()),
-            ),
         );
         crate::application::emit(
             &services.application_sink,
@@ -935,6 +1122,7 @@ async fn connection_task(
                 ConnectionOutcome::Completed(run)
             };
         }
+        trace_reach(&trace, crate::ConnectionStage::FirstRequest);
         let inner = match read_request_in_context(
             &mut client_tls,
             config.protocol_limits(),
@@ -942,8 +1130,19 @@ async fn connection_task(
         )
         .await
         {
-            Ok(Some(request)) if !request.is_connect() => request,
+            Ok(Some(request)) if !request.is_connect() => {
+                trace_complete(&trace, crate::ConnectionStage::FirstRequest);
+                request
+            }
             Ok(Some(_)) => {
+                trace_fail(
+                    &trace,
+                    "client-facing",
+                    &ProtocolError::new(
+                        "nested-connect-refused",
+                        "nested CONNECT is not supported",
+                    ),
+                );
                 return ConnectionOutcome::Failed(HttpRun {
                     observations: Vec::new(),
                     accounting: Default::default(),
@@ -951,9 +1150,17 @@ async fn connection_task(
                         "nested-connect-refused",
                         "nested CONNECT is not supported",
                     )),
-                })
+                });
             }
             Ok(None) => {
+                trace_fail(
+                    &trace,
+                    "client-facing",
+                    &ProtocolError::new(
+                        "client-tls-no-http",
+                        "client TLS ended before an HTTP request",
+                    ),
+                );
                 return ConnectionOutcome::Failed(HttpRun {
                     observations: Vec::new(),
                     accounting: Default::default(),
@@ -961,14 +1168,15 @@ async fn connection_task(
                         "client-tls-no-http",
                         "client TLS ended before an HTTP request",
                     )),
-                })
+                });
             }
             Err(error) => {
+                trace_fail(&trace, "client-facing", &error);
                 return ConnectionOutcome::Failed(HttpRun {
                     observations: Vec::new(),
                     accounting: Default::default(),
                     failure: Some(error),
-                })
+                });
             }
         };
         let tunnel_authority = authority.clone();
@@ -1040,6 +1248,9 @@ async fn connection_task(
                 upstream_tls_observed.clone(),
             ],
         );
+        if let Some(error) = run.failure.as_ref() {
+            trace_fail(&trace, failure_boundary(error.code), error);
+        }
         return if run.failure.is_some() {
             ConnectionOutcome::Failed(run)
         } else {
@@ -1051,6 +1262,8 @@ async fn connection_task(
     let upstream_budgets = limits.upstream;
     let upstream_sink = services.application_sink.clone();
     let upstream_session_id = session_id.clone();
+    trace_complete(&trace, crate::ConnectionStage::Protocol);
+    trace_complete(&trace, crate::ConnectionStage::FirstRequest);
     let run = serve_http(
         stream,
         first,
@@ -1093,10 +1306,21 @@ async fn connection_task(
         },
     )
     .await;
+    if let Some(error) = run.failure.as_ref() {
+        trace_fail(&trace, failure_boundary(error.code), error);
+    }
     if run.failure.is_some() {
         ConnectionOutcome::Failed(run)
     } else {
         ConnectionOutcome::Completed(run)
+    }
+}
+
+fn failure_boundary(code: &str) -> &'static str {
+    if code.starts_with("upstream-") || code.starts_with("destination-") || code.contains("dns") {
+        "upstream"
+    } else {
+        "client-facing"
     }
 }
 
@@ -1542,12 +1766,14 @@ async fn run(
                                 tasks.spawn(async move {
                                     let terminal_sink = connection_services.application_sink.clone();
                                     let terminal_session = connection_services.config.session_id.clone();
+                                    let trace = Arc::new(StdMutex::new(ConnectionTrace::default()));
                                     let mut outcome = connection_task(
                                         stream,
                                         connection_shutdown,
                                         connection_services,
                                         ConnectionIdentity { id: connection_id, peer, local },
                                         permit,
+                                        Arc::clone(&trace),
                                     ).await;
                                     let closed_at_ns = wall_clock_ns();
                                     stamp_observation_window(
@@ -1566,7 +1792,8 @@ async fn run(
                                             crate::ApplicationEventKind::ConnectionTerminal(terminal),
                                         ),
                                     );
-                                    (connection_id, outcome)
+                                    let trace = trace.lock().expect("connection trace lock").clone();
+                                    (connection_id, outcome, trace)
                                 });
                             }
                             Err(_) => {
@@ -1680,7 +1907,7 @@ async fn sync_resource_accounting(
 }
 
 async fn drain_tasks(
-    tasks: &mut JoinSet<(u64, ConnectionOutcome)>,
+    tasks: &mut JoinSet<(u64, ConnectionOutcome, ConnectionTrace)>,
     observation: &mut RuntimeObservation,
     budget: Duration,
     max_observations: usize,
@@ -1732,12 +1959,33 @@ async fn drain_tasks(
     }
 }
 
+#[cfg(test)]
 fn record_connection_diagnostic(
     observation: &mut RuntimeObservation,
     connection_id: u64,
     terminal: &'static str,
     code: Option<&'static str>,
     capacity: usize,
+) {
+    record_connection_diagnostic_with_trace(
+        observation,
+        connection_id,
+        terminal,
+        code,
+        capacity,
+        ConnectionTrace::default(),
+        0,
+    );
+}
+
+fn record_connection_diagnostic_with_trace(
+    observation: &mut RuntimeObservation,
+    connection_id: u64,
+    terminal: &'static str,
+    code: Option<&'static str>,
+    capacity: usize,
+    trace: ConnectionTrace,
+    completed_exchanges: u64,
 ) {
     let cause = code.map(crate::ConnectionFailureCategory::from_code);
     if let Some(category) = cause {
@@ -1750,19 +1998,21 @@ fn record_connection_diagnostic(
             .connection_details_dropped_oldest
             .saturating_add(1);
     }
-    observation
-        .connection_diagnostics
-        .push(crate::ConnectionDiagnostic {
-            connection_id,
-            terminal,
-            cause,
-            code,
+    let mut detail = trace.into_diagnostic(connection_id, terminal, code);
+    detail.completed_exchanges = completed_exchanges;
+    if code == Some("http-header-timeout") {
+        detail.header_timeout_phase = Some(if completed_exchanges > 0 {
+            "after-completed-exchange"
+        } else {
+            "before-first-request"
         });
+    }
+    observation.connection_diagnostics.push(detail);
 }
 
 fn account_join(
     observation: &mut RuntimeObservation,
-    result: Result<(u64, ConnectionOutcome), JoinError>,
+    result: Result<(u64, ConnectionOutcome, ConnectionTrace), JoinError>,
     max_observations: usize,
 ) {
     observation.live_connections = observation.live_connections.saturating_sub(1);
@@ -1782,20 +2032,30 @@ fn account_join(
             .saturating_add(1);
     }
     match result {
-        Ok((id, ConnectionOutcome::Completed(run))) => {
-            record_connection_diagnostic(observation, id, "complete", None, max_observations);
+        Ok((id, ConnectionOutcome::Completed(run), trace)) => {
+            record_connection_diagnostic_with_trace(
+                observation,
+                id,
+                "complete",
+                None,
+                max_observations,
+                trace,
+                run.accounting.http1_exchanges_completed,
+            );
             observation.authenticated_connections =
                 observation.authenticated_connections.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
             merge_protocol(observation, run, max_observations);
         }
-        Ok((id, ConnectionOutcome::AuthenticationRefused(error))) => {
-            record_connection_diagnostic(
+        Ok((id, ConnectionOutcome::AuthenticationRefused(error), trace)) => {
+            record_connection_diagnostic_with_trace(
                 observation,
                 id,
                 "refused",
                 Some(error.code),
                 max_observations,
+                trace,
+                0,
             );
             observation.authentication_refused =
                 observation.authentication_refused.saturating_add(1);
@@ -1817,9 +2077,10 @@ fn account_join(
                 },
             );
         }
-        Ok((id, ConnectionOutcome::PreAuthenticationFailed(run))) => {
+        Ok((id, ConnectionOutcome::PreAuthenticationFailed(run), trace)) => {
             observation.failed_connections = observation.failed_connections.saturating_add(1);
             let failure = run.failure.clone();
+            let completed_exchanges = run.accounting.http1_exchanges_completed;
             merge_protocol(observation, run, max_observations);
             let failure = failure.unwrap_or_else(|| {
                 ProtocolError::new(
@@ -1827,12 +2088,14 @@ fn account_join(
                     "connection failed before authentication",
                 )
             });
-            record_connection_diagnostic(
+            record_connection_diagnostic_with_trace(
                 observation,
                 id,
                 "failed",
                 Some(failure.code),
                 max_observations,
+                trace,
+                completed_exchanges,
             );
             push_runtime_failure(
                 observation,
@@ -1843,20 +2106,23 @@ fn account_join(
                 },
             );
         }
-        Ok((id, ConnectionOutcome::Failed(run))) => {
+        Ok((id, ConnectionOutcome::Failed(run), trace)) => {
             observation.authenticated_connections =
                 observation.authenticated_connections.saturating_add(1);
             observation.failed_connections = observation.failed_connections.saturating_add(1);
             let failure = run.failure.clone();
+            let completed_exchanges = run.accounting.http1_exchanges_completed;
             merge_protocol(observation, run, max_observations);
             let failure = failure
                 .unwrap_or_else(|| ProtocolError::new("connection-io-failed", "connection failed"));
-            record_connection_diagnostic(
+            record_connection_diagnostic_with_trace(
                 observation,
                 id,
                 "failed",
                 Some(failure.code),
                 max_observations,
+                trace,
+                completed_exchanges,
             );
             push_runtime_failure(
                 observation,
@@ -2443,7 +2709,7 @@ mod tests {
             let mut tasks = JoinSet::new();
             tasks.spawn(async {
                 std::future::pending::<()>().await;
-                (1, completed_run())
+                (1, completed_run(), ConnectionTrace::default())
             });
             let mut observed = observation();
             drain_tasks(&mut tasks, &mut observed, Duration::ZERO, 4_096).await;
@@ -2463,7 +2729,7 @@ mod tests {
             tasks.spawn(async {
                 panic!("controlled connection panic");
                 #[allow(unreachable_code)]
-                (1, completed_run())
+                (1, completed_run(), ConnectionTrace::default())
             });
             let mut observed = observation();
             drain_tasks(&mut tasks, &mut observed, Duration::from_secs(1), 4_096).await;
@@ -2479,6 +2745,49 @@ mod tests {
             accounting: Default::default(),
             failure: None,
         })
+    }
+
+    #[test]
+    fn connection_stages_keep_client_success_before_upstream_failure() {
+        let mut trace = ConnectionTrace::default();
+        trace.reach(crate::ConnectionStage::Authentication);
+        trace.complete(crate::ConnectionStage::Authentication);
+        trace.reach(crate::ConnectionStage::ClientTls);
+        trace.complete(crate::ConnectionStage::ClientTls);
+        trace.reach(crate::ConnectionStage::UpstreamTls);
+        trace.fail("upstream-tls", None, Some("connection-reset"), None);
+        let detail = trace.into_diagnostic(17, "failed", Some("tls-refusal-unknown"));
+        assert_eq!(detail.schema_version, 1);
+        assert_eq!(detail.last_completed, crate::ConnectionStage::ClientTls);
+        assert_eq!(detail.last_reached, crate::ConnectionStage::UpstreamTls);
+        assert_eq!(detail.boundary, Some("upstream-tls"));
+        assert_eq!(detail.transport_category, Some("connection-reset"));
+        assert_eq!(detail.tls_alert, None);
+    }
+
+    #[test]
+    fn header_timeout_after_exchange_keeps_the_completed_exchange() {
+        let mut observed = observation();
+        let mut trace = ConnectionTrace::default();
+        trace.complete(crate::ConnectionStage::FirstRequest);
+        trace.fail("client-facing", None, Some("timeout"), None);
+        record_connection_diagnostic_with_trace(
+            &mut observed,
+            18,
+            "failed",
+            Some("http-header-timeout"),
+            4,
+            trace,
+            1,
+        );
+        let detail = &observed.connection_diagnostics[0];
+        assert_eq!(detail.completed_exchanges, 1);
+        assert_eq!(
+            detail.header_timeout_phase,
+            Some("after-completed-exchange")
+        );
+        assert_eq!(detail.last_completed, crate::ConnectionStage::FirstRequest);
+        assert_eq!(detail.boundary, Some("client-facing"));
     }
 
     #[test]
@@ -2510,6 +2819,7 @@ mod tests {
                         accounting,
                         failure: Some(failure),
                     }),
+                    ConnectionTrace::default(),
                 )),
                 2,
             );

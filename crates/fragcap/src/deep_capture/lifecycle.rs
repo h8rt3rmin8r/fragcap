@@ -269,6 +269,8 @@ enum ProxyLifecycleMessage {
     Event(Box<ApplicationEvent>),
     ListenerStarted(String),
     ListenerFailed(String),
+    Diagnostic(Value),
+    DiagnosticAccounting(Value),
 }
 
 impl ApplicationEventSink for ProxySink {
@@ -392,6 +394,29 @@ impl ProxyLifecycleLease {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle writer retired"))
     }
 
+    /// Append a bounded terminal diagnostic after the native runtime has joined.
+    pub fn connection_diagnostic(&self, detail: Value) -> io::Result<()> {
+        self.sink
+            .sender
+            .lock()
+            .expect("proxy lifecycle sender lock")
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle is retired"))?
+            .send(ProxyLifecycleMessage::Diagnostic(detail))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle writer retired"))
+    }
+
+    pub fn diagnostic_accounting(&self, detail: Value) -> io::Result<()> {
+        self.sink
+            .sender
+            .lock()
+            .expect("proxy lifecycle sender lock")
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle is retired"))?
+            .send(ProxyLifecycleMessage::DiagnosticAccounting(detail))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle writer retired"))
+    }
+
     pub fn finish(&mut self) -> io::Result<()> {
         self.sink.account.retired.store(true, Ordering::Release);
         let sender = self
@@ -433,6 +458,12 @@ fn proxy_writer_loop(
             }
             ProxyLifecycleMessage::ListenerFailed(detail) => {
                 writer.append("proxy.listener-failed", json!({"detail": detail}))?;
+            }
+            ProxyLifecycleMessage::Diagnostic(detail) => {
+                writer.append("proxy.connection-diagnostic", detail)?;
+            }
+            ProxyLifecycleMessage::DiagnosticAccounting(detail) => {
+                writer.append("proxy.diagnostic-accounting", detail)?;
             }
             ProxyLifecycleMessage::Event(event) => {
                 writer.append(

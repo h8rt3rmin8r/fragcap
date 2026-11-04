@@ -88,6 +88,9 @@ pub struct ProtocolError {
     pub authentication_refused: bool,
     pub policy_refused: bool,
     pub timed_out: bool,
+    pub tls_alert: Option<String>,
+    pub transport_category: Option<&'static str>,
+    pub os_error_code: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +123,9 @@ impl ProtocolError {
             authentication_refused: false,
             policy_refused: false,
             timed_out: false,
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
         }
     }
 
@@ -138,6 +144,16 @@ impl ProtocolError {
     pub(crate) fn timeout(code: &'static str) -> Self {
         let mut value = Self::new(code, code);
         value.timed_out = true;
+        value.transport_category = Some("timeout");
+        value
+    }
+
+    pub(crate) fn io(code: &'static str, error: std::io::Error) -> Self {
+        let (tls_alert, transport_category, os_error_code) = crate::upstream::diagnostic_io(&error);
+        let mut value = Self::new(code, error.to_string());
+        value.tls_alert = tls_alert;
+        value.transport_category = Some(transport_category);
+        value.os_error_code = os_error_code;
         value
     }
 }
@@ -1614,7 +1630,7 @@ where
             let read = stream
                 .read(&mut byte)
                 .await
-                .map_err(|error| ProtocolError::new("http-head-read-failed", error.to_string()))?;
+                .map_err(|error| ProtocolError::io("http-head-read-failed", error))?;
             if read == 0 {
                 return if result.is_empty() {
                     Ok(None)
@@ -1829,7 +1845,7 @@ where
     timeout(budget, writer.write_all(bytes))
         .await
         .map_err(|_| ProtocolError::timeout("http-write-timeout"))?
-        .map_err(|error| ProtocolError::new("http-write-failed", error.to_string()))
+        .map_err(|error| ProtocolError::io("http-write-failed", error))
 }
 
 fn stamp_observation_evidence(observation: &mut ProxyObservation) {

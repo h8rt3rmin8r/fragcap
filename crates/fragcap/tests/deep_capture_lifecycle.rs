@@ -79,3 +79,31 @@ fn listener_start_is_recorded_only_after_confirmation() {
         .iter()
         .any(|record| record["type"] == "proxy.listener-started"));
 }
+
+#[test]
+fn retained_connection_diagnostic_round_trips_with_connection_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("proxy.jsonl");
+    let mut lease = ProxyLifecycleLease::open(&path, "session", 2).unwrap();
+    lease
+        .connection_diagnostic(serde_json::json!({
+            "schema_version": 1,
+            "connection_id": 17,
+            "terminal": "failed",
+            "last_completed": "client-tls",
+            "last_reached": "upstream-tls",
+            "boundary": "upstream-tls",
+        }))
+        .unwrap();
+    lease.finish().unwrap();
+    let prefix = read_lifecycle_prefix(&path).unwrap();
+    assert_eq!(prefix.status, LifecycleStreamStatus::Complete);
+    let record = prefix
+        .records
+        .iter()
+        .find(|record| record["type"] == "proxy.connection-diagnostic")
+        .unwrap();
+    assert_eq!(record["fields"]["connection_id"], 17);
+    assert_eq!(record["fields"]["last_completed"], "client-tls");
+    assert_eq!(record["fields"]["last_reached"], "upstream-tls");
+}

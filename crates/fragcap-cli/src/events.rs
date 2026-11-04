@@ -359,6 +359,7 @@ pub enum Event {
         requested_observation_duration_ms: Option<u64>,
         observation_duration_ms: u64,
         capture_return_allowance_ms: u64,
+        phase_timing: serde_json::Value,
         inspectable: u64,
         metadata_only: u64,
         unsupported: u64,
@@ -1219,6 +1220,7 @@ impl Event {
                 requested_observation_duration_ms,
                 observation_duration_ms,
                 capture_return_allowance_ms,
+                phase_timing,
                 inspectable,
                 metadata_only,
                 unsupported,
@@ -1248,6 +1250,8 @@ impl Event {
                 line.push_str(&observation_duration_ms.to_string());
                 line.push_str(",\"capture_return_allowance_ms\":");
                 line.push_str(&capture_return_allowance_ms.to_string());
+                line.push_str(",\"phase_timing\":");
+                line.push_str(&phase_timing.to_string());
                 line.push_str(",\"inspectable\":");
                 line.push_str(&inspectable.to_string());
                 line.push_str(",\"metadata_only\":");

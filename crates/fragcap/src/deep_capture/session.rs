@@ -145,6 +145,8 @@ impl PreparedSession {
             resource_journal: None,
             cleanup_lifecycle: None,
             artifacts_prepared: false,
+            startup_started: None,
+            phase_timings: Vec::new(),
             cancellation,
         }
     }
@@ -181,6 +183,8 @@ pub struct DeepCaptureSession<'a> {
     resource_journal: Option<ResourceJournal>,
     cleanup_lifecycle: Option<LifecycleWriter>,
     artifacts_prepared: bool,
+    startup_started: Option<Duration>,
+    phase_timings: Vec<PhaseTiming>,
     cancellation: CancellationToken,
 }
 
@@ -231,6 +235,7 @@ impl DeepCaptureSession<'_> {
             return Ok(());
         }
         let started = self.adapters.clock.monotonic_elapsed();
+        self.startup_started = Some(started);
         if let Err(error) = self.adapters.artifacts.prepare(&self.plan) {
             self.failures.push(error);
             self.transition(LifecycleState::Stopped);
@@ -735,6 +740,9 @@ impl DeepCaptureSession<'_> {
                 .applied(),
             budget,
         );
+        for timing in self.adapters.capture.take_phase_timing() {
+            self.record_phase(timing);
+        }
         self.seal_observation_window();
         let cancellation_requested = self.cancellation.is_requested();
         match capture_result {
@@ -811,6 +819,15 @@ impl DeepCaptureSession<'_> {
             let started = self.adapters.clock.monotonic_elapsed();
             let budget = self.remaining_budget(started, self.plan.deadlines.route_owner_release);
             let result = self.adapters.capture.release_route_owners(budget);
+            self.record_phase_end(
+                "owner-release",
+                self.plan.deadlines.route_owner_release,
+                started,
+                matches!(
+                    result.status,
+                    CleanupStatus::Released | CleanupStatus::NotNeeded
+                ),
+            );
             let steps = self.adapters.capture.take_route_owner_steps();
             let owners_released = matches!(
                 result.status,
@@ -875,6 +892,8 @@ impl DeepCaptureSession<'_> {
             }
         }
         let started = self.adapters.clock.monotonic_elapsed();
+        let cleanup_before_shutdown = self.cleanup.len();
+        let failures_before_shutdown = self.failures.len();
         let capture_target = self.capture.token.clone();
         self.record_resource(
             "capture",
@@ -991,6 +1010,20 @@ impl DeepCaptureSession<'_> {
                 "stop and observation drain returned after the shutdown deadline",
             );
         }
+        self.record_phase_end(
+            "proxy-shutdown",
+            self.plan.deadlines.shutdown,
+            started,
+            self.failures.len() == failures_before_shutdown
+                && !self.cleanup[cleanup_before_shutdown..]
+                    .iter()
+                    .any(|result| {
+                        !matches!(
+                            result.status,
+                            CleanupStatus::Released | CleanupStatus::NotNeeded
+                        )
+                    }),
+        );
         if let Some(routing) = self.routing.as_ref() {
             let eligible = self
                 .observations
@@ -1046,6 +1079,11 @@ impl DeepCaptureSession<'_> {
             self.record_cancellation();
         }
         self.prepare_lifecycle_authority();
+        self.emit(DeepCaptureEvent::PhaseTiming {
+            sequence: 0,
+            session_id: self.plan.session_id.clone(),
+            timing: self.phase_timing(),
+        });
         let mut snapshot = self.snapshot();
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
@@ -1139,6 +1177,27 @@ impl DeepCaptureSession<'_> {
             return;
         }
         let from = self.state;
+        if from == LifecycleState::Prepared
+            && matches!(next, LifecycleState::Running | LifecycleState::Stopped)
+        {
+            if let Some(started) = self.startup_started.take() {
+                let elapsed = self
+                    .adapters
+                    .clock
+                    .monotonic_elapsed()
+                    .saturating_sub(started);
+                self.record_phase(PhaseTiming::ended(
+                    "startup",
+                    self.plan.deadlines.launch,
+                    elapsed,
+                    if next == LifecycleState::Running {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                ));
+            }
+        }
         assert!(
             LIFECYCLE_EDGES.contains(&(from, next)),
             "undeclared Deep Capture lifecycle edge: {:?} -> {:?}",
@@ -1264,6 +1323,8 @@ impl DeepCaptureSession<'_> {
 
     fn cleanup_resources(&mut self) {
         let started = self.adapters.clock.monotonic_elapsed();
+        let cleanup_before = self.cleanup.len();
+        let failures_before = self.failures.len();
         let route_owner_unresolved = self.cleanup.iter().any(|result| {
             result.resource == "route-owner"
                 && !matches!(
@@ -1465,6 +1526,18 @@ impl DeepCaptureSession<'_> {
                 "cleanup operations returned after the total cleanup deadline",
             );
         }
+        self.record_phase_end(
+            "cleanup",
+            self.plan.deadlines.cleanup,
+            started,
+            self.failures.len() == failures_before
+                && !self.cleanup[cleanup_before..].iter().any(|result| {
+                    !matches!(
+                        result.status,
+                        CleanupStatus::Released | CleanupStatus::NotNeeded
+                    )
+                }),
+        );
     }
 
     fn record_cleanup(&mut self, result: CleanupResult) {
@@ -1736,7 +1809,66 @@ impl DeepCaptureSession<'_> {
         }
     }
 
+    fn record_phase(&mut self, timing: PhaseTiming) {
+        if let Some(existing) = self
+            .phase_timings
+            .iter_mut()
+            .find(|item| item.phase == timing.phase)
+        {
+            *existing = timing;
+        } else {
+            self.phase_timings.push(timing);
+        }
+    }
+
+    fn record_phase_end(
+        &mut self,
+        phase: &'static str,
+        budget: Duration,
+        started: Duration,
+        succeeded: bool,
+    ) {
+        let elapsed = self
+            .adapters
+            .clock
+            .monotonic_elapsed()
+            .saturating_sub(started);
+        let status = if !succeeded || elapsed > budget {
+            "failed"
+        } else if self.cancellation.is_requested() {
+            "interrupted"
+        } else {
+            "completed"
+        };
+        self.record_phase(PhaseTiming::ended(phase, budget, elapsed, status));
+    }
+
+    fn phase_timing(&self) -> Vec<PhaseTiming> {
+        let defaults = [
+            ("startup", self.plan.deadlines.launch),
+            ("capture-preparation", CAPTURE_PREPARE_ALLOWANCE),
+            ("acquisition", self.plan.deadlines.launch),
+            ("observation", self.plan.deadlines.observation),
+            ("capture-return", CAPTURE_RETURN_ALLOWANCE),
+            ("owner-release", self.plan.deadlines.route_owner_release),
+            ("proxy-shutdown", self.plan.deadlines.shutdown),
+            ("cleanup", self.plan.deadlines.cleanup),
+        ];
+        defaults
+            .into_iter()
+            .map(|(phase, budget)| {
+                self.phase_timings
+                    .iter()
+                    .find(|item| item.phase == phase)
+                    .cloned()
+                    .unwrap_or_else(|| PhaseTiming::not_started(phase, budget))
+            })
+            .collect()
+    }
+
     fn write_bundle(&mut self, snapshot: &TerminalSnapshot) {
+        let timing = self.phase_timing();
+        self.adapters.artifacts.phase_timing(&timing);
         for result in self
             .adapters
             .artifacts
@@ -1986,6 +2118,13 @@ fn with_sequence(event: DeepCaptureEvent, sequence: u64) -> DeepCaptureEvent {
             sequence,
             session_id,
             diagnostics,
+        },
+        DeepCaptureEvent::PhaseTiming {
+            session_id, timing, ..
+        } => DeepCaptureEvent::PhaseTiming {
+            sequence,
+            session_id,
+            timing,
         },
     }
 }

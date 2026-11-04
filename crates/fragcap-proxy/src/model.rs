@@ -437,12 +437,61 @@ impl ConnectionCauseCounts {
 }
 
 /// Bounded terminal identity and stable reason, with no payload or private detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionStage {
+    Accept,
+    Authentication,
+    Authority,
+    UpstreamTcp,
+    TunnelResponse,
+    ClientTls,
+    UpstreamTls,
+    Protocol,
+    FirstRequest,
+    Terminal,
+}
+
+impl ConnectionStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Authentication => "authentication",
+            Self::Authority => "authority",
+            Self::UpstreamTcp => "upstream-tcp",
+            Self::TunnelResponse => "tunnel-response",
+            Self::ClientTls => "client-tls",
+            Self::UpstreamTls => "upstream-tls",
+            Self::Protocol => "protocol",
+            Self::FirstRequest => "first-request",
+            Self::Terminal => "terminal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectionStageRecord {
+    pub stage: ConnectionStage,
+    pub reached_ms: u64,
+    pub completed_ms: Option<u64>,
+}
+
+/// Bounded terminal identity, stage timeline, and stable reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionDiagnostic {
+    pub schema_version: u32,
     pub connection_id: u64,
     pub terminal: &'static str,
     pub cause: Option<ConnectionFailureCategory>,
     pub code: Option<&'static str>,
+    pub stages: Vec<ConnectionStageRecord>,
+    pub last_reached: ConnectionStage,
+    pub last_completed: ConnectionStage,
+    pub boundary: Option<&'static str>,
+    pub tls_alert: Option<String>,
+    pub transport_category: Option<&'static str>,
+    pub os_error_code: Option<i32>,
+    pub header_timeout_phase: Option<&'static str>,
+    pub completed_exchanges: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
