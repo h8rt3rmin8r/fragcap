@@ -17,3 +17,5 @@ The first default data operation inventories the exact current-user ordinary App
 ## Cleanup
 
 Retention and fresh-start use the same root inventory. A discoverable legacy root is not automatically cleanup eligible. Preview and execution bind exact current-user roots and exclude custom paths, other users, and unrelated package contents.
+
+Confirmed fresh-start records a durable marker beside the removable default roots before cleanup. The marker prevents a later default startup from importing preserved AppData databases or profiles back into the cleaned store. Preview and cleanup report the marker path. Historical sessions remain at their original paths for recovery.

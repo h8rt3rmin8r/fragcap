@@ -7,12 +7,76 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use rusqlite::backup::{Backup, StepResult};
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 const RECORD_PREFIX: &str = "storage-transition-v1-";
+#[cfg(windows)]
 const MAX_PACKAGES: usize = 4096;
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
+const FRESH_START_MARKER: &str = "storage-transition-v1-fresh-start.json";
+
+fn fresh_start_suppressed() -> Result<bool, String> {
+    let root = crate::paths::storage_root().map_err(|error| error.to_string())?;
+    fresh_start_suppressed_at(&root)
+}
+
+fn prepare_database_if_allowed(
+    destination: &Path,
+    roots: &[PathBuf],
+    storage_root: &Path,
+) -> Result<(), String> {
+    if fresh_start_suppressed_at(storage_root)? {
+        return Ok(());
+    }
+    prepare_database_from(destination, roots)
+}
+
+fn fresh_start_suppressed_at(root: &Path) -> Result<bool, String> {
+    let marker = root.join(FRESH_START_MARKER);
+    let file = match File::open(&marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot read fresh-start marker: {error}")),
+    };
+    if file.metadata().map_err(|error| error.to_string())?.len() > MAX_RECORD_BYTES {
+        return Err("fresh-start marker is oversized".to_string());
+    }
+    let value: Value = serde_json::from_reader(file).map_err(|error| error.to_string())?;
+    if value != json!({"version": 1, "legacy_transition": "suppressed-after-confirmed-fresh-start"})
+    {
+        return Err(format!("invalid fresh-start marker: {}", marker.display()));
+    }
+    Ok(true)
+}
+
+/// Persist confirmed cleanup intent outside the two data roots that cleanup removes.
+pub(crate) fn suppress_legacy_transition(storage_root: &Path) -> Result<(), String> {
+    let marker = storage_root.join(FRESH_START_MARKER);
+    if fresh_start_suppressed_at(storage_root)? {
+        return Ok(());
+    }
+    fs::create_dir_all(storage_root).map_err(|error| error.to_string())?;
+    let metadata = fs::symlink_metadata(storage_root).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "fresh-start storage root is not a directory: {}",
+            storage_root.display()
+        ));
+    }
+    #[cfg(windows)]
+    if is_redirected(&metadata) {
+        return Err(format!(
+            "fresh-start storage root is redirected: {}",
+            storage_root.display()
+        ));
+    }
+    write_record(
+        &marker,
+        &json!({"version": 1, "legacy_transition": "suppressed-after-confirmed-fresh-start"}),
+    )
+}
 
 /// Exact pre-S192 product roots visible to the current Windows account.
 pub(crate) fn legacy_roots() -> io::Result<Vec<PathBuf>> {
@@ -197,9 +261,13 @@ pub(crate) fn prepare_database(destination: &Path) -> Result<(), String> {
         // An explicitly selected whole-store location owns its own history.
         return Ok(());
     }
+    let storage_root = crate::paths::storage_root().map_err(|error| error.to_string())?;
+    if fresh_start_suppressed_at(&storage_root)? {
+        return index_legacy_sessions();
+    }
     let roots =
         legacy_roots().map_err(|error| format!("legacy store inventory failed: {error}"))?;
-    prepare_database_from(destination, &roots)?;
+    prepare_database_if_allowed(destination, &roots, &storage_root)?;
     index_legacy_sessions()
 }
 
@@ -208,6 +276,9 @@ pub(crate) fn prepare_profiles() -> Result<(), String> {
     if std::env::var_os(crate::paths::STORAGE_ROOT_ENV).is_some()
         || std::env::var_os(crate::paths::PROFILE_DIR_ENV).is_some()
     {
+        return Ok(());
+    }
+    if fresh_start_suppressed()? {
         return Ok(());
     }
     let roots = legacy_roots().map_err(|error| error.to_string())?;
@@ -473,7 +544,7 @@ fn prepare_database_from(destination: &Path, roots: &[PathBuf]) -> Result<(), St
         let key = name.to_string_lossy();
         let prior = &record["databases"][key.as_ref()];
         if prior["source"] == source.to_string_lossy().as_ref()
-            && prior["fingerprint"] == source_fingerprint(source).map_err(|e| e.to_string())?
+            && prior["fingerprint"] == source_fingerprint(source)?
         {
             return Ok(());
         }
@@ -499,7 +570,14 @@ fn prepare_database_from(destination: &Path, roots: &[PathBuf]) -> Result<(), St
     }
     let result = (|| -> Result<(), String> {
         sqlite_snapshot(source, &staged)?;
-        let after = source_fingerprint(source).map_err(|error| error.to_string())?;
+        let staged_fingerprint = source_fingerprint(&staged)?;
+        let after = source_fingerprint(source)?;
+        if staged_fingerprint != after {
+            return Err(format!(
+                "legacy SQLite store changed during snapshot: {}",
+                source.display()
+            ));
+        }
         fs::OpenOptions::new()
             .write(true)
             .open(&staged)
@@ -586,31 +664,102 @@ fn sqlite_snapshot(source: &Path, staged: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn source_fingerprint(source: &Path) -> io::Result<String> {
+fn source_fingerprint(source: &Path) -> Result<String, String> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection =
+        Connection::open_with_flags(source, flags).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::ZERO)
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
     let mut hasher = blake3::Hasher::new();
-    for path in [
-        source.to_path_buf(),
-        source.with_file_name({
-            let mut name = source.file_name().unwrap_or_default().to_os_string();
-            name.push("-wal");
-            name
-        }),
-    ] {
-        if !path.exists() {
-            hasher.update(b"absent");
-            continue;
+    for pragma in ["user_version", "application_id"] {
+        let value: i64 = connection
+            .query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        hash_field(&mut hasher, pragma.as_bytes());
+        hasher.update(&value.to_le_bytes());
+    }
+    let schema = {
+        let mut statement = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name, tbl_name",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    for (kind, name, owner, sql) in schema {
+        for field in [&kind, &name, &owner] {
+            hash_field(&mut hasher, field.as_bytes());
         }
-        let mut file = File::open(&path)?;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
+        match sql {
+            Some(sql) => hash_field(&mut hasher, sql.as_bytes()),
+            None => hash_field(&mut hasher, b""),
+        }
+        if kind == "table" {
+            let quoted = name.replace('"', "\"\"");
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{quoted}\""))
+                .map_err(|error| error.to_string())?;
+            let columns = statement.column_count();
+            let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+            let mut row_hashes = Vec::new();
+            while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+                let mut row_hasher = blake3::Hasher::new();
+                for index in 0..columns {
+                    match row.get_ref(index).map_err(|error| error.to_string())? {
+                        ValueRef::Null => {
+                            row_hasher.update(&[0]);
+                        }
+                        ValueRef::Integer(value) => {
+                            row_hasher.update(&[1]);
+                            row_hasher.update(&value.to_le_bytes());
+                        }
+                        ValueRef::Real(value) => {
+                            row_hasher.update(&[2]);
+                            row_hasher.update(&value.to_bits().to_le_bytes());
+                        }
+                        ValueRef::Text(value) => {
+                            row_hasher.update(&[3]);
+                            hash_field(&mut row_hasher, value);
+                        }
+                        ValueRef::Blob(value) => {
+                            row_hasher.update(&[4]);
+                            hash_field(&mut row_hasher, value);
+                        }
+                    }
+                }
+                row_hashes.push(*row_hasher.finalize().as_bytes());
             }
-            hasher.update(&buffer[..count]);
+            row_hashes.sort_unstable();
+            hasher.update(&(row_hashes.len() as u64).to_le_bytes());
+            for row_hash in row_hashes {
+                hasher.update(&row_hash);
+            }
         }
     }
+    connection
+        .execute_batch("ROLLBACK")
+        .map_err(|error| error.to_string())?;
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn hash_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 fn read_record(path: &Path) -> Result<Value, String> {
@@ -700,8 +849,39 @@ mod tests {
             .query_row("SELECT value FROM marker", [], |row| row.get(0))
             .unwrap();
         assert_eq!(value, "retained");
-        prepare_database_from(&destination, &[legacy]).unwrap();
+        drop(connection);
+        prepare_database_from(&destination, std::slice::from_ref(&legacy)).unwrap();
+        Connection::open(&source)
+            .unwrap()
+            .execute("INSERT INTO marker VALUES ('new')", [])
+            .unwrap();
+        assert!(prepare_database_from(&destination, &[legacy])
+            .unwrap_err()
+            .contains("automatic replacement is refused"));
         assert!(source.exists());
+    }
+
+    #[test]
+    fn confirmed_fresh_start_suppresses_import_without_removing_legacy_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("old");
+        let storage = temp.path().join(".fragcap");
+        fs::create_dir(&legacy).unwrap();
+        fs::create_dir(&storage).unwrap();
+        let source = legacy.join("local.db");
+        Connection::open(&source)
+            .unwrap()
+            .execute_batch("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES ('legacy')")
+            .unwrap();
+        let destination = storage.join("roaming").join("local.db");
+        prepare_database_from(&destination, std::slice::from_ref(&legacy)).unwrap();
+        fs::remove_file(&destination).unwrap();
+        suppress_legacy_transition(&storage).unwrap();
+        assert!(fresh_start_suppressed_at(&storage).unwrap());
+        assert!(source.exists());
+        prepare_database_if_allowed(&destination, &[legacy], &storage).unwrap();
+        assert!(!destination.exists());
+        suppress_legacy_transition(&storage).unwrap();
     }
 
     #[test]

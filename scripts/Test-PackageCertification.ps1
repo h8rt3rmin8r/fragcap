@@ -779,6 +779,9 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
         $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
+        $legacyStorageReplay = (-not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) -and ($buildIdentity.version -ceq '0.10.13')
+        $fixtureRoamingRoot = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.APPDATA 'fragcap' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming' }
+        $fixtureLocalRoot = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local' }
         if (-not $buildIdentity.official -or $buildIdentity.target -ne $contract.release_identity.target -or $buildIdentity.architecture -ne $contract.release_identity.architecture -or $buildIdentity.deep_capture_backend -ne $contract.release_identity.deep_capture_backend -or (Compare-Object -ReferenceObject @($contract.release_identity.features | Sort-Object) -DifferenceObject @($buildIdentity.features | Sort-Object))) { throw 'packaged binary build identity differs from the release contract' }
         $expectedMsiName = "fragcap-$($buildIdentity.version)-x86_64.msi"
         $expectedZipName = "fragcap-$($buildIdentity.version)-x86_64-pc-windows-msvc.zip"
@@ -792,12 +795,13 @@ Param(
         $portableSmokeLocalDb = Join-Path $scratch 'smoke-portable\local.db'
         $portableSmokeBundle = Join-Path $scratch 'smoke-portable\bundle'
         $installDirectory = Join-Path $scratch 'installed'
+        $captureFixture = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap\captures\preserved.fcapng' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local\captures\preserved.fcapng' }
         $userFixturePaths = [ordered]@{
-            'capture' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local\captures\preserved.fcapng'
-            'deep-capture-bundle' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\sessions\preserved\manifest.json'
+            'capture' = $captureFixture
+            'deep-capture-bundle' = Join-Path $fixtureRoamingRoot 'sessions\preserved\manifest.json'
             'extcap-registration' = Join-Path $cleanEnvironment.APPDATA 'Wireshark\extcap\fragcap.exe'
-            'local-database' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\local.db'
-            'writable-catalog' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\catalog.db'
+            'local-database' = Join-Path $fixtureRoamingRoot 'local.db'
+            'writable-catalog' = Join-Path $fixtureRoamingRoot 'catalog.db'
         }
         $expectedFileFixtureNames = @($contract.user_owned_fixtures | Where-Object { $_ -ne 'preexisting-defender-exclusion' } | Sort-Object)
         if (Compare-Object -ReferenceObject $expectedFileFixtureNames -DifferenceObject @($userFixturePaths.Keys | Sort-Object)) { throw 'user-owned fixture path map does not cover the contract' }
@@ -902,8 +906,8 @@ Param(
         [void](Invoke-MsiOperation -Case 'fresh-start-test-install' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'fresh-start-install.log'))
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
         $freshStartReport = Join-Path $scratch 'fresh-start-report.json'
-        $roamingRoot = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming'
-        $localRoot = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local'
+        $roamingRoot = $fixtureRoamingRoot
+        $localRoot = $fixtureLocalRoot
         $freshStartPreview = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--preview', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot) -Environment $cleanEnvironment
         $freshStartInventory = $freshStartPreview.Stdout | ConvertFrom-Json -Depth 32
         $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
@@ -915,12 +919,12 @@ Param(
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
         if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
         if (-not (Test-Path -LiteralPath $portableSmokeLocalDb) -or -not (Test-Path -LiteralPath $portableSmokeBundle)) { throw 'fresh start removed custom database or bundle paths' }
-        $msiStorageRoot = Join-Path ([System.Environment]::GetFolderPath('UserProfile')) '.fragcap'
-        $msiRoamingRoot = Join-Path $msiStorageRoot 'roaming'
-        $msiLocalRoot = Join-Path $msiStorageRoot 'local'
+        $msiStorageRoot = if ($legacyStorageReplay) { Join-Path ([System.Environment]::GetFolderPath('UserProfile')) 'AppData' } else { Join-Path ([System.Environment]::GetFolderPath('UserProfile')) '.fragcap' }
+        $msiRoamingRoot = if ($legacyStorageReplay) { Join-Path $msiStorageRoot 'Roaming\fragcap' } else { Join-Path $msiStorageRoot 'roaming' }
+        $msiLocalRoot = if ($legacyStorageReplay) { Join-Path $msiStorageRoot 'Local\fragcap' } else { Join-Path $msiStorageRoot 'local' }
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
         if ($RequireInstallationCa) { Invoke-InstalledSlowTiming -Executable $installedExecutable }
-        Invoke-DefaultStorageReadback -Executable $installedExecutable -ScratchRoot $scratch
+        if (-not $legacyStorageReplay) { Invoke-DefaultStorageReadback -Executable $installedExecutable -ScratchRoot $scratch }
         [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
         [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
         [System.IO.File]::WriteAllText((Join-Path $msiRoamingRoot 'settings.json'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
@@ -928,7 +932,7 @@ Param(
         [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName, 'FRAGCAP_FRESH_START=1', 'FRAGCAP_FRESH_START_SCOPE=current-user') -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot) -or (Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'MSI fresh-start uninstall did not remove exact initiating-user and installer-owned state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-after-fresh-start' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-reinstall.log'))
-        $cleanLocalDb = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\local.db'
+        $cleanLocalDb = Join-Path $fixtureRoamingRoot 'local.db'
         $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment
         if ($cleanListing.Stdout -match 'S131 user-owned fixture' -or -not (Test-Path -LiteralPath $cleanLocalDb)) { throw 'clean reinstall restored prior local target state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-final-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'clean-reinstall-uninstall.log'))

@@ -110,6 +110,21 @@ pub fn run(
         .map(|path| ReportTarget::prepare(path, &inventory.roots))
         .transpose()
         .map_err(|error| CliError::failure(format!("fresh-start report failed: {error}")))?;
+    let mut storage_roots = BTreeSet::new();
+    for root in &inventory.roots {
+        let storage_root = root
+            .path
+            .parent()
+            .ok_or_else(|| CliError::failure("fresh-start data root has no storage parent"))?;
+        storage_roots.insert(storage_root.to_path_buf());
+    }
+    for storage_root in storage_roots {
+        crate::storage_transition::suppress_legacy_transition(&storage_root).map_err(|error| {
+            CliError::failure(format!(
+                "fresh-start could not record legacy transition suppression: {error}"
+            ))
+        })?;
+    }
     let mut recovery_output = Vec::new();
     let outcomes = execute_inventory(&inventory, &mut recovery_output);
     let complete = outcomes
@@ -1045,6 +1060,7 @@ fn inventory_value(inventory: &Inventory) -> Value {
         "type": "fresh-start.inventory",
         "scope": inventory.scope,
         "inventory_id": inventory.identifier,
+        "transition_markers": inventory.roots.iter().filter(|root| root.kind == "roaming").map(|root| root.path.parent().expect("validated profile pair").join("storage-transition-v1-fresh-start.json")).collect::<Vec<_>>(),
         "roots": inventory.roots.iter().map(|root| json!({
             "profile": root.profile,
             "kind": root.kind,
@@ -1069,6 +1085,7 @@ fn report_value(inventory: &Inventory, outcomes: &[ItemOutcome], complete: bool)
         "scope": inventory.scope,
         "inventory_id": inventory.identifier,
         "status": if complete { "complete" } else { "partial" },
+        "transition_markers": inventory.roots.iter().filter(|root| root.kind == "roaming").map(|root| root.path.parent().expect("validated profile pair").join("storage-transition-v1-fresh-start.json")).collect::<Vec<_>>(),
         "roots": inventory.roots.iter().map(|root| json!({
             "profile": root.profile,
             "kind": root.kind,
@@ -1101,6 +1118,8 @@ fn emit_inventory(
     writeln!(out, "Fresh-start preview ({})", inventory.scope)
         .map_err(|error| CliError::failure(error.to_string()))?;
     writeln!(out, "Irreversible after confirmation. Exact roots:")
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    writeln!(out, "Confirmation also records a marker beside these roots so retained AppData state cannot be imported again.")
         .map_err(|error| CliError::failure(error.to_string()))?;
     let rows: Vec<Vec<String>> = inventory
         .roots

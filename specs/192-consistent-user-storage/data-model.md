@@ -16,6 +16,8 @@ A legacy root is selected from the current user's ordinary known folders or an e
 
 Each copied database has a versioned record naming its source, source fingerprint, and `copied-source-retained` disposition. Authored profiles have a separate source fingerprint record. Retained session roots have append-only marker files. The database destination is published without replacement, then its record is written; an interrupted publication without a record refuses a later automatic retry and keeps the legacy source intact.
 
+The database fingerprint covers SQLite schema, selected pragmas, and typed row values rather than physical DB or WAL bytes. Confirmed fresh-start writes `storage-transition-v1-fresh-start.json` in the parent `.fragcap` directory before removing its `roaming` and `local` children. That marker stops later default database and profile import from retained AppData roots; retained legacy sessions remain discoverable for recovery.
+
 ## Lifecycle
 
 Read-only resolution -> exact legacy inventory -> conflict classification -> staged consistent copy -> destination verification -> atomic publication -> retained-source discovery. Any failure remains a named state with original data intact. Cleanup examines the same roots but only an explicitly owned, previewed root can be removed.
