@@ -12,6 +12,8 @@ pub use fragcap_proxy::{
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EvidenceWindow {
+    PreClient,
+    ProvisionalHandoff,
     Observation,
     OwnerRelease,
     Unavailable,
@@ -20,6 +22,8 @@ pub enum EvidenceWindow {
 impl EvidenceWindow {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::PreClient => "pre-client",
+            Self::ProvisionalHandoff => "provisional-handoff",
             Self::Observation => "observation",
             Self::OwnerRelease => "owner-release",
             Self::Unavailable => "unavailable",
