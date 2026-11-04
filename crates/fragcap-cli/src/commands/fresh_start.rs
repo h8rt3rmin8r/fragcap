@@ -1754,7 +1754,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn redirected_appdata_ancestor_is_refused() {
+    fn redirected_appdata_is_independent_but_storage_ancestor_is_refused() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1765,6 +1765,8 @@ mod tests {
         fs::create_dir_all(outside.join("Local")).unwrap();
         symlink(&outside, user.join("AppData")).unwrap();
         let profile = roots(temp.path());
+        assert!(build_inventory("current-user", std::slice::from_ref(&profile)).is_ok());
+        symlink(&outside, user.join(".fragcap")).unwrap();
 
         let error = build_inventory("current-user", &[profile]).unwrap_err();
 
