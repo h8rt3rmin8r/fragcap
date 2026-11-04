@@ -746,6 +746,19 @@ impl CaptureSession {
         if !role_in(&self.allowed_roles, &role) {
             return;
         }
+        if self.config.managed_client_handoff && terminal {
+            if let (Some(wait), Some(armed)) = (self.config.acquisition_timeout, self.armed_at) {
+                if elapsed(armed, self.event_deadline_time(at)) >= wait {
+                    let reason = if self.provisional_client.is_some() {
+                        StopReason::HandoffIncomplete
+                    } else {
+                        StopReason::AcquisitionTimeout
+                    };
+                    self.stop(reason);
+                    return;
+                }
+            }
+        }
         if self.config.exact_stage_ownership
             && self.bindings.iter().any(|binding| binding.role == role)
         {
