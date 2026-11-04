@@ -18,7 +18,7 @@ use fragcap_proxy::{
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
 #[cfg(any(test, all(windows, feature = "socket-table")))]
-use fragcap_attr::SocketTable;
+use fragcap_attr::{socket_match_rank, SocketTable};
 #[cfg(all(windows, feature = "socket-table"))]
 use fragcap_attr::{IpHelperTable, SocketTableSource};
 use fragcap_core::{Fidelity, FlowKey, FlowRegistry, ProcessEvent, Proto, Timestamp};
@@ -1515,29 +1515,46 @@ fn select_inception_socket_owner(
             ..Default::default()
         };
     };
-    let mut matches = table.entries().iter().filter(|entry| {
-        let endpoints_match = match descriptor.transport {
-            "tcp" => {
-                entry.proto == Proto::Tcp
-                    && entry.local == descriptor.client_peer
-                    && entry.remote == Some(descriptor.proxy_local)
+    let proto = match descriptor.transport {
+        "tcp" => Proto::Tcp,
+        "udp" => Proto::Udp,
+        _ => {
+            return super::ConnectionInception {
+                reason: "client-socket-transport-unsupported",
+                ..Default::default()
             }
-            "udp" => {
-                entry.proto == Proto::Udp
-                    && entry.local == descriptor.client_peer
-                    && entry.remote.is_none()
-            }
-            _ => false,
+        }
+    };
+    let key = FlowKey::new(proto, descriptor.client_peer, descriptor.proxy_local);
+    let mut best: Option<(&fragcap_attr::SocketTableEntry, fragcap_attr::MatchRank)> = None;
+    let mut ambiguous = false;
+    for entry in table.entries() {
+        if entry.created.is_none_or(|at| at.as_nanos() > opened) {
+            continue;
+        }
+        let Some(rank) = socket_match_rank(entry, &key) else {
+            continue;
         };
-        endpoints_match && entry.created.is_some_and(|at| at.as_nanos() <= opened)
-    });
-    let Some(owner) = matches.next() else {
+        match best {
+            None => {
+                best = Some((entry, rank));
+                ambiguous = false;
+            }
+            Some((_, previous)) if rank < previous => {
+                best = Some((entry, rank));
+                ambiguous = false;
+            }
+            Some((_, previous)) if rank == previous => ambiguous = true,
+            _ => {}
+        }
+    }
+    let Some((owner, _)) = best else {
         return super::ConnectionInception {
             reason: "client-socket-not-in-table",
             ..Default::default()
         };
     };
-    if matches.next().is_some() {
+    if ambiguous {
         return super::ConnectionInception {
             state: "ambiguous",
             reason: "multiple-client-socket-owners",
@@ -2325,6 +2342,54 @@ mod tests {
         assert_eq!(
             select_inception_socket_owner(&udp_table, association, 11).state,
             "unavailable"
+        );
+
+        let wildcard_v4 = fragcap_attr::SocketTableEntry::udp("0.0.0.0:41000".parse().unwrap(), 74)
+            .created_at(Timestamp::from_nanos(12));
+        let wildcard_v6 = fragcap_attr::SocketTableEntry::udp("[::]:41000".parse().unwrap(), 75)
+            .created_at(Timestamp::from_nanos(12));
+        let only_wildcard = SocketTable::new(Timestamp::from_nanos(15), vec![wildcard_v4]);
+        assert_eq!(
+            select_inception_socket_owner(&only_wildcard, association, 15).pid,
+            Some(74)
+        );
+        let only_dual_stack = SocketTable::new(Timestamp::from_nanos(15), vec![wildcard_v6]);
+        assert_eq!(
+            select_inception_socket_owner(&only_dual_stack, association, 15).pid,
+            Some(75)
+        );
+        let exact_and_wildcard = SocketTable::new(
+            Timestamp::from_nanos(15),
+            vec![
+                wildcard_v4,
+                fragcap_attr::SocketTableEntry::udp(client, 73)
+                    .created_at(Timestamp::from_nanos(12)),
+            ],
+        );
+        assert_eq!(
+            select_inception_socket_owner(&exact_and_wildcard, association, 15).pid,
+            Some(73)
+        );
+        let ambiguous_wildcard = SocketTable::new(
+            Timestamp::from_nanos(15),
+            vec![
+                wildcard_v4,
+                fragcap_attr::SocketTableEntry::udp("0.0.0.0:41000".parse().unwrap(), 76)
+                    .created_at(Timestamp::from_nanos(13)),
+            ],
+        );
+        assert_eq!(
+            select_inception_socket_owner(&ambiguous_wildcard, association, 15).state,
+            "ambiguous"
+        );
+        let ipv6_association = ConnectionDescriptor {
+            client_peer: "[::1]:41000".parse().unwrap(),
+            proxy_local: "[::1]:42000".parse().unwrap(),
+            ..association
+        };
+        assert_eq!(
+            select_inception_socket_owner(&only_dual_stack, ipv6_association, 15).pid,
+            Some(75)
         );
     }
 

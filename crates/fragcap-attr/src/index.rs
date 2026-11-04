@@ -61,7 +61,7 @@ pub enum MatchRank {
 /// both endpoints, so an exact local match is available and a looser rule would
 /// only add false positives; `AttributionKey` already encodes that, and this
 /// function does not widen it.
-fn rank_of(entry: &SocketTableEntry, key: &FlowKey) -> Option<MatchRank> {
+pub fn socket_match_rank(entry: &SocketTableEntry, key: &FlowKey) -> Option<MatchRank> {
     if entry.proto != key.proto {
         return None;
     }
@@ -324,11 +324,11 @@ impl AttributionIndex {
         self.table
             .entries()
             .iter()
-            .any(|e| rank_of(e, key).is_some())
+            .any(|e| socket_match_rank(e, key).is_some())
             || self
                 .retained
                 .values()
-                .any(|r| rank_of(&r.entry, key).is_some())
+                .any(|r| socket_match_rank(&r.entry, key).is_some())
     }
 
     /// Every endpoint believed active at `at`: those in the table, plus those
@@ -396,7 +396,7 @@ impl AttributionIndex {
             .entries()
             .iter()
             .filter(|e| Self::existed_by(e.created, at))
-            .filter_map(|entry| rank_of(entry, key).map(|rank| Candidate { entry, rank }))
+            .filter_map(|entry| socket_match_rank(entry, key).map(|rank| Candidate { entry, rank }))
             .min_by(better)
             .map(|c| c.entry)
     }
@@ -426,7 +426,7 @@ impl AttributionIndex {
             if !self.within_retention(r, at) || !Self::existed_by(r.entry.created, at) {
                 continue;
             }
-            let rank = match rank_of(&r.entry, key) {
+            let rank = match socket_match_rank(&r.entry, key) {
                 Some(rank) => rank,
                 None => continue,
             };
