@@ -160,7 +160,7 @@
     <!-- FRAGCAP_DEFENDER_EXCLUSION_OWNER is written only after this installer creates and re-observes the exact exclusion. A pre-existing administrator-owned exclusion has no marker and is never removed by fragcap. -->
     <CustomAction Id="SetDefenderAdd"
                   Property="DefenderAdd"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Add-MpPreference -ExclusionPath $p; if((Get-MpPreference).ExclusionPath -contains $p){New-Item -Path $k -Force|Out-Null; New-ItemProperty -Path $k -Name $n -Value $p -PropertyType String -Force|Out-Null}}}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([\[]char[\]]46,[\[]char[\]]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Add-MpPreference -ExclusionPath $p; if((Get-MpPreference).ExclusionPath -contains $p){New-Item -Path $k -Force|Out-Null; New-ItemProperty -Path $k -Name $n -Value $p -PropertyType String -Force|Out-Null}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderAdd"
                   BinaryKey="WixCA"
@@ -171,7 +171,7 @@
 
     <CustomAction Id="SetDefenderRollback"
                   Property="DefenderRollback"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([\[]char[\]]46,[\[]char[\]]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRollback"
                   BinaryKey="WixCA"
@@ -182,7 +182,7 @@
 
     <CustomAction Id="SetDefenderRemove"
                   Property="DefenderRemove"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([\[]char[\]]46,[\[]char[\]]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRemove"
                   BinaryKey="WixCA"
@@ -212,7 +212,7 @@
     <Property Id="FRAGCAP_FRESH_START_SCOPE" Secure="yes" />
     <CustomAction Id="SetFreshStartCurrentUser"
                   Property="FreshStartCurrentUser"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) if([Environment]::GetFolderPath('ApplicationData').TrimEnd([char]92) -ine $roaming.TrimEnd([char]92) -or [Environment]::GetFolderPath('LocalApplicationData').TrimEnd([char]92) -ine $local.TrimEnd([char]92)){exit 1}; Remove-Item Env:FRAGCAP_STORAGE_ROOT -ErrorAction SilentlyContinue; $preview=&amp; $exe --json fresh-start --scope current-user --preview | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]&quot; &quot;[LocalAppDataFolder]&quot; &quot;[TempFolder].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) if([\[]Environment[\]]::GetFolderPath('ApplicationData').TrimEnd([\[]char[\]]92) -ine $roaming.TrimEnd([\[]char[\]]92) -or [\[]Environment[\]]::GetFolderPath('LocalApplicationData').TrimEnd([\[]char[\]]92) -ine $local.TrimEnd([\[]char[\]]92)){exit 1}; Remove-Item Env:FRAGCAP_STORAGE_ROOT -ErrorAction SilentlyContinue; $preview=&amp; $exe --json fresh-start --scope current-user --preview | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]&quot; &quot;[LocalAppDataFolder]&quot; &quot;[TempFolder].&quot;"
                   Execute="immediate" />
     <CustomAction Id="FreshStartCurrentUser"
                   BinaryKey="WixCA"
