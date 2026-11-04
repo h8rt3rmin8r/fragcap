@@ -210,13 +210,15 @@
 
       SetProperty and deferred CustomActionData each apply MSI formatting. The
       PowerShell type brackets and script-block braces below are escaped for
-      both passes; a single escape survives only the first pass.
+      both passes; a single escape survives only the first pass. AppData and
+      TempFolder arguments carry a trailing dot so their terminal backslashes
+      cannot consume the closing command-line quote; the action trims the dot.
     -->
     <Property Id="FRAGCAP_FRESH_START" Secure="yes" />
     <Property Id="FRAGCAP_FRESH_START_SCOPE" Secure="yes" />
     <CustomAction Id="SetFreshStartCurrentUser"
                   Property="FreshStartCurrentUser"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; [\[][\\][\{][\]]param($exe,$roaming,$local,$temp) if([\[][\\][\[][\]]Environment[\[][\\][\]][\]]::GetFolderPath('ApplicationData').TrimEnd('\') -ine $roaming.TrimEnd('\') -or [\[][\\][\[][\]]Environment[\[][\\][\]][\]]::GetFolderPath('LocalApplicationData').TrimEnd('\') -ine $local.TrimEnd('\'))[\[][\\][\{][\]]exit 1[\[][\\][\}][\]]; Remove-Item Env:FRAGCAP_STORAGE_ROOT -ErrorAction SilentlyContinue; $preview=&amp; $exe --json fresh-start --scope current-user --preview | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id)[\[][\\][\{][\]]exit 1[\[][\\][\}][\]]; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE[\[][\\][\}][\]]&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]&quot; &quot;[LocalAppDataFolder]&quot; &quot;[TempFolder].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; [\[][\\][\{][\]]param($exe,$roaming,$local,$temp) if([\[][\\][\[][\]]Environment[\[][\\][\]][\]]::GetFolderPath('ApplicationData').TrimEnd('\') -ine $roaming.TrimEnd('.','\') -or [\[][\\][\[][\]]Environment[\[][\\][\]][\]]::GetFolderPath('LocalApplicationData').TrimEnd('\') -ine $local.TrimEnd('.','\'))[\[][\\][\{][\]]exit 1[\[][\\][\}][\]]; Remove-Item Env:FRAGCAP_STORAGE_ROOT -ErrorAction SilentlyContinue; $preview=&amp; $exe --json fresh-start --scope current-user --preview | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id)[\[][\\][\{][\]]exit 1[\[][\\][\}][\]]; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE[\[][\\][\}][\]]&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder].&quot; &quot;[LocalAppDataFolder].&quot; &quot;[TempFolder].&quot;"
                   Execute="immediate" />
     <CustomAction Id="FreshStartCurrentUser"
                   BinaryKey="WixCA"
