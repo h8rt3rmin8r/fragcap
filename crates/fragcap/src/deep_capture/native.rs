@@ -878,13 +878,32 @@ impl NativeProxyLease {
         &self,
         observations: Vec<fragcap_proxy::ProxyObservation>,
     ) -> Vec<super::PhaseQualifiedObservation> {
+        let managed_windows = self
+            .observation_context
+            .process_evidence
+            .lock()
+            .expect("process evidence lock")
+            .as_ref()
+            .and_then(ManagedClientWindows::from_evidence);
         observations
             .into_iter()
             .map(|value| {
-                let evidence_window = native_evidence_window(
+                let coarse_window = native_evidence_window(
                     value.evidence_observed_at_ns,
                     self.observation_ended_at_ns,
                 );
+                let evidence_window = if coarse_window == super::EvidenceWindow::Observation {
+                    managed_windows.map_or(coarse_window, |windows| {
+                        let opened = windows.classify(Some(value.connection_opened_at_ns));
+                        if opened == super::EvidenceWindow::Observation {
+                            windows.classify(value.evidence_observed_at_ns)
+                        } else {
+                            opened
+                        }
+                    })
+                } else {
+                    coarse_window
+                };
                 // Correlation authority for an observation-phase result cannot
                 // be supplied solely by packets captured during owner release.
                 let correlation_closed_at_ns =
@@ -1122,6 +1141,78 @@ impl ProxyLease for NativeProxyLease {
             results.push(lab.cleanup());
         }
         results
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ManagedClientWindows {
+    first_match: Option<u64>,
+    eligible_match: Option<u64>,
+    eligible_exit: Option<u64>,
+}
+
+impl ManagedClientWindows {
+    fn from_evidence(evidence: &super::CaptureProcessEvidence) -> Option<Self> {
+        if evidence.shutdown_scope.is_empty() {
+            return None;
+        }
+        let mut matches: Vec<(u32, u64)> = evidence
+            .stage_transitions
+            .iter()
+            .filter(|transition| {
+                transition.role == "client"
+                    && transition.kind == super::StageTransitionKind::Matched
+            })
+            .filter_map(|transition| {
+                u64::try_from(transition.at.as_nanos())
+                    .ok()
+                    .map(|at| (transition.pid, at))
+            })
+            .collect();
+        matches.sort_by_key(|(_, at)| *at);
+        let first_match = matches.first().map(|(_, at)| *at);
+        let eligible = if evidence.stop_reason.as_deref() == Some("handoffincomplete")
+            || evidence.stage_transitions_unretained > 0
+            || evidence.watcher_ended
+        {
+            None
+        } else {
+            matches.last().copied()
+        };
+        let eligible_exit = eligible.and_then(|(pid, started)| {
+            evidence
+                .stage_transitions
+                .iter()
+                .filter(|transition| {
+                    transition.role == "client"
+                        && transition.kind == super::StageTransitionKind::Exited
+                        && transition.pid == pid
+                })
+                .filter_map(|transition| u64::try_from(transition.at.as_nanos()).ok())
+                .filter(|at| *at >= started)
+                .min()
+        });
+        Some(Self {
+            first_match,
+            eligible_match: eligible.map(|(_, at)| at),
+            eligible_exit,
+        })
+    }
+
+    fn classify(self, timestamp_ns: Option<u64>) -> super::EvidenceWindow {
+        let Some(at) = timestamp_ns else {
+            return super::EvidenceWindow::Unavailable;
+        };
+        if self.first_match.is_none_or(|first| at < first) {
+            return super::EvidenceWindow::PreClient;
+        }
+        if self.eligible_match.is_none_or(|eligible| at < eligible) {
+            return super::EvidenceWindow::ProvisionalHandoff;
+        }
+        if self.eligible_exit.is_some_and(|exit| at >= exit) {
+            return super::EvidenceWindow::OwnerRelease;
+        }
+        super::EvidenceWindow::Observation
     }
 }
 

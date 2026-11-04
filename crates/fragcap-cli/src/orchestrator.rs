@@ -211,7 +211,13 @@ pub fn capture(
     allowed_roles: Option<Vec<String>>,
     sink_failure_is_clean: bool,
 ) -> Result<CaptureOutcome, CliError> {
-    let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
+    let mut session_config = config.session_config();
+    session_config.managed_client_handoff =
+        config.launch.is_some() && !config.shutdown_scope.is_empty();
+    if session_config.managed_client_handoff {
+        session_config.exact_stage_ownership = true;
+    }
+    let mut session = CaptureSession::new_scoped(profile, session_config, allowed_roles);
     if let Some(fragcap::managed_launch::ManagedLaunch::Platform(platform)) = &config.launch {
         session.require_owned_platform_root(&platform.root().executable().to_string_lossy());
     }
@@ -324,6 +330,7 @@ fn final_exit(
         stop_reason,
         Some(
             StopReason::AcquisitionTimeout
+                | StopReason::HandoffIncomplete
                 | StopReason::AmbiguousStageMatch
                 | StopReason::PlatformExitedBeforeClient
                 | StopReason::EscapedPlatformClient
@@ -346,6 +353,7 @@ fn process_terminal_state(stop_reason: Option<StopReason>) -> &'static str {
         Some(StopReason::Interrupt) => "partial",
         Some(
             StopReason::AcquisitionTimeout
+            | StopReason::HandoffIncomplete
             | StopReason::AmbiguousStageMatch
             | StopReason::PlatformExitedBeforeClient
             | StopReason::EscapedPlatformClient
@@ -379,22 +387,23 @@ fn capture_prerecorded(
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
     let mut bound: HashMap<u32, String> = session
-        .role_bindings()
+        .role_binding_intervals()
         .into_iter()
-        .filter_map(|(pid, role, _)| role.map(|role| (pid, role.to_string())))
+        .filter(|binding| binding.exited.is_none())
+        .filter_map(|binding| binding.role.map(|role| (binding.pid, role.to_string())))
         .collect();
     let publisher = components.publisher.clone();
 
     // Acquisition: fold events until a non-service stage acquires the target.
     let mut cursor = 0usize;
-    while cursor < events.len() && session.state() != SessionState::Capturing {
+    while cursor < events.len() && !session.acquired() {
         let event = events[cursor].clone();
         cursor += 1;
         apply_event(event, &mut session, &mut bound, emitter, process_evidence);
-        publisher.publish(session.role_bindings());
+        publisher.publish_exact(session.role_binding_intervals());
     }
 
-    let acquired = session.state() == SessionState::Capturing;
+    let acquired = session.acquired();
     if !acquired {
         // No target was acquired. If an acquisition timeout was set, fire it so
         // the summary names it; either way the run captured nothing and exits 1.
@@ -415,7 +424,7 @@ fn capture_prerecorded(
         return Ok(outcome);
     }
 
-    publisher.publish(session.role_bindings());
+    publisher.publish_exact(session.role_binding_intervals());
     // Drive an initial refresh so the count reflects the first real snapshot.
     // On the live socket-table path the pipeline control thread performs the
     // refreshes during the run, but it has not started yet at this point, so
@@ -507,7 +516,7 @@ fn capture_prerecorded(
             }
         }
         apply_event(event, &mut session, &mut bound, emitter, process_evidence);
-        publisher.publish(session.role_bindings());
+        publisher.publish_exact(session.role_binding_intervals());
     }
     if let Some(tick) = replay_tick.filter(|_| is_active(&session)) {
         session.on_tick(tick);
@@ -672,7 +681,7 @@ fn drive(
             let event = pending[folded].clone();
             folded += 1;
             apply_event(event, session, bound, emitter, process_evidence);
-            publisher.publish(session.role_bindings());
+            publisher.publish_exact(session.role_binding_intervals());
         }
         session.on_packet(len);
         // Packet and process instants above are absolute evidence. A deadline
@@ -809,9 +818,11 @@ fn capture_live(
     // `bound`/`bound_images` are populated, so without this seeding step the
     // live status display would show "waiting for a target" for the whole
     // of an attach-to-running run despite a target actively being captured.
-    for (pid, role, _stage) in session.role_bindings() {
-        if let Some(role) = role {
-            bound.insert(pid, role.to_string());
+    for binding in session.role_binding_intervals() {
+        if binding.exited.is_none() {
+            if let Some(role) = binding.role {
+                bound.insert(binding.pid, role.to_string());
+            }
         }
     }
     for record in &components.startup_snapshot {
@@ -831,6 +842,12 @@ fn capture_live(
     // Elapsed time is real and monotonic, converted onto the session clock from
     // ARMED_AT so the session's tick-driven bounds see wall time pass.
     let started = Instant::now();
+    if config.launch.is_some() && !config.shutdown_scope.is_empty() {
+        let wall_at_arm = wall_timestamp().ok_or_else(|| {
+            CliError::failure("system wall clock is unavailable for managed observation timing")
+        })?;
+        session.set_event_clock_origin(wall_at_arm);
+    }
     let tick = Duration::from_millis(200);
 
     // Run from arm (slice 017, C2). The live capture handle is open from arm, so
@@ -921,7 +938,7 @@ fn capture_live(
     // instant rather than by the window state at write time (review of PR #26).
     let mut acquired_at: Option<Timestamp> = None;
     loop {
-        if session.state() == SessionState::Capturing {
+        if session.acquired() {
             break;
         }
         // The pipeline was spawned from arm, so it can end before a target is
@@ -955,7 +972,7 @@ fn capture_live(
                 record_bound_image(&event, &mut bound_images);
                 apply_event(event, &mut session, &mut bound, emitter, process_evidence);
                 let bindings = session.role_bindings();
-                publisher.publish(bindings.clone());
+                publisher.publish_exact(session.role_binding_intervals());
                 if is_active(&session) && platform_dispatch.observe(&bindings) {
                     let dispatch = config.launch.as_ref().and_then(|launch| match launch {
                         fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
@@ -968,7 +985,7 @@ fn capture_live(
                         session.on_platform_dispatch_failure();
                     }
                 }
-                if session.state() == SessionState::Capturing {
+                if session.acquired() {
                     acquired_at = Some(event_at);
                 }
             }
@@ -981,12 +998,12 @@ fn capture_live(
         }
         // A busy watcher can keep this loop from timing out. Apply the same
         // monotonic deadline after both process events and idle wakeups.
-        if session.state() != SessionState::Capturing {
+        if !session.acquired() {
             advance_live_deadline(&mut session, started);
         }
     }
 
-    if session.state() != SessionState::Capturing {
+    if !session.acquired() {
         // No target was acquired. The pipeline has been running from arm, so it
         // is stopped and joined before reporting; its watch-time frames are in
         // the gate's tallies and surface in the summary. A managed Deep Capture
@@ -1061,7 +1078,7 @@ fn capture_live(
         session.on_volume_reached();
     }
 
-    publisher.publish(session.role_bindings());
+    publisher.publish_exact(session.role_binding_intervals());
     // Drive an initial refresh so the count reflects the first real snapshot.
     // The pipeline's control thread also drives refreshes, but reading the count
     // through the retained stamper reader here keeps the filter-narrowed event
@@ -1247,7 +1264,7 @@ fn drive_live(
                 let was_active = is_active(session);
                 record_bound_image(&event, bound_images);
                 apply_event(event, session, bound, emitter, process_evidence);
-                publisher.publish(session.role_bindings());
+                publisher.publish_exact(session.role_binding_intervals());
                 if was_active && !is_active(session) {
                     gate_handle.close_at(event_at);
                 }
@@ -1599,19 +1616,32 @@ fn apply_event(
         }
     }
 
-    let bindings = session.role_bindings();
+    let bindings = session.role_binding_intervals();
     let current: HashMap<u32, String> = bindings
         .iter()
-        .cloned()
-        .map(|(pid, role, _)| (pid, role.map(|r| r.to_string()).unwrap_or_default()))
+        .filter(|binding| binding.exited.is_none())
+        .map(|binding| {
+            (
+                binding.pid,
+                binding
+                    .role
+                    .as_ref()
+                    .map_or_else(String::new, ToString::to_string),
+            )
+        })
         .collect();
 
     for (pid, role) in &current {
         if !bound.contains_key(pid) {
             let stage = bindings
                 .iter()
-                .find(|(bound_pid, _, _)| bound_pid == pid)
-                .and_then(|(_, _, stage)| stage.as_ref().map(|value| value.as_str().to_string()));
+                .find(|binding| binding.pid == *pid && binding.exited.is_none())
+                .and_then(|binding| {
+                    binding
+                        .stage
+                        .as_ref()
+                        .map(|value| value.as_str().to_string())
+                });
             process_evidence.observe_stage(
                 StageTransition {
                     kind: StageTransitionKind::Matched,

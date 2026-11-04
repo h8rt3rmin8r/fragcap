@@ -457,12 +457,48 @@ impl CalibrationDeadlines {
         }
     }
 
+    fn for_launch_case(
+        mut self,
+        args: &DeepCaptureArgs,
+        launch_case: CompatibilityLaunchCase,
+    ) -> Self {
+        let multi_stage = matches!(
+            launch_case,
+            CompatibilityLaunchCase::SteamProtocolCold
+                | CompatibilityLaunchCase::SteamProtocolWarm
+                | CompatibilityLaunchCase::PublisherLauncher
+                | CompatibilityLaunchCase::PublisherLauncherCold
+                | CompatibilityLaunchCase::PublisherLauncherWarm
+                | CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
+        );
+        if multi_stage {
+            self.launch = args.wait.unwrap_or(Duration::from_secs(180));
+            self.observation = args.duration.unwrap_or(Duration::from_secs(120));
+        }
+        self
+    }
+
     fn seconds(duration: Duration) -> u64 {
         u64::try_from(duration.as_millis().saturating_add(999) / 1_000).unwrap_or(u64::MAX)
     }
 
     fn milliseconds(duration: Duration) -> u64 {
         u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn capture_attempt_ceiling(self) -> Duration {
+        self.launch
+            .saturating_add(self.observation)
+            .saturating_add(fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE)
+            .saturating_add(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE)
+    }
+
+    fn total_attempt_ceiling(self) -> Duration {
+        self.launch
+            .saturating_add(self.capture_attempt_ceiling())
+            .saturating_add(self.route_owner_release)
+            .saturating_add(self.shutdown)
+            .saturating_add(self.cleanup)
     }
 }
 
@@ -1238,7 +1274,15 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             &capture_args,
             budget.remaining().saturating_sub(adapter_started.elapsed()),
         )?;
-        capture_args.duration = Some(prepared.bound_duration(duration));
+        let effective_duration = prepared.bound_duration(duration);
+        if effective_duration != duration {
+            return Err(deep_capture_api::StageFailure::new(
+                deep_capture_api::Stage::Capture,
+                "prepared-duration-shorter-than-authorized",
+                "prepared Capture duration is shorter than the authorized observation interval",
+            ));
+        }
+        capture_args.duration = Some(effective_duration);
         let registry = self.observation_context.flow_registry();
         self.runtime.borrow_mut().managed_launch_attempted = true;
         let (result, process_evidence, process_release_watch, interrupted, retained_target_packets) =
@@ -1340,9 +1384,19 @@ fn bound_real_capture_duration(
             "no finite observation time remains after reserving Capture completion",
         ));
     }
-    Ok(args
-        .duration
-        .map_or(available, |requested| requested.min(available)))
+    match args.duration {
+        Some(requested)
+            if args.wait.unwrap_or_default().saturating_add(requested) > available =>
+        {
+            Err(deep_capture_api::StageFailure::new(
+                deep_capture_api::Stage::Capture,
+                "observation-budget-shorter-than-authorized",
+                "the remaining Capture budget cannot provide acquisition and the authorized observation interval",
+            ))
+        }
+        Some(requested) => Ok(requested),
+        None => Ok(available),
+    }
 }
 
 struct LibraryFactAdapter {
@@ -2288,9 +2342,24 @@ fn build_authorization_plan(
             "cleanup": CalibrationDeadlines::milliseconds(deadlines.cleanup),
             "launch": CalibrationDeadlines::milliseconds(deadlines.launch),
             "observation": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "capture_prepare_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE),
             "capture_return_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
             "route_owner_release": CalibrationDeadlines::milliseconds(deadlines.route_owner_release),
             "shutdown": CalibrationDeadlines::milliseconds(deadlines.shutdown),
+        },
+        "phase_budget": {
+            "startup_starts": "after exact plan authorization",
+            "startup_budget_ms": CalibrationDeadlines::milliseconds(deadlines.launch),
+            "acquisition_starts": "capture arm",
+            "observation_starts": "verified current terminal-client acquisition; resets only on a proven managed handoff",
+            "route_owner_release_starts": "effective observation end or another named true terminal condition",
+            "proxy_shutdown_starts": "after route-owner release",
+            "cleanup_starts": "after proxy shutdown",
+            "guaranteed_observation_if_client_remains_owned_ms": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "maximum_post_acquisition_observation_ms": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "capture_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(deadlines.capture_attempt_ceiling()),
+            "total_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(deadlines.total_attempt_ceiling()),
+            "early_terminal_conditions": ["client exit without a proven handoff", "acquisition timeout", "incomplete handoff", "operator interrupt", "volume bound", "sink or process watcher failure"],
         },
         "requested_deadlines_milliseconds": {
             "launch": args.wait.map(CalibrationDeadlines::milliseconds),
@@ -2551,7 +2620,6 @@ pub(crate) fn run_with_outcome(
         ));
     }
     validate_requested_deadlines(args)?;
-    let deadlines = CalibrationDeadlines::from_args(args);
     if calibration == Some(CalibrationPhase::Reachability) && (args.har || args.key_log) {
         return Err(CliError::usage(
             "reachability calibration does not change trust or produce HAR or TLS key logs",
@@ -2594,6 +2662,8 @@ pub(crate) fn run_with_outcome(
         .map_err(cli_error_from_library_refusal)?;
     let mut target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
+    let deadlines =
+        CalibrationDeadlines::from_args(args).for_launch_case(args, target_authority.launch_case);
     if args.controlled_target {
         target_authority.resolved_launch = controlled_launch_authority();
     } else {
@@ -2996,12 +3066,15 @@ pub(crate) fn run_with_outcome(
             crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
         ));
     emitter.borrow_mut().terminal_human(&format!(
-        "Requested launch: {}; effective launch: {} ms; requested observation: {}; effective observation: {} ms; Capture return allowance: {} ms\n",
+        "Requested launch: {}; effective launch: {} ms from capture arm; requested observation: {}; effective observation: {} ms from verified client acquisition; Capture preparation allowance: {} ms; return allowance: {} ms; capture attempt ceiling: {} ms; total phase ceiling: {} ms\n",
         args.wait.map(|value| format!("{} ms", CalibrationDeadlines::milliseconds(value))).unwrap_or_else(|| "default".to_string()),
         CalibrationDeadlines::milliseconds(report.snapshot.deadlines.launch),
         args.duration.map(|value| format!("{} ms", CalibrationDeadlines::milliseconds(value))).unwrap_or_else(|| "default".to_string()),
         CalibrationDeadlines::milliseconds(report.snapshot.deadlines.observation),
+        CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE),
         CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
+        CalibrationDeadlines::milliseconds(deadlines.capture_attempt_ceiling()),
+        CalibrationDeadlines::milliseconds(deadlines.total_attempt_ceiling()),
     ));
     let observation_windows = runtime
         .borrow()
@@ -3636,16 +3709,8 @@ fn real_capture_args(
         out: Some(bundle.join("capture.fcapng")),
         mode: None,
         sink: Vec::new(),
-        duration: if args.calibrate.is_some() {
-            Some(deadlines.observation)
-        } else {
-            args.duration
-        },
-        wait: if args.calibrate.is_some() {
-            Some(deadlines.launch)
-        } else {
-            args.wait
-        },
+        duration: Some(deadlines.observation),
+        wait: Some(deadlines.launch),
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles: None,
@@ -3739,6 +3804,7 @@ fn run_real_capture(
 fn capture_failure_message(outcome: &crate::orchestrator::CaptureOutcome) -> String {
     let Some(
         reason @ (fragcap::StopReason::AcquisitionTimeout
+        | fragcap::StopReason::HandoffIncomplete
         | fragcap::StopReason::AmbiguousStageMatch
         | fragcap::StopReason::PlatformExitedBeforeClient
         | fragcap::StopReason::EscapedPlatformClient
@@ -4780,7 +4846,18 @@ fn manifest_json(
             "effective_launch": CalibrationDeadlines::milliseconds(ctx.deadlines.launch),
             "requested_observation": ctx.requested_observation.map(CalibrationDeadlines::milliseconds),
             "effective_observation": CalibrationDeadlines::milliseconds(ctx.deadlines.observation),
+            "capture_prepare_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_PREPARE_ALLOWANCE),
             "capture_return_allowance": CalibrationDeadlines::milliseconds(fragcap::deep_capture::CAPTURE_RETURN_ALLOWANCE),
+        },
+        "phase_budget": {
+            "startup_starts": "after exact plan authorization",
+            "startup_budget_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.launch),
+            "acquisition_starts": "capture arm",
+            "observation_starts": "verified current terminal-client acquisition",
+            "route_owner_release_starts": "effective observation end or named terminal condition",
+            "guaranteed_observation_if_client_remains_owned_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.observation),
+            "capture_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.capture_attempt_ceiling()),
+            "total_attempt_ceiling_ms": CalibrationDeadlines::milliseconds(ctx.deadlines.total_attempt_ceiling()),
         },
         "proxy": {
             "backend": ctx.session.backend.name,
@@ -5159,19 +5236,21 @@ mod tests {
             super::CalibrationDeadlines::from_args(&args),
         );
         assert_eq!(capture.duration, Some(std::time::Duration::from_secs(60)));
-        assert_eq!(
+        assert!(
             super::bound_real_capture_duration(&capture, std::time::Duration::from_secs(60))
-                .unwrap(),
-            std::time::Duration::from_secs(55)
+                .is_err()
         );
         let short = super::real_capture_args(
             &args,
             std::path::Path::new("bundle"),
             super::CalibrationDeadlines::from_args(&args),
         );
+        assert!(
+            super::bound_real_capture_duration(&short, std::time::Duration::from_secs(2)).is_err()
+        );
         assert_eq!(
-            super::bound_real_capture_duration(&short, std::time::Duration::from_secs(2)).unwrap(),
-            std::time::Duration::from_millis(1800)
+            super::bound_real_capture_duration(&short, std::time::Duration::from_secs(95)).unwrap(),
+            std::time::Duration::from_secs(60)
         );
         assert!(super::bound_real_capture_duration(&short, std::time::Duration::ZERO,).is_err());
     }
@@ -5845,7 +5924,7 @@ mod tests {
         let capture = real_capture_args(&args, std::path::Path::new("bundle"), deadlines);
         assert_eq!(capture.duration, Some(Duration::from_secs(240)));
         assert_eq!(
-            bound_real_capture_duration(&capture, Duration::from_secs(245)).unwrap(),
+            bound_real_capture_duration(&capture, Duration::from_secs(275)).unwrap(),
             Duration::from_secs(240),
             "the separately authorized return allowance must not shorten Capture",
         );

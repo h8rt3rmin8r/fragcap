@@ -35,6 +35,7 @@ use fragcap_core::filter::FilterProgram;
 use fragcap_core::flow::{Direction as PacketDirection, Endpoint, FlowKey};
 use fragcap_core::link::LinkType;
 use fragcap_core::packet::{CapturedPacket, RawPacket, Timestamp};
+use fragcap_core::process::tree::NodeId;
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
 use fragcap_core::stats::SourceStats;
 use fragcap_core::traits::{FlowAttributor, PacketSource, WriteGate};
@@ -75,6 +76,9 @@ pub enum StopReason {
     /// No target was acquired, or an awaited terminal stage did not bind,
     /// before the acquisition timeout elapsed.
     AcquisitionTimeout,
+    /// A matched managed client handed off to owned descendants, but no exact
+    /// successor bound before the authorized acquisition deadline.
+    HandoffIncomplete,
     /// More than one process satisfied one declared stage identity. No later
     /// candidate is bound or promoted to terminal ownership.
     AmbiguousStageMatch,
@@ -198,6 +202,9 @@ pub struct SessionConfig {
     /// declared role, and keep the acquisition deadline active until the
     /// terminal stage binds. False for ordinary authored profiles.
     pub exact_stage_ownership: bool,
+    /// Managed Deep Capture may follow a proven client-to-descendant handoff.
+    /// Ordinary Capture leaves this false and keeps its terminal exit rule.
+    pub managed_client_handoff: bool,
 }
 
 /// The session's own accounting.
@@ -242,7 +249,7 @@ impl SessionStats {
 /// a service (which section 10.4 never awaits), and whether the process is still
 /// live.
 struct Binding {
-    pid: u32,
+    id: NodeId,
     role: String,
     terminal: bool,
     service: bool,
@@ -308,6 +315,10 @@ pub struct CaptureSession {
     tree: ProcessTree,
     stats: SessionStats,
     armed_at: Option<Timestamp>,
+    /// Live ETW event times are wall-clock Unix nanos while deadline ticks are
+    /// monotonic nanos since arm. This anchor translates only phase decisions;
+    /// process identity and packet evidence keep their original timestamps.
+    event_clock_origin: Option<Timestamp>,
     stop: Option<StopReason>,
     bindings: Vec<Binding>,
     /// Roles of non-service stages that have not yet bound a process. A stage is
@@ -319,6 +330,12 @@ pub struct CaptureSession {
     /// acquisition timeout remains active while this is true, even after a
     /// launcher or intermediate stage begins capture.
     pending_terminal: bool,
+    /// The predecessor whose exact owned descendants may supply a replacement
+    /// terminal client. None outside the managed provisional handoff state.
+    provisional_client: Option<NodeId>,
+    /// The current verified terminal client's observation clock origin.
+    /// Cleared during a proven handoff so a successor receives its full bound.
+    observation_started_at: Option<Timestamp>,
     /// The roles the run was scoped to with `--roles` (specification FR-011b).
     /// `None` means unscoped: every stage triggers and is captured. `Some` means
     /// only a stage whose role is in the set may bind, so a stage outside it
@@ -373,11 +390,14 @@ impl CaptureSession {
             tree: ProcessTree::new(),
             stats: SessionStats::default(),
             armed_at: None,
+            event_clock_origin: None,
             stop: None,
             bindings: Vec::new(),
             pending_nonservice,
             live_nonservice: 0,
             pending_terminal,
+            provisional_client: None,
+            observation_started_at: None,
             allowed_roles,
             owned_platform_root: None,
             observe_until_explicit_stop: false,
@@ -433,6 +453,12 @@ impl CaptureSession {
         }
     }
 
+    /// Anchor live event timestamps to the monotonic session deadline clock.
+    /// Offline timelines already share one clock and leave this unset.
+    pub fn set_event_clock_origin(&mut self, wall_at_arm: Timestamp) {
+        self.event_clock_origin = Some(wall_at_arm);
+    }
+
     /// Fold one process event into the session: apply it to the tree, match and
     /// bind a start, handle a bound exit. The event carries its own timestamp;
     /// wall-clock bounds are checked in [`on_tick`](CaptureSession::on_tick).
@@ -460,7 +486,7 @@ impl CaptureSession {
         if is_start {
             self.match_and_bind(pid, at);
         } else if is_exit {
-            self.on_bound_exit(pid);
+            self.on_bound_exit(pid, at);
         }
     }
 
@@ -538,19 +564,29 @@ impl CaptureSession {
         if self.is_active() && (self.state == SessionState::Watching || self.pending_terminal) {
             if let (Some(timeout), Some(armed)) = (self.config.acquisition_timeout, self.armed_at) {
                 if elapsed(armed, now) >= timeout {
+                    let reason = if self.provisional_client.is_some() {
+                        StopReason::HandoffIncomplete
+                    } else {
+                        StopReason::AcquisitionTimeout
+                    };
                     if self.state == SessionState::Watching {
-                        self.stop = Some(StopReason::AcquisitionTimeout);
+                        self.stop = Some(reason);
                         self.state = SessionState::Complete;
                     } else {
-                        self.stop(StopReason::AcquisitionTimeout);
+                        self.stop(reason);
                     }
                     return;
                 }
             }
         }
         if self.is_active() {
-            if let (Some(dur), Some(armed)) = (self.config.duration, self.armed_at) {
-                if elapsed(armed, now) >= dur {
+            let origin = if self.config.managed_client_handoff {
+                self.observation_started_at
+            } else {
+                self.armed_at
+            };
+            if let (Some(dur), Some(origin)) = (self.config.duration, origin) {
+                if elapsed(origin, now) >= dur {
                     self.stop(StopReason::DurationReached);
                 }
             }
@@ -596,6 +632,13 @@ impl CaptureSession {
         self.state
     }
 
+    /// Whether the exact terminal client has acquired the managed packet window.
+    /// Ordinary Capture continues to use its first non-service stage.
+    pub fn acquired(&self) -> bool {
+        self.state == SessionState::Capturing
+            && (!self.config.managed_client_handoff || !self.pending_terminal)
+    }
+
     /// The session's accounting.
     pub fn stats(&self) -> SessionStats {
         self.stats
@@ -625,6 +668,24 @@ impl CaptureSession {
             .filter_map(|n| {
                 n.stage()
                     .map(|s| (n.pid().get(), Some(Arc::from(s.as_str())), Some(s.clone())))
+            })
+            .collect()
+    }
+
+    /// Exact stage-bound process lifetimes for packet role stamping. Historical
+    /// instances remain present so a buffered packet is judged at its own time,
+    /// while a reused PID cannot inherit an earlier client's role.
+    pub fn role_binding_intervals(&self) -> Vec<RoleBindingInterval> {
+        self.tree
+            .nodes()
+            .filter_map(|node| {
+                node.stage().map(|stage| RoleBindingInterval {
+                    pid: node.pid().get(),
+                    started: node.started(),
+                    exited: node.exited(),
+                    role: Some(Arc::from(stage.as_str())),
+                    stage: Some(stage.clone()),
+                })
             })
             .collect()
     }
@@ -685,11 +746,35 @@ impl CaptureSession {
         if !role_in(&self.allowed_roles, &role) {
             return;
         }
+        if self.config.managed_client_handoff && terminal {
+            if let (Some(wait), Some(armed)) = (self.config.acquisition_timeout, self.armed_at) {
+                if elapsed(armed, self.event_deadline_time(at)) >= wait {
+                    let reason = if self.provisional_client.is_some() {
+                        StopReason::HandoffIncomplete
+                    } else {
+                        StopReason::AcquisitionTimeout
+                    };
+                    self.stop(reason);
+                    return;
+                }
+            }
+        }
         if self.config.exact_stage_ownership
             && self.bindings.iter().any(|binding| binding.role == role)
         {
-            self.stop(StopReason::AmbiguousStageMatch);
-            return;
+            let proven_successor = self.config.managed_client_handoff
+                && terminal
+                && self
+                    .provisional_client
+                    .is_some_and(|predecessor| self.tree.descends_from(id, predecessor))
+                && !self
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.terminal && binding.live);
+            if !proven_successor {
+                self.stop(StopReason::AmbiguousStageMatch);
+                return;
+            }
         }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
@@ -706,7 +791,7 @@ impl CaptureSession {
                 }
             }
             self.bindings.push(Binding {
-                pid,
+                id,
                 role,
                 terminal,
                 service,
@@ -714,13 +799,20 @@ impl CaptureSession {
             });
             if terminal {
                 self.pending_terminal = false;
+                if self.config.managed_client_handoff {
+                    self.provisional_client = None;
+                    self.observation_started_at = Some(self.event_deadline_time(at));
+                }
             }
             // Only a non-service match acquires the target. Section 10.4: a
             // service is never awaited during acquisition, so a persistent
             // service that appears while Watching binds for attribution but does
             // not begin capturing, which would otherwise disable the acquisition
             // timeout and retain service noise before any target exists.
-            if !service && self.state == SessionState::Watching {
+            if !service
+                && self.state == SessionState::Watching
+                && (!self.config.managed_client_handoff || terminal)
+            {
                 self.state = SessionState::Capturing;
             }
             // A target already gone by the time we see it start is the exit it
@@ -730,47 +822,90 @@ impl CaptureSession {
                 if platform && self.owns_platform_client() && self.pending_terminal {
                     self.stop(StopReason::PlatformExitedBeforeClient);
                 } else {
-                    self.note_bound_exit(terminal);
+                    self.note_bound_exit(
+                        terminal,
+                        id,
+                        self.tree.node(id).and_then(|n| n.exited()).unwrap_or(at),
+                    );
                 }
             }
         }
     }
 
-    fn on_bound_exit(&mut self, pid: u32) {
+    fn on_bound_exit(&mut self, pid: u32, at: Timestamp) {
+        let Some(id) = self.tree.resolve(ProcessId(pid), at) else {
+            return;
+        };
         let mut hit: Option<(bool, bool, bool)> = None; // (terminal, service, platform)
-        if let Some(b) = self.bindings.iter_mut().find(|b| b.pid == pid && b.live) {
+        if let Some(b) = self.bindings.iter_mut().find(|b| b.id == id && b.live) {
             b.live = false;
             hit = Some((b.terminal, b.service, b.role == "platform"));
         }
         let Some((terminal, service, platform)) = hit else {
             return;
         };
-        if platform && self.owns_platform_client() && self.pending_terminal {
+        if platform
+            && self.owns_platform_client()
+            && self.pending_terminal
+            && self.provisional_client.is_none()
+        {
             self.stop(StopReason::PlatformExitedBeforeClient);
             return;
         }
         if !service {
             self.live_nonservice = self.live_nonservice.saturating_sub(1);
         }
-        self.note_bound_exit(terminal);
+        self.note_bound_exit(terminal, id, at);
     }
 
     /// Apply the stop conditions an exit can trigger. The caller has already
     /// adjusted the live count; this decides whether the exit ends capture.
-    fn note_bound_exit(&mut self, terminal: bool) {
+    fn note_bound_exit(&mut self, terminal: bool, id: NodeId, at: Timestamp) {
         if terminal {
+            if self.config.managed_client_handoff {
+                let owned_handoff = self
+                    .tree
+                    .nodes()
+                    .any(|node| node.is_live() && self.tree.descends_from(node.id(), id));
+                let within_wait = self
+                    .config
+                    .acquisition_timeout
+                    .zip(self.armed_at)
+                    .is_some_and(|(wait, armed)| {
+                        elapsed(armed, self.event_deadline_time(at)) < wait
+                    });
+                if owned_handoff && within_wait {
+                    self.provisional_client = Some(id);
+                    self.pending_terminal = true;
+                    self.observation_started_at = None;
+                    return;
+                }
+                if owned_handoff {
+                    self.stop(StopReason::HandoffIncomplete);
+                    return;
+                }
+            }
             self.stop(StopReason::TerminalStageExited);
             return;
         }
         // All matched non-service processes have exited and no non-service stage
-        // is still awaited. A live service does not gate this (decision D-6).
+        // is still awaited. A provisional managed client is still awaiting its
+        // exact successor even if an intermediate launcher has also exited.
+        // A live service does not affect this ordinary stop rule (decision D-6).
         if !self.observe_until_explicit_stop
             && self.state == SessionState::Capturing
+            && self.provisional_client.is_none()
             && self.pending_nonservice.is_empty()
             && self.live_nonservice == 0
         {
             self.stop(StopReason::AllProcessesExited);
         }
+    }
+
+    fn event_deadline_time(&self, at: Timestamp) -> Timestamp {
+        self.event_clock_origin.map_or(at, |origin| {
+            Timestamp::from_nanos(at.nanos_since(origin).max(0))
+        })
     }
 
     fn check_volume_bounds(&mut self) {
@@ -878,8 +1013,35 @@ fn parent_first(records: &[ProcessRecord]) -> Vec<ProcessRecord> {
     order
 }
 
-/// A published map from process identifier to its role and stage.
-type BindingMap = HashMap<u32, (Option<Arc<str>>, Option<StageId>)>;
+/// One stage-bound process lifetime in the published packet role map.
+#[derive(Clone)]
+pub struct RoleBindingInterval {
+    /// Process identifier, interpreted only with this instance's bounds.
+    pub pid: u32,
+    /// Creation instant, when known from the event or startup snapshot.
+    pub started: Option<Timestamp>,
+    /// Exit instant; packets at or after it cannot inherit this role.
+    pub exited: Option<Timestamp>,
+    /// Bound profile role.
+    pub role: Option<Arc<str>>,
+    /// Bound profile stage.
+    pub stage: Option<StageId>,
+}
+
+impl RoleBindingInterval {
+    fn contains(&self, at: Timestamp) -> bool {
+        self.started.is_none_or(|start| at >= start) && self.exited.is_none_or(|exit| at < exit)
+    }
+}
+
+/// A PID may have several historical exact instances during one managed run.
+type BindingMap = HashMap<u32, Vec<RoleBindingInterval>>;
+
+fn bound_at(map: &BindingMap, pid: u32, at: Timestamp) -> Option<&RoleBindingInterval> {
+    let mut candidates = map.get(&pid)?.iter().filter(|binding| binding.contains(at));
+    let first = candidates.next()?;
+    candidates.next().is_none().then_some(first)
+}
 
 /// A handle that publishes new role and stage bindings to a live
 /// [`RoleStampingAttributor`].
@@ -903,10 +1065,27 @@ impl BindingPublisher {
     /// republishing the whole set is simpler than reconciling a delta and
     /// cannot leave a stale entry behind.
     pub fn publish(&self, bindings: Vec<(u32, Option<Arc<str>>, Option<StageId>)>) {
-        let map: BindingMap = bindings
-            .into_iter()
-            .map(|(pid, role, stage)| (pid, (role, stage)))
-            .collect();
+        self.publish_exact(
+            bindings
+                .into_iter()
+                .map(|(pid, role, stage)| RoleBindingInterval {
+                    pid,
+                    started: None,
+                    exited: None,
+                    role,
+                    stage,
+                })
+                .collect(),
+        );
+    }
+
+    /// Publish exact process lifetimes after an event fold. This keeps the
+    /// packet path independent from mutable process-tree locks.
+    pub fn publish_exact(&self, bindings: Vec<RoleBindingInterval>) {
+        let mut map: BindingMap = HashMap::new();
+        for binding in bindings {
+            map.entry(binding.pid).or_default().push(binding);
+        }
         *self.cell.lock().expect("binding publisher lock") = Arc::new(map);
     }
 
@@ -977,10 +1156,10 @@ impl FlowAttributor for RoleStampingAttributor {
                 .resolve(&FlowKey::new(key.proto, key.remote, key.local), at);
             let first = original
                 .as_ref()
-                .filter(|owner| snapshot.contains_key(&owner.pid));
+                .filter(|owner| bound_at(&snapshot, owner.pid, at).is_some());
             let second = reversed
                 .as_ref()
-                .filter(|owner| snapshot.contains_key(&owner.pid));
+                .filter(|owner| bound_at(&snapshot, owner.pid, at).is_some());
             match (first, second) {
                 (Some(first), Some(second)) => {
                     if first.pid != second.pid || first.process != second.process {
@@ -1000,11 +1179,11 @@ impl FlowAttributor for RoleStampingAttributor {
         } else {
             original?
         };
-        if let Some((role, stage)) = snapshot.get(&attribution.pid) {
-            if let Some(role) = role {
+        if let Some(binding) = bound_at(&snapshot, attribution.pid, at) {
+            if let Some(role) = &binding.role {
                 attribution = attribution.with_role(role);
             }
-            if let Some(stage) = stage {
+            if let Some(stage) = &binding.stage {
                 attribution = attribution.with_stage(stage.clone());
             }
         }
@@ -1049,7 +1228,9 @@ impl FlowAttributor for RoleStampingAttributor {
             .active_endpoints_owned()
             .into_iter()
             .filter(|owned| match owned.owner {
-                Some(pid) => snapshot.contains_key(&pid),
+                Some(pid) => snapshot.get(&pid).is_some_and(|bindings| {
+                    bindings.iter().any(|binding| binding.exited.is_none())
+                }),
                 None => true,
             })
             .map(|owned| owned.endpoint)

@@ -208,6 +208,7 @@ impl EffectiveConfig {
             // rather than only of which stages trigger acquisition (issue #184).
             allowed_roles: self.roles.clone(),
             exact_stage_ownership: self.exact_stage_ownership,
+            managed_client_handoff: false,
         }
     }
 

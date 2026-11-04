@@ -513,11 +513,16 @@ pub struct DeepCaptureArgs {
     #[arg(long, required = true, help_heading = "Required inputs")]
     pub launch: bool,
 
-    /// The capture duration bound, from arm.
+    /// Eligible observation duration after a verified managed client acquires.
+    ///
+    /// Simple launches default to 60s; multi-stage launches default to 120s.
     #[arg(short = 'd', long, value_parser = parse_duration, help_heading = "Common options")]
     pub duration: Option<Duration>,
 
-    /// How long to wait for the target before giving up.
+    /// Acquisition wait from capture arm.
+    ///
+    /// Simple launches default to 30s;
+    /// multi-stage launches default to 180s. Explicit supported values are exact.
     #[arg(long, value_parser = parse_duration, help_heading = "Common options")]
     pub wait: Option<Duration>,
 

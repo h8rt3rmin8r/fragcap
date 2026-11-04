@@ -75,6 +75,7 @@ impl CompletionSummary {
             Some(StopReason::Interrupt) => "interrupt",
             Some(StopReason::SinkError) => "sink-error",
             Some(StopReason::AcquisitionTimeout) => "acquisition-timeout",
+            Some(StopReason::HandoffIncomplete) => "handoff-incomplete",
             Some(StopReason::AmbiguousStageMatch) => "ambiguous-stage-match",
             Some(StopReason::PlatformExitedBeforeClient) => "platform-exited-before-client",
             Some(StopReason::EscapedPlatformClient) => "escaped-platform-client",

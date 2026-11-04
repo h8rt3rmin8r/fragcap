@@ -352,9 +352,9 @@ impl CaptureRunner for LateObservationCapture {
         &mut self,
         _: &PreparedCapture,
         _: &AppliedRoute,
-        _: Budget,
+        budget: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
-        *self.0.borrow_mut() = Duration::from_secs(16);
+        *self.0.borrow_mut() += budget.remaining().saturating_add(Duration::from_secs(1));
         Ok(CaptureRunResult {
             observations: Vec::new(),
             interrupted: false,
