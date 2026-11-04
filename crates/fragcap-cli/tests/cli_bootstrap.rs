@@ -22,7 +22,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn hidden_command(executable: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(windows)]
     let mut command = Command::new(executable);
+    #[cfg(not(windows))]
+    let command = Command::new(executable);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
