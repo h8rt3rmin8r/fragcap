@@ -582,6 +582,13 @@ async fn connection_task(
     };
     if socks5 {
         trace_reach(&trace, crate::ConnectionStage::Authentication);
+        let on_stage = |stage, completed| {
+            if completed {
+                trace_complete(&trace, stage);
+            } else {
+                trace_reach(&trace, stage);
+            }
+        };
         let run = crate::socks5::serve_socks5(
             stream,
             capability,
@@ -601,6 +608,7 @@ async fn connection_task(
                 tls_client_config: Arc::clone(&services.tls_client_config),
                 key_log: services.key_log.clone(),
                 quic_slots: Arc::clone(&services.quic_slots),
+                on_stage: &on_stage,
             },
         )
         .await;
@@ -622,8 +630,6 @@ async fn connection_task(
             }
             return ConnectionOutcome::PreAuthenticationFailed(run);
         }
-        trace_complete(&trace, crate::ConnectionStage::Authentication);
-        trace_complete(&trace, crate::ConnectionStage::Protocol);
         if let Some(error) = run.failure.as_ref() {
             trace_fail(
                 &trace,

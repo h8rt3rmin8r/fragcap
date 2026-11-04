@@ -128,6 +128,7 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
         .unwrap();
     authenticate(&mut client, password.as_bytes());
     connect_ipv4(&mut client, address);
+    std::thread::sleep(Duration::from_millis(150));
     client.write_all(b"opaque request").unwrap();
     client.shutdown(Shutdown::Write).unwrap();
     let mut response = Vec::new();
@@ -135,6 +136,28 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
     assert_eq!(response, b"opaque response");
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
+    let diagnostic = &report.observation.connection_diagnostics[0];
+    let terminal_ms = diagnostic
+        .stages
+        .iter()
+        .find(|record| record.stage == fragcap_proxy::ConnectionStage::Terminal)
+        .unwrap()
+        .reached_ms;
+    for stage in [
+        fragcap_proxy::ConnectionStage::Authentication,
+        fragcap_proxy::ConnectionStage::Authority,
+        fragcap_proxy::ConnectionStage::Protocol,
+        fragcap_proxy::ConnectionStage::TunnelResponse,
+    ] {
+        let completed_ms = diagnostic
+            .stages
+            .iter()
+            .find(|record| record.stage == stage)
+            .unwrap()
+            .completed_ms
+            .unwrap();
+        assert!(terminal_ms.saturating_sub(completed_ms) >= 100, "{stage:?}");
+    }
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
     assert_eq!(report.observation.protocol.socks_tcp_opaque, 1);
     assert_eq!(report.observation.protocol.socks_client_bytes, 14);

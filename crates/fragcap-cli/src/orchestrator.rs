@@ -108,6 +108,9 @@ pub struct CaptureTiming {
     pub acquisition_elapsed: Option<std::time::Duration>,
     pub observation_elapsed: Option<std::time::Duration>,
     pub capture_return_elapsed: Option<std::time::Duration>,
+    pub acquisition_status: Option<&'static str>,
+    pub observation_status: Option<&'static str>,
+    pub capture_return_status: Option<&'static str>,
 }
 
 impl CaptureTiming {
@@ -120,10 +123,42 @@ impl CaptureTiming {
         ]
     }
 
+    pub fn phase_statuses(&self) -> [Option<&'static str>; 3] {
+        [
+            self.acquisition_status,
+            self.observation_status,
+            self.capture_return_status,
+        ]
+    }
+
     fn record_outcome(&mut self, outcome: &CaptureOutcome) {
         self.acquisition_elapsed = outcome.acquisition_elapsed;
         self.observation_elapsed = outcome.observation_elapsed;
         self.capture_return_elapsed = outcome.capture_return_elapsed;
+        self.acquisition_status = None;
+        self.observation_status = None;
+        self.capture_return_status = None;
+        if outcome.acquisition_elapsed.is_some() {
+            self.acquisition_status = Some(if outcome.observation_elapsed.is_some() {
+                "completed"
+            } else if outcome.stop_reason == Some(StopReason::Interrupt) {
+                "interrupted"
+            } else {
+                "failed"
+            });
+        }
+        if outcome.observation_elapsed.is_some() {
+            self.observation_status = Some(if outcome.exit != Exit::SUCCESS {
+                "failed"
+            } else if outcome.stop_reason == Some(StopReason::Interrupt) {
+                "interrupted"
+            } else {
+                "completed"
+            });
+        }
+        if outcome.capture_return_elapsed.is_some() {
+            self.capture_return_status = Some("completed");
+        }
     }
 }
 
@@ -976,6 +1011,8 @@ fn capture_live(
                 if let Some(timing) = timing {
                     timing.acquisition_elapsed = Some(acquisition_elapsed);
                     timing.capture_return_elapsed = Some(capture_return_started.elapsed());
+                    timing.acquisition_status = Some("failed");
+                    timing.capture_return_status = Some("completed");
                 }
                 return Err(CliError::failure(e.to_string()));
             }
@@ -1971,6 +2008,29 @@ mod tests {
     use fragcap::ProcessEvent;
     use fragcap::{StageId, StopReason, Timestamp};
     use std::sync::Arc;
+
+    #[test]
+    fn completed_acquisition_keeps_its_status_when_observation_ends_early() {
+        let mut outcome = super::CaptureOutcome::bare(super::Exit::SUCCESS);
+        outcome.acquisition_elapsed = Some(std::time::Duration::from_secs(5));
+        outcome.observation_elapsed = Some(std::time::Duration::from_secs(2));
+        outcome.capture_return_elapsed = Some(std::time::Duration::from_millis(50));
+        outcome.stop_reason = Some(StopReason::Interrupt);
+        let mut timing = super::CaptureTiming::default();
+        timing.record_outcome(&outcome);
+        assert_eq!(
+            timing.phase_statuses(),
+            [Some("completed"), Some("interrupted"), Some("completed")]
+        );
+
+        outcome.exit = super::Exit::FAILURE;
+        outcome.stop_reason = None;
+        timing.record_outcome(&outcome);
+        assert_eq!(
+            timing.phase_statuses(),
+            [Some("completed"), Some("failed"), Some("completed")]
+        );
+    }
 
     #[test]
     fn replay_deadline_clock_is_relative_even_with_epoch_and_reordered_packets() {

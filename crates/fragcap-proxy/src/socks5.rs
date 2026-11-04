@@ -16,12 +16,12 @@ use tokio::time::{timeout, Instant};
 
 use crate::http1::{HttpRun, ProtocolError};
 use crate::{
-    connect_upstream, ApplicationEvent, ApplicationEventKind, DestinationAuthority,
-    DestinationPolicy, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
-    ProtocolAccounting, ProtocolLimits, ProxyObservation, QuicAssociationGateway,
-    QuicGatewayIoError, QuicGatewayTerminal, QuicInspectionPlan, QuicRefusalCode,
-    SessionCapability, SocksClassification, SocksConnectEvent, SocksNegotiationEvent,
-    SocksTransferEvent, SocksUdpEvent, UdpSocketError, UpstreamError, UpstreamStage,
+    ApplicationEvent, ApplicationEventKind, DestinationAuthority, DestinationPolicy,
+    GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome, ProtocolAccounting, ProtocolLimits,
+    ProxyObservation, QuicAssociationGateway, QuicGatewayIoError, QuicGatewayTerminal,
+    QuicInspectionPlan, QuicRefusalCode, SessionCapability, SocksClassification, SocksConnectEvent,
+    SocksNegotiationEvent, SocksTransferEvent, SocksUdpEvent, UdpSocketError, UpstreamError,
+    UpstreamStage,
 };
 
 const SOCKS_VERSION: u8 = 5;
@@ -94,6 +94,8 @@ pub(crate) struct SocksConnectionContext<'a> {
     pub tls_client_config: std::sync::Arc<rustls::ClientConfig>,
     pub key_log: Option<std::sync::Arc<crate::SessionKeyLog>>,
     pub quic_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Called at the actual stage boundary, before relay or association teardown.
+    pub on_stage: &'a (dyn Fn(crate::ConnectionStage, bool) + Send + Sync),
 }
 
 pub(crate) async fn is_socks5(stream: &TcpStream, budget: Duration) -> bool {
@@ -122,6 +124,7 @@ pub(crate) async fn serve_socks5(
         tls_client_config,
         key_log,
         quic_slots,
+        on_stage,
     } = context;
     let mut accounting = ProtocolAccounting {
         socks_negotiations: 1,
@@ -153,6 +156,7 @@ pub(crate) async fn serve_socks5(
         return failed(accounting, failure);
     }
     accounting.socks_auth_succeeded = 1;
+    on_stage(crate::ConnectionStage::Authentication, true);
     crate::application::emit(
         sink,
         ApplicationEvent::now(
@@ -166,6 +170,7 @@ pub(crate) async fn serve_socks5(
         ),
     );
 
+    on_stage(crate::ConnectionStage::Authority, false);
     let request = tokio::select! {
         _ = shutdown.changed() => Err(SocksFailure::cancelled()),
         result = read_request(&mut client, limits.header_timeout) => result,
@@ -194,6 +199,8 @@ pub(crate) async fn serve_socks5(
             return failed(accounting, failure);
         }
     };
+    on_stage(crate::ConnectionStage::Authority, true);
+    on_stage(crate::ConnectionStage::Protocol, true);
     let request = match request {
         SocksRequest::Connect(request) => request,
         SocksRequest::UdpAssociate(request) => {
@@ -234,12 +241,20 @@ pub(crate) async fn serve_socks5(
     let authority_text = request.authority.lookup_host();
     let upstream = tokio::select! {
         _ = shutdown.changed() => Err(SocksFailure::cancelled()),
-        result = connect_upstream(&request.authority, policy, limits.upstream) => {
+        result = crate::upstream::connect_upstream_observed(
+            &request.authority,
+            policy,
+            limits.upstream,
+            || on_stage(crate::ConnectionStage::UpstreamTcp, false),
+        ) => {
             result.map_err(SocksFailure::upstream)
         }
     };
     let mut upstream = match upstream {
-        Ok(upstream) => upstream,
+        Ok(upstream) => {
+            on_stage(crate::ConnectionStage::UpstreamTcp, true);
+            upstream
+        }
         Err(failure) => {
             accounting.socks_connect_refused = 1;
             accounting.policy_refused = u64::from(failure.policy_refused);
@@ -272,6 +287,7 @@ pub(crate) async fn serve_socks5(
     };
     let bound = upstream.local_addr().ok();
     let selected_peer = upstream.peer_addr().ok();
+    on_stage(crate::ConnectionStage::TunnelResponse, false);
     if let Err(error) = write_reply(&mut client, SocksReplyCode::Succeeded, bound).await {
         accounting.socks_connect_refused = 1;
         return failed(
@@ -279,6 +295,7 @@ pub(crate) async fn serve_socks5(
             SocksFailure::new("socks-reply-write-failed", error.to_string()),
         );
     }
+    on_stage(crate::ConnectionStage::TunnelResponse, true);
     accounting.socks_connect_succeeded = 1;
     let classification = classify_prefix(
         &client,

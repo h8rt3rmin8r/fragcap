@@ -1335,6 +1335,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             interrupted,
             retained_target_packets,
             capture_timing,
+            capture_statuses,
             capture_preparation_completed,
         } = run_real_capture(
             &capture_args,
@@ -1361,17 +1362,13 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             ),
         ]
         .into_iter()
-        .zip(capture_timing.into_iter().skip(1))
+        .zip(capture_timing.into_iter().skip(1).zip(capture_statuses))
         {
-            if let Some(elapsed) = elapsed {
+            if let (Some(elapsed), Some(recorded_status)) = elapsed {
                 let status = if elapsed > budget {
                     "failed"
-                } else if interrupted {
-                    "interrupted"
-                } else if result.is_err() && phase != "capture-return" {
-                    "failed"
                 } else {
-                    "completed"
+                    recorded_status
                 };
                 self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
                     phase, budget, elapsed, status,
@@ -3887,6 +3884,7 @@ struct RealCaptureResult {
     interrupted: bool,
     retained_target_packets: Option<u64>,
     capture_timing: [Option<Duration>; 4],
+    capture_statuses: [Option<&'static str>; 3],
     capture_preparation_completed: bool,
 }
 
@@ -3917,6 +3915,7 @@ fn run_real_capture(
         .unwrap_or_default();
     let retained_target_packets = result.as_ref().ok().map(|outcome| outcome.retained_packets);
     let capture_timing = timing.intervals();
+    let capture_statuses = timing.phase_statuses();
     let result = result.and_then(|outcome| {
         if outcome.exit == Exit::SUCCESS {
             Ok(())
@@ -3931,6 +3930,7 @@ fn run_real_capture(
         interrupted,
         retained_target_packets,
         capture_timing,
+        capture_statuses,
         capture_preparation_completed: timing.capture_prepare_completed,
     }
 }
