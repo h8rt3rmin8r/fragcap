@@ -682,8 +682,13 @@ Param(
         $altered.LOCALAPPDATA = Join-Path $ScratchRoot 'other-host\AppData\Local'
         $marker = 'S192 storage readback'
         [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', $marker, '--handle', 's192_storage_readback', '--exe', $Executable, '--socket-holder', 'yes') -Environment $ordinary)
-        $listing = Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'list') -Environment $altered
-        if (-not $listing.Stdout.Contains($marker)) { throw 'altered AppData process did not read the ordinary process target from the shared default' }
+        $listing = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'targets', 'list') -Environment $altered
+        $listingRows = @($listing.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop })
+        $targetLists = @($listingRows | Where-Object { $_.event -ceq 'targets.list' })
+        if ($targetLists.Count -ne 1 -or @($targetLists[0].targets | Where-Object { $_.name -ceq $marker -and $_.handle -ceq 's192_storage_readback' }).Count -ne 1) {
+            $observedNames = @($targetLists | ForEach-Object { $_.targets } | ForEach-Object { $_.name }) -join ', '
+            throw "altered AppData process did not read the ordinary process target from the shared default (observed names: $observedNames)"
+        }
         $doctor = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'doctor') -Environment $altered -AllowedExitCodes @(0, 1)
         $rows = @($doctor.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop })
         $local = @($rows | Where-Object { $_.name -ceq 'local storage' })
