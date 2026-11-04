@@ -309,9 +309,17 @@ pub(crate) fn run_prepared_with_flow_registry(
     emitter: &mut Emitter,
     prepared: PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
+    inspection_context: fragcap::deep_capture::NativeObservationContext,
     timing: &mut orchestrator::CaptureTiming,
 ) -> Result<orchestrator::CaptureOutcome, CliError> {
-    run_prepared_outcome(args, emitter, prepared, Some(flow_registry), Some(timing))
+    run_prepared_outcome(
+        args,
+        emitter,
+        prepared,
+        Some(flow_registry),
+        Some(inspection_context),
+        Some(timing),
+    )
 }
 
 fn run_inner(
@@ -329,7 +337,8 @@ fn run_prepared(
     prepared: PreparedCapture,
     flow_registry: Option<Arc<FlowRegistry>>,
 ) -> Result<Exit, CliError> {
-    run_prepared_outcome(args, emitter, prepared, flow_registry, None).map(|outcome| outcome.exit)
+    run_prepared_outcome(args, emitter, prepared, flow_registry, None, None)
+        .map(|outcome| outcome.exit)
 }
 
 fn run_prepared_outcome(
@@ -337,6 +346,7 @@ fn run_prepared_outcome(
     emitter: &mut Emitter,
     prepared: PreparedCapture,
     flow_registry: Option<Arc<FlowRegistry>>,
+    inspection_context: Option<fragcap::deep_capture::NativeObservationContext>,
     mut timing: Option<&mut orchestrator::CaptureTiming>,
 ) -> Result<orchestrator::CaptureOutcome, CliError> {
     let PreparedCapture {
@@ -375,6 +385,7 @@ fn run_prepared_outcome(
     }
     let mut components = components_result?;
     components.flow_registry = flow_registry;
+    components.inspection_context = inspection_context;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a
     // resolved path anchor cannot be checked against the executable-only startup

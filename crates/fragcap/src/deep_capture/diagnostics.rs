@@ -127,6 +127,20 @@ pub struct ProxyConnectionDiagnostic {
     pub os_error_code: Option<i32>,
     pub header_timeout_phase: Option<String>,
     pub completed_exchanges: u64,
+    pub inspection_requested_scope: Option<String>,
+    pub inspection_scope: Option<String>,
+    pub inspection_action: Option<String>,
+    pub inspection_reason: Option<String>,
+    pub inspection_decided_after_ms: Option<u64>,
+    pub inspection_policy_id: Option<String>,
+    pub inspection_owner_proof: Option<String>,
+    pub association_inspection_requested_scope: Option<String>,
+    pub association_inspection_scope: Option<String>,
+    pub association_inspection_action: Option<String>,
+    pub association_inspection_reason: Option<String>,
+    pub association_inspection_decided_after_ms: Option<u64>,
+    pub association_inspection_policy_id: Option<String>,
+    pub association_inspection_owner_proof: Option<String>,
 }
 
 /// Native aggregate counters and independently bounded per-connection evidence.
@@ -202,6 +216,48 @@ impl ProxyDiagnostics {
                     os_error_code: record.os_error_code,
                     header_timeout_phase: record.header_timeout_phase.map(str::to_string),
                     completed_exchanges: record.completed_exchanges,
+                    inspection_requested_scope: record
+                        .inspection
+                        .map(|decision| decision.requested_scope.to_string()),
+                    inspection_scope: record
+                        .inspection
+                        .map(|decision| decision.scope.as_str().to_string()),
+                    inspection_action: record
+                        .inspection
+                        .map(|decision| decision.action.as_str().to_string()),
+                    inspection_reason: record
+                        .inspection
+                        .map(|decision| decision.reason.as_str().to_string()),
+                    inspection_decided_after_ms: record
+                        .inspection
+                        .map(|decision| decision.decided_after_ms),
+                    inspection_policy_id: record
+                        .inspection
+                        .map(|decision| decision.policy_id.to_string()),
+                    inspection_owner_proof: record
+                        .inspection
+                        .map(|decision| decision.owner_proof.to_string()),
+                    association_inspection_requested_scope: record
+                        .association_inspection
+                        .map(|decision| decision.requested_scope.to_string()),
+                    association_inspection_scope: record
+                        .association_inspection
+                        .map(|decision| decision.scope.as_str().to_string()),
+                    association_inspection_action: record
+                        .association_inspection
+                        .map(|decision| decision.action.as_str().to_string()),
+                    association_inspection_reason: record
+                        .association_inspection
+                        .map(|decision| decision.reason.as_str().to_string()),
+                    association_inspection_decided_after_ms: record
+                        .association_inspection
+                        .map(|decision| decision.decided_after_ms),
+                    association_inspection_policy_id: record
+                        .association_inspection
+                        .map(|decision| decision.policy_id.to_string()),
+                    association_inspection_owner_proof: record
+                        .association_inspection
+                        .map(|decision| decision.owner_proof.to_string()),
                 })
                 .collect(),
             connection_details_lost: value.resources.connection_details_dropped_oldest,

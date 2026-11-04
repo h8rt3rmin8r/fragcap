@@ -884,6 +884,14 @@ fn capture_live(
 ) -> Result<CaptureOutcome, CliError> {
     use std::time::{Duration, Instant};
 
+    let inspection_context = components.inspection_context.clone();
+    if let Some(watcher) = components.watcher.as_ref() {
+        process_evidence.watcher_report = Some(watcher.report());
+    }
+    if let Some(context) = &inspection_context {
+        context.record_live_process_evidence(process_evidence);
+    }
+
     let mut bound: HashMap<u32, String> = HashMap::new();
     // Image names by pid, for the live status display's header line (slice
     // S069). `apply_event`'s own `bound` map carries only the role, since
@@ -1062,6 +1070,13 @@ fn capture_live(
                 let event_at = event.at();
                 record_bound_image(&event, &mut bound_images);
                 apply_event(event, &mut session, &mut bound, emitter, process_evidence);
+                if let Some(watcher) = components.watcher.as_ref() {
+                    process_evidence.watcher_report = Some(watcher.report());
+                    process_evidence.unparseable_events = watcher.unparsed_events();
+                }
+                if let Some(context) = &inspection_context {
+                    context.record_live_process_evidence(process_evidence);
+                }
                 let bindings = session.role_bindings();
                 publisher.publish_exact(session.role_binding_intervals());
                 if is_active(&session) && platform_dispatch.observe(&bindings) {
@@ -1247,6 +1262,8 @@ fn capture_live(
         &mut narration,
         &mut display,
         process_evidence,
+        inspection_context.as_ref(),
+        components.watcher.as_ref(),
     );
     let observation_elapsed = observation_started.elapsed();
     let return_started = Instant::now();
@@ -1349,6 +1366,8 @@ fn drive_live(
     narration: &mut FilterNarration,
     display: &mut LiveStatusDisplay,
     process_evidence: &mut CaptureProcessEvidence,
+    inspection_context: Option<&fragcap::deep_capture::NativeObservationContext>,
+    watcher: Option<&fragcap::EtwWatcher>,
 ) {
     loop {
         let now = std::time::Instant::now();
@@ -1378,11 +1397,21 @@ fn drive_live(
                     gate_handle.close_at(event_at);
                 }
             }
-            Ok(DriverMsg::WatcherLost) => session.on_process_watcher_lost(),
+            Ok(DriverMsg::WatcherLost) => {
+                process_evidence.watcher_ended = true;
+                session.on_process_watcher_lost();
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // Both forwarders ended: the pipeline is done and the watcher is
             // gone. Nothing more can arrive.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if let Some(watcher) = watcher {
+            process_evidence.watcher_report = Some(watcher.report());
+            process_evidence.unparseable_events = watcher.unparsed_events();
+        }
+        if let Some(context) = inspection_context {
+            context.record_live_process_evidence(process_evidence);
         }
         // A busy queue may never time out. Tick after every kind of message,
         // using the same monotonic clock as a silent capture.
@@ -2169,6 +2198,186 @@ mod tests {
         assert_eq!(session.tree().nodes().last().unwrap().image(), image);
         assert!(evidence.stage_path_limitations.is_empty());
         assert!(String::from_utf8(output).unwrap().contains("stage.matched"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned only by the controlled managed handoff regression"]
+    fn orchestrator_handoff_child_waits() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn orchestrator_preserves_owned_same_image_handoff_through_final_client() {
+        use crate::emit::{Emitter, Format, Verbosity};
+        use fragcap::deep_capture::CaptureProcessEvidence;
+        use fragcap::managed_shutdown::ProcessIdentity;
+        use fragcap::{CaptureSession, PacketDisposition, ProcessEvent, SessionConfig};
+        use std::collections::HashMap;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Child, Command, Stdio};
+        use std::time::Duration;
+
+        struct HiddenChild(Child);
+        impl HiddenChild {
+            fn spawn() -> Self {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .arg("--ignored")
+                    .arg("orchestrator_handoff_child_waits")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+                Self(command.spawn().expect("hidden controlled child"))
+            }
+            fn stop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        impl Drop for HiddenChild {
+            fn drop(&mut self) {
+                self.stop();
+            }
+        }
+
+        let executable = std::env::current_exe().unwrap();
+        let canonical = executable.to_string_lossy();
+        let ordinary = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+        let image = ordinary.rsplit(['\\', '/']).next().unwrap();
+        let profile = fragcap::Profile::parse(&serde_json::json!({
+            "schema": 1, "kind": "profile", "fidelity": "verified",
+            "game": {"id": "synthetic", "name": "Synthetic", "platform": "steam", "app_id": "42"},
+            "stage": [
+                {"role": "client", "lifecycle": "session", "terminal": true,
+                 "match": {"exe": image, "path_regex": format!("(?i)^{}$", regex::escape(ordinary)), "descends_from": "platform"}},
+                {"role": "platform", "lifecycle": "service", "match": {"exe": "Steam.exe"}}
+            ]
+        }).to_string()).unwrap();
+        let mut first = HiddenChild::spawn();
+        let first_identity = ProcessIdentity::observe(first.0.id()).unwrap();
+        let root_at = Timestamp::from_nanos(
+            i64::try_from(first_identity.created_unix_nanos()).unwrap() - 1_000_000,
+        );
+        let mut session = CaptureSession::new(
+            profile,
+            SessionConfig {
+                managed_client_handoff: true,
+                exact_stage_ownership: true,
+                acquisition_timeout: Some(Duration::from_secs(60)),
+                duration: Some(Duration::from_secs(6)),
+                ..Default::default()
+            },
+        );
+        let root_pid = u32::MAX - 1;
+        let launcher_pid = u32::MAX - 2;
+        let bootstrap_pid = u32::MAX - 3;
+        session.require_owned_platform_root("C:\\Fixture\\Steam.exe");
+        session.arm_owned_platform_root(root_pid, 1, root_at, root_at);
+        session.attach(root_at);
+        let mut evidence = CaptureProcessEvidence {
+            shutdown_scope: vec![first_identity.path.clone()],
+            ..Default::default()
+        };
+        let mut bound = HashMap::new();
+        let mut output = Vec::new();
+        let mut emitter = Emitter::new(&mut output, Format::Json, Verbosity::Normal);
+        macro_rules! apply {
+            ($event:expr) => {
+                super::apply_event(
+                    $event,
+                    &mut session,
+                    &mut bound,
+                    &mut emitter,
+                    &mut evidence,
+                )
+            };
+        }
+        apply!(ProcessEvent::started(root_pid, 1, "Steam.exe", "", root_at));
+        let first_at =
+            Timestamp::from_nanos(i64::try_from(first_identity.created_unix_nanos()).unwrap());
+        apply!(ProcessEvent::started(
+            first.0.id(),
+            root_pid,
+            image,
+            "",
+            first_at
+        ));
+        assert!(session.acquired());
+        apply!(ProcessEvent::started(
+            launcher_pid,
+            first.0.id(),
+            "launcher.exe",
+            "",
+            Timestamp::from_nanos(first_at.as_nanos() + 1)
+        ));
+        first.stop();
+        apply!(ProcessEvent::Exited {
+            pid: first_identity.pid,
+            at: Timestamp::from_nanos(first_at.as_nanos() + 2)
+        });
+        assert!(!session.acquired());
+        assert_eq!(session.stop_reason(), None);
+
+        let mut second = HiddenChild::spawn();
+        let second_identity = ProcessIdentity::observe(second.0.id()).unwrap();
+        let second_at =
+            Timestamp::from_nanos(i64::try_from(second_identity.created_unix_nanos()).unwrap());
+        apply!(ProcessEvent::started(
+            second.0.id(),
+            launcher_pid,
+            image,
+            "",
+            second_at
+        ));
+        assert!(session.acquired());
+        apply!(ProcessEvent::started(
+            bootstrap_pid,
+            second.0.id(),
+            "bootstrap.exe",
+            "",
+            Timestamp::from_nanos(second_at.as_nanos() + 1)
+        ));
+        second.stop();
+        apply!(ProcessEvent::Exited {
+            pid: second_identity.pid,
+            at: Timestamp::from_nanos(second_at.as_nanos() + 2)
+        });
+        assert!(!session.acquired());
+        assert_eq!(session.stop_reason(), None);
+
+        let third = HiddenChild::spawn();
+        let third_identity = ProcessIdentity::observe(third.0.id()).unwrap();
+        let third_at =
+            Timestamp::from_nanos(i64::try_from(third_identity.created_unix_nanos()).unwrap());
+        apply!(ProcessEvent::started(
+            third.0.id(),
+            bootstrap_pid,
+            image,
+            "",
+            third_at
+        ));
+        assert!(session.acquired());
+        assert_eq!(session.on_packet(64), PacketDisposition::Retained);
+        assert_eq!(session.stats().retained, 1);
+        assert_eq!(
+            session.stop_reason(),
+            None,
+            "no cleanup can start during the owned handoff"
+        );
+        assert_eq!(
+            evidence
+                .stage_transitions
+                .iter()
+                .filter(|stage| stage.role == "client"
+                    && stage.kind == fragcap::deep_capture::StageTransitionKind::Matched)
+                .count(),
+            3
+        );
+        session.on_tick(Timestamp::from_nanos(third_at.as_nanos() + 6_000_000_000));
+        assert_eq!(session.stop_reason(), Some(StopReason::DurationReached));
     }
 
     #[cfg(all(feature = "etw", windows))]

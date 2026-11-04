@@ -23,6 +23,7 @@ mod diagnostics;
 #[doc(hidden)]
 pub mod fuzz_support;
 mod har;
+mod inspection;
 mod journal;
 mod lifecycle;
 mod manifest;
@@ -43,15 +44,16 @@ pub use classification::*;
 pub use collection::*;
 pub use diagnostics::*;
 pub use har::*;
+pub use inspection::*;
 pub use journal::*;
 pub use lifecycle::*;
 pub use manifest::*;
 pub use model::*;
 pub use native::{
-    run_controlled_native_requests, CertificateStore, ClientIdentity, NativeCertificateStore,
-    NativeListenerReservation, NativeObservationContext, NativeProxyAdapter, NativeProxyLimits,
-    PreparedNativeAuthority, TrustController, TrustError, TrustMutation, TrustState,
-    CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
+    run_controlled_native_requests, CertificateStore, ClientIdentity, ExactGameDecider,
+    NativeCertificateStore, NativeListenerReservation, NativeObservationContext,
+    NativeProxyAdapter, NativeProxyLimits, PreparedNativeAuthority, TrustController, TrustError,
+    TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
 };
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,

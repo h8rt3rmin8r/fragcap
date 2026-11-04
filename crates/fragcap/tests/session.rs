@@ -45,6 +45,134 @@ fn exact_platform_profile() -> Profile {
 }
 
 #[test]
+fn managed_provisional_client_handoff_preserves_final_observation_duration() {
+    let mut session = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            managed_client_handoff: true,
+            exact_stage_ownership: true,
+            acquisition_timeout: Some(Duration::from_secs(30)),
+            duration: Some(Duration::from_secs(6)),
+            ..SessionConfig::default()
+        },
+    );
+    session.require_owned_platform_root("C:\\Steam\\steam.exe");
+    session.attach(at(0));
+    session.arm_owned_platform_root(10, 0, at(0), at(1_000_000_000));
+    session.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1_000_000_000));
+    session.on_process_event(start(20, 10, "C:\\Game\\game.exe", 2_000_000_000));
+    session.on_process_event(start(30, 20, "C:\\Publisher\\launcher.exe", 3_000_000_000));
+    session.on_process_event(exit(20, 4_000_000_000));
+    assert!(!session.acquired());
+    assert_eq!(session.stop_reason(), None);
+    assert_eq!(session.on_packet(64), PacketDisposition::Retained);
+    session.on_tick(at(6_000_000_000));
+    assert_eq!(session.stop_reason(), None);
+
+    session.on_process_event(start(40, 30, "C:\\Game\\game.exe", 7_000_000_000));
+    session.on_process_event(start(50, 40, "C:\\Game\\bootstrap.exe", 8_000_000_000));
+    session.on_process_event(exit(40, 9_000_000_000));
+    assert_eq!(session.stop_reason(), None);
+    session.on_process_event(start(60, 50, "C:\\Game\\game.exe", 10_000_000_000));
+    assert!(session.acquired());
+    assert_eq!(session.stop_reason(), None);
+    assert_eq!(session.on_packet(64), PacketDisposition::Retained);
+    assert_eq!(session.stats().observed(), 2);
+    assert_eq!(session.stats().retained, 2);
+    session.on_tick(at(15_000_000_000));
+    assert_eq!(session.stop_reason(), None);
+    session.on_tick(at(16_000_000_000));
+    assert_eq!(session.stop_reason(), Some(StopReason::DurationReached));
+}
+
+#[test]
+fn managed_handoff_refuses_wrong_path_successor() {
+    let text = r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"t","name":"T","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","path_regex":"(?i)^C:\\\\Game\\\\game\\.exe$","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe"}}]}"#;
+    let profile = Profile::parse(text).unwrap();
+    let mut session = CaptureSession::new(
+        profile,
+        SessionConfig {
+            managed_client_handoff: true,
+            exact_stage_ownership: true,
+            acquisition_timeout: Some(Duration::from_secs(30)),
+            ..Default::default()
+        },
+    );
+    session.require_owned_platform_root("C:\\Steam\\steam.exe");
+    session.attach(at(0));
+    session.arm_owned_platform_root(10, 0, at(0), at(1_000_000_000));
+    session.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1_000_000_000));
+    session.on_process_event(start(20, 10, "C:\\Game\\game.exe", 2_000_000_000));
+    session.on_process_event(start(30, 20, "C:\\Publisher\\launcher.exe", 3_000_000_000));
+    session.on_process_event(exit(20, 4_000_000_000));
+    session.on_process_event(start(40, 30, "C:\\Other\\game.exe", 5_000_000_000));
+    assert!(!session.acquired());
+    session.on_tick(at(30_000_000_000));
+    assert_eq!(session.stop_reason(), Some(StopReason::HandoffIncomplete));
+}
+
+fn provisional_handoff() -> CaptureSession {
+    let mut session = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            managed_client_handoff: true,
+            exact_stage_ownership: true,
+            acquisition_timeout: Some(Duration::from_secs(30)),
+            duration: Some(Duration::from_secs(6)),
+            ..SessionConfig::default()
+        },
+    );
+    session.require_owned_platform_root("C:\\Steam\\steam.exe");
+    session.attach(at(0));
+    session.arm_owned_platform_root(10, 0, at(0), at(1_000_000_000));
+    session.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1_000_000_000));
+    session.on_process_event(start(20, 10, "C:\\Game\\game.exe", 2_000_000_000));
+    session.on_process_event(start(30, 20, "C:\\Publisher\\launcher.exe", 3_000_000_000));
+    session.on_process_event(exit(20, 4_000_000_000));
+    session
+}
+
+#[test]
+fn managed_handoff_rejects_escaped_and_ambiguous_successors() {
+    let mut escaped = provisional_handoff();
+    escaped.on_process_event(start(40, 99, "C:\\Game\\game.exe", 5_000_000_000));
+    assert!(!escaped.acquired());
+    escaped.on_tick(at(30_000_000_000));
+    assert_eq!(
+        escaped.stop_reason(),
+        Some(StopReason::EscapedPlatformClient)
+    );
+
+    let mut ambiguous = provisional_handoff();
+    ambiguous.on_process_event(start(40, 30, "C:\\Game\\game.exe", 5_000_000_000));
+    ambiguous.on_process_event(start(41, 30, "C:\\Game\\game.exe", 6_000_000_000));
+    assert_eq!(
+        ambiguous.stop_reason(),
+        Some(StopReason::AmbiguousStageMatch)
+    );
+
+    let mut reused = provisional_handoff();
+    reused.on_process_event(start(20, 99, "C:\\Game\\game.exe", 5_000_000_000));
+    assert!(
+        !reused.acquired(),
+        "a recycled PID cannot inherit prior ancestry"
+    );
+    assert_eq!(
+        reused.stop_reason(),
+        Some(StopReason::EscapedPlatformClient)
+    );
+}
+
+#[test]
+fn managed_handoff_with_no_successor_preserves_incomplete_result() {
+    let mut session = provisional_handoff();
+    session.on_process_event(exit(30, 6_000_000_000));
+    session.on_tick(at(30_000_000_000));
+    assert_eq!(session.stop_reason(), Some(StopReason::HandoffIncomplete));
+    assert!(!session.acquired());
+}
+
+#[test]
 fn owned_platform_basename_requires_receipt_creation_identity() {
     let fresh = || {
         CaptureSession::new(

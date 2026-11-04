@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 pub use fragcap_proxy::ClientIdentity;
 use fragcap_proxy::{
@@ -67,6 +67,7 @@ pub struct NativeProxyAdapter {
     client_identity: Option<ClientIdentity>,
     listener_reservation: Option<NativeListenerReservation>,
     prepared_authority: Option<PreparedNativeAuthority>,
+    inspection_decider: Option<Arc<dyn fragcap_proxy::InspectionDecider>>,
 }
 
 static NEXT_PREPARED_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -321,6 +322,41 @@ pub struct NativeObservationContext {
 }
 
 impl NativeObservationContext {
+    /// Publish only newly retained process facts during an active capture.
+    /// Cloning the full event history on every ETW event would be quadratic.
+    pub fn record_live_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
+        let mut held = self.process_evidence.lock().expect("process evidence lock");
+        let live = held.get_or_insert_with(super::CaptureProcessEvidence::default);
+        live.event_limit = evidence.event_limit;
+        live.launch_pid = evidence.launch_pid;
+        live.launch_at = evidence.launch_at;
+        live.launch_earliest_at = evidence.launch_earliest_at;
+        live.launch_identity = evidence.launch_identity.clone();
+        live.events_unretained = evidence.events_unretained;
+        live.stage_transitions_unretained = evidence.stage_transitions_unretained;
+        live.stage_path_limitations = evidence.stage_path_limitations.clone();
+        live.unparseable_events = evidence.unparseable_events;
+        live.rundown_ignored = evidence.rundown_ignored;
+        live.watcher_ended = evidence.watcher_ended;
+        live.watcher_report.clone_from(&evidence.watcher_report);
+        if live.shutdown_scope.is_empty() {
+            live.shutdown_scope.clone_from(&evidence.shutdown_scope);
+        }
+        if live.events.len() <= evidence.events.len() {
+            live.events
+                .extend_from_slice(&evidence.events[live.events.len()..]);
+        }
+        if live.stage_transitions.len() <= evidence.stage_transitions.len() {
+            live.stage_transitions
+                .extend_from_slice(&evidence.stage_transitions[live.stage_transitions.len()..]);
+        }
+        if live.managed_instances.len() <= evidence.managed_instances.len() {
+            live.managed_instances
+                .extend_from_slice(&evidence.managed_instances[live.managed_instances.len()..]);
+        }
+        live.managed_instance_limit_reached = evidence.managed_instance_limit_reached;
+    }
+
     /// Retain already observed process events for the final connection-instance join.
     pub fn record_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
         *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
@@ -394,6 +430,153 @@ impl NativeObservationContext {
     }
 }
 
+/// Exact game owner resolution for an opted-in native inspection scope.
+#[derive(Clone, Debug)]
+pub struct ExactGameDecider {
+    context: NativeObservationContext,
+    game_roles: Arc<[String]>,
+    requested_scope: super::RequestedInspectionScope,
+}
+
+impl ExactGameDecider {
+    pub fn new(context: NativeObservationContext, game_roles: Vec<String>) -> Self {
+        Self {
+            context,
+            game_roles: Arc::from(game_roles),
+            requested_scope: super::RequestedInspectionScope::ExactGame,
+        }
+    }
+
+    /// Preserve an auto request after the plan resolves it to exact game.
+    pub fn with_auto_request(mut self) -> Self {
+        self.requested_scope = super::RequestedInspectionScope::Auto;
+        self
+    }
+}
+
+impl fragcap_proxy::InspectionDecider for ExactGameDecider {
+    fn requested_scope(&self) -> &'static str {
+        self.requested_scope.as_str()
+    }
+
+    fn decide(
+        &self,
+        request: fragcap_proxy::InspectionRequest,
+        budget: Duration,
+    ) -> fragcap_proxy::InspectionDecision {
+        use fragcap_proxy::{InspectionDecision, InspectionReason};
+
+        let started = Instant::now();
+        let descriptor = ConnectionDescriptor {
+            transport: request.transport,
+            client_peer: request.client_peer,
+            proxy_local: request.proxy_local,
+        };
+        let result = self
+            .context
+            .socket_inception(descriptor, request.opened_at_ns);
+        let inception = loop {
+            let current = *result.lock().expect("inception result lock");
+            if current.reason != "socket-collector-pending" {
+                break current;
+            }
+            if started.elapsed() >= budget {
+                return InspectionDecision::uninspected(
+                    InspectionReason::PendingTimeout,
+                    elapsed_millis(started),
+                )
+                .with_requested_scope(self.requested_scope.as_str());
+            }
+            std::thread::sleep(
+                Duration::from_millis(1).min(budget.saturating_sub(started.elapsed())),
+            );
+        };
+        let decision = if inception.state != "exact" {
+            match inception.reason {
+                "socket-collector-saturated" => InspectionReason::QueueSaturated,
+                "multiple-client-socket-owners" => InspectionReason::AmbiguousOwner,
+                "client-socket-not-in-table" | "socket-created-after-accept" => {
+                    InspectionReason::StaleSocket
+                }
+                _ => InspectionReason::TelemetryUnavailable,
+            }
+        } else {
+            let held = self
+                .context
+                .process_evidence
+                .lock()
+                .expect("process evidence lock");
+            let Some(evidence) = held.as_ref() else {
+                return InspectionDecision::uninspected(
+                    InspectionReason::TelemetryUnavailable,
+                    elapsed_millis(started),
+                )
+                .with_requested_scope(self.requested_scope.as_str());
+            };
+            exact_game_owner_reason(evidence, inception, request.opened_at_ns, &self.game_roles)
+        };
+        let result = if decision == InspectionReason::VerifiedGame {
+            InspectionDecision::verified_game(elapsed_millis(started))
+        } else {
+            InspectionDecision::uninspected(decision, elapsed_millis(started))
+        };
+        result.with_requested_scope(self.requested_scope.as_str())
+    }
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn exact_game_owner_reason(
+    evidence: &super::CaptureProcessEvidence,
+    inception: super::ConnectionInception,
+    opened_at_ns: u64,
+    game_roles: &[String],
+) -> fragcap_proxy::InspectionReason {
+    use fragcap_proxy::InspectionReason;
+
+    let owner = bind_inception_process(evidence, inception, opened_at_ns);
+    if owner.state != "exact" {
+        return match owner.reason.as_str() {
+            "socket-owner-generation-changed-before-accept" => InspectionReason::ChangedGeneration,
+            "socket-created-after-accept" => InspectionReason::StaleSocket,
+            _ => InspectionReason::TelemetryUnavailable,
+        };
+    }
+    let Some(pid) = owner.pid else {
+        return InspectionReason::TelemetryUnavailable;
+    };
+    let Some(root) = evidence.launch_identity.as_ref() else {
+        return InspectionReason::TelemetryUnavailable;
+    };
+    let Some(instance) = evidence.managed_instances.iter().find(|instance| {
+        instance.identity.pid == pid
+            && owner
+                .process_instance_id
+                .as_deref()
+                .is_some_and(|id| id == format!("process-{pid}-{}", instance.event_at.as_nanos()))
+            && (instance.identity.created_unix_nanos() - i128::from(instance.event_at.as_nanos()))
+                .abs()
+                <= 1_000_000_000
+            && instance.identity.same_user_session(root)
+            && evidence.shutdown_scope.iter().any(|path| {
+                path.to_string_lossy()
+                    .eq_ignore_ascii_case(&instance.identity.path.to_string_lossy())
+            })
+    }) else {
+        return InspectionReason::TelemetryUnavailable;
+    };
+    let _ = instance;
+    match owner.role.as_deref() {
+        Some(role) if game_roles.iter().any(|allowed| allowed == role) => {
+            InspectionReason::VerifiedGame
+        }
+        Some(_) => InspectionReason::KnownMiddleware,
+        None => InspectionReason::UnprovenRole,
+    }
+}
+
 impl NativeProxyAdapter {
     pub fn generate_installation_authority(
         generation: u64,
@@ -452,6 +635,7 @@ impl NativeProxyAdapter {
             client_identity: None,
             listener_reservation: None,
             prepared_authority: None,
+            inspection_decider: None,
         }
     }
 
@@ -477,6 +661,14 @@ impl NativeProxyAdapter {
     /// Use packet and process truth shared with this session's capture runner.
     pub fn with_observation_context(mut self, context: NativeObservationContext) -> Self {
         self.observation_context = context;
+        self
+    }
+
+    pub fn with_inspection_decider(
+        mut self,
+        decider: Arc<dyn fragcap_proxy::InspectionDecider>,
+    ) -> Self {
+        self.inspection_decider = Some(decider);
         self
     }
 
@@ -661,6 +853,9 @@ impl ProxyBackend for NativeProxyAdapter {
             })
             .transpose()?;
         let mut backend = RuntimeBackend::new(config);
+        if let Some(decider) = &self.inspection_decider {
+            backend = backend.with_inspection_decider(Arc::clone(decider));
+        }
         if let Some(authority) = self.prepared_authority.take() {
             backend = backend.with_prepared_authority(authority.into_inner());
         }
@@ -826,7 +1021,7 @@ impl NativeProxyLease {
         };
         self.diagnostics_appended = true;
         for record in &diagnostics.connections {
-            lifecycle.connection_diagnostic(serde_json::json!({
+            let mut value = serde_json::json!({
                 "schema_version": record.schema_version,
                 "connection_id": record.connection_id,
                 "terminal": record.terminal,
@@ -845,7 +1040,26 @@ impl NativeProxyLease {
                 "os_error_code": record.os_error_code,
                 "header_timeout_phase": record.header_timeout_phase,
                 "completed_exchanges": record.completed_exchanges,
-            }))?;
+                "inspection_scope": record.inspection_scope,
+                "inspection_action": record.inspection_action,
+                "inspection_reason": record.inspection_reason,
+                "inspection_decided_after_ms": record.inspection_decided_after_ms,
+                "association_inspection_scope": record.association_inspection_scope,
+                "association_inspection_action": record.association_inspection_action,
+                "association_inspection_reason": record.association_inspection_reason,
+                "association_inspection_decided_after_ms": record.association_inspection_decided_after_ms,
+            });
+            value["inspection_requested_scope"] =
+                serde_json::json!(record.inspection_requested_scope);
+            value["inspection_policy_id"] = serde_json::json!(record.inspection_policy_id);
+            value["inspection_owner_proof"] = serde_json::json!(record.inspection_owner_proof);
+            value["association_inspection_requested_scope"] =
+                serde_json::json!(record.association_inspection_requested_scope);
+            value["association_inspection_policy_id"] =
+                serde_json::json!(record.association_inspection_policy_id);
+            value["association_inspection_owner_proof"] =
+                serde_json::json!(record.association_inspection_owner_proof);
+            lifecycle.connection_diagnostic(value)?;
         }
         lifecycle.diagnostic_accounting(serde_json::json!({
             "schema_version": 1,
@@ -1302,10 +1516,20 @@ fn select_inception_socket_owner(
         };
     };
     let mut matches = table.entries().iter().filter(|entry| {
-        entry.proto == Proto::Tcp
-            && entry.local == descriptor.client_peer
-            && entry.remote == Some(descriptor.proxy_local)
-            && entry.created.is_some_and(|at| at.as_nanos() <= opened)
+        let endpoints_match = match descriptor.transport {
+            "tcp" => {
+                entry.proto == Proto::Tcp
+                    && entry.local == descriptor.client_peer
+                    && entry.remote == Some(descriptor.proxy_local)
+            }
+            "udp" => {
+                entry.proto == Proto::Udp
+                    && entry.local == descriptor.client_peer
+                    && entry.remote.is_none()
+            }
+            _ => false,
+        };
+        endpoints_match && entry.created.is_some_and(|at| at.as_nanos() <= opened)
     });
     let Some(owner) = matches.next() else {
         return super::ConnectionInception {
@@ -1922,6 +2146,82 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn exact_game_owner_requires_instance_path_account_role_and_generation() {
+        use fragcap_proxy::InspectionReason;
+
+        let identity = crate::managed_shutdown::ProcessIdentity::current().unwrap();
+        let started = i64::try_from(identity.created_unix_nanos()).unwrap();
+        let pid = identity.pid;
+        let mut evidence = super::super::CaptureProcessEvidence {
+            launch_pid: Some(pid),
+            launch_at: Some(Timestamp::from_nanos(started)),
+            launch_identity: Some(identity.clone()),
+            shutdown_scope: vec![identity.path.clone()],
+            watcher_report: Some(fragcap_core::WatcherReport::default()),
+            managed_instances: vec![super::super::ManagedProcessInstance {
+                event_at: Timestamp::from_nanos(started),
+                identity: identity.clone(),
+            }],
+            ..Default::default()
+        };
+        evidence.events.push(ProcessEvent::started(
+            pid,
+            0,
+            identity.path.to_string_lossy(),
+            "controlled",
+            Timestamp::from_nanos(started),
+        ));
+        evidence
+            .stage_transitions
+            .push(super::super::StageTransition {
+                kind: super::super::StageTransitionKind::Matched,
+                pid,
+                role: "client".to_string(),
+                stage: Some("client".to_string()),
+                at: Timestamp::from_nanos(started),
+            });
+        let inception = super::super::ConnectionInception {
+            state: "exact",
+            reason: "controlled-client-socket",
+            pid: Some(pid),
+            socket_created_at_ns: Some(started + 1),
+        };
+        let opened = u64::try_from(started + 2).unwrap();
+        let game_roles = ["client".to_string()];
+        assert_eq!(
+            exact_game_owner_reason(&evidence, inception, opened, &game_roles),
+            InspectionReason::VerifiedGame
+        );
+        evidence.stage_transitions[0].role = "launcher".to_string();
+        assert_eq!(
+            exact_game_owner_reason(&evidence, inception, opened, &game_roles),
+            InspectionReason::KnownMiddleware
+        );
+        evidence.stage_transitions[0].role = "client".to_string();
+        evidence.managed_instances[0].identity.path = PathBuf::from("C:\\Other\\same.exe");
+        assert_eq!(
+            exact_game_owner_reason(&evidence, inception, opened, &game_roles),
+            InspectionReason::TelemetryUnavailable
+        );
+        evidence.managed_instances[0].identity.path = identity.path.clone();
+        evidence.managed_instances[0].identity.user_sid = "unrelated-user".to_string();
+        assert_eq!(
+            exact_game_owner_reason(&evidence, inception, opened, &game_roles),
+            InspectionReason::TelemetryUnavailable
+        );
+        evidence.managed_instances[0].identity.user_sid = identity.user_sid.clone();
+        evidence.events.push(ProcessEvent::Exited {
+            pid,
+            at: Timestamp::from_nanos(started + 2),
+        });
+        assert_eq!(
+            exact_game_owner_reason(&evidence, inception, opened + 1, &game_roles),
+            InspectionReason::ChangedGeneration
+        );
+    }
+
     #[cfg(all(windows, feature = "socket-table"))]
     #[test]
     fn inception_collector_never_waits_for_socket_enumeration_on_accept() {
@@ -2003,6 +2303,28 @@ mod tests {
         assert_eq!(
             select_inception_socket_owner(&ambiguous, descriptor, 15).state,
             "ambiguous"
+        );
+
+        let association = ConnectionDescriptor {
+            transport: "udp",
+            client_peer: client,
+            proxy_local: proxy,
+        };
+        let udp_table = SocketTable::new(
+            Timestamp::from_nanos(15),
+            vec![
+                fragcap_attr::SocketTableEntry::udp(client, 73)
+                    .created_at(Timestamp::from_nanos(12)),
+                fragcap_attr::SocketTableEntry::udp(proxy, 9).created_at(Timestamp::from_nanos(10)),
+            ],
+        );
+        assert_eq!(
+            select_inception_socket_owner(&udp_table, association, 15).pid,
+            Some(73)
+        );
+        assert_eq!(
+            select_inception_socket_owner(&udp_table, association, 11).state,
+            "unavailable"
         );
     }
 
