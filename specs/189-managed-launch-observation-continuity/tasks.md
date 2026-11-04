@@ -12,3 +12,4 @@
 - [x] T008 Review the diff for changed behavior, unchanged ordinary Capture semantics, encoding, and unintended files.
 - [ ] T009 Commit and push the S189 branch, publish the authorized official PR, and handle external review comments with no more than one optional second `@Codex` request.
 - [ ] T010 Give the owner the PR and remaining post-release observation limits for final review and merge. Do not merge, tag, or publish a release.
+- [ ] T011 Report actual elapsed and remaining time for every lifecycle phase in terminal output and the manifest before closing #553.

@@ -27,9 +27,11 @@ The S188 change already joins basename-only ETW starts to a same-instance verifi
 - **FR-006 (#553)**: Managed client acquisition and post-acquisition observation have separate finite clock origins and durations. Startup, capture preparation, owner release, proxy shutdown, and cleanup retain separate bounds.
 - **FR-007 (#553)**: A client acquired within the accepted wait gets the requested post-acquisition duration unless a named actual terminal condition occurs. A proven successor receives a full interval within the authorized attempt ceiling.
 - **FR-008 (#553)**: Simple launch defaults remain 30 seconds of acquisition and 60 seconds of observation. Declared multi-stage launches default to 180 seconds and 120 seconds respectively. Exact supported overrides take precedence.
-- **FR-009 (#553)**: Human and JSON authorization plans, terminal output, and manifest state the effective values and phase origins. Runtime refuses a budget that cannot honor an accepted request instead of silently clamping it.
+- **FR-009 (#553)**: Human and JSON authorization plans, terminal output, and manifest state the effective values and phase origins. Runtime refuses a budget that cannot honor an accepted request instead of silently clamping it. Actual elapsed and remaining time for every phase is still required and remains open in #553.
 - **FR-010**: Capture remains passive; Deep Capture remains explicitly authorized, target-scoped, finite, and auditable. No target memory access or private installed-title identity is added.
 
 ## Issue disposition
 
 S188/v0.10.13 shipped #547's source-level basename/path correction and precise acquisition reason. If an installed release exhibits a remaining or new defect, it is reported as a GitHub issue with its observed behavior and separate evidence claims.
+
+The implementation in this PR does not yet emit actual elapsed and remaining time for every lifecycle phase. #553 stays open for that requirement. Post-release installed-product and cleanup/recovery observations for #552 also remain in its issue record.
