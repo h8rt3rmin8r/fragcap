@@ -83,7 +83,7 @@ fn identity(inputs: &Inputs) -> Vec<Check> {
             None => "undetermined".to_string(),
         }
     }
-    vec![
+    let mut checks = vec![
         Check::ok(IDENTITY, "version", inputs.fragcap_version.clone()),
         Check::ok(IDENTITY, "binary", path_detail(&inputs.binary_path)),
         Check::ok(
@@ -96,7 +96,39 @@ fn identity(inputs: &Inputs) -> Vec<Check> {
             "local db",
             store_detail(&inputs.local_db_path, inputs.local_db_present),
         ),
-    ]
+    ];
+    for observation in &inputs.storage_observations {
+        let effective = observation.effective.as_ref().map_or_else(
+            || "unverified".to_string(),
+            |path| path.display().to_string(),
+        );
+        let redirected = observation
+            .redirected
+            .map_or("unknown".to_string(), |value| value.to_string());
+        let reason = observation.reason.as_deref().unwrap_or("none");
+        let detail = format!(
+            "selected={} | source={} | existence={} | effective={} | redirected={} | reason={}",
+            observation.selected.display(),
+            observation.source,
+            observation.existence,
+            effective,
+            redirected,
+            reason
+        );
+        let mut check = if observation.existence == "unavailable" {
+            Check::fail(
+                IDENTITY,
+                &observation.name,
+                detail,
+                "Check the selected path and current-user profile access.",
+            )
+        } else {
+            Check::ok(IDENTITY, &observation.name, detail)
+        };
+        check.storage = Some(observation.clone());
+        checks.push(check);
+    }
+    checks
 }
 
 fn os(inputs: &Inputs) -> Check {
@@ -786,6 +818,7 @@ mod tests {
                 "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
             )),
             local_db_present: true,
+            storage_observations: Vec::new(),
             os: "Windows 11".to_string(),
             subsystem: Subsystem::Native,
             privilege: Privilege::Elevated,

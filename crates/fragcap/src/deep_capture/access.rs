@@ -21,6 +21,18 @@ pub struct OutputRecipient {
 }
 
 impl OutputRecipient {
+    /// Check that the current Windows token is an individual storage user and,
+    /// in an interactive session, names that session's desktop account.
+    pub fn current_storage_account() -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            windows::current_storage_account()
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(())
+        }
+    }
     /// Controlled group-denied equivalent for repository-owned ACL fixtures.
     #[cfg(windows)]
     #[doc(hidden)]

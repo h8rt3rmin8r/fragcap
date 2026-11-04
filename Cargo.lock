@@ -593,6 +593,7 @@ dependencies = [
  "http_req",
  "regex",
  "ring",
+ "rusqlite",
  "serde_json",
  "subtle",
  "tempfile",

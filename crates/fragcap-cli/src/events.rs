@@ -352,6 +352,10 @@ pub enum Event {
     DeepCaptureComplete {
         session_id: String,
         manifest: String,
+        bundle_selected: String,
+        bundle_effective: Option<String>,
+        bundle_redirected: Option<bool>,
+        bundle_verification_reason: Option<String>,
         status: String,
         cleanup_status: String,
         requested_launch_duration_ms: Option<u64>,
@@ -1213,6 +1217,10 @@ impl Event {
             Event::DeepCaptureComplete {
                 session_id,
                 manifest,
+                bundle_selected,
+                bundle_effective,
+                bundle_redirected,
+                bundle_verification_reason,
                 status,
                 cleanup_status,
                 requested_launch_duration_ms,
@@ -1236,6 +1244,14 @@ impl Event {
                 write_json_string(session_id, &mut line);
                 line.push_str(",\"manifest\":");
                 write_json_string(manifest, &mut line);
+                line.push_str(",\"bundle_selected\":");
+                write_json_string(bundle_selected, &mut line);
+                line.push_str(",\"bundle_effective\":");
+                line.push_str(&serde_json::to_string(bundle_effective).unwrap());
+                line.push_str(",\"bundle_redirected\":");
+                line.push_str(&serde_json::to_string(bundle_redirected).unwrap());
+                line.push_str(",\"bundle_verification_reason\":");
+                line.push_str(&serde_json::to_string(bundle_verification_reason).unwrap());
                 line.push_str(",\"status\":");
                 write_json_string(status, &mut line);
                 line.push_str(",\"cleanup_status\":");

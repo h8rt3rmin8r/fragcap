@@ -196,8 +196,9 @@
       unset by default. Interactive UI sets the scope only after the operator
       selects the unchecked current-user option; silent removal must provide both
       exact values. The immediate action captures the initiating user's exact
-      AppData roots into CustomActionData. The deferred action impersonates that
-      user, previews the exact supplied inventory, and passes its identifier into
+      AppData identity paths into CustomActionData. The deferred action impersonates
+      that user, verifies the identity paths against its own token, previews the
+      current profile's .fragcap inventory, and passes its identifier into
       fragcap's shared recovery, deletion, and report authority before the
       installed executable is removed. No installer-only confirmation bypass
       exists on the public process boundary.
@@ -211,7 +212,7 @@
     <Property Id="FRAGCAP_FRESH_START_SCOPE" Secure="yes" />
     <CustomAction Id="SetFreshStartCurrentUser"
                   Property="FreshStartCurrentUser"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) $roots=@('--installer-adapter','--roaming-root',$roaming,'--local-root',$local); $preview=&amp; $exe --json fresh-start --scope current-user --preview @roots | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user @roots --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]fragcap&quot; &quot;[LocalAppDataFolder]fragcap&quot; &quot;[TempFolder].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) if([Environment]::GetFolderPath('ApplicationData').TrimEnd([char]92) -ine $roaming.TrimEnd([char]92) -or [Environment]::GetFolderPath('LocalApplicationData').TrimEnd([char]92) -ine $local.TrimEnd([char]92)){exit 1}; Remove-Item Env:FRAGCAP_STORAGE_ROOT -ErrorAction SilentlyContinue; $preview=&amp; $exe --json fresh-start --scope current-user --preview | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]&quot; &quot;[LocalAppDataFolder]&quot; &quot;[TempFolder].&quot;"
                   Execute="immediate" />
     <CustomAction Id="FreshStartCurrentUser"
                   BinaryKey="WixCA"
@@ -439,8 +440,8 @@
 
         <Control Id="FreshStartCheckBox" Type="CheckBox" X="20" Y="58" Width="335" Height="30" Property="FRAGCAP_FRESH_START" CheckBoxValue="1" Text="Remove all fragcap application and user data for my account for a fresh start" />
         <Control Id="Warning" Type="Text" X="35" Y="91" Width="320" Height="26" NoPrefix="yes" Text="Irreversible. This includes local.db, learned targets, profiles, catalog state, settings, caches, logs, captures, and sensitive Deep Capture evidence." />
-        <Control Id="RoamingRoot" Type="Text" X="35" Y="122" Width="320" Height="18" NoPrefix="yes" Text="Roaming root: [AppDataFolder]fragcap" />
-        <Control Id="LocalRoot" Type="Text" X="35" Y="143" Width="320" Height="18" NoPrefix="yes" Text="Local root: [LocalAppDataFolder]fragcap" />
+        <Control Id="RoamingRoot" Type="Text" X="35" Y="122" Width="320" Height="18" NoPrefix="yes" Text="Roaming root: current user .fragcap\roaming" />
+        <Control Id="LocalRoot" Type="Text" X="35" Y="143" Width="320" Height="18" NoPrefix="yes" Text="Local root: current user .fragcap\local" />
         <Control Id="Exclusions" Type="Text" X="35" Y="164" Width="320" Height="29" NoPrefix="yes" Text="Custom paths, Npcap, Wireshark configuration, and independently managed extcap registrations are excluded." />
         <Control Id="AllUsers" Type="Text" X="35" Y="198" Width="320" Height="29" NoPrefix="yes" Text="Administrators: preview the distinct all-users scope with `fragcap fresh-start --scope all-users --preview`." />
 

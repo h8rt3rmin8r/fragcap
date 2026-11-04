@@ -378,6 +378,7 @@ mod tests {
             catalog_db_present: false,
             local_db_path: None,
             local_db_present: false,
+            storage_observations: Vec::new(),
             os: "controlled-platform".into(),
             subsystem: Subsystem::Native,
             privilege: Privilege::NotElevated,

@@ -2327,17 +2327,19 @@ winning.
 4. A profile bundled with the fragcap distribution whose `game.id`
    matches.
 
-fragcap keeps two stores in the per-user data root, `%APPDATA%\fragcap\`, both
-siblings of the user profile directory. `catalog.db` is the ShruggieTech-shipped
+On Windows, fragcap keeps two stores in the per-user data root, `%USERPROFILE%\.fragcap\roaming\`, both
+siblings of the `profiles` directory. `catalog.db` is the ShruggieTech-shipped
 catalog, disposable and replaced wholesale by a catalog refresh; `local.db` is
 the user-owned store, where learned launch data and later user data accumulate
 and which a catalog refresh never touches. When neither the `--catalog-db` option
 nor the `FRAGCAP_CATALOG_DB` environment variable names a catalog, `run` uses the
 default and creates it on first use: it copies a store shipped beside the binary
 when one is present, and otherwise creates an empty store. The local store
-defaults the same way (`--local-db`, `FRAGCAP_LOCAL_DB`) and is always created
-empty. A store named explicitly is used as given and, when absent, is neither
+defaults the same way (`--local-db`, `FRAGCAP_LOCAL_DB`) and is created
+empty when no legacy database exists. A store named explicitly is used as given and, when absent, is neither
 created nor an error.
+
+S192 makes the current token's Windows profile folder the authority for this root, rather than the launching application's AppData environment. The separate `%USERPROFILE%\.fragcap\local\` subtree holds local capture data. `FRAGCAP_STORAGE_ROOT` is an explicit whole-store override for isolated automation; database, profile, session, and bundle overrides retain their existing precedence. The first default write inventories exact ordinary and package-private legacy Fragcap roots. A single legacy SQLite database is copied through a consistent snapshot before initialization, with its source retained; multiple sources, an active writer, or an existing conflicting destination produce a diagnostic. Authored profiles transfer without replacing existing files. Legacy sessions and their path-bound recovery records remain at their original roots, with an append-only current-user index. Read-only Doctor examines those roots without creating or migrating state and reports selected and opened-handle effective destinations separately.
 
 Were a profile bundled, a user profile of the same id would shadow it by
 design, so a bundled profile that had drifted from a game update is
@@ -4489,7 +4491,7 @@ downloading, bundling, or installing npcap (section 20.2). It is unsigned for
 this release; code signing is tracked separately, so the checksum is the
 integrity check a user verifies.
 
-Ordinary uninstall preserves every user-owned database, profile, capture, log, cache, and Deep Capture bundle. Interactive removal separately offers an unchecked current-user fresh-start choice. Its confirmation names the initiating user's exact `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap` roots and warns that deletion is irreversible. The MSI passes those exact client-context roots to the installed executable before removing it; it never resolves an elevated service account's profile and never implements its own recursive path search. The deferred action verifies the supplied roots against the impersonated initiating user, previews the current inventory, and passes that identifier into execution, so no process-visible installer flag bypasses confirmation. Silent removal requires both `FRAGCAP_FRESH_START=1` and `FRAGCAP_FRESH_START_SCOPE=current-user`. Repair, reinstall, upgrade, rollback, and automatic maintenance ignore this authority.
+Ordinary uninstall preserves every user-owned database, profile, capture, log, cache, and Deep Capture bundle. Interactive removal separately offers an unchecked current-user fresh-start choice. Its confirmation names the initiating user's exact `%USERPROFILE%\.fragcap\roaming` and `%USERPROFILE%\.fragcap\local` roots and warns that deletion is irreversible. The MSI passes the initiating user's AppData identity paths to an impersonated deferred action, which verifies its token context before asking the installed executable to preview and execute the current profile's `.fragcap` inventory. The preview identifier binds execution, so no process-visible installer flag bypasses confirmation. Legacy AppData roots remain retained and are not automatically deleted by S192 fresh-start. Silent removal requires both `FRAGCAP_FRESH_START=1` and `FRAGCAP_FRESH_START_SCOPE=current-user`. Repair, reinstall, upgrade, rollback, and automatic maintenance ignore this authority.
 
 An administrator who needs all-users cleanup must use `fragcap fresh-start --scope all-users --preview`, review every exact SID-bound root, and then execute with that preview identifier and `--yes`. Another profile's Deep Capture sessions remain until current-user cleanup in that profile reconciles its Windows CurrentUser certificate authority; the elevated administrator must not replay Doctor under the wrong identity. The static MSI does not offer an all-users checkbox because it cannot display and bind a dynamic profile inventory truthfully. Custom `FRAGCAP_*` roots, command-line paths, exported evidence, Npcap, Wireshark configuration, and independently managed extcap registrations remain excluded. Link or reparse traversal is refused rather than followed.
 

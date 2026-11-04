@@ -11,7 +11,7 @@ mod common;
 use fragcap_cli::doctor::action::{offered_actions, ActionKind, Capabilities, ExtcapScope};
 use fragcap_cli::doctor::{
     checks, DeepCaptureCa, DeepCaptureInputs, IfaceInfo, Inputs, LoopbackReadiness, NpcapInfo,
-    Privilege, ProxyBackendInfo, Status, Subsystem,
+    Privilege, ProxyBackendInfo, Status, StorageObservation, Subsystem,
 };
 
 fn ready() -> Inputs {
@@ -28,6 +28,7 @@ fn ready() -> Inputs {
             "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
         )),
         local_db_present: true,
+        storage_observations: Vec::new(),
         os: "Windows 11".to_string(),
         subsystem: Subsystem::Native,
         privilege: Privilege::Elevated,
@@ -88,6 +89,38 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     );
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
+}
+
+#[test]
+fn storage_location_reports_selected_effective_and_unavailable_distinctly() {
+    let mut inputs = ready();
+    inputs.storage_observations = vec![StorageObservation {
+        name: "local storage".to_string(),
+        selected: std::path::PathBuf::from("C:\\Users\\gamer\\.fragcap\\roaming\\local.db"),
+        source: "current-user default".to_string(),
+        existence: "present".to_string(),
+        effective: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\.fragcap\\roaming\\local.db",
+        )),
+        redirected: Some(false),
+        reason: None,
+    }];
+    let report = checks::run(&inputs);
+    let human = report.render_human();
+    assert!(human.contains("selected=C:\\Users\\gamer\\.fragcap\\roaming\\local.db"));
+    let json = report.render_json();
+    assert!(json.contains("\"redirected\":false"), "{json}");
+    assert!(json.contains("\"effective\":\"C:"), "{json}");
+
+    inputs.storage_observations[0].existence = "unavailable".to_string();
+    inputs.storage_observations[0].effective = None;
+    inputs.storage_observations[0].redirected = None;
+    inputs.storage_observations[0].reason = Some("access denied".to_string());
+    let unavailable = checks::run(&inputs);
+    assert_eq!(unavailable.exit().code(), 1);
+    assert!(unavailable
+        .render_json()
+        .contains("\"reason\":\"access denied\""));
 }
 
 #[test]

@@ -569,6 +569,7 @@ Param(
         $environment = $BaseEnvironment.Clone()
         $environment.APPDATA = Join-Path $profile 'AppData\Roaming'
         $environment.LOCALAPPDATA = Join-Path $profile 'AppData\Local'
+        $environment.FRAGCAP_STORAGE_ROOT = Join-Path $profile '.fragcap'
         $environment.FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable
         [void][System.IO.Directory]::CreateDirectory($environment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($environment.LOCALAPPDATA)
@@ -619,14 +620,15 @@ Param(
         # real documented defaults back instead of supplying path overrides.
         $roaming = [System.Environment]::GetFolderPath('ApplicationData')
         $local = [System.Environment]::GetFolderPath('LocalApplicationData')
+        $profile = [System.Environment]::GetFolderPath('UserProfile')
         if ([string]::IsNullOrEmpty($roaming) -or [string]::IsNullOrEmpty($local) -or
             [System.IO.Path]::GetFullPath($env:APPDATA) -ine [System.IO.Path]::GetFullPath($roaming) -or
             [System.IO.Path]::GetFullPath($env:LOCALAPPDATA) -ine [System.IO.Path]::GetFullPath($local)) {
             throw 'installed slow timing requires the runner account actual default data paths'
         }
-        $dataRoot = Join-Path $roaming 'fragcap'
+        $dataRoot = Join-Path $profile '.fragcap\roaming'
         if (Test-Path -LiteralPath $dataRoot) { throw 'installed slow timing requires an absent default data root' }
-        $environment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = $roaming; LOCALAPPDATA = $local; FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable; FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS = '50000'; FRAGCAP_CONTROLLED_TARGET_HOLD_MS = '70000'; FRAGCAP_SESSION_DIR = $null; FRAGCAP_CATALOG_DB = $null; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
+        $environment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = $roaming; LOCALAPPDATA = $local; FRAGCAP_STORAGE_ROOT = $null; FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable; FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS = '50000'; FRAGCAP_CONTROLLED_TARGET_HOLD_MS = '70000'; FRAGCAP_SESSION_DIR = $null; FRAGCAP_CATALOG_DB = $null; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         $targetHandle = 'package_certification'
         [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', 'Package Certification', '--anchor', 'package:certification', '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
         $expectedDb = Join-Path $dataRoot 'local.db'
@@ -667,6 +669,28 @@ Param(
                 [void]$script:SmokeFirewallRules.Remove($firewallRuleName)
             }
         }
+    }
+
+    function Invoke-DefaultStorageReadback {
+        [CmdletBinding()]
+        Param([Parameter(Mandatory=$true)][string]$Executable, [Parameter(Mandatory=$true)][string]$ScratchRoot)
+        $profile = [System.Environment]::GetFolderPath('UserProfile')
+        $expected = Join-Path $profile '.fragcap\roaming\local.db'
+        $ordinary = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = [System.Environment]::GetFolderPath('ApplicationData'); LOCALAPPDATA = [System.Environment]::GetFolderPath('LocalApplicationData'); FRAGCAP_STORAGE_ROOT = $null; FRAGCAP_LOCAL_DB = $null; FRAGCAP_CATALOG_DB = $null; FRAGCAP_SESSION_DIR = $null }
+        $altered = $ordinary.Clone()
+        $altered.APPDATA = Join-Path $ScratchRoot 'other-host\AppData\Roaming'
+        $altered.LOCALAPPDATA = Join-Path $ScratchRoot 'other-host\AppData\Local'
+        $marker = 'S192 storage readback'
+        [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', $marker, '--handle', 's192_storage_readback', '--exe', $Executable, '--socket-holder', 'yes') -Environment $ordinary)
+        $listing = Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'list') -Environment $altered
+        if (-not $listing.Stdout.Contains($marker)) { throw 'altered AppData process did not read the ordinary process target from the shared default' }
+        $doctor = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'doctor') -Environment $altered -AllowedExitCodes @(0, 1)
+        $rows = @($doctor.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop })
+        $local = @($rows | Where-Object { $_.name -ceq 'local storage' })
+        if ($local.Count -ne 1 -or $local[0].storage.selected -ine $expected -or $local[0].storage.existence -cne 'present' -or $local[0].storage.redirected -ne $false -or -not ([string]$local[0].storage.effective).EndsWith('\.fragcap\roaming\local.db', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'opened-handle Doctor destination disagrees with the independent default-store readback'
+        }
+        Write-ShruggieLog 'Independent ordinary and altered-AppData processes read one current-user default store.' -Level Success -Source Storage
     }
 
     function Test-UserFixture {
@@ -750,7 +774,7 @@ Param(
         Assert-Unsigned -Path $candidateMsi[0].FullName
         $zipPe = Get-PeInspection -ExecutablePath $zipExe -Dumper $dumper -Policy $contract.pe_imports -Surface 'portable-zip'
         $testProfile = Join-Path $scratch 'User'
-        $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $testProfile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $testProfile 'AppData\Local'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
+        $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $testProfile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $testProfile 'AppData\Local'); FRAGCAP_STORAGE_ROOT = (Join-Path $testProfile '.fragcap'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
@@ -769,11 +793,11 @@ Param(
         $portableSmokeBundle = Join-Path $scratch 'smoke-portable\bundle'
         $installDirectory = Join-Path $scratch 'installed'
         $userFixturePaths = [ordered]@{
-            'capture' = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap\captures\preserved.fcapng'
-            'deep-capture-bundle' = Join-Path $cleanEnvironment.APPDATA 'fragcap\sessions\preserved\manifest.json'
+            'capture' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local\captures\preserved.fcapng'
+            'deep-capture-bundle' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\sessions\preserved\manifest.json'
             'extcap-registration' = Join-Path $cleanEnvironment.APPDATA 'Wireshark\extcap\fragcap.exe'
-            'local-database' = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
-            'writable-catalog' = Join-Path $cleanEnvironment.APPDATA 'fragcap\catalog.db'
+            'local-database' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\local.db'
+            'writable-catalog' = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\catalog.db'
         }
         $expectedFileFixtureNames = @($contract.user_owned_fixtures | Where-Object { $_ -ne 'preexisting-defender-exclusion' } | Sort-Object)
         if (Compare-Object -ReferenceObject $expectedFileFixtureNames -DifferenceObject @($userFixturePaths.Keys | Sort-Object)) { throw 'user-owned fixture path map does not cover the contract' }
@@ -878,8 +902,8 @@ Param(
         [void](Invoke-MsiOperation -Case 'fresh-start-test-install' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'fresh-start-install.log'))
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
         $freshStartReport = Join-Path $scratch 'fresh-start-report.json'
-        $roamingRoot = Join-Path $cleanEnvironment.APPDATA 'fragcap'
-        $localRoot = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap'
+        $roamingRoot = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming'
+        $localRoot = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local'
         $freshStartPreview = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--preview', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot) -Environment $cleanEnvironment
         $freshStartInventory = $freshStartPreview.Stdout | ConvertFrom-Json -Depth 32
         $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
@@ -891,10 +915,12 @@ Param(
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
         if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
         if (-not (Test-Path -LiteralPath $portableSmokeLocalDb) -or -not (Test-Path -LiteralPath $portableSmokeBundle)) { throw 'fresh start removed custom database or bundle paths' }
-        $msiRoamingRoot = Join-Path $env:APPDATA 'fragcap'
-        $msiLocalRoot = Join-Path $env:LOCALAPPDATA 'fragcap'
+        $msiStorageRoot = Join-Path ([System.Environment]::GetFolderPath('UserProfile')) '.fragcap'
+        $msiRoamingRoot = Join-Path $msiStorageRoot 'roaming'
+        $msiLocalRoot = Join-Path $msiStorageRoot 'local'
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
         if ($RequireInstallationCa) { Invoke-InstalledSlowTiming -Executable $installedExecutable }
+        Invoke-DefaultStorageReadback -Executable $installedExecutable -ScratchRoot $scratch
         [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
         [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
         [System.IO.File]::WriteAllText((Join-Path $msiRoamingRoot 'settings.json'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
@@ -902,7 +928,7 @@ Param(
         [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName, 'FRAGCAP_FRESH_START=1', 'FRAGCAP_FRESH_START_SCOPE=current-user') -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot) -or (Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'MSI fresh-start uninstall did not remove exact initiating-user and installer-owned state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-after-fresh-start' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-reinstall.log'))
-        $cleanLocalDb = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
+        $cleanLocalDb = Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming\local.db'
         $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment
         if ($cleanListing.Stdout -match 'S131 user-owned fixture' -or -not (Test-Path -LiteralPath $cleanLocalDb)) { throw 'clean reinstall restored prior local target state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-final-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'clean-reinstall-uninstall.log'))

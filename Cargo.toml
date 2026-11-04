@@ -236,6 +236,7 @@ ctrlc           = "3.4"
 # lock update raise the floor. See the S034 decisions fragment.
 rusqlite        = { version = "0.40", default-features = false, features = [
     "bundled",
+    "backup",
 ] }
 
 # External, optional. Slice S035, research R-1: the HTTP client the targets hint

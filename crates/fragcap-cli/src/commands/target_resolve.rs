@@ -251,6 +251,7 @@ pub(crate) fn resolve_stored(
                  cascade determines the client identity",
             ));
         }
+        crate::storage_transition::prepare_profiles().map_err(CliError::failure)?;
         let search = paths::search_path(&[]);
         let bundled = paths::bundled();
         let resolver = build_resolver(catalog_db.as_deref(), local_db.as_deref())?;
@@ -670,6 +671,13 @@ fn setup_stores(
         }
     }
 
+    if local_default {
+        let path = local_db
+            .as_deref()
+            .ok_or_else(|| CliError::failure("the current-user local store path is unavailable"))?;
+        crate::storage_transition::prepare_database(path).map_err(CliError::failure)?;
+    }
+
     // Bootstrap only defaulted locations, never a path the operator named. A
     // bootstrap failure is a warning that drops that store, never fatal (FR-005).
     // The catalog resolves and seeds through the one shared helper the `targets`
@@ -761,9 +769,15 @@ pub(crate) fn ensure_catalog_store(
         return Ok(Some(path));
     }
     // Per-user default: seed it from the shipped template on first run.
-    let Some(default) = paths::default_catalog_db_path() else {
-        return Ok(None);
-    };
+    let default = paths::default_catalog_db_path().ok_or_else(|| {
+        format!(
+            "current-user catalog store path is unavailable: {}",
+            paths::storage_root()
+                .err()
+                .map_or_else(|| "unknown reason".to_string(), |error| error.to_string())
+        )
+    })?;
+    crate::storage_transition::prepare_database(&default)?;
     let template = bundled_catalog_template();
     ensure_store(&default, template.as_deref()).map_err(|e| {
         format!(
