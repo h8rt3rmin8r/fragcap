@@ -94,6 +94,9 @@ pub(crate) struct SocksConnectionContext<'a> {
     pub tls_client_config: std::sync::Arc<rustls::ClientConfig>,
     pub key_log: Option<std::sync::Arc<crate::SessionKeyLog>>,
     pub quic_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    pub inspection_decider: Option<std::sync::Arc<dyn crate::InspectionDecider>>,
+    pub inspection_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    pub on_association_inspection: &'a (dyn Fn(crate::InspectionDecision) + Send + Sync),
     /// Called at the actual stage boundary, before relay or association teardown.
     pub on_stage: &'a (dyn Fn(crate::ConnectionStage, bool) + Send + Sync),
 }
@@ -124,6 +127,9 @@ pub(crate) async fn serve_socks5(
         tls_client_config,
         key_log,
         quic_slots,
+        inspection_decider,
+        inspection_slots,
+        on_association_inspection,
         on_stage,
     } = context;
     let mut accounting = ProtocolAccounting {
@@ -223,6 +229,9 @@ pub(crate) async fn serve_socks5(
                     tls_client_config,
                     key_log,
                     quic_slots,
+                    inspection_decider,
+                    inspection_slots,
+                    on_association_inspection,
                 },
                 accounting,
             )
@@ -594,6 +603,9 @@ struct UdpAssociationContext<'a> {
     tls_client_config: std::sync::Arc<rustls::ClientConfig>,
     key_log: Option<std::sync::Arc<crate::SessionKeyLog>>,
     quic_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    inspection_decider: Option<std::sync::Arc<dyn crate::InspectionDecider>>,
+    inspection_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    on_association_inspection: &'a (dyn Fn(crate::InspectionDecision) + Send + Sync),
 }
 
 async fn serve_udp_association(
@@ -617,6 +629,9 @@ async fn serve_udp_association(
         tls_client_config,
         key_log,
         quic_slots,
+        inspection_decider,
+        inspection_slots,
+        on_association_inspection,
     } = context;
     let claimed = request.client_endpoint.map(|address| {
         if address.ip().is_unspecified() {
@@ -714,6 +729,7 @@ async fn serve_udp_association(
     let mut upstream_v4_buffer = vec![0_u8; upstream_capacity];
     let mut upstream_v6_buffer = vec![0_u8; upstream_capacity];
     let mut client_endpoint = claimed.filter(|value| value.port() != 0);
+    let mut association_inspection = None;
     let mut peers = BTreeSet::new();
     let mut quic = None;
     let mut quic_buffer = vec![0_u8; upstream_capacity];
@@ -794,6 +810,29 @@ async fn serve_udp_association(
                 };
                 if client_endpoint.is_none() {
                     client_endpoint = Some(source);
+                }
+                if association_inspection.is_none() {
+                    let decision = crate::runtime::decide_inspection(
+                        inspection_decider.clone(),
+                        std::sync::Arc::clone(&inspection_slots),
+                        crate::InspectionRequest {
+                            connection_id,
+                            client_peer: source,
+                            proxy_local: relay_address,
+                            opened_at_ns: crate::runtime::wall_clock_ns(),
+                            transport: "udp",
+                        },
+                    ).await;
+                    on_association_inspection(decision);
+                    association_inspection = Some(decision);
+                    if decision.action == crate::InspectionAction::Uninspected {
+                        accounting.socks_udp_inspection_unavailable = accounting
+                            .socks_udp_inspection_unavailable.saturating_add(1);
+                        break Err(SocksFailure::new(
+                            "inspection-relay-unavailable",
+                            "the uninspected native relay is not available in this slice",
+                        ));
+                    }
                 }
                 let address_type = datagram.address_type;
                 let payload_len = datagram.payload.len();

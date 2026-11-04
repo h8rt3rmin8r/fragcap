@@ -492,6 +492,8 @@ pub struct ConnectionDiagnostic {
     pub os_error_code: Option<i32>,
     pub header_timeout_phase: Option<&'static str>,
     pub completed_exchanges: u64,
+    pub inspection: Option<crate::InspectionDecision>,
+    pub association_inspection: Option<crate::InspectionDecision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -633,6 +635,7 @@ pub struct ProtocolAccounting {
     pub socks_udp_fragment_dropped: u64,
     pub socks_udp_source_dropped: u64,
     pub socks_udp_policy_dropped: u64,
+    pub socks_udp_inspection_unavailable: u64,
     pub socks_udp_resolution_dropped: u64,
     pub socks_udp_peer_limit_dropped: u64,
     pub socks_udp_oversized_dropped: u64,

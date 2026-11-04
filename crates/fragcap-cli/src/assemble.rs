@@ -517,6 +517,8 @@ pub struct CaptureComponents {
     /// Optional capture-wide flow registry supplied by Deep Capture so proxy
     /// observations can resolve packet-side flow ids after the run.
     pub flow_registry: Option<Arc<fragcap::FlowRegistry>>,
+    /// Shared live owner evidence for a Deep Capture native inspection decision.
+    pub inspection_context: Option<fragcap::deep_capture::NativeObservationContext>,
     /// The live process watcher, kept alive for the duration of the run so the
     /// ETW session it owns is not torn down while its receiver is still being
     /// drained. `None` on the offline path, which owns no watcher.
@@ -612,6 +614,7 @@ fn offline_components(
         // it at the arm instant, so a snapshot process is present from arm.
         snapshot_at: None,
         flow_registry: None,
+        inspection_context: None,
         #[cfg(all(feature = "etw", windows))]
         watcher: None,
     })
@@ -793,6 +796,7 @@ fn live_components(
             startup_snapshot,
             snapshot_at,
             flow_registry: None,
+            inspection_context: None,
             watcher: Some(watcher),
         })
     }

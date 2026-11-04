@@ -1341,6 +1341,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             &capture_args,
             prepared,
             Arc::clone(&registry),
+            self.observation_context.clone(),
             &mut self.emitter.borrow_mut(),
         );
         self.phase_timing.push(deep_capture_api::PhaseTiming::ended(
@@ -3892,6 +3893,7 @@ fn run_real_capture(
     capture_args: &CaptureArgs,
     prepared: capture::PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
+    inspection_context: deep_capture_api::NativeObservationContext,
     emitter: &mut Emitter,
 ) -> RealCaptureResult {
     let mut timing = crate::orchestrator::CaptureTiming::default();
@@ -3900,6 +3902,7 @@ fn run_real_capture(
         emitter,
         prepared,
         Arc::clone(&flow_registry),
+        inspection_context,
         &mut timing,
     );
     let process_release_watch = result

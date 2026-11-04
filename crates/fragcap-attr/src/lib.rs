@@ -59,7 +59,9 @@ pub mod table;
 pub mod platform;
 
 pub use etw::WatcherError;
-pub use index::{AttributionIndex, MatchRank, PublishedIndex, RetainedEntry, RetentionMap};
+pub use index::{
+    socket_match_rank, AttributionIndex, MatchRank, PublishedIndex, RetainedEntry, RetentionMap,
+};
 pub use proc_script::{ProcessScript, ScriptedWatcher};
 pub use resolver::PublishedResolver;
 pub use schedule::RefreshSchedule;

@@ -45,6 +45,7 @@ pub struct NativeProxyBackend {
     tls_client_config: Option<Arc<rustls::ClientConfig>>,
     application_sink: crate::application::SharedEventSink,
     key_log: Option<Arc<crate::SessionKeyLog>>,
+    inspection_decider: Option<Arc<dyn crate::InspectionDecider>>,
 }
 
 impl NativeProxyBackend {
@@ -57,6 +58,7 @@ impl NativeProxyBackend {
             tls_client_config: None,
             application_sink: None,
             key_log: None,
+            inspection_decider: None,
         }
     }
 
@@ -92,6 +94,11 @@ impl NativeProxyBackend {
 
     pub fn with_key_log(mut self, key_log: Arc<crate::SessionKeyLog>) -> Self {
         self.key_log = Some(key_log);
+        self
+    }
+
+    pub fn with_inspection_decider(mut self, decider: Arc<dyn crate::InspectionDecider>) -> Self {
+        self.inspection_decider = Some(decider);
         self
     }
 
@@ -243,6 +250,8 @@ impl NativeProxyBackend {
             tls_client_config,
             application_sink: self.application_sink.clone(),
             key_log: self.key_log.clone(),
+            inspection_decider: self.inspection_decider.clone(),
+            inspection_slots: Arc::new(tokio::sync::Semaphore::new(self.config.max_connections())),
             body_resources: crate::body::SessionBodyResources::new(
                 self.config.protocol.max_concurrent_decoders,
             ),
@@ -430,6 +439,8 @@ struct ConnectionTrace {
     tls_alert: Option<String>,
     transport_category: Option<&'static str>,
     os_error_code: Option<i32>,
+    inspection: Option<crate::InspectionDecision>,
+    association_inspection: Option<crate::InspectionDecision>,
 }
 
 impl Default for ConnectionTrace {
@@ -445,6 +456,8 @@ impl Default for ConnectionTrace {
             tls_alert: None,
             transport_category: None,
             os_error_code: None,
+            inspection: None,
+            association_inspection: None,
         }
     }
 }
@@ -519,6 +532,8 @@ impl ConnectionTrace {
             os_error_code: self.os_error_code,
             header_timeout_phase: None,
             completed_exchanges: 0,
+            inspection: self.inspection,
+            association_inspection: self.association_inspection,
         }
     }
 }
@@ -551,6 +566,8 @@ struct RuntimeServices {
     tls_client_config: Arc<rustls::ClientConfig>,
     application_sink: crate::application::SharedEventSink,
     key_log: Option<Arc<crate::SessionKeyLog>>,
+    inspection_decider: Option<Arc<dyn crate::InspectionDecider>>,
+    inspection_slots: Arc<tokio::sync::Semaphore>,
     body_resources: crate::body::SessionBodyResources,
     quic_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -560,6 +577,7 @@ struct ConnectionIdentity {
     id: u64,
     peer: std::net::SocketAddr,
     local: std::net::SocketAddr,
+    opened_at_ns: u64,
 }
 
 async fn connection_task(
@@ -576,6 +594,29 @@ async fn connection_task(
     let connection_id = identity.id;
     let peer = identity.peer;
     let local = identity.local;
+    let decision = decide_inspection(
+        services.inspection_decider.clone(),
+        Arc::clone(&services.inspection_slots),
+        crate::InspectionRequest {
+            connection_id,
+            client_peer: peer,
+            proxy_local: local,
+            opened_at_ns: identity.opened_at_ns,
+            transport: "tcp",
+        },
+    )
+    .await;
+    trace.lock().expect("connection trace lock").inspection = Some(decision);
+    if decision.action == crate::InspectionAction::Uninspected {
+        return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
+            observations: Vec::new(),
+            accounting: Default::default(),
+            failure: Some(ProtocolError::new(
+                "inspection-relay-unavailable",
+                "the uninspected native relay is not available in this slice",
+            )),
+        });
+    }
     let socks5 = tokio::select! {
         _ = shutdown.changed() => false,
         value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
@@ -588,6 +629,12 @@ async fn connection_task(
             } else {
                 trace_reach(&trace, stage);
             }
+        };
+        let on_association_inspection = |decision| {
+            trace
+                .lock()
+                .expect("connection trace lock")
+                .association_inspection = Some(decision);
         };
         let run = crate::socks5::serve_socks5(
             stream,
@@ -608,6 +655,9 @@ async fn connection_task(
                 tls_client_config: Arc::clone(&services.tls_client_config),
                 key_log: services.key_log.clone(),
                 quic_slots: Arc::clone(&services.quic_slots),
+                inspection_decider: services.inspection_decider.clone(),
+                inspection_slots: Arc::clone(&services.inspection_slots),
+                on_association_inspection: &on_association_inspection,
                 on_stage: &on_stage,
             },
         )
@@ -1344,6 +1394,34 @@ async fn connection_task(
     }
 }
 
+pub(crate) async fn decide_inspection(
+    decider: Option<Arc<dyn crate::InspectionDecider>>,
+    slots: Arc<tokio::sync::Semaphore>,
+    request: crate::InspectionRequest,
+) -> crate::InspectionDecision {
+    let Some(decider) = decider else {
+        return crate::InspectionDecision::launch_chain();
+    };
+    let requested_scope = decider.requested_scope();
+    let budget = Duration::from_millis(50);
+    let Ok(permit) = slots.try_acquire_owned() else {
+        return crate::InspectionDecision::uninspected(crate::InspectionReason::QueueSaturated, 0)
+            .with_requested_scope(requested_scope);
+    };
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        decider.decide(request, budget)
+    });
+    match timeout(budget, task).await {
+        Ok(Ok(decision)) => decision,
+        _ => crate::InspectionDecision::uninspected(
+            crate::InspectionReason::PendingTimeout,
+            budget.as_millis() as u64,
+        )
+        .with_requested_scope(requested_scope),
+    }
+}
+
 fn failure_boundary(code: &str) -> &'static str {
     if code.starts_with("upstream-") || code.starts_with("destination-") || code.contains("dns") {
         "upstream"
@@ -1392,7 +1470,7 @@ fn stamp_observation_window(outcome: &mut ConnectionOutcome, opened_at_ns: u64, 
     }
 }
 
-fn wall_clock_ns() -> u64 {
+pub(crate) fn wall_clock_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1799,7 +1877,12 @@ async fn run(
                                         stream,
                                         connection_shutdown,
                                         connection_services,
-                                        ConnectionIdentity { id: connection_id, peer, local },
+                                        ConnectionIdentity {
+                                            id: connection_id,
+                                            peer,
+                                            local,
+                                            opened_at_ns,
+                                        },
                                         permit,
                                         Arc::clone(&trace),
                                     ).await;
@@ -2537,6 +2620,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .socks_udp_policy_dropped
         .saturating_add(source.socks_udp_policy_dropped);
+    observation.protocol.socks_udp_inspection_unavailable = observation
+        .protocol
+        .socks_udp_inspection_unavailable
+        .saturating_add(source.socks_udp_inspection_unavailable);
     observation.protocol.socks_udp_resolution_dropped = observation
         .protocol
         .socks_udp_resolution_dropped
@@ -2667,6 +2754,37 @@ fn owner_thread_timeout_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exhausted_inspection_slots_freeze_an_uninspected_decision() {
+        struct NeverCalled;
+        impl crate::InspectionDecider for NeverCalled {
+            fn decide(
+                &self,
+                _: crate::InspectionRequest,
+                _: Duration,
+            ) -> crate::InspectionDecision {
+                panic!("an exhausted slot cannot start an owner lookup")
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let decision = runtime.block_on(decide_inspection(
+            Some(Arc::new(NeverCalled)),
+            Arc::new(tokio::sync::Semaphore::new(0)),
+            crate::InspectionRequest {
+                connection_id: 1,
+                client_peer: "127.0.0.1:41000".parse().unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+                opened_at_ns: 15,
+                transport: "tcp",
+            },
+        ));
+        assert_eq!(decision.action, crate::InspectionAction::Uninspected);
+        assert_eq!(decision.reason, crate::InspectionReason::QueueSaturated);
+    }
 
     #[test]
     fn prepared_authority_is_reported_exactly_and_consumed_once() {

@@ -889,6 +889,14 @@ mod tests {
             .unwrap()
             .iter()
             .any(|(pid, _)| *pid == 999_996));
+
+        evidence.events.push(ProcessEvent::Exited {
+            pid: 999_996,
+            at: fragcap::Timestamp::from_nanos(late_at.as_nanos() + 1),
+        });
+        let recovered = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_eq!(recovered.result.status, CleanupStatus::Released);
+        assert_eq!(late.result.status, CleanupStatus::Failed);
     }
 
     #[cfg(feature = "etw")]

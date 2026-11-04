@@ -7,9 +7,89 @@ use std::time::Duration;
 
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, ApplicationEventSink, DestinationPolicy,
-    EventDisposition, GenericUdpDirection, GenericUdpOutcome, NativeProxyBackend,
-    NativeProxyConfig, ProtocolLimits,
+    EventDisposition, GenericUdpDirection, GenericUdpOutcome, InspectionAction, InspectionDecider,
+    InspectionDecision, InspectionReason, InspectionRequest, NativeProxyBackend, NativeProxyConfig,
+    ProtocolLimits,
 };
+
+#[derive(Default)]
+struct AssociationDecider(Mutex<Vec<InspectionRequest>>);
+
+impl InspectionDecider for AssociationDecider {
+    fn decide(&self, request: InspectionRequest, _budget: Duration) -> InspectionDecision {
+        let transport = request.transport;
+        self.0.lock().unwrap().push(request);
+        match transport {
+            "tcp" => InspectionDecision::verified_game(1),
+            "udp" => InspectionDecision::uninspected(InspectionReason::KnownMiddleware, 1),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn association_decision_uses_udp_client_socket_before_forwarding() {
+    let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+    origin
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin_address);
+    let decider = Arc::new(AssociationDecider::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(decider.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut control = TcpStream::connect(lease.endpoint()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut control,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let relay = associate(&mut control, Some(client.local_addr().unwrap()));
+    client
+        .send_to(&ipv4_frame(origin_address, b"never-forward"), relay)
+        .unwrap();
+    let mut buffer = [0_u8; 64];
+    assert!(origin.recv_from(&mut buffer).is_err());
+    drop(control);
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(
+        report.observation.protocol.socks_udp_inspection_unavailable,
+        1
+    );
+    let seen = decider.0.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].transport, "udp");
+    assert_eq!(seen[1].client_peer, client.local_addr().unwrap());
+    assert_eq!(seen[1].proxy_local, relay);
+    let diagnostic = &report.observation.connection_diagnostics[0];
+    assert_eq!(
+        diagnostic.inspection.unwrap().action,
+        InspectionAction::Inspect
+    );
+    assert_eq!(
+        diagnostic.association_inspection.unwrap().action,
+        InspectionAction::Uninspected
+    );
+    assert_eq!(
+        diagnostic.association_inspection.unwrap().policy_id,
+        "exact-game-v1"
+    );
+}
 
 #[derive(Default)]
 struct Collector(Mutex<Vec<ApplicationEvent>>);

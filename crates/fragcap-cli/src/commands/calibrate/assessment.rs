@@ -309,7 +309,8 @@ fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
             "timeout": proxy.causes.timeout, "cancelled": proxy.causes.cancelled,
             "unavailable": proxy.causes.unavailable,
         },
-        "connections": proxy.connections.iter().map(|record| json!({
+        "connections": proxy.connections.iter().map(|record| {
+            let mut value = json!({
             "schema_version": record.schema_version,
             "connection_id": record.connection_id, "terminal": record.terminal,
             "category": record.cause.map(|cause| cause.as_str()), "code": record.code,
@@ -325,7 +326,23 @@ fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
             "os_error_code": record.os_error_code,
             "header_timeout_phase": record.header_timeout_phase,
             "completed_exchanges": record.completed_exchanges,
-        })).collect::<Vec<_>>(),
+            "inspection_scope": record.inspection_scope,
+            "inspection_action": record.inspection_action,
+            "inspection_reason": record.inspection_reason,
+            "inspection_decided_after_ms": record.inspection_decided_after_ms,
+            });
+            value["association_inspection_scope"] = json!(record.association_inspection_scope);
+            value["association_inspection_action"] = json!(record.association_inspection_action);
+            value["association_inspection_reason"] = json!(record.association_inspection_reason);
+            value["association_inspection_decided_after_ms"] = json!(record.association_inspection_decided_after_ms);
+            value["inspection_requested_scope"] = json!(record.inspection_requested_scope);
+            value["inspection_policy_id"] = json!(record.inspection_policy_id);
+            value["inspection_owner_proof"] = json!(record.inspection_owner_proof);
+            value["association_inspection_requested_scope"] = json!(record.association_inspection_requested_scope);
+            value["association_inspection_policy_id"] = json!(record.association_inspection_policy_id);
+            value["association_inspection_owner_proof"] = json!(record.association_inspection_owner_proof);
+            value
+        }).collect::<Vec<_>>(),
     })
 }
 
