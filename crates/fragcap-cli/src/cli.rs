@@ -514,11 +514,14 @@ pub struct DeepCaptureArgs {
     pub launch: bool,
 
     /// Eligible observation duration after a verified managed client acquires.
+    ///
     /// Simple launches default to 60s; multi-stage launches default to 120s.
     #[arg(short = 'd', long, value_parser = parse_duration, help_heading = "Common options")]
     pub duration: Option<Duration>,
 
-    /// Acquisition wait from capture arm. Simple launches default to 30s;
+    /// Acquisition wait from capture arm.
+    ///
+    /// Simple launches default to 30s;
     /// multi-stage launches default to 180s. Explicit supported values are exact.
     #[arg(long, value_parser = parse_duration, help_heading = "Common options")]
     pub wait: Option<Duration>,
