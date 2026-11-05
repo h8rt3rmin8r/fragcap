@@ -236,6 +236,15 @@ Native lifecycle bundles also carry `resource-journal.jsonl` as the synchronized
 ownership authority, `proxy.jsonl` and `cleanup.jsonl` as crash-readable
 chronologies, and `cleanup.json` as a derived compatibility summary.
 
+For a blind-relayed connection, `proxy.jsonl` retains its frozen inspection
+decision, terminal cause, and directional forwarded byte or datagram totals.
+For HTTP/2 the byte totals count forwarded DATA payload, not HPACK headers or
+frame overhead; for plaintext HTTP/1 they count bytes accepted by destination
+writes, including forwarded heads. UDP byte totals count datagram payload.
+Excluded application content has no HAR entry, decoded body, protocol message,
+or proxy-owned TLS key. The omission is separate from packet-capture loss and
+from a failed or incomplete cleanup.
+
 {: .matters }
 > Deep Capture should feel like an elevated Capture session, not a second
 > product. The bundle is what keeps decrypted application-layer observations,

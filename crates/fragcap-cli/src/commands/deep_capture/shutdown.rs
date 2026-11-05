@@ -733,6 +733,40 @@ mod tests {
     }
 
     #[test]
+    fn exited_game_does_not_release_live_launcher_route_owner() {
+        let mut launcher = child();
+        let mut game = child();
+        let mut evidence = child_evidence(&launcher);
+        let identity = ProcessIdentity::observe(game.0.id()).unwrap();
+        let at =
+            fragcap::Timestamp::from_nanos(i64::try_from(identity.created_unix_nanos()).unwrap());
+        evidence.events.push(ProcessEvent::started(
+            identity.pid,
+            launcher.0.id(),
+            identity.path.display().to_string(),
+            "",
+            at,
+        ));
+        evidence.managed_instances.push(ManagedProcessInstance {
+            event_at: at,
+            identity,
+        });
+        game.0.kill().unwrap();
+        game.0.wait().unwrap();
+        evidence.events.push(ProcessEvent::Exited {
+            pid: game.0.id(),
+            at: fragcap::Timestamp::from_nanos(at.as_nanos() + 1),
+        });
+        let pending = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_ne!(pending.result.status, CleanupStatus::Released);
+        assert!(launcher.0.try_wait().unwrap().is_none());
+        launcher.0.kill().unwrap();
+        launcher.0.wait().unwrap();
+        let released = release_with_grace(&evidence, Budget::new(Duration::ZERO), Duration::ZERO);
+        assert_eq!(released.result.status, CleanupStatus::Released);
+    }
+
+    #[test]
     fn force_revalidation_rejects_changed_pid_without_killing_either_child() {
         let mut owned = child();
         let mut unrelated = child();

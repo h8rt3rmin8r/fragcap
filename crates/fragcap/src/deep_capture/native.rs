@@ -1048,6 +1048,10 @@ impl NativeProxyLease {
                 "association_inspection_action": record.association_inspection_action,
                 "association_inspection_reason": record.association_inspection_reason,
                 "association_inspection_decided_after_ms": record.association_inspection_decided_after_ms,
+                "relay_client_bytes": record.relay_client_bytes,
+                "relay_upstream_bytes": record.relay_upstream_bytes,
+                "relay_client_datagrams": record.relay_client_datagrams,
+                "relay_upstream_datagrams": record.relay_upstream_datagrams,
             });
             value["inspection_requested_scope"] =
                 serde_json::json!(record.inspection_requested_scope);
@@ -1065,6 +1069,10 @@ impl NativeProxyLease {
             "schema_version": 1,
             "retained": diagnostics.connections.len(),
             "lost": diagnostics.connection_details_lost,
+            "relay_client_bytes": diagnostics.relay_client_bytes,
+            "relay_upstream_bytes": diagnostics.relay_upstream_bytes,
+            "relay_client_datagrams": diagnostics.relay_client_datagrams,
+            "relay_upstream_datagrams": diagnostics.relay_upstream_datagrams,
             "unavailable": diagnostics.connection_details_unavailable,
         }))
     }

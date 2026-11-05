@@ -282,7 +282,7 @@ impl AttemptAssessment {
 }
 
 fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
-    json!({
+    let mut value = json!({
         "accepted_connections": proxy.accepted_connections,
         "authenticated_connections": proxy.authenticated_connections,
         "authentication_refused": proxy.authentication_refused,
@@ -341,9 +341,18 @@ fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
             value["association_inspection_requested_scope"] = json!(record.association_inspection_requested_scope);
             value["association_inspection_policy_id"] = json!(record.association_inspection_policy_id);
             value["association_inspection_owner_proof"] = json!(record.association_inspection_owner_proof);
+            value["relay_client_bytes"] = json!(record.relay_client_bytes);
+            value["relay_upstream_bytes"] = json!(record.relay_upstream_bytes);
+            value["relay_client_datagrams"] = json!(record.relay_client_datagrams);
+            value["relay_upstream_datagrams"] = json!(record.relay_upstream_datagrams);
             value
         }).collect::<Vec<_>>(),
-    })
+    });
+    value["relay_client_bytes"] = json!(proxy.relay_client_bytes);
+    value["relay_upstream_bytes"] = json!(proxy.relay_upstream_bytes);
+    value["relay_client_datagrams"] = json!(proxy.relay_client_datagrams);
+    value["relay_upstream_datagrams"] = json!(proxy.relay_upstream_datagrams);
+    value
 }
 
 pub(crate) fn diagnostics_json(value: &TerminalDiagnostics) -> Value {
