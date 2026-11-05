@@ -10,8 +10,8 @@
 
 - `--inspect-scope` is accepted by `fragcap calibrate` and `fragcap deep-capture`.
 - `auto` resolves to an effective scope before any session effect.
-- `--retry-game-scope` authorizes at most one fresh linked game-scope successor after an eligible launch-chain failure and exact obligation reconciliation.
-- `--fallback-capture` authorizes packet-only Capture fallback when application inspection cannot proceed.
+- `--retry-game-scope` authorizes at most one fresh linked game-scope successor after an eligible launch-chain failure and exact obligation reconciliation. The predecessor authorization is inherited within that invocation only while the complete target and resolved launch authority remain unchanged apart from the reviewed scope transition.
+- `--fallback-capture` authorizes packet-only Capture fallback when application inspection cannot proceed. Success requires the written capture artifact, every required output, event delivery, and cleanup to reconcile; otherwise the original failure remains authoritative.
 - Resume accepts none of these flags and reuses the stored immutable values.
 
 ## Structured fields
@@ -43,4 +43,4 @@ Before effects, the plan names game roles, observed launch chain, middleware rel
 
 ## Refusal contract
 
-Unknown scope, conflicting resume intent, unavailable exact game ownership, changed target authority, repeated scoped case, exhausted bound, unresolved predecessor obligations, and unsupported fallback all stop before the new effect and provide one typed reason plus one supported next command.
+Unknown scope, conflicting resume intent, unavailable exact game ownership, changed target or resolved launch authority, repeated scoped case, exhausted bound, unresolved predecessor obligations, unsupported fallback, missing capture output, failed required output, event-delivery failure, and unresolved cleanup all stop the new effect or prevent fallback success while preserving the original failure.

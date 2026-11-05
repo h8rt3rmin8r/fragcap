@@ -37,7 +37,8 @@
 
 - Fields: attempt identity, ordinal, exact scoped case key, optional predecessor identity, fallback kind, effective mode, state, phase, protocol, bundle identity, evidence window, terminal reason, cleanup obligations.
 - Bound: one game-scope successor and the existing finite case bound.
-- Transition: `Ready -> InFlight -> Completed|Paused|Refused`; a linked retry starts only after the predecessor reaches a terminal state and obligations reconcile.
+- Transition: `Ready -> InFlight -> Completed|Paused|Refused`; a linked retry starts only after the predecessor reaches a terminal state, obligations reconcile, and fresh resolution reproduces the predecessor target and launch authority apart from the reviewed scope transition.
+- Fallback success: retained packet accounting is present, the packet-capture artifact and every required artifact are written, event delivery has no failure, and every cleanup result is released or not needed. Any unmet condition preserves the attempt's terminal failure.
 
 ## Scope Readiness
 

@@ -313,6 +313,12 @@ struct AuthorizationPlan {
     authority_expires: SystemTime,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct InheritedRetryAuthorization {
+    predecessor_plan_id: String,
+    target_authority: AuthorizationTargetAuthority,
+}
+
 impl AuthorizationPlan {
     fn new(
         canonical: Value,
@@ -363,6 +369,13 @@ impl AuthorizationPlan {
                     "could not write the Deep Capture authorization plan: {error}"
                 ))
             })
+    }
+
+    fn inherited_retry_authorization(&self) -> InheritedRetryAuthorization {
+        InheritedRetryAuthorization {
+            predecessor_plan_id: self.id.clone(),
+            target_authority: self.target_authority.clone(),
+        }
     }
 }
 
@@ -1001,6 +1014,21 @@ fn stored_target_authority_matches(
     let mut current = current.clone();
     current.resolved_launch = authorized.resolved_launch.clone();
     &current == authorized
+}
+
+fn inherited_retry_target_matches(
+    predecessor: &AuthorizationTargetAuthority,
+    successor: &AuthorizationTargetAuthority,
+) -> bool {
+    if predecessor.inspection_scope.effective != CompatibilityInspectionScope::LaunchChain
+        || successor.inspection_scope.requested != CompatibilityRequestedInspectionScope::ExactGame
+        || successor.inspection_scope.effective != CompatibilityInspectionScope::ExactGame
+    {
+        return false;
+    }
+    let mut successor = successor.clone();
+    successor.inspection_scope = predecessor.inspection_scope;
+    &successor == predecessor
 }
 
 impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
@@ -2777,7 +2805,7 @@ pub fn run(
             &retry_args,
             authorization,
             emitter,
-            Some(&predecessor_attempt),
+            Some(&outcome.retry_authorization),
         )?;
         emitter.event(&Event::DeepCaptureScopeRetry {
             predecessor_attempt,
@@ -2801,7 +2829,7 @@ pub fn run(
     }
     if outcome.disposition == RunDisposition::Failed
         && args.fallback_capture
-        && outcome.retained_target_packets.is_some()
+        && outcome.passive_fallback_ready
     {
         let retained_target_packets = outcome.retained_target_packets.unwrap_or(0);
         let (evidence_windows, omissions) = passive_fallback_lineage(&outcome);
@@ -2900,6 +2928,31 @@ pub(crate) fn passive_fallback_lineage(outcome: &RunOutcome) -> (Vec<String>, Ve
     (evidence_windows, omissions)
 }
 
+fn passive_fallback_evidence_is_usable(
+    retained_target_packets: Option<u64>,
+    cleanup: &[deep_capture_api::CleanupResult],
+    artifacts: &[deep_capture_api::ArtifactResult],
+    event_failures: &[deep_capture_api::EventDeliveryFailure],
+) -> bool {
+    retained_target_packets.is_some()
+        && event_failures.is_empty()
+        && cleanup.iter().all(|result| {
+            matches!(
+                result.status,
+                deep_capture_api::CleanupStatus::Released
+                    | deep_capture_api::CleanupStatus::NotNeeded
+            )
+        })
+        && artifacts.iter().all(|artifact| {
+            !artifact.required
+                || matches!(artifact.status, deep_capture_api::ArtifactStatus::Written)
+        })
+        && artifacts.iter().any(|artifact| {
+            artifact.role == "pcapng"
+                && matches!(artifact.status, deep_capture_api::ArtifactStatus::Written)
+        })
+}
+
 pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
     pub observation_windows: Vec<deep_capture_api::EvidenceWindow>,
@@ -2910,6 +2963,8 @@ pub(crate) struct RunOutcome {
     pub inspection_scope: ResolvedCliInspectionScope,
     pub authorization_plan_id: String,
     pub bundle: Option<PathBuf>,
+    pub retry_authorization: InheritedRetryAuthorization,
+    pub passive_fallback_ready: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2957,7 +3012,7 @@ pub(crate) fn run_with_outcome(
     args: &DeepCaptureArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
-    preauthorized_by: Option<&str>,
+    inherited_authorization: Option<&InheritedRetryAuthorization>,
 ) -> Result<RunOutcome, CliError> {
     if !args.launch {
         return Err(CliError::usage(
@@ -3095,8 +3150,22 @@ pub(crate) fn run_with_outcome(
         &prepared_authority,
     )?;
     crate::orchestrator::install_interrupt_handler();
-    if preauthorized_by.is_some() {
+    if let Some(inherited) = inherited_authorization {
         authorization_plan.emit(emitter)?;
+        if !inherited_retry_target_matches(
+            &inherited.target_authority,
+            &authorization_plan.target_authority,
+        ) {
+            authorization_outcome(
+                emitter,
+                &authorization_plan,
+                "drifted",
+                "target launch authority differs from the predecessor authorization",
+            )?;
+            return Err(CliError::usage(
+                "the target launch authority changed after the predecessor authorization; no successor effects were applied",
+            ));
+        }
     } else {
         match authorize_plan(args, authorization, emitter, &authorization_plan)? {
             AuthorizationDecision::Authorized => {}
@@ -3112,6 +3181,8 @@ pub(crate) fn run_with_outcome(
                     inspection_scope: resolved_inspection_scope,
                     authorization_plan_id: authorization_plan.id.clone(),
                     bundle: None,
+                    retry_authorization: authorization_plan.inherited_retry_authorization(),
+                    passive_fallback_ready: false,
                 });
             }
             AuthorizationDecision::Interrupted => {
@@ -3124,6 +3195,8 @@ pub(crate) fn run_with_outcome(
                     inspection_scope: resolved_inspection_scope,
                     authorization_plan_id: authorization_plan.id.clone(),
                     bundle: None,
+                    retry_authorization: authorization_plan.inherited_retry_authorization(),
+                    passive_fallback_ready: false,
                     terminal_error: Some(CliError::failure(
                         "Deep Capture authorization was interrupted; no effects were applied",
                     )),
@@ -3170,8 +3243,11 @@ pub(crate) fn run_with_outcome(
             return Err(CliError::failure("installation CA changed after authorization; no effects were applied; run elevated `fragcap ca repair`"));
         }
     }
-    let authorization_reason = if let Some(predecessor) = preauthorized_by {
-        format!("predecessor plan {predecessor} authorized this one bounded exact-game successor")
+    let authorization_reason = if let Some(inherited) = inherited_authorization {
+        format!(
+            "predecessor plan {} authorized this one bounded exact-game successor",
+            inherited.predecessor_plan_id
+        )
     } else if args.authorize_stdin {
         "exact plan identifier matched and target authority remained current".to_string()
     } else {
@@ -3502,6 +3578,12 @@ pub(crate) fn run_with_outcome(
         .as_ref()
         .map_or_else(Vec::new, |value| value.observation_windows.clone());
     let retained_target_packets = runtime.borrow().retained_target_packets;
+    let passive_fallback_ready = passive_fallback_evidence_is_usable(
+        retained_target_packets,
+        &report.snapshot.cleanup,
+        &report.artifacts,
+        &report.event_failures,
+    );
     if let Some(root) = paths::deep_capture_session_dir() {
         let maintenance = match crate::session_gc::maintenance(&root, Some(&bundle)) {
             Ok(value) => value,
@@ -3530,6 +3612,8 @@ pub(crate) fn run_with_outcome(
             inspection_scope: resolved_inspection_scope,
             authorization_plan_id: authorization_plan.id.clone(),
             bundle: Some(bundle.clone()),
+            retry_authorization: authorization_plan.inherited_retry_authorization(),
+            passive_fallback_ready,
         })
     } else {
         let disposition =
@@ -3554,6 +3638,8 @@ pub(crate) fn run_with_outcome(
             inspection_scope: resolved_inspection_scope,
             authorization_plan_id: authorization_plan.id.clone(),
             bundle: Some(bundle.clone()),
+            retry_authorization: authorization_plan.inherited_retry_authorization(),
+            passive_fallback_ready,
         })
     }
 }
@@ -5960,6 +6046,97 @@ mod tests {
         });
         let refusal = require_authorized_target(&authorized, &changed).unwrap_err();
         assert_eq!(refusal.code, "authorization-target-drift");
+    }
+
+    #[test]
+    fn inherited_retry_accepts_only_the_same_target_and_launch_authority() {
+        let predecessor = authorization_target();
+        let mut successor = predecessor.clone();
+        successor.inspection_scope = ResolvedCliInspectionScope {
+            requested: CompatibilityRequestedInspectionScope::ExactGame,
+            effective: CompatibilityInspectionScope::ExactGame,
+            middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+            policy_id: "exact-game-v1",
+            recommendation_source: "explicit",
+        };
+        assert!(inherited_retry_target_matches(&predecessor, &successor));
+
+        let mut changed_target = successor.clone();
+        changed_target.launch_entries = Some(json!([{"path":"changed.exe","role":"client"}]));
+        assert!(!inherited_retry_target_matches(
+            &predecessor,
+            &changed_target
+        ));
+
+        let mut changed_launch = successor;
+        changed_launch.resolved_launch = json!({"kind":"direct","executable":"changed.exe"});
+        assert!(!inherited_retry_target_matches(
+            &predecessor,
+            &changed_launch
+        ));
+    }
+
+    #[test]
+    fn passive_fallback_requires_reconciled_cleanup_and_written_outputs() {
+        let cleanup = vec![deep_capture_api::CleanupResult {
+            resource: "native-proxy-listener".to_string(),
+            status: deep_capture_api::CleanupStatus::Released,
+            reason: "released".to_string(),
+        }];
+        let artifacts = vec![
+            deep_capture_api::ArtifactResult {
+                role: "pcapng".to_string(),
+                path: "capture.fcapng".into(),
+                sensitivity: deep_capture_api::Sensitivity::Metadata,
+                required: false,
+                status: deep_capture_api::ArtifactStatus::Written,
+            },
+            deep_capture_api::ArtifactResult {
+                role: "manifest".to_string(),
+                path: "manifest.json".into(),
+                sensitivity: deep_capture_api::Sensitivity::Metadata,
+                required: true,
+                status: deep_capture_api::ArtifactStatus::Written,
+            },
+        ];
+        assert!(passive_fallback_evidence_is_usable(
+            Some(0),
+            &cleanup,
+            &artifacts,
+            &[]
+        ));
+
+        let mut failed_cleanup = cleanup.clone();
+        failed_cleanup[0].status = deep_capture_api::CleanupStatus::Failed;
+        assert!(!passive_fallback_evidence_is_usable(
+            Some(1),
+            &failed_cleanup,
+            &artifacts,
+            &[]
+        ));
+
+        let mut failed_artifacts = artifacts.clone();
+        failed_artifacts[1].status = deep_capture_api::ArtifactStatus::Failed {
+            code: "manifest-write".to_string(),
+            detail: "controlled failure".to_string(),
+        };
+        assert!(!passive_fallback_evidence_is_usable(
+            Some(1),
+            &cleanup,
+            &failed_artifacts,
+            &[]
+        ));
+
+        let mut missing_capture = artifacts;
+        missing_capture[0].status = deep_capture_api::ArtifactStatus::Omitted {
+            reason: "not produced".to_string(),
+        };
+        assert!(!passive_fallback_evidence_is_usable(
+            Some(1),
+            &cleanup,
+            &missing_capture,
+            &[]
+        ));
     }
 
     #[test]

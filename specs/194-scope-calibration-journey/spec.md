@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-05
 
-**Status**: Implemented and locally verified; hosted review and CI pending
+**Status**: Implemented and locally verified; pull-request review and exact-head CI determine merge readiness
 
 **Input**: User description: "Deliver #560 and #561 as S194 under autopilot: scope-specific game inspection calibration, bounded retry and passive fallback, then the complete CLI, Doctor, output, documentation, and package-artifact journey."
 
@@ -40,13 +40,14 @@ An operator can authorize one bounded game-scope retry after a failed launch-cha
 
 **Why this priority**: The approved relay design needs a practical recovery path that preserves the original failure and avoids midstream scope changes or repeated effects.
 
-**Independent Test**: Drive a failed launch-chain attempt through an authorized linked game-scope retry, then drive an unavailable inspection path through packet-only fallback, asserting separate identities, fresh authority, preserved artifacts, exact windows, finite bounds, and no positive inspection claim from the fallback.
+**Independent Test**: Drive a failed launch-chain attempt through an authorized linked game-scope retry, then drive an unavailable inspection path through packet-only fallback, asserting separate identities, unchanged target and launch authority, preserved artifacts, exact windows, finite bounds, reconciled outputs and cleanup, and no positive inspection claim from the fallback.
 
 **Acceptance Scenarios**:
 
-1. **Given** an initial plan that authorizes one game-scope retry, **When** launch-chain middleware inspection fails after cleanup is reconciled, **Then** a fresh linked attempt uses game scope and preserves the predecessor result and bundle.
+1. **Given** an initial plan that authorizes one game-scope retry, **When** launch-chain middleware inspection fails after cleanup is reconciled and the exact target and launch authority remain unchanged, **Then** a fresh linked attempt uses game scope and preserves the predecessor result and bundle without a second prompt in that invocation.
 2. **Given** a plan without retry authority, changed target authority, unresolved route ownership, a repeated exact case, or an exhausted bound, **When** retry is considered, **Then** no successor effect starts and one typed reason identifies the refusal.
-3. **Given** declared packet-only fallback and unavailable Deep Capture prerequisites, **When** the inspection attempt cannot proceed, **Then** eligible passive evidence is retained under an exact Capture window and the result reports effective Capture mode without a positive Deep Capture fact.
+3. **Given** declared packet-only fallback and unavailable Deep Capture prerequisites, **When** the inspection attempt cannot proceed and passive capture, required outputs, event delivery, and cleanup are reconciled, **Then** eligible passive evidence is retained under an exact Capture window and the result reports effective Capture mode without a positive Deep Capture fact.
+4. **Given** an attempted packet-only fallback with a missing capture artifact, failed required output, event-delivery failure, or unresolved cleanup, **When** fallback eligibility is evaluated, **Then** the original terminal failure remains authoritative and the fallback does not convert the command to success.
 
 ---
 
@@ -88,9 +89,9 @@ An operator can select and understand inspection scope consistently across guide
 - **FR-004**: Scope MUST participate in canonical case keys, no-progress detection, concurrency checks, stale applicability, resume equality, and the finite workflow bound.
 - **FR-005**: Only exact qualifying game-owned routing and protocol observations within the correct observation window MAY write positive game-scope facts; relay success, listener acceptance, HTTP status, and unresolved ownership MUST NOT supply them.
 - **FR-006**: Launch acquisition, provisional handoff, middleware relay, game routing, game protocol inspection, passive evidence, artifact completeness, route-owner release, proxy drain, and cleanup MUST remain independent typed outcomes.
-- **FR-007**: A declared game-scope retry MUST create at most one fresh immutable successor attempt linked to its failed predecessor after fresh target authority and exact cleanup reconciliation; it MUST preserve the predecessor result and artifacts.
+- **FR-007**: A declared game-scope retry MUST create at most one fresh immutable successor attempt linked to its failed predecessor after fresh target resolution and exact cleanup reconciliation; same-invocation inheritance of the predecessor authorization MUST require the complete target and resolved launch authority to remain identical apart from the reviewed scope transition, and the successor MUST preserve the predecessor result and artifacts.
 - **FR-008**: Retry MUST refuse changed target authority, unresolved obligations, repeated exact cases, exhausted bounds, missing initial authority, and resume intent mismatch before new effects.
-- **FR-009**: A declared packet-only fallback MUST retain eligible passive evidence under its actual window, report effective Capture mode and omissions, and MUST NOT create a positive Deep Capture or game-inspection fact.
+- **FR-009**: A declared packet-only fallback MUST retain eligible passive evidence under its actual window, report effective Capture mode and omissions, and MUST NOT create a positive Deep Capture or game-inspection fact. Fallback success MUST require a written packet-capture artifact, every required artifact written, no event-delivery failure, and every cleanup obligation released or not needed; otherwise the original terminal failure MUST remain authoritative.
 - **FR-010**: The system MUST NOT change an established connection's inspection decision after a TLS or protocol failure; a different scope requires a new authorized attempt.
 - **FR-011**: Calibration and advanced Deep Capture MUST accept one shared public `--inspect-scope auto|game|launch-chain` vocabulary; generated resume and next commands MUST preserve exact intent.
 - **FR-012**: Authorization MUST state the selected game roles, observed launch-chain scope, relayed middleware, unresolved-owner handling, managed route effects, installation CA use, exact output, phase lifetimes, permitted retry or fallback, route-owner release, and cleanup before effects.

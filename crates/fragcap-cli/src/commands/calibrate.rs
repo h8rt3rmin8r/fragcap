@@ -217,12 +217,12 @@ fn should_use_passive_fallback(
     disposition: deep_capture::RunDisposition,
     retry_selected: bool,
     allowed: bool,
-    retained_target_packets: Option<u64>,
+    passive_fallback_ready: bool,
 ) -> bool {
     disposition == deep_capture::RunDisposition::Failed
         && !retry_selected
         && allowed
-        && retained_target_packets.is_some()
+        && passive_fallback_ready
 }
 
 const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
@@ -3725,8 +3725,11 @@ fn run_inner(
 
         if selected.steps.is_empty() {
             let launch_case = ready_launch_case(&selected)?;
-            let current =
-                workflow_compatibility_case(&workflow, launch_case, CompatibilityProtocol::Routing);
+            let current = proposal_compatibility_case(
+                &selected,
+                launch_case,
+                CompatibilityProtocol::Routing,
+            )?;
             let mut requested_case = current.clone();
             requested_case.protocol = all_protocols
                 .first()
@@ -3967,7 +3970,7 @@ fn run_inner(
             &low_level,
             authorization,
             emitter,
-            inherited_authorization.as_deref(),
+            inherited_authorization.as_ref(),
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -4178,7 +4181,7 @@ fn run_inner(
             outcome.disposition,
             retry_as_game_scope,
             workflow.allow_capture_fallback,
-            outcome.retained_target_packets,
+            outcome.passive_fallback_ready,
         );
         let (completed_status, completed_reason) = match outcome.disposition {
             deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
@@ -4301,7 +4304,7 @@ fn run_inner(
                     .map(|path| path.display().to_string()),
             });
             active_requested_scope = CompatibilityRequestedInspectionScope::ExactGame;
-            successor_authorization = Some(outcome.authorization_plan_id.clone());
+            successor_authorization = Some(outcome.retry_authorization.clone());
             emitter.progress(&format!(
                 "Calibration attempt {} failed under launch-chain inspection. The reviewed plan permits one fresh game-scope successor; the failed attempt and its bundle remain unchanged.",
                 progress.number
@@ -4979,6 +4982,39 @@ fn workflow_compatibility_case(
         workflow.effective_scope,
         workflow.middleware_handling,
         &workflow.inspection_policy_id,
+    )
+}
+
+fn proposal_compatibility_case(
+    proposal: &deep_capture_api::CalibrationProposal,
+    launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+) -> Result<fragcap::targets::CompatibilityCase, CliError> {
+    let scope = proposal.scope.as_ref().ok_or_else(|| {
+        CliError::usage("calibration proposal did not resolve an inspection scope")
+    })?;
+    Ok(resolved_scope_compatibility_case(
+        proposal.address_family,
+        scope,
+        launch_case,
+        protocol,
+    ))
+}
+
+fn resolved_scope_compatibility_case(
+    address_family: CompatibilityAddressFamily,
+    scope: &deep_capture_api::CalibrationScopeResolution,
+    launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+) -> fragcap::targets::CompatibilityCase {
+    deep_capture::current_scoped_compatibility_case(
+        launch_case,
+        proxy_family_arg(address_family),
+        protocol,
+        scope.requested,
+        scope.effective,
+        scope.middleware_handling,
+        scope.policy_id,
     )
 }
 
@@ -5962,31 +5998,62 @@ mod tests {
     }
 
     #[test]
-    fn passive_fallback_requires_declared_authority_and_retained_observation() {
+    fn passive_fallback_requires_declared_authority_and_usable_evidence() {
         assert!(should_use_passive_fallback(
             deep_capture::RunDisposition::Failed,
             false,
             true,
-            Some(0),
+            true,
         ));
         assert!(!should_use_passive_fallback(
             deep_capture::RunDisposition::Failed,
             true,
             true,
-            Some(1),
+            true,
         ));
         assert!(!should_use_passive_fallback(
             deep_capture::RunDisposition::Failed,
             false,
             false,
-            Some(1),
+            true,
         ));
         assert!(!should_use_passive_fallback(
             deep_capture::RunDisposition::Failed,
             false,
             true,
-            None,
+            false,
         ));
+    }
+
+    #[test]
+    fn readiness_case_uses_the_active_successor_scope() {
+        let scope = deep_capture_api::CalibrationScopeResolution {
+            requested: CompatibilityRequestedInspectionScope::ExactGame,
+            effective: CompatibilityInspectionScope::ExactGame,
+            middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+            policy_id: "exact-game-v1",
+            recommendation_source: deep_capture_api::CalibrationScopeRecommendationSource::Explicit,
+        };
+        let case = resolved_scope_compatibility_case(
+            CompatibilityAddressFamily::Ipv6,
+            &scope,
+            CompatibilityLaunchCase::PublisherLauncherCold,
+            CompatibilityProtocol::Routing,
+        );
+        assert_eq!(
+            case.requested_scope,
+            CompatibilityRequestedInspectionScope::ExactGame
+        );
+        assert_eq!(
+            case.effective_scope,
+            CompatibilityInspectionScope::ExactGame
+        );
+        assert_eq!(
+            case.middleware_handling,
+            CompatibilityMiddlewareHandling::BlindRelay
+        );
+        assert_eq!(case.inspection_policy_id, "exact-game-v1");
+        assert_eq!(case.address_family, CompatibilityAddressFamily::Ipv6);
     }
 
     #[test]
