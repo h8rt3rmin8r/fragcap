@@ -2205,9 +2205,25 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 } else {
                     "failed"
                 };
+                let bundle_location = paths::observe_storage(
+                    "retained bundle",
+                    self.bundle.clone(),
+                    if self.args.bundle.is_some() {
+                        "--bundle"
+                    } else {
+                        "current-user default"
+                    },
+                );
                 emitter.event(&Event::DeepCaptureComplete {
                     session_id: report.session_id.clone(),
                     manifest: "manifest.json".to_string(),
+                    bundle_selected: bundle_location.selected.display().to_string(),
+                    bundle_effective: bundle_location
+                        .effective
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    bundle_redirected: bundle_location.redirected,
+                    bundle_verification_reason: bundle_location.reason.clone(),
                     status: status.to_string(),
                     cleanup_status: cleanup_status.to_string(),
                     requested_launch_duration_ms: self
@@ -2265,6 +2281,14 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                         .collect(),
                     unclassified_lost: classification_summary.unclassified_lost,
                 });
+                emitter.progress(&format!(
+                    "Retained bundle: selected={}, effective={}",
+                    bundle_location.selected.display(),
+                    bundle_location.effective.as_ref().map_or_else(
+                        || "unverified".to_string(),
+                        |path| path.display().to_string()
+                    )
+                ));
                 let reasons = if classification_summary.by_reason.is_empty() {
                     "none".to_string()
                 } else {
@@ -2669,17 +2693,22 @@ pub(crate) enum RunDisposition {
 }
 
 fn require_prior_recovery_settled_at(root: &Path) -> Result<(), CliError> {
-    let root = root.canonicalize().map_err(|error| {
-        CliError::failure(format!(
-            "cannot inspect prior Deep Capture sessions: {error}"
-        ))
-    })?;
-    let pending = crate::doctor::fix::pending_deep_capture_recovery(&root).map_err(|errors| {
-        CliError::failure(format!(
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => root.to_path_buf(),
+        Err(error) => {
+            return Err(CliError::failure(format!(
+                "cannot inspect prior Deep Capture sessions: {error}"
+            )))
+        }
+    };
+    let pending =
+        crate::doctor::fix::pending_all_deep_capture_recovery(&root).map_err(|errors| {
+            CliError::failure(format!(
             "cannot prove prior Deep Capture sessions are settled; run `fragcap doctor --fix`: {}",
             errors.join("; ")
         ))
-    })?;
+        })?;
     if pending.is_empty() {
         Ok(())
     } else {
@@ -2691,10 +2720,9 @@ fn require_prior_recovery_settled_at(root: &Path) -> Result<(), CliError> {
 }
 
 pub(crate) fn require_prior_recovery_settled() -> Result<(), CliError> {
-    match paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
-        Some(root) => require_prior_recovery_settled_at(&root),
-        None => Ok(()),
-    }
+    let root = paths::deep_capture_session_dir()
+        .ok_or_else(|| CliError::failure("current-user session storage path is unavailable"))?;
+    require_prior_recovery_settled_at(&root)
 }
 
 pub(crate) fn run_with_outcome(
@@ -3447,6 +3475,9 @@ pub(crate) fn local_store_path(flag: Option<&Path>) -> Result<PathBuf, CliError>
 
 pub(crate) fn open_local_store(flag: Option<&Path>) -> Result<Store, CliError> {
     let path = local_store_path(flag)?;
+    if paths::local_db_path(flag).is_none() {
+        crate::storage_transition::prepare_database(&path).map_err(CliError::failure)?;
+    }
     if !path.is_file() {
         return Err(CliError::usage(format!(
             "the local target store {} does not exist; register a target before Deep Capture",

@@ -343,27 +343,65 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             "Deep Capture session storage path could not be determined".to_string(),
         );
     };
-    if !root.is_dir() {
+    let mut roots = vec![root];
+    match crate::storage_transition::legacy_session_roots() {
+        Ok(legacy) => roots.extend(legacy),
+        Err(error) => {
+            return ActionOutcome::Failed(format!("legacy session inventory failed: {error}"))
+        }
+    }
+    roots.retain(|path| path.is_dir());
+    if roots.is_empty() {
         let _ = writeln!(out, "  no Deep Capture session storage found");
         return ActionOutcome::Performed;
     }
-    let root = match root.canonicalize() {
-        Ok(root) => root,
-        Err(err) => {
-            return ActionOutcome::Failed(format!(
-                "could not resolve Deep Capture session storage: {err}"
-            ))
+    let mut failures = Vec::new();
+    for root in roots {
+        match root.canonicalize() {
+            Ok(root) => {
+                if let Err(errors) =
+                    recover_deep_capture_journals_with_legacy_confirmation(&root, out)
+                {
+                    failures.extend(errors);
+                }
+            }
+            Err(error) => failures.push(format!(
+                "cannot resolve Deep Capture storage {}: {error}",
+                root.display()
+            )),
         }
-    };
-    match recover_deep_capture_journals_with_legacy_confirmation(&root, out) {
-        Ok(()) => {
-            let _ = writeln!(out, "  replayed exact Deep Capture recovery actions");
-            ActionOutcome::Performed
-        }
-        Err(errors) => ActionOutcome::Failed(format!(
+    }
+    if failures.is_empty() {
+        let _ = writeln!(out, "  replayed exact Deep Capture recovery actions");
+        ActionOutcome::Performed
+    } else {
+        ActionOutcome::Failed(format!(
             "exact Deep Capture recovery failed: {}",
-            errors.join("; ")
-        )),
+            failures.join("; ")
+        ))
+    }
+}
+
+pub(crate) fn pending_all_deep_capture_recovery(root: &Path) -> Result<Vec<String>, Vec<String>> {
+    let mut roots = vec![root.to_path_buf()];
+    roots.extend(
+        crate::storage_transition::legacy_session_roots()
+            .map_err(|error| vec![format!("legacy session inventory failed: {error}")])?,
+    );
+    let mut pending = Vec::new();
+    let mut failures = Vec::new();
+    for root in roots {
+        match pending_deep_capture_recovery(&root) {
+            Ok(items) => pending.extend(items),
+            Err(errors) => failures.extend(errors),
+        }
+    }
+    pending.sort();
+    pending.dedup();
+    if failures.is_empty() {
+        Ok(pending)
+    } else {
+        Err(failures)
     }
 }
 

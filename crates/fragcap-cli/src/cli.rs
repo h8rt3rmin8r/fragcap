@@ -368,7 +368,7 @@ pub struct CaptureArgs {
     /// Overrides `FRAGCAP_CATALOG_DB` and the default location; a store named here
     /// that does not exist is not created and is not an error. With neither this
     /// flag nor the environment variable set, `capture` defaults to
-    /// `%APPDATA%\fragcap\catalog.db` and creates it on first use (seeding it from
+    /// `%USERPROFILE%\.fragcap\roaming\catalog.db` and creates it on first use (seeding it from
     /// the store shipped beside the executable when present).
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
@@ -379,7 +379,7 @@ pub struct CaptureArgs {
     /// `--target` selectors resolve. Overrides `FRAGCAP_LOCAL_DB` and the default
     /// location; a store named here that does not exist is not created and is not
     /// an error. With neither this flag nor the environment variable set,
-    /// `capture` defaults to `%APPDATA%\fragcap\local.db` and creates it empty on
+    /// `capture` defaults to `%USERPROFILE%\.fragcap\roaming\local.db` and creates it empty on
     /// first use.
     #[arg(long)]
     pub local_db: Option<PathBuf>,

@@ -170,17 +170,13 @@ fn list(json: bool, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, 
         emitter.warn(warning);
     }
 
-    // `steam list` is read-only: `default_local_store()` ensures the parent
-    // directory exists so a *writing* caller (the hero listing) can create the
-    // database on first use, but `Store::open` itself creates the file too, so
-    // reusing it unguarded here would make an inspection command write a fresh
-    // empty local.db as a side effect on a machine that has never registered
-    // anything. Checking existence first keeps a genuinely absent store in the
-    // same "nothing to join against" state issue #171 describes, rather than
-    // manufacturing one to read from.
-    let opened_store = default_local_store()
-        .filter(|path| path.exists())
-        .and_then(|path| Store::open(&path).ok());
+    // Preserve a populated pre-S192 store before this read. A genuinely absent
+    // store still remains absent; Store::open would create an empty database.
+    let local_path = default_local_store()?;
+    let opened_store = local_path
+        .exists()
+        .then(|| Store::open(&local_path).ok())
+        .flatten();
 
     let mut rows = resolve_rows(&installation.titles, opened_store.as_ref(), emitter);
     sort_rows(&mut rows);

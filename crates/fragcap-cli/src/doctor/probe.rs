@@ -296,6 +296,89 @@ fn identity_fields() -> (String, Option<PathBuf>, Option<PathBuf>, Option<PathBu
     )
 }
 
+fn storage_observations() -> Vec<super::StorageObservation> {
+    let mut observations = Vec::new();
+    if let Err(error) = crate::paths::storage_root() {
+        observations.push(super::StorageObservation {
+            name: "current-user storage root".to_string(),
+            selected: PathBuf::new(),
+            source: "current-user default".to_string(),
+            existence: "unavailable".to_string(),
+            effective: None,
+            redirected: None,
+            reason: Some(error.to_string()),
+        });
+    }
+    let selection = if std::env::var_os(crate::paths::STORAGE_ROOT_ENV).is_some() {
+        "storage-root override"
+    } else {
+        "current-user default"
+    };
+    let catalog = crate::paths::catalog_db_path(None)
+        .map(|path| (path, "FRAGCAP_CATALOG_DB"))
+        .or_else(|| crate::paths::default_catalog_db_path().map(|path| (path, selection)));
+    let local = crate::paths::local_db_path(None)
+        .map(|path| (path, "FRAGCAP_LOCAL_DB"))
+        .or_else(|| crate::paths::default_local_db_path().map(|path| (path, selection)));
+    let session = crate::paths::deep_capture_session_dir().map(|path| {
+        let source = if std::env::var_os(crate::paths::SESSION_DIR_ENV).is_some() {
+            "FRAGCAP_SESSION_DIR"
+        } else {
+            selection
+        };
+        (path, source)
+    });
+    for (name, selected) in [
+        ("catalog storage", catalog),
+        ("local storage", local),
+        ("session storage location", session.clone()),
+    ] {
+        if let Some((path, source)) = selected {
+            observations.push(crate::paths::observe_storage(name, path, source));
+        }
+    }
+    if let Some((session, source)) = session {
+        observations.push(crate::paths::observe_storage(
+            "session owner registry",
+            session.join(super::residue::SESSION_OWNER_REGISTRY),
+            source,
+        ));
+    }
+    if std::env::var_os(crate::paths::STORAGE_ROOT_ENV).is_none() {
+        match crate::storage_transition::legacy_roots() {
+            Ok(roots) => {
+                for root in roots {
+                    for (name, relative) in [
+                        ("legacy catalog storage", "catalog.db"),
+                        ("legacy local storage", "local.db"),
+                        ("legacy session storage", "sessions"),
+                    ] {
+                        let path = root.join(relative);
+                        match std::fs::symlink_metadata(&path) {
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            _ => observations.push(crate::paths::observe_storage(
+                                name,
+                                path,
+                                "legacy retained",
+                            )),
+                        }
+                    }
+                }
+            }
+            Err(error) => observations.push(super::StorageObservation {
+                name: "legacy storage inventory".to_string(),
+                selected: PathBuf::new(),
+                source: "legacy retained".to_string(),
+                existence: "unavailable".to_string(),
+                effective: None,
+                redirected: None,
+                reason: Some(error.to_string()),
+            }),
+        }
+    }
+    observations
+}
+
 /// The npcap version, read from the `wpcap.dll` FileVersion resource, or the
 /// literal "installed" when it cannot be read.
 ///
@@ -417,7 +500,20 @@ fn deep_capture_probe(observer: &mut dyn ProbeObserver) -> DeepCaptureInputs {
     let session_dir_present = session_dir.as_ref().is_some_and(|p| p.is_dir());
     #[cfg(windows)]
     let native_residue = observe(observer, ProbeName::NativeResidueInventory, || {
-        super::residue::inventory(session_dir.as_deref())
+        let mut inventory = super::residue::inventory(session_dir.as_deref());
+        match crate::storage_transition::legacy_session_roots() {
+            Ok(roots) => {
+                for root in roots {
+                    let previous = super::residue::inventory(Some(&root));
+                    inventory.findings.extend(previous.findings);
+                    inventory.limitations.extend(previous.limitations);
+                }
+            }
+            Err(error) => inventory
+                .limitations
+                .push(format!("legacy-session-inventory: {error}")),
+        }
+        inventory
     });
     #[cfg(not(windows))]
     let mut native_residue = observe(observer, ProbeName::NativeResidueInventory, || {
@@ -438,7 +534,24 @@ fn deep_capture_probe(observer: &mut dyn ProbeObserver) -> DeepCaptureInputs {
             detail: "native Deep Capture is available only on Windows".to_string(),
         });
     let scan = observe(observer, ProbeName::ManifestArtifactScan, || {
-        scan_deep_capture_root(session_dir.as_deref())
+        let mut scan = scan_deep_capture_root(session_dir.as_deref());
+        match crate::storage_transition::legacy_session_roots() {
+            Ok(roots) => {
+                for root in roots {
+                    let previous = scan_deep_capture_root(Some(&root));
+                    scan.stale_manifests.extend(previous.stale_manifests);
+                    scan.stale_tls_key_logs.extend(previous.stale_tls_key_logs);
+                    scan.sensitive_artifacts
+                        .extend(previous.sensitive_artifacts);
+                    scan.manifests.extend(previous.manifests);
+                    scan.errors.extend(previous.errors);
+                }
+            }
+            Err(error) => scan
+                .errors
+                .push(format!("legacy-session-inventory: {error}")),
+        }
+        scan
     });
     let (proxy_backend, proxy_backend_error) = proxy_backend_status();
     let ca = if scan.errors.is_empty() {
@@ -1132,6 +1245,7 @@ pub fn gather_with(observer: &mut dyn ProbeObserver) -> Inputs {
             catalog_db_path,
             local_db_present: local_db_path.as_ref().is_some_and(|p| p.exists()),
             local_db_path,
+            storage_observations: storage_observations(),
             os,
             subsystem,
             privilege,
@@ -1240,6 +1354,7 @@ fn gather_windows(observer: &mut dyn ProbeObserver) -> Inputs {
         catalog_db_path,
         local_db_present: local_db_path.as_ref().is_some_and(|p| p.exists()),
         local_db_path,
+        storage_observations: storage_observations(),
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
         privilege,

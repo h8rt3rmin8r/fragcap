@@ -295,6 +295,21 @@ fn session_user(id: u32) -> io::Result<String> {
     }
     sid_string(sid.as_mut_ptr().cast())
 }
+
+pub(super) fn current_storage_account() -> io::Result<()> {
+    let producer = user(CURRENT_TOKEN)?;
+    if matches!(producer.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20") {
+        return Err(bad(
+            "a service account cannot own the current-user default storage root",
+        ));
+    }
+    individual(&producer)?;
+    let id = session(CURRENT_TOKEN)?;
+    if id != 0 && session_user(id)? != producer {
+        return Err(bad("the process account differs from the interactive session user; use an explicit storage path for a different-account run"));
+    }
+    Ok(())
+}
 fn restricted(token: isize) -> io::Result<Handle> {
     let groups = info(token, TokenGroups)?;
     let group_info = unsafe { &*groups.as_ptr().cast::<TOKEN_GROUPS>() };

@@ -110,6 +110,21 @@ pub fn run(
         .map(|path| ReportTarget::prepare(path, &inventory.roots))
         .transpose()
         .map_err(|error| CliError::failure(format!("fresh-start report failed: {error}")))?;
+    let mut storage_roots = BTreeSet::new();
+    for root in &inventory.roots {
+        let storage_root = root
+            .path
+            .parent()
+            .ok_or_else(|| CliError::failure("fresh-start data root has no storage parent"))?;
+        storage_roots.insert(storage_root.to_path_buf());
+    }
+    for storage_root in storage_roots {
+        crate::storage_transition::suppress_legacy_transition(&storage_root).map_err(|error| {
+            CliError::failure(format!(
+                "fresh-start could not record legacy transition suppression: {error}"
+            ))
+        })?;
+    }
     let mut recovery_output = Vec::new();
     let outcomes = execute_inventory(&inventory, &mut recovery_output);
     let complete = outcomes
@@ -207,7 +222,7 @@ fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError
                     "all-users fresh-start inventory requires an elevated Administrator session",
                 ));
             }
-            platform_profiles().map_err(|error| {
+            platform_profiles(false).map_err(|error| {
                 CliError::failure(format!("Windows profile inventory failed: {error}"))
             })
         }
@@ -305,6 +320,43 @@ fn build_inventory(scope: &'static str, profiles: &[ProfileRoots]) -> io::Result
 }
 
 fn validate_profile_pair(profile: &ProfileRoots) -> io::Result<()> {
+    let shared = profile.roaming.parent();
+    let local_shared = profile.local.parent();
+    let new_shape = profile
+        .roaming
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("roaming"))
+        && profile
+            .local
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("local"))
+        && shared.zip(local_shared).is_some_and(|(left, right)| {
+            left.to_string_lossy()
+                .eq_ignore_ascii_case(&right.to_string_lossy())
+                && left
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".fragcap"))
+        });
+    if new_shape {
+        let shared = shared.expect("checked shape");
+        let home = shared.parent().expect("checked shape");
+        for ancestor in [home, shared] {
+            if ancestor == shared && !ancestor.exists() {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(ancestor)?;
+            if !metadata.is_dir() || is_redirected(&metadata) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "cleanup ancestor {} is redirected or not a directory",
+                        ancestor.display()
+                    ),
+                ));
+            }
+        }
+        return Ok(());
+    }
     let roaming_parent = profile.roaming.parent().and_then(Path::parent);
     let local_parent = profile.local.parent().and_then(Path::parent);
     let roaming_kind = profile.roaming.parent().and_then(Path::file_name);
@@ -373,12 +425,11 @@ fn ensure_ordinary_ancestors(root: &Path) -> io::Result<()> {
 }
 
 fn validated_root(profile: &str, kind: &'static str, requested: &Path) -> io::Result<OwnedRoot> {
-    if !requested.is_absolute()
-        || requested.parent().is_none()
-        || requested
-            .file_name()
-            .is_none_or(|name| !name.to_string_lossy().eq_ignore_ascii_case("fragcap"))
-    {
+    let name_matches = requested.file_name().is_some_and(|name| {
+        name.to_string_lossy().eq_ignore_ascii_case("fragcap")
+            || name.to_string_lossy().eq_ignore_ascii_case(kind)
+    });
+    if !requested.is_absolute() || requested.parent().is_none() || !name_matches {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -403,7 +454,18 @@ fn validated_root(profile: &str, kind: &'static str, requested: &Path) -> io::Re
         requested.canonicalize()?
     } else {
         let parent = requested.parent().expect("validated parent");
-        let canonical_parent = parent.canonicalize()?;
+        let canonical_parent = if parent.exists() {
+            parent.canonicalize()?
+        } else {
+            let home = parent
+                .parent()
+                .ok_or_else(|| io::Error::other("data root has no profile"))?;
+            home.canonicalize()?.join(
+                parent
+                    .file_name()
+                    .ok_or_else(|| io::Error::other("data root has no shared folder"))?,
+            )
+        };
         canonical_parent.join(requested.file_name().expect("validated name"))
     };
     if path.parent().is_none() {
@@ -860,7 +922,7 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
 #[cfg(windows)]
 pub(crate) fn cutover_all_users() -> Result<String, CliError> {
     use fragcap::deep_capture::api::NativeCertificateStore;
-    let profiles = platform_profiles()
+    let profiles = platform_profiles(true)
         .map_err(|error| CliError::failure(format!("cutover profile inventory failed: {error}")))?;
     let inventory = build_inventory("s185-cutover", &profiles)
         .map_err(|error| CliError::failure(format!("cutover inventory failed: {error}")))?;
@@ -998,6 +1060,7 @@ fn inventory_value(inventory: &Inventory) -> Value {
         "type": "fresh-start.inventory",
         "scope": inventory.scope,
         "inventory_id": inventory.identifier,
+        "transition_markers": inventory.roots.iter().filter(|root| root.kind == "roaming").map(|root| root.path.parent().expect("validated profile pair").join("storage-transition-v1-fresh-start.json")).collect::<Vec<_>>(),
         "roots": inventory.roots.iter().map(|root| json!({
             "profile": root.profile,
             "kind": root.kind,
@@ -1022,6 +1085,7 @@ fn report_value(inventory: &Inventory, outcomes: &[ItemOutcome], complete: bool)
         "scope": inventory.scope,
         "inventory_id": inventory.identifier,
         "status": if complete { "complete" } else { "partial" },
+        "transition_markers": inventory.roots.iter().filter(|root| root.kind == "roaming").map(|root| root.path.parent().expect("validated profile pair").join("storage-transition-v1-fresh-start.json")).collect::<Vec<_>>(),
         "roots": inventory.roots.iter().map(|root| json!({
             "profile": root.profile,
             "kind": root.kind,
@@ -1054,6 +1118,8 @@ fn emit_inventory(
     writeln!(out, "Fresh-start preview ({})", inventory.scope)
         .map_err(|error| CliError::failure(error.to_string()))?;
     writeln!(out, "Irreversible after confirmation. Exact roots:")
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    writeln!(out, "Confirmation also records a marker beside these roots so retained AppData state cannot be imported again.")
         .map_err(|error| CliError::failure(error.to_string()))?;
     let rows: Vec<Vec<String>> = inventory
         .roots
@@ -1186,7 +1252,7 @@ impl Drop for ReportTarget {
 }
 
 #[cfg(windows)]
-fn platform_profiles() -> io::Result<Vec<ProfileRoots>> {
+fn platform_profiles(legacy: bool) -> io::Result<Vec<ProfileRoots>> {
     use windows_sys::Win32::Foundation::ERROR_NO_MORE_ITEMS;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE,
@@ -1300,8 +1366,16 @@ fn platform_profiles() -> io::Result<Vec<ProfileRoots>> {
         }
         profiles.push(ProfileRoots {
             identity: sid,
-            roaming: base.join("AppData").join("Roaming").join("fragcap"),
-            local: base.join("AppData").join("Local").join("fragcap"),
+            roaming: if legacy {
+                base.join("AppData").join("Roaming").join("fragcap")
+            } else {
+                base.join(".fragcap").join("roaming")
+            },
+            local: if legacy {
+                base.join("AppData").join("Local").join("fragcap")
+            } else {
+                base.join(".fragcap").join("local")
+            },
         });
     }
     profiles.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -1320,7 +1394,7 @@ fn expand_registry_environment(value: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn platform_profiles() -> io::Result<Vec<ProfileRoots>> {
+fn platform_profiles(_legacy: bool) -> io::Result<Vec<ProfileRoots>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "all-users fresh start is Windows-only",
@@ -1332,11 +1406,11 @@ mod tests {
     use super::*;
 
     fn roots(base: &Path) -> ProfileRoots {
-        let appdata = base.join("User").join("AppData");
+        let shared = base.join("User").join(".fragcap");
         ProfileRoots {
             identity: "test-user".to_string(),
-            roaming: appdata.join("Roaming").join("fragcap"),
-            local: appdata.join("Local").join("fragcap"),
+            roaming: shared.join("roaming"),
+            local: shared.join("local"),
         }
     }
 
@@ -1680,7 +1754,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn redirected_appdata_ancestor_is_refused() {
+    fn redirected_appdata_is_independent_but_storage_ancestor_is_refused() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1691,6 +1765,8 @@ mod tests {
         fs::create_dir_all(outside.join("Local")).unwrap();
         symlink(&outside, user.join("AppData")).unwrap();
         let profile = roots(temp.path());
+        assert!(build_inventory("current-user", std::slice::from_ref(&profile)).is_ok());
+        symlink(&outside, user.join(".fragcap")).unwrap();
 
         let error = build_inventory("current-user", &[profile]).unwrap_err();
 

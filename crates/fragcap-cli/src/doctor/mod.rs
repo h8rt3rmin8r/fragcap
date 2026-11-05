@@ -149,6 +149,8 @@ pub struct Inputs {
     pub local_db_path: Option<std::path::PathBuf>,
     /// Whether the local store exists on disk (created on first run).
     pub local_db_present: bool,
+    /// Opened-file observations for selected persistent locations.
+    pub storage_observations: Vec<StorageObservation>,
     /// The operating system description.
     pub os: String,
     /// Native or a subsystem.
@@ -198,6 +200,18 @@ pub struct Inputs {
     pub target_entry_count: Option<usize>,
     /// Deep Capture readiness and cleanup facts.
     pub deep_capture: DeepCaptureInputs,
+}
+
+/// A read-only observation of one selected storage path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageObservation {
+    pub name: String,
+    pub selected: std::path::PathBuf,
+    pub source: String,
+    pub existence: String,
+    pub effective: Option<std::path::PathBuf>,
+    pub redirected: Option<bool>,
+    pub reason: Option<String>,
 }
 
 /// The classification of one check.
@@ -272,6 +286,8 @@ pub struct Check {
     /// Exact non-secret native residue facts for structured output.
     #[doc(hidden)]
     pub native_resource: Option<NativeResourceContext>,
+    /// Exact selected and opened-file destination for a storage row.
+    pub storage: Option<StorageObservation>,
 }
 
 /// Human-only presentation for a check whose machine identity stays unchanged.
@@ -319,6 +335,7 @@ impl Check {
             action: None,
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -338,6 +355,7 @@ impl Check {
             action: None,
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -357,6 +375,7 @@ impl Check {
             action: None,
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -377,6 +396,7 @@ impl Check {
             action: None,
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -400,6 +420,7 @@ impl Check {
             action: Some(action),
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -423,6 +444,7 @@ impl Check {
             action: Some(action),
             human: None,
             native_resource: None,
+            storage: None,
         }
     }
 
@@ -688,6 +710,20 @@ impl Report {
                     "false"
                 });
                 line.push('}');
+            }
+            if let Some(storage) = &check.storage {
+                line.push_str(",\"storage\":");
+                line.push_str(
+                    &serde_json::json!({
+                        "selected": storage.selected,
+                        "source": storage.source,
+                        "existence": storage.existence,
+                        "effective": storage.effective,
+                        "redirected": storage.redirected,
+                        "reason": storage.reason,
+                    })
+                    .to_string(),
+                );
             }
             line.push_str("}\n");
             out.push_str(&line);

@@ -6,7 +6,7 @@
 //! The distribution places `catalog.db` read-only beside `fragcap.exe` (the MSI
 //! component and the portable archive both do). On first run fragcap seeds the
 //! per-user catalog from that template. This test reproduces that layout with a
-//! clean `%APPDATA%` and asserts the hero listing (`fragcap targets`, the
+//! clean explicit scratch storage root and asserts the hero listing (`fragcap targets`, the
 //! documented first command) seeds the per-user catalog from the template rather
 //! than ignoring it.
 //!
@@ -20,6 +20,19 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+fn hidden_command(executable: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(windows)]
+    let mut command = Command::new(executable);
+    #[cfg(not(windows))]
+    let command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
 
 /// A unique scratch directory for this test, removed first so a prior run cannot
 /// leave a stale catalog behind and mask a regression.
@@ -47,7 +60,7 @@ fn targets_seeds_the_per_user_catalog_from_the_template_beside_the_exe() {
 
     // Build the template through the binary's own catalog path, the way the release
     // job does, so it carries the detection signatures a real shipped catalog does.
-    let seed = Command::new(&staged_exe)
+    let seed = hidden_command(&staged_exe)
         .args(["catalog", "seed", "--tier", "signature", "--db"])
         .arg(&template)
         .output()
@@ -63,18 +76,17 @@ fn targets_seeds_the_per_user_catalog_from_the_template_beside_the_exe() {
     // A clean per-user home: the default catalog and local stores resolve under it,
     // and neither exists yet, so this is a genuine first run.
     let home = scratch("home");
-    let per_user = home.join("fragcap");
+    let per_user = home.join(".fragcap").join("roaming");
     assert!(
         !per_user.join("catalog.db").exists(),
         "the per-user catalog must not exist before the first run"
     );
 
     // Run the hero listing exactly as a fresh install would: the default store
-    // locations (no --db, no FRAGCAP_* overrides), with APPDATA pointing at the
-    // clean home so the defaults resolve there.
-    let run = Command::new(&staged_exe)
+    // locations (no --db), with an explicit scratch root so no real user data is touched.
+    let run = hidden_command(&staged_exe)
         .arg("targets")
-        .env("APPDATA", &home)
+        .env("FRAGCAP_STORAGE_ROOT", home.join(".fragcap"))
         .env_remove("FRAGCAP_CATALOG_DB")
         .env_remove("FRAGCAP_LOCAL_DB")
         .env_remove("FRAGCAP_PROFILE_DIR")
@@ -131,7 +143,7 @@ fn catalog_subcommands_resolve_a_store_without_a_flag() {
     let from_flag = dir.join("from-flag.db");
 
     // With no flag, the environment override is the store that gets written.
-    let run = Command::new(bin)
+    let run = hidden_command(bin)
         .args(["catalog", "seed", "--tier", "signature"])
         .env("FRAGCAP_CATALOG_DB", &from_env)
         .output()
@@ -152,7 +164,7 @@ fn catalog_subcommands_resolve_a_store_without_a_flag() {
     );
 
     // An explicit flag wins over the environment override.
-    let run = Command::new(bin)
+    let run = hidden_command(bin)
         .args(["catalog", "seed", "--tier", "signature", "--db"])
         .arg(&from_flag)
         .env("FRAGCAP_CATALOG_DB", &from_env)

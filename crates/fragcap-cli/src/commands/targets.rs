@@ -53,22 +53,10 @@ pub(crate) fn run_mode(
     match command {
         TargetsCommand::Add(args) => add(args, out, emitter, mode),
         TargetsCommand::Relocate(args) => relocate(args, out, emitter, mode),
-        // `list` mirrors the bare `fragcap targets`: an omitted `--db` resolves the
-        // default store, and an unresolvable location degrades to the empty listing
-        // rather than erroring, since there is nothing to list either way.
+        // `list` mirrors the bare `fragcap targets` default-store resolution.
         TargetsCommand::List { db } => {
-            let path = db.clone().or_else(default_local_store);
-            match path {
-                Some(path) => hero_listing_mode(&path, false, out, emitter, mode),
-                None => {
-                    if mode.json {
-                        write_json(out, &json!({"event":"targets.list","count":0,"targets":[]}))?;
-                    } else if mode.human_result() {
-                        empty_listing(out);
-                    }
-                    Ok(Exit::SUCCESS)
-                }
-            }
+            let path = db.clone().map(Ok).unwrap_or_else(default_local_store)?;
+            hero_listing_mode(&path, false, out, emitter, mode)
         }
         TargetsCommand::Show(args) => show(args, out, mode),
         TargetsCommand::Discover(args) => discover(args, out, emitter, mode),
@@ -104,24 +92,12 @@ pub(crate) fn list_default_mode(
 ) -> Result<Exit, CliError> {
     // Resolve like the rest of the surface: the FRAGCAP_LOCAL_DB override, else the
     // per-user default (whose parent is created for first use).
-    let exit = match default_local_store() {
-        Some(path) => hero_listing_mode(&path, footer, out, emitter, mode)?,
-        None => {
-            if mode.json {
-                write_json(out, &json!({"event":"targets.list","count":0,"targets":[]}))?;
-            } else if mode.human_result() {
-                empty_listing(out);
-                print_footer(out, footer);
-            }
-            Exit::SUCCESS
-        }
-    };
-    Ok(exit)
+    hero_listing_mode(&default_local_store()?, footer, out, emitter, mode)
 }
 
 /// Resolve the default local store when no `--db` is given: the `FRAGCAP_LOCAL_DB`
 /// override, else the per-user default, the same order the bare `fragcap targets`
-/// command uses. `None` only when no location can be determined at all.
+/// command uses. An unavailable default is a named failure.
 ///
 /// The per-user default is created on first use, but SQLite does not create a missing
 /// parent directory, so this ensures the default's parent exists before the store is
@@ -132,13 +108,15 @@ pub(crate) fn list_default_mode(
 ///
 /// `pub(crate)` since slice S063 so `targets discover` resolves its local store
 /// through the same precedence rather than a second implementation of it.
-pub(crate) fn default_local_store() -> Option<PathBuf> {
+pub(crate) fn default_local_store() -> Result<PathBuf, CliError> {
     if let Some(env) = paths::local_db_path(None) {
-        return Some(env);
+        return Ok(env);
     }
-    let path = paths::default_local_db_path()?;
+    let path = paths::default_local_db_path()
+        .ok_or_else(|| CliError::failure("the current-user local store path is unavailable"))?;
+    crate::storage_transition::prepare_database(&path).map_err(CliError::failure)?;
     ensure_parent_dir(&path);
-    Some(path)
+    Ok(path)
 }
 
 /// Best-effort creation of a store path's parent directory, so a first-use open can
@@ -161,11 +139,7 @@ fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
     if let Some(db) = db {
         return Ok(db.to_path_buf());
     }
-    default_local_store().ok_or_else(|| {
-        CliError::failure(
-            "the local store path could not be determined; pass --db or set FRAGCAP_LOCAL_DB",
-        )
-    })
+    default_local_store()
 }
 
 /// The hero listing: run discovery and register newly found titles (so each row is
@@ -593,8 +567,7 @@ pub(crate) fn run_discovery_default(
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let db = default_local_store()
-        .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
+    let db = default_local_store()?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let result = discover_and_register(&mut store, emitter)?;
     let _ = writeln!(
@@ -645,28 +618,23 @@ fn scan(
     // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
     // else the per-user default). Registration is idempotent, so a rescan does not
     // duplicate (P-10), and the conserved account is surfaced (P-4).
-    let db = db.map(Path::to_path_buf).or_else(default_local_store);
-    if let Some(db) = db {
-        let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
-        let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
-            .map_err(|e| CliError::failure(e.to_string()))?;
-        if mode.json {
-            write_json(
-                out,
-                &json!({"event":"targets.scan","candidates":discovery.candidates.len(),"registered":outcome.registered,"already_present":outcome.already_present,"store":db.display().to_string(),"warnings":discovery.warnings}),
-            )?;
-        } else if mode.human_result() {
-            let _ = writeln!(
-                out,
-                "registered {} target(s), {} already present",
-                outcome.registered, outcome.already_present
-            );
-        }
-    } else if mode.json {
+    let db = db
+        .map(|path| Ok(path.to_path_buf()))
+        .unwrap_or_else(default_local_store)?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
+    let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    if mode.json {
         write_json(
             out,
-            &json!({"event":"targets.scan","candidates":discovery.candidates.len(),"registered":null,"already_present":null,"store":null,"warnings":discovery.warnings}),
+            &json!({"event":"targets.scan","candidates":discovery.candidates.len(),"registered":outcome.registered,"already_present":outcome.already_present,"store":db.display().to_string(),"warnings":discovery.warnings}),
         )?;
+    } else if mode.human_result() {
+        let _ = writeln!(
+            out,
+            "registered {} target(s), {} already present",
+            outcome.registered, outcome.already_present
+        );
     }
     Ok(Exit::SUCCESS)
 }
@@ -902,16 +870,11 @@ fn discover(
     // resolves through the same precedence the hero listing uses; the catalog
     // one through the shared bootstrap, so a first run creates it rather than
     // asking the operator for a path to a component fragcap installs.
-    let local_db = match args.local_db.clone().or_else(default_local_store) {
-        Some(p) => p,
-        None => {
-            return Err(CliError::failure(concat!(
-                "no local store could be resolved: pass --local-db, set ",
-                "FRAGCAP_LOCAL_DB, or run on a machine with a per-user ",
-                "application data directory",
-            )))
-        }
-    };
+    let local_db = args
+        .local_db
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(default_local_store)?;
     let catalog_db = target_resolve::ensure_catalog_store(args.catalog_db.as_deref())
         .map_err(CliError::failure)?
         .ok_or_else(|| {

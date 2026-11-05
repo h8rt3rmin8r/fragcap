@@ -50,6 +50,7 @@ fragcap              = { workspace = true, features = ["deep-capture"] }
 clap.workspace       = true
 ctrlc.workspace      = true
 serde_json.workspace = true
+rusqlite.workspace = true
 blake3.workspace = true
 ring.workspace = true
 x509-parser.workspace = true

@@ -52,6 +52,7 @@ mod output;
 mod paths;
 mod session_gc;
 mod session_ux;
+mod storage_transition;
 #[cfg(windows)]
 mod windows_cert;
 mod workflow_help;

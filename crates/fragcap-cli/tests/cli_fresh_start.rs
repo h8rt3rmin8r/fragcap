@@ -11,6 +11,7 @@ static CURRENT_USER_ENVIRONMENT: Mutex<()> = Mutex::new(());
 
 struct CurrentUserEnvironment<'a> {
     _lock: MutexGuard<'a, ()>,
+    storage_root: Option<std::ffi::OsString>,
     appdata: Option<std::ffi::OsString>,
     local_appdata: Option<std::ffi::OsString>,
 }
@@ -20,11 +21,18 @@ impl<'a> CurrentUserEnvironment<'a> {
         let lock = CURRENT_USER_ENVIRONMENT.lock().unwrap();
         let appdata = std::env::var_os("APPDATA");
         let local_appdata = std::env::var_os("LOCALAPPDATA");
+        let storage_root = std::env::var_os("FRAGCAP_STORAGE_ROOT");
         let base = temp.path().join("User").join("AppData");
+        fs::create_dir_all(temp.path().join("User")).unwrap();
         std::env::set_var("APPDATA", base.join("Roaming"));
         std::env::set_var("LOCALAPPDATA", base.join("Local"));
+        std::env::set_var(
+            "FRAGCAP_STORAGE_ROOT",
+            temp.path().join("User").join(".fragcap"),
+        );
         Self {
             _lock: lock,
+            storage_root,
             appdata,
             local_appdata,
         }
@@ -33,6 +41,10 @@ impl<'a> CurrentUserEnvironment<'a> {
 
 impl Drop for CurrentUserEnvironment<'_> {
     fn drop(&mut self) {
+        match self.storage_root.take() {
+            Some(value) => std::env::set_var("FRAGCAP_STORAGE_ROOT", value),
+            None => std::env::remove_var("FRAGCAP_STORAGE_ROOT"),
+        }
         match self.appdata.take() {
             Some(value) => std::env::set_var("APPDATA", value),
             None => std::env::remove_var("APPDATA"),
@@ -45,9 +57,9 @@ impl Drop for CurrentUserEnvironment<'_> {
 }
 
 fn roots(temp: &tempfile::TempDir) -> (String, String) {
-    let appdata = temp.path().join("User").join("AppData");
-    let roaming = appdata.join("Roaming").join("fragcap");
-    let local = appdata.join("Local").join("fragcap");
+    let shared = temp.path().join("User").join(".fragcap");
+    let roaming = shared.join("roaming");
+    let local = shared.join("local");
     fs::create_dir_all(roaming.join("profiles")).unwrap();
     fs::create_dir_all(local.join("logs")).unwrap();
     fs::write(roaming.join("local.db"), b"learned target").unwrap();
