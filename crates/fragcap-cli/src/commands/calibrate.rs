@@ -200,13 +200,13 @@ fn no_progress_reason(attempted_count: usize, inserted: bool) -> Option<&'static
 }
 
 fn should_retry_as_game_scope(
-    disposition: deep_capture::RunDisposition,
+    inspection_recovery_needed: bool,
     allowed: bool,
     requested_scope: CompatibilityRequestedInspectionScope,
     effective_scope: Option<CompatibilityInspectionScope>,
     attempt_ordinal: u64,
 ) -> bool {
-    disposition == deep_capture::RunDisposition::Failed
+    inspection_recovery_needed
         && allowed
         && requested_scope != CompatibilityRequestedInspectionScope::ExactGame
         && effective_scope == Some(CompatibilityInspectionScope::LaunchChain)
@@ -214,15 +214,12 @@ fn should_retry_as_game_scope(
 }
 
 fn should_use_passive_fallback(
-    disposition: deep_capture::RunDisposition,
+    inspection_recovery_needed: bool,
     retry_selected: bool,
     allowed: bool,
     passive_fallback_ready: bool,
 ) -> bool {
-    disposition == deep_capture::RunDisposition::Failed
-        && !retry_selected
-        && allowed
-        && passive_fallback_ready
+    inspection_recovery_needed && !retry_selected && allowed && passive_fallback_ready
 }
 
 const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
@@ -3783,11 +3780,10 @@ fn run_inner(
                     observed_protocols: protocol_names(&observed_protocols),
                     completed_protocols: protocol_names(&completed_protocols),
                     remaining_protocols: protocol_names(&remaining_protocols),
-                    next_command: Some(target_command(
-                        "deep-capture",
+                    next_command: Some(deep_capture_handoff_command(
                         fresh_target.stable_id,
                         &local_store_argument,
-                        " --launch",
+                        current.requested_scope,
                     )),
                 },
             );
@@ -4170,28 +4166,27 @@ fn run_inner(
             .as_ref()
             .is_some_and(|assessment| assessment.reason == "final-client-correlation-missing");
         let selected_effective_scope = selected.scope.as_ref().map(|scope| scope.effective);
+        let inspection_recovery_needed = outcome.inspection_recovery_needed();
         let retry_as_game_scope = should_retry_as_game_scope(
-            outcome.disposition,
+            inspection_recovery_needed,
             workflow.allow_game_scope_retry,
             active_requested_scope,
             selected_effective_scope,
             workflow.attempt_ordinal,
         );
         let passive_fallback = should_use_passive_fallback(
-            outcome.disposition,
+            inspection_recovery_needed,
             retry_as_game_scope,
             workflow.allow_capture_fallback,
             outcome.passive_fallback_ready,
         );
-        let (completed_status, completed_reason) = match outcome.disposition {
+        let automatic_inspection_recovery_declared =
+            workflow.allow_game_scope_retry || workflow.allow_capture_fallback;
+        let (base_status, base_reason) = match outcome.disposition {
             deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
             deep_capture::RunDisposition::Interrupted => {
                 ("interrupted", "delegated-session-interrupted")
             }
-            deep_capture::RunDisposition::Failed if passive_fallback => (
-                "capture-fallback",
-                "deep-capture-failed-passive-evidence-retained",
-            ),
             deep_capture::RunDisposition::Failed => {
                 ("failed", "delegated-session-terminal-failure")
             }
@@ -4206,16 +4201,26 @@ fn run_inner(
                 &completed_protocols,
             ),
         };
+        let (completed_status, completed_reason) = if passive_fallback {
+            (
+                "capture-fallback",
+                "deep-capture-failed-passive-evidence-retained",
+            )
+        } else {
+            (base_status, base_reason)
+        };
         let next_command = if correlation_missing {
             Some("fragcap doctor".to_string())
-        } else if outcome.disposition == deep_capture::RunDisposition::Failed {
+        } else if inspection_recovery_needed
+            && (automatic_inspection_recovery_declared
+                || outcome.disposition == deep_capture::RunDisposition::Failed)
+        {
             None
         } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
-            Some(target_command(
-                "deep-capture",
+            Some(deep_capture_handoff_command(
                 completed_target.stable_id,
                 &local_store_argument,
-                " --launch",
+                active_requested_scope,
             ))
         } else {
             Some(calibration_resume_command(
@@ -4648,6 +4653,24 @@ fn calibrate_command(
     target_command("calibrate", target_id, local_store, &suffix)
 }
 
+fn deep_capture_handoff_command(
+    target_id: i64,
+    local_store: &str,
+    requested_scope: CompatibilityRequestedInspectionScope,
+) -> String {
+    let scope = match requested_scope {
+        CompatibilityRequestedInspectionScope::Auto => "auto",
+        CompatibilityRequestedInspectionScope::ExactGame => "game",
+        CompatibilityRequestedInspectionScope::LaunchChain => "launch-chain",
+    };
+    target_command(
+        "deep-capture",
+        target_id,
+        local_store,
+        &format!(" --launch --inspect-scope {scope}"),
+    )
+}
+
 #[cfg(test)]
 fn continuation_command(
     proposal: &deep_capture_api::CalibrationProposal,
@@ -4689,11 +4712,10 @@ fn continuation_command(
             all_protocols,
         ))
     } else if remaining_protocols.is_empty() {
-        Some(target_command(
-            "deep-capture",
+        Some(deep_capture_handoff_command(
             target_id,
             local_store,
-            " --launch",
+            proposal.scope.as_ref()?.requested,
         ))
     } else {
         Some(calibrate_command(
@@ -5968,28 +5990,35 @@ mod tests {
     #[test]
     fn declared_scope_retry_is_single_directional_and_finite() {
         assert!(should_retry_as_game_scope(
-            deep_capture::RunDisposition::Failed,
+            true,
             true,
             CompatibilityRequestedInspectionScope::LaunchChain,
             Some(CompatibilityInspectionScope::LaunchChain),
             1,
         ));
         assert!(!should_retry_as_game_scope(
-            deep_capture::RunDisposition::Failed,
+            false,
+            true,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            Some(CompatibilityInspectionScope::LaunchChain),
+            1,
+        ));
+        assert!(!should_retry_as_game_scope(
+            true,
             false,
             CompatibilityRequestedInspectionScope::LaunchChain,
             Some(CompatibilityInspectionScope::LaunchChain),
             1,
         ));
         assert!(!should_retry_as_game_scope(
-            deep_capture::RunDisposition::Failed,
+            true,
             true,
             CompatibilityRequestedInspectionScope::ExactGame,
             Some(CompatibilityInspectionScope::ExactGame),
             2,
         ));
         assert!(!should_retry_as_game_scope(
-            deep_capture::RunDisposition::Failed,
+            true,
             true,
             CompatibilityRequestedInspectionScope::LaunchChain,
             Some(CompatibilityInspectionScope::LaunchChain),
@@ -5999,30 +6028,30 @@ mod tests {
 
     #[test]
     fn passive_fallback_requires_declared_authority_and_usable_evidence() {
-        assert!(should_use_passive_fallback(
-            deep_capture::RunDisposition::Failed,
-            false,
-            true,
-            true,
-        ));
-        assert!(!should_use_passive_fallback(
-            deep_capture::RunDisposition::Failed,
-            true,
-            true,
-            true,
-        ));
-        assert!(!should_use_passive_fallback(
-            deep_capture::RunDisposition::Failed,
-            false,
-            false,
-            true,
-        ));
-        assert!(!should_use_passive_fallback(
-            deep_capture::RunDisposition::Failed,
-            false,
-            true,
-            false,
-        ));
+        assert!(should_use_passive_fallback(true, false, true, true,));
+        assert!(!should_use_passive_fallback(false, false, true, true,));
+        assert!(!should_use_passive_fallback(true, true, true, true,));
+        assert!(!should_use_passive_fallback(true, false, false, true,));
+        assert!(!should_use_passive_fallback(true, false, true, false,));
+    }
+
+    #[test]
+    fn deep_capture_handoff_preserves_the_requested_scope() {
+        for (scope, expected) in [
+            (CompatibilityRequestedInspectionScope::Auto, "auto"),
+            (CompatibilityRequestedInspectionScope::ExactGame, "game"),
+            (
+                CompatibilityRequestedInspectionScope::LaunchChain,
+                "launch-chain",
+            ),
+        ] {
+            assert_eq!(
+                deep_capture_handoff_command(42, "local.db", scope),
+                format!(
+                    "fragcap deep-capture --id 42 --local-db local.db --launch --inspect-scope {expected}"
+                )
+            );
+        }
     }
 
     #[test]

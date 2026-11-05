@@ -837,7 +837,7 @@ fn assert_next_command_selects_store(events: &str, subcommand: &str, target_id: 
         .filter(|event| event["event"] == "calibration.guidance")
         .filter_map(|event| event["next_command"].as_str().map(str::to_string))
         .next_back()
-        .expect("one guided next command");
+        .unwrap_or_else(|| panic!("one guided next command; events:\n{events}"));
     let matches = fragcap_cli::command()
         .try_get_matches_from(powershell_words(&command))
         .expect("generated next command parses");

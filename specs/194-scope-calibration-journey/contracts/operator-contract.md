@@ -13,6 +13,8 @@
 - `--retry-game-scope` authorizes at most one fresh linked game-scope successor after an eligible launch-chain failure and exact obligation reconciliation. The predecessor authorization is inherited within that invocation only while the complete target and resolved launch authority remain unchanged apart from the reviewed scope transition.
 - `--fallback-capture` authorizes packet-only Capture fallback when application inspection cannot proceed. Success requires the written capture artifact, every required output, event delivery, and cleanup to reconcile; otherwise the original failure remains authoritative.
 - Resume accepts none of these flags and reuses the stored immutable values.
+- Recovery selection follows the typed inspection or calibration result independently from lifecycle completion. A cleanly finalized session without qualifying inspection evidence remains eligible for reviewed retry or fallback.
+- A generated Deep Capture handoff always includes the exact requested `--inspect-scope` value that produced the applicable facts.
 
 ## Structured fields
 

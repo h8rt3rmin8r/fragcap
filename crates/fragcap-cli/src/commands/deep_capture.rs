@@ -2791,7 +2791,7 @@ pub fn run(
         }
         Err(error) => return Err(error),
     };
-    if outcome.disposition == RunDisposition::Failed
+    if outcome.inspection_recovery_needed()
         && args.retry_game_scope
         && outcome.inspection_scope.effective == CompatibilityInspectionScope::LaunchChain
     {
@@ -2827,7 +2827,7 @@ pub fn run(
         );
         outcome = retry_outcome;
     }
-    if outcome.disposition == RunDisposition::Failed
+    if outcome.inspection_recovery_needed()
         && args.fallback_capture
         && outcome.passive_fallback_ready
     {
@@ -2842,7 +2842,7 @@ pub fn run(
             omissions,
         });
         emitter.progress(&format!(
-            "Deep Capture failed. Packet-only Capture evidence remains under the observed window (retained target packets: {retained_target_packets}); no positive inspection fact was created."
+            "Deep Capture did not establish application inspection. Packet-only Capture evidence remains under the observed window (retained target packets: {retained_target_packets}); no positive inspection fact was created."
         ));
         return Ok(Exit::SUCCESS);
     }
@@ -2965,6 +2965,13 @@ pub(crate) struct RunOutcome {
     pub bundle: Option<PathBuf>,
     pub retry_authorization: InheritedRetryAuthorization,
     pub passive_fallback_ready: bool,
+    inspection_succeeded: bool,
+}
+
+impl RunOutcome {
+    pub(crate) fn inspection_recovery_needed(&self) -> bool {
+        inspection_recovery_needed(self.disposition, self.inspection_succeeded)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2973,6 +2980,11 @@ pub(crate) enum RunDisposition {
     Completed,
     Interrupted,
     Failed,
+}
+
+fn inspection_recovery_needed(disposition: RunDisposition, inspection_succeeded: bool) -> bool {
+    disposition == RunDisposition::Failed
+        || (disposition == RunDisposition::Completed && !inspection_succeeded)
 }
 
 fn require_prior_recovery_settled_at(root: &Path) -> Result<(), CliError> {
@@ -3183,6 +3195,7 @@ pub(crate) fn run_with_outcome(
                     bundle: None,
                     retry_authorization: authorization_plan.inherited_retry_authorization(),
                     passive_fallback_ready: false,
+                    inspection_succeeded: false,
                 });
             }
             AuthorizationDecision::Interrupted => {
@@ -3197,6 +3210,7 @@ pub(crate) fn run_with_outcome(
                     bundle: None,
                     retry_authorization: authorization_plan.inherited_retry_authorization(),
                     passive_fallback_ready: false,
+                    inspection_succeeded: false,
                     terminal_error: Some(CliError::failure(
                         "Deep Capture authorization was interrupted; no effects were applied",
                     )),
@@ -3541,6 +3555,21 @@ pub(crate) fn run_with_outcome(
             ));
         assessment
     });
+    let inspection_succeeded = assessment.as_ref().map_or_else(
+        || {
+            !deep_capture_api::observed_protocol_candidates(
+                &report.snapshot.observations,
+                report.snapshot.controlled,
+            )
+            .is_empty()
+        },
+        |assessment| {
+            matches!(
+                assessment.outcome,
+                CalibrationOutcome::ReachedClient | CalibrationOutcome::LocalCaAccepted
+            )
+        },
+    );
     let mut access = runtime.borrow().output_access.as_ref().map(|access| access.as_json())
         .unwrap_or_else(|| json!({"state":"unresolved","recipient_sid":recipient.sid(),"proof_kind":recipient.proof_kind()}));
     if access["state"] != "verified" {
@@ -3614,6 +3643,7 @@ pub(crate) fn run_with_outcome(
             bundle: Some(bundle.clone()),
             retry_authorization: authorization_plan.inherited_retry_authorization(),
             passive_fallback_ready,
+            inspection_succeeded,
         })
     } else {
         let disposition =
@@ -3640,6 +3670,7 @@ pub(crate) fn run_with_outcome(
             bundle: Some(bundle.clone()),
             retry_authorization: authorization_plan.inherited_retry_authorization(),
             passive_fallback_ready,
+            inspection_succeeded,
         })
     }
 }
@@ -6074,6 +6105,18 @@ mod tests {
             &predecessor,
             &changed_launch
         ));
+    }
+
+    #[test]
+    fn inspection_recovery_is_independent_from_lifecycle_completion() {
+        assert!(inspection_recovery_needed(RunDisposition::Completed, false));
+        assert!(!inspection_recovery_needed(RunDisposition::Completed, true));
+        assert!(inspection_recovery_needed(RunDisposition::Failed, true));
+        assert!(!inspection_recovery_needed(
+            RunDisposition::Interrupted,
+            false
+        ));
+        assert!(!inspection_recovery_needed(RunDisposition::Declined, false));
     }
 
     #[test]

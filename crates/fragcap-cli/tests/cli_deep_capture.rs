@@ -1782,6 +1782,63 @@ fn declared_game_scope_successor_reuses_the_predecessor_authorization_once() {
 }
 
 #[test]
+fn completed_session_without_inspection_still_uses_declared_scope_recovery() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("launch-chain-complete");
+    let successor_bundle = dir.path().join("launch-chain-complete-game-scope-retry");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS", "1");
+    let mut authorization = CountingAuthorization::default();
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--authorize-stdin",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--inspect-scope",
+            "launch-chain",
+            "--retry-game-scope",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "events:\n{events}");
+    assert_eq!(authorization.reads, 1, "events:\n{events}");
+    assert_eq!(
+        events.matches("deep_capture.authorization_plan").count(),
+        2,
+        "events:\n{events}"
+    );
+    assert!(
+        events.contains("deep_capture.scope_retry"),
+        "events:\n{events}"
+    );
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(successor_bundle.join("manifest.json").is_file());
+}
+
+#[test]
 fn failed_calibration_human_report_names_evidence_once_before_artifacts() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
