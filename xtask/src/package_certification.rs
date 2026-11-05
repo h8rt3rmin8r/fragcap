@@ -104,6 +104,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &[
             "schema_version",
             "release_identity",
+            "controlled_smoke",
             "primary_artifacts",
             "shared_entries",
             "checksum_sidecars",
@@ -124,6 +125,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         problems.push("contract schema_version must be 1".into());
     }
     validate_release_identity(&value["release_identity"], &mut problems);
+    validate_controlled_smoke(&value["controlled_smoke"], &mut problems);
     validate_artifacts(value, &mut problems);
     validate_imports(&value["pe_imports"], &mut problems);
     validate_lifecycle(value, &mut problems);
@@ -148,6 +150,28 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &mut problems,
     );
     problems
+}
+
+fn validate_controlled_smoke(value: &Value, problems: &mut Vec<String>) {
+    exact_keys(
+        value,
+        &[
+            "inspection_scope",
+            "middleware_handling",
+            "inspection_policy_id",
+        ],
+        "controlled_smoke",
+        problems,
+    );
+    for (key, expected) in [
+        ("inspection_scope", "exact-game"),
+        ("middleware_handling", "blind-relay"),
+        ("inspection_policy_id", "exact-game-v1"),
+    ] {
+        if value[key] != expected {
+            problems.push(format!("controlled_smoke.{key} must be {expected}"));
+        }
+    }
 }
 
 fn validate_clean_guest_value(

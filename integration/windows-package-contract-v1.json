@@ -8,6 +8,11 @@
     "features": ["etw", "live", "native-deep-capture", "socket-table"],
     "deep_capture_backend": "fragcap-native"
   },
+  "controlled_smoke": {
+    "inspection_scope": "exact-game",
+    "middleware_handling": "blind-relay",
+    "inspection_policy_id": "exact-game-v1"
+  },
   "primary_artifacts": [
     {"id": "portable-zip", "filename": "fragcap-{version}-x86_64-pc-windows-msvc.zip", "signature": "not_applicable", "size_ceiling_bytes": 33554432},
     {"id": "windows-msi", "filename": "fragcap-{version}-x86_64.msi", "signature": "not_signed", "size_ceiling_bytes": 33554432},
