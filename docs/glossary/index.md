@@ -27,6 +27,7 @@ the owning category page.
 - [Authorization plan](command-line-and-diagnostics.md#authorization-plan)
 - [Backpressure](capture-and-networking.md#backpressure)
 - [Binary marker](anti-cheat-and-security.md#binary-marker)
+- [Blind relay](capture-and-networking.md#blind-relay)
 - [Bootstrap filter](capture-and-networking.md#bootstrap-filter)
 - [Bounded buffer](capture-and-networking.md#bounded-buffer)
 - [BSD loopback encapsulation](capture-and-networking.md#bsd-loopback-encapsulation)

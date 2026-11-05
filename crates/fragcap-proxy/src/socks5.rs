@@ -99,6 +99,7 @@ pub(crate) struct SocksConnectionContext<'a> {
     pub on_association_inspection: &'a (dyn Fn(crate::InspectionDecision) + Send + Sync),
     /// Called at the actual stage boundary, before relay or association teardown.
     pub on_stage: &'a (dyn Fn(crate::ConnectionStage, bool) + Send + Sync),
+    pub decision: crate::InspectionDecision,
 }
 
 pub(crate) async fn is_socks5(stream: &TcpStream, budget: Duration) -> bool {
@@ -131,6 +132,7 @@ pub(crate) async fn serve_socks5(
         inspection_slots,
         on_association_inspection,
         on_stage,
+        decision,
     } = context;
     let mut accounting = ProtocolAccounting {
         socks_negotiations: 1,
@@ -339,15 +341,26 @@ pub(crate) async fn serve_socks5(
             accounting.generic_streams_plain = 1;
         }
     }
+    let muted_sink: crate::application::SharedEventSink = None;
+    let relay_limits = ProtocolLimits {
+        capture_payloads: decision.action != crate::InspectionAction::Uninspected
+            && limits.capture_payloads,
+        ..limits.clone()
+    };
+    let stream_sink = if decision.action == crate::InspectionAction::Uninspected {
+        &muted_sink
+    } else {
+        sink
+    };
     let forwarding = crate::relay_generic(
         &mut client,
         &mut upstream,
         crate::GenericRelayContext {
-            limits,
+            limits: &relay_limits,
             shutdown: &mut shutdown,
             session_id,
             connection_id,
-            sink,
+            sink: stream_sink,
             body_resources,
             buffer_bytes,
             provenance,
@@ -362,6 +375,10 @@ pub(crate) async fn serve_socks5(
     accounting.generic_stream_bytes_observed = report.observed_bytes;
     accounting.generic_stream_bytes_retained = report.retained_bytes;
     accounting.generic_stream_bytes_omitted = report.omitted_bytes;
+    if decision.action == crate::InspectionAction::Uninspected {
+        accounting.relay_client_bytes = client_bytes;
+        accounting.relay_upstream_bytes = upstream_bytes;
+    }
     crate::application::emit(
         sink,
         ApplicationEvent::now(
@@ -735,10 +752,25 @@ async fn serve_udp_association(
     let mut quic_buffer = vec![0_u8; upstream_capacity];
     let quic_session_retained = std::sync::Arc::clone(&body_resources.retained);
     let mut datagrams = GenericUdpObserver::new(body_resources);
+    let muted_sink: crate::application::SharedEventSink = None;
+    let muted_limits = ProtocolLimits {
+        capture_payloads: false,
+        ..limits.clone()
+    };
     let idle = tokio::time::sleep(limits.idle_timeout);
     tokio::pin!(idle);
     let terminal = loop {
         let mut control_byte = [0_u8; 1];
+        let relay_association =
+            association_inspection.is_some_and(|decision: crate::InspectionDecision| {
+                decision.action == crate::InspectionAction::Uninspected
+            });
+        let reply_sink = if relay_association { &muted_sink } else { sink };
+        let reply_limits = if relay_association {
+            &muted_limits
+        } else {
+            limits
+        };
         tokio::select! {
             biased;
             _ = shutdown.changed() => break Err(SocksFailure::cancelled()),
@@ -825,15 +857,12 @@ async fn serve_udp_association(
                     ).await;
                     on_association_inspection(decision);
                     association_inspection = Some(decision);
-                    if decision.action == crate::InspectionAction::Uninspected {
-                        accounting.socks_udp_inspection_unavailable = accounting
-                            .socks_udp_inspection_unavailable.saturating_add(1);
-                        break Err(SocksFailure::new(
-                            "inspection-relay-unavailable",
-                            "the uninspected native relay is not available in this slice",
-                        ));
-                    }
                 }
+                let inspect_association = association_inspection.is_some_and(|decision: crate::InspectionDecision| {
+                    decision.action == crate::InspectionAction::Inspect
+                });
+                let data_sink = if inspect_association { sink } else { &muted_sink };
+                let data_limits = if inspect_association { limits } else { &muted_limits };
                 let address_type = datagram.address_type;
                 let payload_len = datagram.payload.len();
                 let client = client_endpoint.expect("accepted client endpoint is pinned");
@@ -851,6 +880,7 @@ async fn serve_udp_association(
                         upstream_v6.as_ref(),
                         &peers,
                         &mut quic,
+                        inspect_association,
                         Some(QuicRouteContext {
                             session_id,
                             association_id: connection_id,
@@ -868,8 +898,8 @@ async fn serve_udp_association(
                             client,
                             selected,
                             datagram.payload,
-                            limits,
-                            sink,
+                            data_limits,
+                            data_sink,
                             session_id,
                             connection_id,
                             &mut accounting,
@@ -1029,8 +1059,8 @@ async fn serve_udp_association(
                         relay: &relay,
                         client_endpoint,
                         peers: &peers,
-                        limits,
-                        sink,
+                        limits: reply_limits,
+                        sink: reply_sink,
                         session_id,
                         connection_id,
                         datagrams: &mut datagrams,
@@ -1059,8 +1089,8 @@ async fn serve_udp_association(
                         relay: &relay,
                         client_endpoint,
                         peers: &peers,
-                        limits,
-                        sink,
+                        limits: reply_limits,
+                        sink: reply_sink,
                         session_id,
                         connection_id,
                         datagrams: &mut datagrams,
@@ -1100,8 +1130,8 @@ async fn serve_udp_association(
                         relay: &relay,
                         client_endpoint,
                         peers: &peers,
-                        limits,
-                        sink,
+                        limits: reply_limits,
+                        sink: reply_sink,
                         session_id,
                         connection_id,
                         datagrams: &mut datagrams,
@@ -1120,6 +1150,14 @@ async fn serve_udp_association(
         accounting.quic_pairs_completed = accounting.quic_pairs_completed.saturating_add(
             u64::from(report.terminal == Some(QuicGatewayTerminal::Complete)),
         );
+    }
+    if association_inspection.is_some_and(|decision: crate::InspectionDecision| {
+        decision.action == crate::InspectionAction::Uninspected
+    }) {
+        accounting.relay_client_bytes = accounting.socks_udp_client_bytes;
+        accounting.relay_upstream_bytes = accounting.socks_udp_upstream_bytes;
+        accounting.relay_client_datagrams = accounting.socks_udp_client_forwarded;
+        accounting.relay_upstream_datagrams = accounting.socks_udp_upstream_forwarded;
     }
     peers.clear();
     drop(upstream_v6);
@@ -1250,6 +1288,7 @@ async fn forward_client_datagram<F>(
     upstream_v6: Option<&UdpSocket>,
     peers: &BTreeSet<SocketAddr>,
     quic: &mut Option<QuicAssociationGateway>,
+    inspect_quic: bool,
     quic_context: Option<QuicRouteContext<'_>>,
     observe: F,
 ) -> Result<(SocketAddr, usize), UdpForwardFailure>
@@ -1274,7 +1313,7 @@ where
     {
         return Err(UdpForwardFailure::PeerLimit(selected));
     }
-    if quic.is_some() || crate::is_quic_initial(payload) {
+    if inspect_quic && (quic.is_some() || crate::is_quic_initial(payload)) {
         observe(selected);
         let quic_context = quic_context.ok_or(UdpForwardFailure::Quic(
             selected,
@@ -2213,6 +2252,7 @@ mod tests {
             None,
             &BTreeSet::new(),
             &mut None,
+            false,
             None,
             |remote| observed = Some(remote),
         )

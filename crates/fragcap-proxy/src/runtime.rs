@@ -25,12 +25,56 @@ use crate::tls::{
     accept_client_tls, client_server_config, connect_verified_tls, upstream_client_config_for_alpn,
     upstream_client_config_without_alpn,
 };
-use crate::{connect_upstream, ProtocolError};
+use crate::{connect_upstream, ProtocolError, ProtocolLimits};
 use crate::{
     CapabilityProof, DestinationPolicy, LeafCache, SessionCapability, SessionCertificateAuthority,
 };
 
 static NEXT_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Counts bytes accepted by a relay's destination write, including rewritten HTTP heads.
+struct CountedWrite<S> {
+    inner: S,
+    written: Arc<AtomicU64>,
+}
+
+impl<S> CountedWrite<S> {
+    fn new(inner: S, written: Arc<AtomicU64>) -> Self {
+        Self { inner, written }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for CountedWrite<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for CountedWrite<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(size)) = result {
+            self.written.fetch_add(size as u64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 
 use crate::{
     BackendCapabilities, BackendIdentity, BackendKind, LifecycleState, NativeProxyConfig,
@@ -534,6 +578,10 @@ impl ConnectionTrace {
             completed_exchanges: 0,
             inspection: self.inspection,
             association_inspection: self.association_inspection,
+            relay_client_bytes: 0,
+            relay_upstream_bytes: 0,
+            relay_client_datagrams: 0,
+            relay_upstream_datagrams: 0,
         }
     }
 }
@@ -607,16 +655,7 @@ async fn connection_task(
     )
     .await;
     trace.lock().expect("connection trace lock").inspection = Some(decision);
-    if decision.action == crate::InspectionAction::Uninspected {
-        return ConnectionOutcome::PreAuthenticationFailed(HttpRun {
-            observations: Vec::new(),
-            accounting: Default::default(),
-            failure: Some(ProtocolError::new(
-                "inspection-relay-unavailable",
-                "the uninspected native relay is not available in this slice",
-            )),
-        });
-    }
+    let uninspected = decision.action == crate::InspectionAction::Uninspected;
     let socks5 = tokio::select! {
         _ = shutdown.changed() => false,
         value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
@@ -659,6 +698,7 @@ async fn connection_task(
                 inspection_slots: Arc::clone(&services.inspection_slots),
                 on_association_inspection: &on_association_inspection,
                 on_stage: &on_stage,
+                decision,
             },
         )
         .await;
@@ -706,11 +746,23 @@ async fn connection_task(
             capability.clone(),
             policy.clone(),
             crate::http2::Http2ConnectionContext {
-                limits: config.protocol.clone(),
+                limits: if uninspected {
+                    ProtocolLimits {
+                        capture_payloads: false,
+                        ..config.protocol.clone()
+                    }
+                } else {
+                    config.protocol.clone()
+                },
                 session_id: config.session_id.clone(),
                 connection_id,
-                sink: services.application_sink.clone(),
+                sink: if uninspected {
+                    None
+                } else {
+                    services.application_sink.clone()
+                },
                 body_resources: services.body_resources.clone(),
+                blind_relay: uninspected,
             },
         )
         .await;
@@ -788,7 +840,7 @@ async fn connection_task(
     };
     if first.is_connect() {
         let authority = first.authority().clone();
-        let upstream = match crate::upstream::connect_upstream_observed(
+        let mut upstream = match crate::upstream::connect_upstream_observed(
             &authority,
             policy,
             config.protocol.upstream,
@@ -851,6 +903,71 @@ async fn connection_task(
         trace_complete(&trace, crate::ConnectionStage::TunnelResponse);
         let connect_accepted =
             connect_observation(&config.session_id, connection_id, peer, local, &first, None);
+        if uninspected {
+            trace_reach(&trace, crate::ConnectionStage::Protocol);
+            let muted_sink: crate::application::SharedEventSink = None;
+            let relay_limits = ProtocolLimits {
+                capture_payloads: false,
+                ..config.protocol.clone()
+            };
+            let transfer = crate::relay_generic(
+                &mut stream,
+                &mut upstream,
+                crate::GenericRelayContext {
+                    limits: &relay_limits,
+                    shutdown: &mut shutdown,
+                    session_id: &config.session_id,
+                    connection_id,
+                    sink: &muted_sink,
+                    body_resources: services.body_resources.clone(),
+                    buffer_bytes: config.per_connection_buffer_bytes(),
+                    provenance: crate::GenericStreamProvenance::TlsEncrypted,
+                },
+            )
+            .await;
+            let report = transfer.report;
+            let mut accounting = crate::ProtocolAccounting {
+                requests: 1,
+                responses: 1,
+                connect_requests: 1,
+                generic_streams_tls_opaque: 1,
+                generic_stream_bytes_observed: report.observed_bytes,
+                generic_stream_bytes_omitted: report.omitted_bytes,
+                relay_client_bytes: report.client_to_upstream_bytes,
+                relay_upstream_bytes: report.upstream_to_client_bytes,
+                ..Default::default()
+            };
+            let failure = transfer.error.map(|error| match error {
+                crate::GenericRelayFailure::Cancelled => {
+                    ProtocolError::new("connection-cancelled", "relay cancelled")
+                }
+                crate::GenericRelayFailure::IdleTimeout => {
+                    ProtocolError::timeout("relay-idle-timeout")
+                }
+                crate::GenericRelayFailure::OperationTimeout => {
+                    ProtocolError::timeout("relay-operation-timeout")
+                }
+                crate::GenericRelayFailure::Transport(error) => {
+                    ProtocolError::io("relay-transport-failed", error)
+                }
+            });
+            accounting.timed_out = u64::from(failure.as_ref().is_some_and(|error| error.timed_out));
+            if let Some(error) = failure.as_ref() {
+                trace_fail(&trace, "relay", error);
+            } else {
+                trace_complete(&trace, crate::ConnectionStage::Protocol);
+            }
+            let run = HttpRun {
+                observations: vec![connect_accepted],
+                accounting,
+                failure,
+            };
+            return if run.failure.is_some() {
+                ConnectionOutcome::Failed(run)
+            } else {
+                ConnectionOutcome::Completed(run)
+            };
+        }
         let server_config = {
             let mut cache = services.leaf_cache.lock().await;
             match client_server_config(
@@ -1083,6 +1200,7 @@ async fn connection_task(
                     connection_id,
                     sink: services.application_sink.clone(),
                     body_resources: services.body_resources.clone(),
+                    blind_relay: false,
                 },
             )
             .await;
@@ -1330,14 +1448,32 @@ async fn connection_task(
         };
     }
     let session_id = config.session_id.clone();
-    let limits = config.protocol.clone();
+    let limits = ProtocolLimits {
+        capture_payloads: !uninspected && config.protocol.capture_payloads,
+        ..config.protocol.clone()
+    };
     let upstream_budgets = limits.upstream;
-    let upstream_sink = services.application_sink.clone();
+    let upstream_sink = if uninspected {
+        None
+    } else {
+        services.application_sink.clone()
+    };
     let upstream_session_id = session_id.clone();
+    let relay_summary = uninspected.then(|| {
+        let mut record = connect_observation(&session_id, connection_id, peer, local, &first, None);
+        record.protocol = "http-relay".to_string();
+        record.method = None;
+        record.url = Some(first.authority().lookup_host());
+        record.status = None;
+        record.transformations = vec!["explicit-proxy-framing"];
+        record
+    });
+    let relay_client_written = Arc::new(AtomicU64::new(0));
+    let relay_upstream_written = Arc::new(AtomicU64::new(0));
     trace_complete(&trace, crate::ConnectionStage::Protocol);
     trace_complete(&trace, crate::ConnectionStage::FirstRequest);
-    let run = serve_http(
-        stream,
+    let mut run = serve_http(
+        CountedWrite::new(stream, Arc::clone(&relay_upstream_written)),
         first,
         capability,
         &limits,
@@ -1347,7 +1483,11 @@ async fn connection_task(
             client_peer: peer,
             proxy_local: local,
             protocol: "http",
-            application_sink: services.application_sink.clone(),
+            application_sink: if uninspected {
+                None
+            } else {
+                services.application_sink.clone()
+            },
             body_resources: services.body_resources.clone(),
         },
         true,
@@ -1355,6 +1495,7 @@ async fn connection_task(
             let policy = policy.clone();
             let sink = upstream_sink.clone();
             let session_id = upstream_session_id.clone();
+            let written = Arc::clone(&relay_client_written);
             async move {
                 connect_upstream(&authority, &policy, upstream_budgets)
                     .await
@@ -1368,6 +1509,7 @@ async fn connection_task(
                             stream.peer_addr(),
                         );
                     })
+                    .map(|stream| CountedWrite::new(stream, written))
                     .map_err(|error| {
                         let mut protocol = ProtocolError::new(error.code, error.detail);
                         protocol.policy_refused =
@@ -1378,6 +1520,12 @@ async fn connection_task(
         },
     )
     .await;
+    if let Some(summary) = relay_summary {
+        run.accounting.relay_client_bytes = relay_client_written.load(Ordering::Relaxed);
+        run.accounting.relay_upstream_bytes = relay_upstream_written.load(Ordering::Relaxed);
+        run.observations.clear();
+        run.observations.push(summary);
+    }
     if let Some(error) = run.failure.as_ref() {
         trace_fail(
             &trace,
@@ -2085,7 +2233,7 @@ fn record_connection_diagnostic(
         code,
         capacity,
         ConnectionTrace::default(),
-        0,
+        crate::ProtocolAccounting::default(),
     );
 }
 
@@ -2096,7 +2244,7 @@ fn record_connection_diagnostic_with_trace(
     code: Option<&'static str>,
     capacity: usize,
     trace: ConnectionTrace,
-    completed_exchanges: u64,
+    source: crate::ProtocolAccounting,
 ) {
     let cause = code.map(crate::ConnectionFailureCategory::from_code);
     if let Some(category) = cause {
@@ -2110,9 +2258,13 @@ fn record_connection_diagnostic_with_trace(
             .saturating_add(1);
     }
     let mut detail = trace.into_diagnostic(connection_id, terminal, code);
-    detail.completed_exchanges = completed_exchanges;
+    detail.completed_exchanges = source.http1_exchanges_completed;
+    detail.relay_client_bytes = source.relay_client_bytes;
+    detail.relay_upstream_bytes = source.relay_upstream_bytes;
+    detail.relay_client_datagrams = source.relay_client_datagrams;
+    detail.relay_upstream_datagrams = source.relay_upstream_datagrams;
     if code == Some("http-header-timeout") {
-        detail.header_timeout_phase = Some(if completed_exchanges > 0 {
+        detail.header_timeout_phase = Some(if source.http1_exchanges_completed > 0 {
             "after-completed-exchange"
         } else {
             "before-first-request"
@@ -2151,7 +2303,7 @@ fn account_join(
                 None,
                 max_observations,
                 trace,
-                run.accounting.http1_exchanges_completed,
+                run.accounting,
             );
             observation.authenticated_connections =
                 observation.authenticated_connections.saturating_add(1);
@@ -2166,7 +2318,7 @@ fn account_join(
                 Some(error.code),
                 max_observations,
                 trace,
-                0,
+                crate::ProtocolAccounting::default(),
             );
             observation.authentication_refused =
                 observation.authentication_refused.saturating_add(1);
@@ -2191,7 +2343,7 @@ fn account_join(
         Ok((id, ConnectionOutcome::PreAuthenticationFailed(run), trace)) => {
             observation.failed_connections = observation.failed_connections.saturating_add(1);
             let failure = run.failure.clone();
-            let completed_exchanges = run.accounting.http1_exchanges_completed;
+            let source = run.accounting;
             merge_protocol(observation, run, max_observations);
             let failure = failure.unwrap_or_else(|| {
                 ProtocolError::new(
@@ -2206,7 +2358,7 @@ fn account_join(
                 Some(failure.code),
                 max_observations,
                 trace,
-                completed_exchanges,
+                source,
             );
             push_runtime_failure(
                 observation,
@@ -2222,7 +2374,7 @@ fn account_join(
                 observation.authenticated_connections.saturating_add(1);
             observation.failed_connections = observation.failed_connections.saturating_add(1);
             let failure = run.failure.clone();
-            let completed_exchanges = run.accounting.http1_exchanges_completed;
+            let source = run.accounting;
             merge_protocol(observation, run, max_observations);
             let failure = failure
                 .unwrap_or_else(|| ProtocolError::new("connection-io-failed", "connection failed"));
@@ -2233,7 +2385,7 @@ fn account_join(
                 Some(failure.code),
                 max_observations,
                 trace,
-                completed_exchanges,
+                source,
             );
             push_runtime_failure(
                 observation,
@@ -2260,6 +2412,22 @@ fn account_join(
 
 fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observations: usize) {
     let source = run.accounting;
+    observation.protocol.relay_client_bytes = observation
+        .protocol
+        .relay_client_bytes
+        .saturating_add(source.relay_client_bytes);
+    observation.protocol.relay_upstream_bytes = observation
+        .protocol
+        .relay_upstream_bytes
+        .saturating_add(source.relay_upstream_bytes);
+    observation.protocol.relay_client_datagrams = observation
+        .protocol
+        .relay_client_datagrams
+        .saturating_add(source.relay_client_datagrams);
+    observation.protocol.relay_upstream_datagrams = observation
+        .protocol
+        .relay_upstream_datagrams
+        .saturating_add(source.relay_upstream_datagrams);
     observation.protocol.http1_exchanges_completed = observation
         .protocol
         .http1_exchanges_completed
@@ -2924,7 +3092,10 @@ mod tests {
             Some("http-header-timeout"),
             4,
             trace,
-            1,
+            crate::ProtocolAccounting {
+                http1_exchanges_completed: 1,
+                ..Default::default()
+            },
         );
         let detail = &observed.connection_diagnostics[0];
         assert_eq!(detail.completed_exchanges, 1);

@@ -494,6 +494,11 @@ pub struct ConnectionDiagnostic {
     pub completed_exchanges: u64,
     pub inspection: Option<crate::InspectionDecision>,
     pub association_inspection: Option<crate::InspectionDecision>,
+    /// Successfully forwarded bytes and datagrams on an uninspected route.
+    pub relay_client_bytes: u64,
+    pub relay_upstream_bytes: u64,
+    pub relay_client_datagrams: u64,
+    pub relay_upstream_datagrams: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -544,6 +549,10 @@ impl RuntimeObservation {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProtocolAccounting {
+    pub relay_client_bytes: u64,
+    pub relay_upstream_bytes: u64,
+    pub relay_client_datagrams: u64,
+    pub relay_upstream_datagrams: u64,
     pub requests: u64,
     pub responses: u64,
     /// Response body and exchange completed, independently from connection closure.

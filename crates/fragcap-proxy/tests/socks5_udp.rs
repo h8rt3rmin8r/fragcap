@@ -44,9 +44,11 @@ fn association_decision_uses_udp_client_socket_before_forwarding() {
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin_address);
     let decider = Arc::new(AssociationDecider::default());
+    let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
         .with_inspection_decider(decider.clone())
+        .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
     let mut control = TcpStream::connect(lease.endpoint()).unwrap();
@@ -60,17 +62,40 @@ fn association_decision_uses_udp_client_socket_before_forwarding() {
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
     let relay = associate(&mut control, Some(client.local_addr().unwrap()));
     client
-        .send_to(&ipv4_frame(origin_address, b"never-forward"), relay)
+        .send_to(&ipv4_frame(origin_address, b"relay-original"), relay)
         .unwrap();
     let mut buffer = [0_u8; 64];
-    assert!(origin.recv_from(&mut buffer).is_err());
+    let (read, source) = origin.recv_from(&mut buffer).unwrap();
+    assert_eq!(&buffer[..read], b"relay-original");
+    origin.send_to(b"origin-reply", source).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let (read, _) = client.recv_from(&mut buffer).unwrap();
+    assert!(buffer[..read].ends_with(b"origin-reply"));
+    let mut initial = vec![0_u8; 1200];
+    initial[..5].copy_from_slice(&[0xc0, 0, 0, 0, 1]);
+    client
+        .send_to(&ipv4_frame(origin_address, &initial), relay)
+        .unwrap();
+    let mut quic_buffer = vec![0_u8; 1300];
+    let (read, _) = origin.recv_from(&mut quic_buffer).unwrap();
+    assert_eq!(&quic_buffer[..read], &initial);
     drop(control);
     let report = lease.cleanup(Duration::from_secs(2));
     assert!(report.is_clean(), "{report:?}");
     assert_eq!(
         report.observation.protocol.socks_udp_inspection_unavailable,
-        1
+        0
     );
+    assert_eq!(report.observation.protocol.quic_pairs_started, 0);
+    assert_eq!(report.observation.protocol.relay_client_datagrams, 2);
+    assert!(!collector
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event.kind, ApplicationEventKind::GenericUdpDatagram(_))));
     let seen = decider.0.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].transport, "udp");
@@ -322,7 +347,21 @@ fn association_relays_ipv6_when_loopback_is_available() {
         origin.send_to(b"ipv6-reply", source).unwrap();
     });
     let collector = Arc::new(Collector::default());
-    let mut lease = start_proxy(&[origin_address], ProtocolLimits::default(), collector);
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin_address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(AssociationDecider::default()))
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
     client
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -348,6 +387,14 @@ fn association_relays_ipv6_when_loopback_is_available() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.socks_udp_client_forwarded, 1);
     assert_eq!(report.observation.protocol.socks_udp_upstream_forwarded, 1);
+    assert_eq!(report.observation.protocol.relay_client_datagrams, 1);
+    assert_eq!(report.observation.protocol.relay_upstream_datagrams, 1);
+    assert!(!collector
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event.kind, ApplicationEventKind::GenericUdpDatagram(_))));
 }
 
 #[test]

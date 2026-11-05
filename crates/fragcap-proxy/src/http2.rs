@@ -2,7 +2,7 @@
 
 //! Bounded HTTP/2 bridge.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,6 +10,7 @@ use bytes::Bytes;
 use h2::client::SendRequest;
 use h2::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -36,9 +37,28 @@ pub(crate) struct Http2ConnectionContext {
     pub connection_id: u64,
     pub sink: SharedEventSink,
     pub body_resources: crate::body::SessionBodyResources,
+    pub blind_relay: bool,
+}
+
+struct CleartextRelayContext {
+    capability: SessionCapability,
+    policy: DestinationPolicy,
+    limits: ProtocolLimits,
+    authority: DestinationAuthority,
+    session_id: String,
+    connection_id: u64,
+    sink: SharedEventSink,
+    session_retained: Arc<AtomicU64>,
+    decoder_slots: Arc<Semaphore>,
 }
 
 struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+#[derive(Default)]
+struct RelayCounters {
+    client_bytes: AtomicU64,
+    upstream_bytes: AtomicU64,
+}
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
@@ -215,6 +235,7 @@ where
         connection_id,
         sink,
         body_resources,
+        blind_relay: _,
     } = context;
     let session_retained = body_resources.retained;
     let decoder_slots = body_resources.decoder_slots;
@@ -399,6 +420,7 @@ where
         connection_id,
         sink,
         body_resources,
+        blind_relay,
     } = context;
     let session_retained = body_resources.retained;
     let decoder_slots = body_resources.decoder_slots;
@@ -427,17 +449,37 @@ where
             }
             Err(_) => return failed("http2-auth-timeout", "HTTP/2 authentication timed out"),
         };
-    let (first, authority) = match authenticate_cleartext_request(first, &capability, None) {
-        Ok(value) => value,
-        Err(error) => {
-            return Http2Run {
-                authenticated: false,
-                accounting: ProtocolAccounting::default(),
-                failure: Some(error),
+    let (first, authority) =
+        match authenticate_cleartext_request(first, &capability, None, blind_relay) {
+            Ok(value) => value,
+            Err(error) => {
+                return Http2Run {
+                    authenticated: false,
+                    accounting: ProtocolAccounting::default(),
+                    failure: Some(error),
+                }
             }
-        }
-    };
+        };
     *authenticated = true;
+    if blind_relay && first.method() == hyper::Method::CONNECT {
+        return serve_cleartext_connects(
+            client_connection,
+            first,
+            first_response,
+            CleartextRelayContext {
+                capability,
+                policy,
+                limits,
+                authority,
+                session_id,
+                connection_id,
+                sink,
+                session_retained,
+                decoder_slots,
+            },
+        )
+        .await;
+    }
     let upstream = match crate::connect_upstream(&authority, &policy, limits.upstream).await {
         Ok(upstream) => upstream,
         Err(error) => {
@@ -483,6 +525,7 @@ where
     let mut tasks = JoinSet::new();
     let mut accounting = ProtocolAccounting::default();
     let mut accepted = Some((first, first_response));
+    let relay_counts = Arc::new(RelayCounters::default());
     loop {
         let next = match accepted.take() {
             Some(value) => Some(Ok(value)),
@@ -522,25 +565,29 @@ where
                 }
             }
         };
-        let (request, _) =
-            match authenticate_cleartext_request(request, &capability, Some(&authority)) {
-                Ok(value) => value,
-                Err(error) => {
-                    respond.send_reset(h2::Reason::REFUSED_STREAM);
-                    accounting.parse_refused = accounting.parse_refused.saturating_add(1);
-                    emit(
-                        &sink,
-                        ApplicationEvent::now(
-                            &session_id,
-                            connection_id,
-                            None,
-                            Some(ProtocolVersion::Http2),
-                            ApplicationEventKind::Error { code: error.code },
-                        ),
-                    );
-                    continue;
-                }
-            };
+        let (request, _) = match authenticate_cleartext_request(
+            request,
+            &capability,
+            Some(&authority),
+            blind_relay,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                respond.send_reset(h2::Reason::REFUSED_STREAM);
+                accounting.parse_refused = accounting.parse_refused.saturating_add(1);
+                emit(
+                    &sink,
+                    ApplicationEvent::now(
+                        &session_id,
+                        connection_id,
+                        None,
+                        Some(ProtocolVersion::Http2),
+                        ApplicationEventKind::Error { code: error.code },
+                    ),
+                );
+                continue;
+            }
+        };
         accounting.requests = accounting.requests.saturating_add(1);
         accounting.http2_streams = accounting.http2_streams.saturating_add(1);
         let stream_id = request.body().stream_id().as_u32() as u64;
@@ -553,8 +600,17 @@ where
             session_retained: Arc::clone(&session_retained),
             decoder_slots: Arc::clone(&decoder_slots),
         };
-        let sender = origin_sender.clone();
-        tasks.spawn(async move { bridge_stream(request, respond, sender, context).await });
+        if blind_relay && request.method() == hyper::Method::CONNECT {
+            accounting.connect_requests = accounting.connect_requests.saturating_add(1);
+            let policy = policy.clone();
+            let counts = Arc::clone(&relay_counts);
+            tasks.spawn(async move {
+                bridge_cleartext_connect(request, respond, policy, context.limits, counts).await
+            });
+        } else {
+            let sender = origin_sender.clone();
+            tasks.spawn(async move { bridge_stream(request, respond, sender, context).await });
+        }
         while let Some(joined) = tasks.try_join_next() {
             account_stream_result(&mut accounting, joined);
         }
@@ -563,10 +619,291 @@ where
         account_stream_result(&mut accounting, joined);
     }
     origin_driver.0.abort();
+    accounting = with_relay_counts(accounting, &relay_counts);
     Http2Run {
         authenticated: false,
         accounting,
         failure: None,
+    }
+}
+
+async fn serve_cleartext_connects<C>(
+    mut client: h2::server::Connection<C, Bytes>,
+    first: hyper::Request<RecvStream>,
+    first_response: h2::server::SendResponse<Bytes>,
+    context: CleartextRelayContext,
+) -> Http2Run
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let CleartextRelayContext {
+        capability,
+        policy,
+        limits,
+        authority,
+        session_id,
+        connection_id,
+        sink,
+        session_retained,
+        decoder_slots,
+    } = context;
+    let mut accepted = Some((first, first_response));
+    let mut tasks = JoinSet::new();
+    let mut accounting = ProtocolAccounting::default();
+    let relay_counts = Arc::new(RelayCounters::default());
+    let mut origin_sender: Option<SendRequest<Bytes>> = None;
+    let mut origin_driver = None;
+    loop {
+        let next = match accepted.take() {
+            Some(value) => Some(Ok(value)),
+            None if tasks.is_empty() => match timeout(limits.idle_timeout, client.accept()).await {
+                Ok(value) => value,
+                Err(_) => {
+                    return Http2Run {
+                        authenticated: true,
+                        accounting: with_relay_counts(accounting, &relay_counts),
+                        failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
+                    }
+                }
+            },
+            None => tokio::select! {
+                joined = tasks.join_next() => {
+                    if let Some(joined) = joined { account_stream_result(&mut accounting, joined); }
+                    continue;
+                }
+                accepted = client.accept() => accepted,
+            },
+        };
+        let Some(next) = next else { break };
+        let (request, mut respond) = match next {
+            Ok(value) => value,
+            Err(error) => {
+                return Http2Run {
+                    authenticated: true,
+                    accounting: with_relay_counts(accounting, &relay_counts),
+                    failure: Some(h2_error("http2-accept-failed", error)),
+                }
+            }
+        };
+        let (request, _) =
+            match authenticate_cleartext_request(request, &capability, Some(&authority), true) {
+                Ok(value) => value,
+                Err(_) => {
+                    respond.send_reset(h2::Reason::REFUSED_STREAM);
+                    accounting.parse_refused = accounting.parse_refused.saturating_add(1);
+                    continue;
+                }
+            };
+        accounting.requests = accounting.requests.saturating_add(1);
+        accounting.http2_streams = accounting.http2_streams.saturating_add(1);
+        if request.method() == hyper::Method::CONNECT {
+            accounting.connect_requests = accounting.connect_requests.saturating_add(1);
+            let policy = policy.clone();
+            let limits = limits.clone();
+            let counts = Arc::clone(&relay_counts);
+            tasks.spawn(async move {
+                bridge_cleartext_connect(request, respond, policy, limits, counts).await
+            });
+        } else {
+            if origin_sender.is_none() {
+                let upstream =
+                    match crate::connect_upstream(&authority, &policy, limits.upstream).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return Http2Run {
+                                authenticated: true,
+                                accounting: with_relay_counts(accounting, &relay_counts),
+                                failure: Some(ProtocolError::new(error.code, error.detail)),
+                            }
+                        }
+                    };
+                let mut builder = h2::client::Builder::new();
+                configure_client(&mut builder, &limits);
+                let (sender, connection) =
+                    match timeout(limits.header_timeout, builder.handshake(upstream)).await {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(error)) => {
+                            return Http2Run {
+                                authenticated: true,
+                                accounting: with_relay_counts(accounting, &relay_counts),
+                                failure: Some(ProtocolError::new(
+                                    "http2-origin-handshake-failed",
+                                    error.to_string(),
+                                )),
+                            }
+                        }
+                        Err(_) => {
+                            return Http2Run {
+                                authenticated: true,
+                                accounting: with_relay_counts(accounting, &relay_counts),
+                                failure: Some(ProtocolError::timeout(
+                                    "http2-origin-handshake-timeout",
+                                )),
+                            }
+                        }
+                    };
+                origin_sender = Some(sender);
+                origin_driver = Some(AbortOnDrop(tokio::spawn(connection)));
+            }
+            let context = StreamContext {
+                limits: limits.clone(),
+                session_id: session_id.clone(),
+                connection_id,
+                stream_id: request.body().stream_id().as_u32() as u64,
+                sink: sink.clone(),
+                session_retained: Arc::clone(&session_retained),
+                decoder_slots: Arc::clone(&decoder_slots),
+            };
+            let sender = origin_sender.as_ref().expect("created above").clone();
+            tasks.spawn(async move { bridge_stream(request, respond, sender, context).await });
+        }
+        while let Some(joined) = tasks.try_join_next() {
+            account_stream_result(&mut accounting, joined);
+        }
+    }
+    while let Some(joined) = tasks.join_next().await {
+        account_stream_result(&mut accounting, joined);
+    }
+    drop(origin_driver);
+    accounting = with_relay_counts(accounting, &relay_counts);
+    Http2Run {
+        authenticated: true,
+        accounting,
+        failure: None,
+    }
+}
+
+async fn bridge_cleartext_connect(
+    request: hyper::Request<RecvStream>,
+    mut respond: h2::server::SendResponse<Bytes>,
+    policy: DestinationPolicy,
+    limits: ProtocolLimits,
+    counts: Arc<RelayCounters>,
+) -> Result<(), ProtocolError> {
+    let authority = request.uri().authority().ok_or_else(|| {
+        ProtocolError::new("http2-authority-required", "CONNECT authority is missing")
+    })?;
+    let authority = DestinationAuthority::parse_uri(authority.as_str())
+        .map_err(|error| ProtocolError::new(error.code, error.detail))?;
+    let upstream = crate::connect_upstream(&authority, &policy, limits.upstream)
+        .await
+        .map_err(|error| {
+            let mut protocol = ProtocolError::new(error.code, error.detail);
+            protocol.policy_refused = matches!(error.stage, crate::UpstreamStage::Policy);
+            protocol
+        })?;
+    let response = hyper::Response::builder()
+        .status(hyper::StatusCode::OK)
+        .body(())
+        .map_err(|error| ProtocolError::new("http2-connect-response-invalid", error.to_string()))?;
+    let send = respond
+        .send_response(response, false)
+        .map_err(|error| h2_error("http2-connect-response-failed", error))?;
+    let receive = request.into_body();
+    let (origin_read, origin_write) = tokio::io::split(upstream);
+    let activity = tokio::sync::Notify::new();
+    let relay = async {
+        tokio::try_join!(
+            relay_h2_to_origin(receive, origin_write, &limits, &activity, &counts),
+            relay_origin_to_h2(origin_read, send, &limits, &activity, &counts),
+        )
+    };
+    tokio::pin!(relay);
+    let idle = tokio::time::sleep(limits.idle_timeout);
+    tokio::pin!(idle);
+    loop {
+        tokio::select! {
+            result = &mut relay => return result.map(|_| ()),
+            _ = activity.notified() => idle.as_mut().reset(tokio::time::Instant::now() + limits.idle_timeout),
+            _ = &mut idle => return Err(ProtocolError::timeout("http2-relay-idle-timeout")),
+        }
+    }
+}
+
+async fn relay_h2_to_origin<W: AsyncWrite + Unpin>(
+    mut receive: RecvStream,
+    mut write: W,
+    limits: &ProtocolLimits,
+    activity: &tokio::sync::Notify,
+    counts: &RelayCounters,
+) -> Result<(), ProtocolError> {
+    while let Some(chunk) = receive.data().await {
+        let chunk = chunk.map_err(|error| h2_error("http2-relay-read-failed", error))?;
+        let mut offset = 0;
+        while offset < chunk.len() {
+            let written = timeout(limits.upstream.write, write.write(&chunk[offset..]))
+                .await
+                .map_err(|_| ProtocolError::timeout("http2-relay-write-timeout"))?
+                .map_err(|error| ProtocolError::io("http2-relay-write-failed", error))?;
+            if written == 0 {
+                return Err(ProtocolError::new(
+                    "http2-relay-write-zero",
+                    "origin write made no progress",
+                ));
+            }
+            offset += written;
+            counts
+                .client_bytes
+                .fetch_add(written as u64, Ordering::Relaxed);
+            activity.notify_one();
+        }
+        receive
+            .flow_control()
+            .release_capacity(chunk.len())
+            .map_err(|error| h2_error("http2-relay-flow-control-failed", error))?;
+    }
+    write
+        .shutdown()
+        .await
+        .map_err(|error| ProtocolError::io("http2-relay-half-close-failed", error))
+}
+
+async fn relay_origin_to_h2<R: AsyncRead + Unpin>(
+    mut read: R,
+    mut send: SendStream<Bytes>,
+    limits: &ProtocolLimits,
+    activity: &tokio::sync::Notify,
+    counts: &RelayCounters,
+) -> Result<(), ProtocolError> {
+    let mut buffer = vec![0_u8; limits.http2_stream_window_bytes.min(16 * 1024)];
+    loop {
+        let size = read
+            .read(&mut buffer)
+            .await
+            .map_err(|error| ProtocolError::io("http2-relay-origin-read-failed", error))?;
+        if size == 0 {
+            return send
+                .send_data(Bytes::new(), true)
+                .map_err(|error| h2_error("http2-relay-end-failed", error));
+        }
+        let mut offset = 0;
+        while offset < size {
+            send.reserve_capacity(size - offset);
+            let capacity = timeout(
+                limits.upstream.write,
+                std::future::poll_fn(|cx| send.poll_capacity(cx)),
+            )
+            .await
+            .map_err(|_| ProtocolError::timeout("http2-relay-flow-control-timeout"))?
+            .ok_or_else(|| {
+                ProtocolError::new("http2-relay-closed", "client closed CONNECT stream")
+            })?
+            .map_err(|error| h2_error("http2-relay-flow-control-failed", error))?;
+            if capacity == 0 {
+                continue;
+            }
+            let count = capacity.min(size - offset);
+            send.send_data(
+                Bytes::copy_from_slice(&buffer[offset..offset + count]),
+                false,
+            )
+            .map_err(|error| h2_error("http2-relay-send-failed", error))?;
+            counts
+                .upstream_bytes
+                .fetch_add(count as u64, Ordering::Relaxed);
+            offset += count;
+            activity.notify_one();
+        }
     }
 }
 
@@ -612,6 +949,7 @@ fn authenticate_cleartext_request(
     mut request: hyper::Request<RecvStream>,
     capability: &SessionCapability,
     expected: Option<&DestinationAuthority>,
+    allow_connect: bool,
 ) -> Result<(hyper::Request<RecvStream>, DestinationAuthority), ProtocolError> {
     if expected.is_none() {
         let values: Vec<_> = request
@@ -636,7 +974,8 @@ fn authenticate_cleartext_request(
     request
         .headers_mut()
         .remove(hyper::header::PROXY_AUTHORIZATION);
-    if request.uri().scheme_str() != Some("http") {
+    let connect = request.method() == hyper::Method::CONNECT;
+    if (!connect || !allow_connect) && request.uri().scheme_str() != Some("http") {
         return Err(ProtocolError::new(
             "http2-cleartext-scheme-refused",
             "cleartext HTTP/2 requires an http URI",
@@ -648,6 +987,12 @@ fn authenticate_cleartext_request(
             "HTTP/2 request has no authority",
         )
     })?;
+    if connect && allow_connect && request.uri().scheme().is_some() {
+        return Err(ProtocolError::new(
+            "http2-connect-scheme-refused",
+            "cleartext HTTP/2 CONNECT must use authority form",
+        ));
+    }
     let authority = DestinationAuthority::parse_uri(raw.as_str())
         .map_err(|error| ProtocolError::new(error.code, error.detail))?;
     if expected.is_some_and(|value| value != &authority) {
@@ -1055,6 +1400,15 @@ fn duration_ns(value: std::time::Duration) -> u64 {
     value.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
+fn with_relay_counts(
+    mut accounting: ProtocolAccounting,
+    counts: &RelayCounters,
+) -> ProtocolAccounting {
+    accounting.relay_client_bytes = counts.client_bytes.load(Ordering::Relaxed);
+    accounting.relay_upstream_bytes = counts.upstream_bytes.load(Ordering::Relaxed);
+    accounting
+}
+
 async fn pump_body(
     mut receive: RecvStream,
     mut send: SendStream<Bytes>,
@@ -1436,6 +1790,9 @@ fn account_stream_result(
         }
         Ok(Err(error)) if error.code.contains("timeout") => {
             accounting.timed_out = accounting.timed_out.saturating_add(1);
+        }
+        Ok(Err(error)) if error.policy_refused => {
+            accounting.policy_refused = accounting.policy_refused.saturating_add(1);
         }
         Ok(Err(_)) | Err(_) => {
             accounting.parse_refused = accounting.parse_refused.saturating_add(1);

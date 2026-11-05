@@ -293,6 +293,22 @@ traffic that accepts the configured trust relationship.
 > session is configured to use, and its configuration must be explicit,
 > reversible, and logged.
 
+## Blind relay
+
+The native proxy's uninspected forwarding path for a connection or UDP
+association whose frozen owner decision excludes application inspection. The
+client's original TLS or QUIC exchange reaches the permitted origin through the
+same authenticated, destination-checked session proxy. HTTP/1 CONNECT and
+SOCKS5 TCP carry opaque bytes; plaintext HTTP and cleartext HTTP/2 still require
+proxy framing. The proxy retains bounded decision, transfer, and terminal
+metadata, but no excluded application content or proxy-owned TLS key material.
+
+The runtime supports an injected exact-game owner decider. The public CLI still
+uses launch-chain inspection until its separate operator-selection work ships.
+
+**See also:** [Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
+[Raw proxy observation](capture-and-networking.md#raw-proxy-observation)
+
 **See also:** [Deep Capture](capture-and-networking.md#deep-capture),
 [Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration),
 [Local development certificate authority](anti-cheat-and-security.md#local-development-certificate-authority)

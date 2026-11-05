@@ -141,6 +141,10 @@ pub struct ProxyConnectionDiagnostic {
     pub association_inspection_decided_after_ms: Option<u64>,
     pub association_inspection_policy_id: Option<String>,
     pub association_inspection_owner_proof: Option<String>,
+    pub relay_client_bytes: u64,
+    pub relay_upstream_bytes: u64,
+    pub relay_client_datagrams: u64,
+    pub relay_upstream_datagrams: u64,
 }
 
 /// Native aggregate counters and independently bounded per-connection evidence.
@@ -160,6 +164,10 @@ pub struct ProxyDiagnostics {
     pub http2_streams_completed: u64,
     pub http3_streams_completed: u64,
     pub response_heads: u64,
+    pub relay_client_bytes: u64,
+    pub relay_upstream_bytes: u64,
+    pub relay_client_datagrams: u64,
+    pub relay_upstream_datagrams: u64,
     pub causes: ProxyCauseCounts,
     pub connections: Vec<ProxyConnectionDiagnostic>,
     pub connection_details_lost: u64,
@@ -189,6 +197,10 @@ impl ProxyDiagnostics {
             http2_streams_completed: value.protocol.http2_streams_completed,
             http3_streams_completed: value.protocol.http3_streams_completed,
             response_heads: value.protocol.responses,
+            relay_client_bytes: value.protocol.relay_client_bytes,
+            relay_upstream_bytes: value.protocol.relay_upstream_bytes,
+            relay_client_datagrams: value.protocol.relay_client_datagrams,
+            relay_upstream_datagrams: value.protocol.relay_upstream_datagrams,
             causes: value.connection_causes,
             connections: value
                 .connection_diagnostics
@@ -258,6 +270,10 @@ impl ProxyDiagnostics {
                     association_inspection_owner_proof: record
                         .association_inspection
                         .map(|decision| decision.owner_proof.to_string()),
+                    relay_client_bytes: record.relay_client_bytes,
+                    relay_upstream_bytes: record.relay_upstream_bytes,
+                    relay_client_datagrams: record.relay_client_datagrams,
+                    relay_upstream_datagrams: record.relay_upstream_datagrams,
                 })
                 .collect(),
             connection_details_lost: value.resources.connection_details_dropped_oldest,
