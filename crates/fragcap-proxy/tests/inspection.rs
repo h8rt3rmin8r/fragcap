@@ -946,7 +946,11 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
         4096,
         Duration::from_secs(3),
     )
-    .unwrap();
+    .unwrap()
+    .with_protocol_limits(fragcap_proxy::ProtocolLimits {
+        idle_timeout: Duration::from_millis(250),
+        ..Default::default()
+    });
     let mut policy = fragcap_proxy::DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin_address);
     let collector = Arc::new(Collector::default());
@@ -991,6 +995,7 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
         }
         assert_eq!(bytes, b"reply");
     }
+    tokio::time::sleep(Duration::from_millis(400)).await;
     drop(sender);
     driver.abort();
     let _ = driver.await;
@@ -1000,6 +1005,10 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
     assert_eq!(report.observation.protocol.http2_streams_completed, 2);
     assert_eq!(report.observation.protocol.relay_client_bytes, 6);
     assert_eq!(report.observation.protocol.relay_upstream_bytes, 10);
+    assert_eq!(
+        report.observation.connection_diagnostics[0].code,
+        Some("http2-connection-idle-timeout")
+    );
     assert!(collector.0.lock().unwrap().iter().all(|event| matches!(
         event.kind,
         fragcap_proxy::ApplicationEventKind::ConnectionOpen(_)

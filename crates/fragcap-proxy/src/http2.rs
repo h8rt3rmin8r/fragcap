@@ -538,7 +538,7 @@ where
                     Err(_) => {
                         return Http2Run {
                             authenticated: false,
-                            accounting,
+                            accounting: with_relay_counts(accounting, &relay_counts),
                             failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
                         };
                     }
@@ -563,7 +563,7 @@ where
             Err(error) => {
                 return Http2Run {
                     authenticated: false,
-                    accounting,
+                    accounting: with_relay_counts(accounting, &relay_counts),
                     failure: Some(h2_error("http2-accept-failed", error)),
                 }
             }
