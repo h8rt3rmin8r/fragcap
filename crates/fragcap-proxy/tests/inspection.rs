@@ -501,6 +501,69 @@ fn established_relay_uses_activity_idle_instead_of_http_header_deadline() {
 }
 
 #[test]
+fn progressing_upload_does_not_expire_while_origin_waits_to_reply() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let mut upload = Vec::new();
+        stream.read_to_end(&mut upload).unwrap();
+        assert_eq!(upload, b"abcde");
+        stream.write_all(b"done").unwrap();
+    });
+    let mut limits = fragcap_proxy::ProtocolLimits {
+        idle_timeout: Duration::from_millis(100),
+        ..Default::default()
+    };
+    limits.upstream.read = Duration::from_millis(30);
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        2,
+        4096,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut policy = fragcap_proxy::DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(RefuseInspection::default()))
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(
+        client,
+        "CONNECT {address} HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\n\r\n",
+        lease.capability_proof().proxy_authorization().as_str()
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        client.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    for byte in b"abcde" {
+        client.write_all(&[*byte]).unwrap();
+        std::thread::sleep(Duration::from_millis(22));
+    }
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut reply = Vec::new();
+    client.read_to_end(&mut reply).unwrap();
+    assert_eq!(reply, b"done");
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.observation.protocol.relay_client_bytes, 5);
+    assert_eq!(report.observation.protocol.relay_upstream_bytes, 4);
+    assert_eq!(report.observation.protocol.timed_out, 0);
+}
+
+#[test]
 fn genuinely_idle_relay_ends_with_a_named_timeout() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = origin.local_addr().unwrap();
@@ -716,8 +779,10 @@ async fn middleware_http2_connect_preserves_original_stream() {
         let mut h2 = h2::server::handshake(stream).await.unwrap();
         let (request, mut respond) = h2.accept().await.unwrap().unwrap();
         assert_eq!(request.uri().path(), "/later");
-        let response = hyper::Response::builder().status(204).body(()).unwrap();
-        respond.send_response(response, true).unwrap();
+        let response = hyper::Response::builder().status(200).body(()).unwrap();
+        let mut send = respond.send_response(response, false).unwrap();
+        send.send_data(bytes::Bytes::from_static(b"later"), true)
+            .unwrap();
         while h2.accept().await.is_some() {}
     });
     let config = NativeProxyConfig::new(
@@ -773,7 +838,14 @@ async fn middleware_http2_connect_preserves_original_stream() {
         .body(())
         .unwrap();
     let (later, _) = sender.send_request(later, true).unwrap();
-    assert_eq!(later.await.unwrap().status(), 204);
+    let later = later.await.unwrap();
+    assert_eq!(later.status(), 200);
+    let mut later_body = later.into_body();
+    let mut later_bytes = Vec::new();
+    while let Some(chunk) = later_body.data().await {
+        later_bytes.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(later_bytes, b"later");
     drop(sender);
     driver.abort();
     let _ = driver.await;
@@ -781,6 +853,14 @@ async fn middleware_http2_connect_preserves_original_stream() {
     let report = lease.cleanup(Duration::from_secs(3));
     assert!(report.is_clean(), "{report:?}");
     assert_eq!(report.observation.protocol.http2_streams_completed, 2);
+    assert_eq!(
+        report.observation.protocol.relay_client_bytes,
+        b"opaque-h2-connect".len() as u64
+    );
+    assert_eq!(
+        report.observation.protocol.relay_upstream_bytes,
+        (b"opaque-origin-reply".len() + b"later".len()) as u64
+    );
     assert!(report.observation.application.is_empty());
 }
 
@@ -842,12 +922,23 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
             let (request, mut respond) = connection.accept().await.unwrap().unwrap();
             replies.spawn(async move {
                 assert!(request.uri().path().starts_with("/private"));
-                let response = hyper::Response::builder().status(204).body(()).unwrap();
-                respond.send_response(response, true).unwrap();
+                let mut body = request.into_body();
+                let mut request_bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    request_bytes.extend_from_slice(&chunk.unwrap());
+                }
+                if !request_bytes.is_empty() {
+                    assert_eq!(request_bytes, b"secret");
+                }
+                let response = hyper::Response::builder().status(200).body(()).unwrap();
+                let mut send = respond.send_response(response, false).unwrap();
+                send.send_data(bytes::Bytes::from_static(b"reply"), true)
+                    .unwrap();
             });
         }
+        let driver = tokio::spawn(async move { while connection.accept().await.is_some() {} });
         while replies.join_next().await.is_some() {}
-        while connection.accept().await.is_some() {}
+        driver.await.unwrap();
     });
     let config = NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
@@ -872,7 +963,7 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
     let driver = tokio::spawn(connection);
     let mut sender = sender.ready().await.unwrap();
     let first = hyper::Request::builder()
-        .method("GET")
+        .method("POST")
         .uri(format!("http://{origin_address}/private-one"))
         .header(
             hyper::header::PROXY_AUTHORIZATION,
@@ -880,7 +971,10 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
         )
         .body(())
         .unwrap();
-    let (first, _) = sender.send_request(first, true).unwrap();
+    let (first, mut first_body) = sender.send_request(first, false).unwrap();
+    first_body
+        .send_data(bytes::Bytes::from_static(b"secret"), true)
+        .unwrap();
     let mut sender = sender.ready().await.unwrap();
     let second = hyper::Request::builder()
         .method("GET")
@@ -888,8 +982,15 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
         .body(())
         .unwrap();
     let (second, _) = sender.send_request(second, true).unwrap();
-    assert_eq!(first.await.unwrap().status(), 204);
-    assert_eq!(second.await.unwrap().status(), 204);
+    for response in [first.await.unwrap(), second.await.unwrap()] {
+        assert_eq!(response.status(), 200);
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            bytes.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(bytes, b"reply");
+    }
     drop(sender);
     driver.abort();
     let _ = driver.await;
@@ -897,6 +998,8 @@ async fn middleware_http2_concurrent_requests_forward_without_application_export
     let report = lease.cleanup(Duration::from_secs(3));
     assert!(report.is_clean(), "{report:?}");
     assert_eq!(report.observation.protocol.http2_streams_completed, 2);
+    assert_eq!(report.observation.protocol.relay_client_bytes, 6);
+    assert_eq!(report.observation.protocol.relay_upstream_bytes, 10);
     assert!(collector.0.lock().unwrap().iter().all(|event| matches!(
         event.kind,
         fragcap_proxy::ApplicationEventKind::ConnectionOpen(_)

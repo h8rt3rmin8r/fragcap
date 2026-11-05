@@ -75,6 +75,7 @@ struct StreamContext {
     sink: SharedEventSink,
     session_retained: Arc<AtomicU64>,
     decoder_slots: Arc<Semaphore>,
+    relay_counts: Option<Arc<RelayCounters>>,
 }
 
 struct BodyPumpContext {
@@ -94,6 +95,7 @@ struct BodyPumpContext {
     session_retention_limit: u64,
     decoder_slots: Arc<Semaphore>,
     streaming: Option<ProtocolObserver>,
+    relay_counts: Option<Arc<RelayCounters>>,
 }
 
 #[derive(Clone, Copy)]
@@ -369,6 +371,7 @@ where
                     sink: task_sink,
                     session_retained: task_session_retained,
                     decoder_slots: task_decoder_slots,
+                    relay_counts: None,
                 },
             )
             .await
@@ -599,6 +602,7 @@ where
             sink: sink.clone(),
             session_retained: Arc::clone(&session_retained),
             decoder_slots: Arc::clone(&decoder_slots),
+            relay_counts: blind_relay.then(|| Arc::clone(&relay_counts)),
         };
         if blind_relay && request.method() == hyper::Method::CONNECT {
             accounting.connect_requests = accounting.connect_requests.saturating_add(1);
@@ -753,6 +757,7 @@ where
                 sink: sink.clone(),
                 session_retained: Arc::clone(&session_retained),
                 decoder_slots: Arc::clone(&decoder_slots),
+                relay_counts: Some(Arc::clone(&relay_counts)),
             };
             let sender = origin_sender.as_ref().expect("created above").clone();
             tasks.spawn(async move { bridge_stream(request, respond, sender, context).await });
@@ -1079,6 +1084,7 @@ fn request_pump_context(
         session_retention_limit: limits.max_session_body_bytes,
         decoder_slots: Arc::clone(&context.decoder_slots),
         streaming,
+        relay_counts: context.relay_counts.clone(),
     }
 }
 
@@ -1346,6 +1352,7 @@ async fn bridge_stream_inner(
             } else {
                 None
             },
+            relay_counts: context.relay_counts.clone(),
         },
     );
     let (request_result, response_result) = tokio::join!(&mut request_pump.0, response_pump);
@@ -1432,6 +1439,7 @@ async fn pump_body(
         session_retention_limit,
         decoder_slots,
         streaming,
+        relay_counts,
     } = context;
     let mut streaming = StreamingPumpObserver {
         observer: streaming,
@@ -1511,6 +1519,13 @@ async fn pump_body(
             let sent = capacity.min(chunk.len() - start);
             send.send_data(chunk.slice(start..start + sent), false)
                 .map_err(|error| ProtocolError::new("http2-body-send-failed", error.to_string()))?;
+            if let Some(counts) = relay_counts.as_ref() {
+                let counter = match direction {
+                    BodyDirection::Request => &counts.client_bytes,
+                    BodyDirection::Response => &counts.upstream_bytes,
+                };
+                counter.fetch_add(sent as u64, Ordering::Relaxed);
+            }
             receive
                 .flow_control()
                 .release_capacity(sent)

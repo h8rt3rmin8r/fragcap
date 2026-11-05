@@ -357,6 +357,8 @@ pub(crate) async fn serve_socks5(
         &mut upstream,
         crate::GenericRelayContext {
             limits: &relay_limits,
+            upstream_read_timeout: (decision.action == crate::InspectionAction::Inspect)
+                .then_some(limits.upstream.read),
             shutdown: &mut shutdown,
             session_id,
             connection_id,

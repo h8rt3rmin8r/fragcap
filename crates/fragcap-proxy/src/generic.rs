@@ -30,6 +30,9 @@ pub(crate) struct GenericRelayReport {
 
 pub(crate) struct GenericRelayContext<'a> {
     pub limits: &'a ProtocolLimits,
+    /// A per-read deadline for inspected generic streams. Blind tunnels use
+    /// only the shared activity clock so uploads can progress without a reply.
+    pub upstream_read_timeout: Option<Duration>,
     pub shutdown: &'a mut watch::Receiver<bool>,
     pub session_id: &'a str,
     pub connection_id: u64,
@@ -75,6 +78,7 @@ where
 {
     let GenericRelayContext {
         limits,
+        upstream_read_timeout,
         shutdown,
         session_id,
         connection_id,
@@ -119,7 +123,7 @@ where
         client,
         upstream,
         buffer_bytes,
-        limits.upstream.read,
+        upstream_read_timeout,
         limits.upstream.write,
         &client_bytes,
         &upstream_bytes,
@@ -232,7 +236,7 @@ async fn relay_bidirectional<C, U>(
     client: &mut C,
     upstream: &mut U,
     buffer_bytes: usize,
-    upstream_read_timeout: Duration,
+    upstream_read_timeout: Option<Duration>,
     upstream_write_timeout: Duration,
     client_bytes: &AtomicU64,
     upstream_bytes: &AtomicU64,
@@ -261,7 +265,7 @@ where
             upstream_read,
             client_write,
             buffer_bytes,
-            Some(upstream_read_timeout),
+            upstream_read_timeout,
             None,
             upstream_bytes,
             activity,
@@ -373,6 +377,7 @@ mod tests {
             &mut upstream,
             GenericRelayContext {
                 limits: &limits,
+                upstream_read_timeout: Some(limits.upstream.read),
                 shutdown: &mut shutdown,
                 session_id: "generic-test",
                 connection_id: 1,

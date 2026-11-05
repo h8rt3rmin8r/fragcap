@@ -915,6 +915,7 @@ async fn connection_task(
                 &mut upstream,
                 crate::GenericRelayContext {
                     limits: &relay_limits,
+                    upstream_read_timeout: None,
                     shutdown: &mut shutdown,
                     session_id: &config.session_id,
                     connection_id,
@@ -1245,6 +1246,7 @@ async fn connection_task(
                 &mut upstream,
                 crate::GenericRelayContext {
                     limits: config.protocol_limits(),
+                    upstream_read_timeout: Some(config.protocol_limits().upstream.read),
                     shutdown: &mut shutdown,
                     session_id: &config.session_id,
                     connection_id,
