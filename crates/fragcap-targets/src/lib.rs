@@ -73,8 +73,9 @@ pub use classifier::{
 pub use compatibility::{
     latest_applicable_fact, CompatibilityAddressFamily, CompatibilityApplicability,
     CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
-    CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityMatrix, CompatibilityMatrixRow,
-    CompatibilityProtocol, CompatibilityRoutingStrategy,
+    CompatibilityFreshness, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMatrix, CompatibilityMatrixRow, CompatibilityMiddlewareHandling,
+    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,

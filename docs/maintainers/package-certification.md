@@ -1,6 +1,6 @@
 # Windows package certification
 
-S131 makes the final Windows downloads a release authority. `cargo xtask package-certification` is the offline contract and wiring gate. `.github/workflows/package-certification.yml` builds the official feature closure once, assembles the ZIP, MSI, catalog, and checksum sidecars, runs the destructive lifecycle only on its fresh Windows runner, validates the bounded report, and uploads the exact certified bytes. `.github/workflows/release.yml` can publish only that uploaded bundle after rehashing every transferred artifact and sidecar against its certified report row.
+S131 makes the final Windows downloads a release authority. `cargo xtask package-certification` is the offline contract and wiring check. `.github/workflows/package-certification.yml` builds the official feature closure once, assembles the ZIP, MSI, catalog, and checksum sidecars, runs the destructive lifecycle only on its fresh Windows runner, validates the bounded report, and uploads the exact certified bytes. `.github/workflows/release.yml` can publish only that uploaded bundle after rehashing every transferred artifact and sidecar against its certified report row.
 
 ## Local static validation
 
@@ -29,6 +29,15 @@ S137 extends the report with a closed fresh-start proof. The real ordinary unins
 Published v0.10.13 package replay uses the released executable's AppData fixture paths. The S192 candidate path uses `.fragcap` fixtures and records a fresh-start transition suppression marker beside them, so retained legacy AppData state cannot restore a cleaned store.
 
 ## Current integrity policy
+
+S194 adds the public inspection-scope parser to both packaged controlled smoke
+surfaces. The candidate executable runs the exact-game reachability case with
+`--inspect-scope game`; the bounded structured-event reader requires the
+authorization plan to report requested and effective `exact-game` scope,
+`blind-relay` middleware handling, and policy `exact-game-v1` before accepting
+the existing reached-client result. This certifies the exact package bytes and
+parser contract. Installed-product and private-title behavior is assessed only
+after release, and any defect returns as a GitHub issue.
 
 The MSI and every packaged executable are deliberately unsigned. Certification requires a determinate Authenticode `NotSigned` result with no signer. The portable ZIP, catalog, documents, dependency evidence, and checksum sidecars are explicitly not applicable. Do not describe any artifact as signed until the master specification and contract change together.
 

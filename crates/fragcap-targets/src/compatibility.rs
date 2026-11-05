@@ -11,6 +11,87 @@ use std::cmp::Ordering;
 
 use crate::TargetsError;
 
+/// Inspection scope requested by the operator before a case is resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityRequestedInspectionScope {
+    Auto,
+    ExactGame,
+    LaunchChain,
+}
+
+impl CompatibilityRequestedInspectionScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ExactGame => "exact-game",
+            Self::LaunchChain => "launch-chain",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "exact-game" => Ok(Self::ExactGame),
+            "launch-chain" => Ok(Self::LaunchChain),
+            other => Err(TargetsError::Model(format!(
+                "unknown requested inspection scope {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Effective inspection scope used by one exact compatibility case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityInspectionScope {
+    ExactGame,
+    LaunchChain,
+}
+
+impl CompatibilityInspectionScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactGame => "exact-game",
+            Self::LaunchChain => "launch-chain",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "exact-game" => Ok(Self::ExactGame),
+            "launch-chain" => Ok(Self::LaunchChain),
+            other => Err(TargetsError::Model(format!(
+                "unknown effective inspection scope {other:?}"
+            ))),
+        }
+    }
+}
+
+/// How middleware traffic is handled under the effective inspection scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityMiddlewareHandling {
+    Inspected,
+    BlindRelay,
+}
+
+impl CompatibilityMiddlewareHandling {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inspected => "inspected",
+            Self::BlindRelay => "blind-relay",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "inspected" => Ok(Self::Inspected),
+            "blind-relay" => Ok(Self::BlindRelay),
+            other => Err(TargetsError::Model(format!(
+                "unknown middleware handling {other:?}"
+            ))),
+        }
+    }
+}
+
 /// Which Deep Capture behavior a row records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CompatibilityFactKey {
@@ -267,6 +348,10 @@ pub struct CompatibilityCase {
     pub protocol: CompatibilityProtocol,
     pub fragcap_version: String,
     pub target_version: Option<String>,
+    pub requested_scope: CompatibilityRequestedInspectionScope,
+    pub effective_scope: CompatibilityInspectionScope,
+    pub middleware_handling: CompatibilityMiddlewareHandling,
+    pub inspection_policy_id: String,
 }
 
 /// Why one stored fact can or cannot apply to an exact current case.
@@ -363,6 +448,14 @@ pub struct CompatibilityFact {
     pub address_family: Option<CompatibilityAddressFamily>,
     /// Exact protocol family, or explicit inapplicability for route facts.
     pub protocol: Option<CompatibilityProtocol>,
+    /// Requested scope that produced this observation.
+    pub requested_scope: Option<CompatibilityRequestedInspectionScope>,
+    /// Effective scope that produced this observation.
+    pub effective_scope: Option<CompatibilityInspectionScope>,
+    /// Exact middleware behavior used for this observation.
+    pub middleware_handling: Option<CompatibilityMiddlewareHandling>,
+    /// Stable policy identity that resolved the scope and middleware behavior.
+    pub inspection_policy_id: Option<String>,
     /// Executable image observed holding the final sockets, if known.
     pub final_owner_executable: Option<String>,
     /// Whether the final socket owner differed from the initially launched
@@ -400,6 +493,10 @@ impl CompatibilityFact {
             routing_strategy: None,
             address_family: None,
             protocol: None,
+            requested_scope: None,
+            effective_scope: None,
+            middleware_handling: None,
+            inspection_policy_id: None,
             final_owner_executable: None,
             final_owner_handoff: false,
             stale: false,
@@ -422,6 +519,10 @@ impl CompatibilityFact {
             Some(family),
             Some(protocol),
             Some(fragcap_version),
+            Some(requested_scope),
+            Some(effective_scope),
+            Some(middleware_handling),
+            Some(inspection_policy_id),
         ) = (
             self.proxy_backend.as_deref(),
             self.proxy_backend_version.as_deref(),
@@ -429,6 +530,10 @@ impl CompatibilityFact {
             self.address_family,
             self.protocol,
             self.fragcap_version.as_deref(),
+            self.requested_scope,
+            self.effective_scope,
+            self.middleware_handling,
+            self.inspection_policy_id.as_deref(),
         )
         else {
             return CompatibilityApplicability::LegacyIncomplete;
@@ -442,6 +547,22 @@ impl CompatibilityFact {
             ),
             (routing == current.routing_strategy, "routing-strategy"),
             (family == current.address_family, "address-family"),
+            (
+                requested_scope == current.requested_scope,
+                "requested-scope",
+            ),
+            (
+                effective_scope == current.effective_scope,
+                "effective-scope",
+            ),
+            (
+                middleware_handling == current.middleware_handling,
+                "middleware-handling",
+            ),
+            (
+                inspection_policy_id == current.inspection_policy_id,
+                "inspection-policy-id",
+            ),
             (
                 fragcap_version == current.fragcap_version,
                 "fragcap-version",
@@ -535,6 +656,10 @@ pub struct CompatibilityMatrixRow {
     pub routing_strategy: Option<CompatibilityRoutingStrategy>,
     pub address_family: Option<CompatibilityAddressFamily>,
     pub protocol: Option<CompatibilityProtocol>,
+    pub requested_scope: Option<CompatibilityRequestedInspectionScope>,
+    pub effective_scope: Option<CompatibilityInspectionScope>,
+    pub middleware_handling: Option<CompatibilityMiddlewareHandling>,
+    pub inspection_policy_id: Option<String>,
     /// Whether the row is current or retained as stale context.
     pub freshness: CompatibilityFreshness,
 }
@@ -552,6 +677,10 @@ impl CompatibilityMatrixRow {
             routing_strategy: fact.routing_strategy,
             address_family: fact.address_family,
             protocol: fact.protocol,
+            requested_scope: fact.requested_scope,
+            effective_scope: fact.effective_scope,
+            middleware_handling: fact.middleware_handling,
+            inspection_policy_id: fact.inspection_policy_id.clone(),
             freshness: if stale {
                 CompatibilityFreshness::Stale
             } else {
@@ -603,6 +732,34 @@ impl CompatibilityMatrixRow {
                     .map(CompatibilityProtocol::as_str)
                     .cmp(&other.protocol.map(CompatibilityProtocol::as_str))
             })
+            .then_with(|| {
+                self.requested_scope
+                    .map(CompatibilityRequestedInspectionScope::as_str)
+                    .cmp(
+                        &other
+                            .requested_scope
+                            .map(CompatibilityRequestedInspectionScope::as_str),
+                    )
+            })
+            .then_with(|| {
+                self.effective_scope
+                    .map(CompatibilityInspectionScope::as_str)
+                    .cmp(
+                        &other
+                            .effective_scope
+                            .map(CompatibilityInspectionScope::as_str),
+                    )
+            })
+            .then_with(|| {
+                self.middleware_handling
+                    .map(CompatibilityMiddlewareHandling::as_str)
+                    .cmp(
+                        &other
+                            .middleware_handling
+                            .map(CompatibilityMiddlewareHandling::as_str),
+                    )
+            })
+            .then_with(|| self.inspection_policy_id.cmp(&other.inspection_policy_id))
             .then_with(|| self.freshness.as_str().cmp(other.freshness.as_str()))
     }
 }
@@ -733,6 +890,10 @@ mod tests {
             protocol,
             fragcap_version: "0.6.0".to_string(),
             target_version: Some("build-a".to_string()),
+            requested_scope: CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: CompatibilityInspectionScope::ExactGame,
+            middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+            inspection_policy_id: "exact-game-v1".to_string(),
         }
     }
 
@@ -755,6 +916,10 @@ mod tests {
         fact.protocol = Some(protocol);
         fact.fragcap_version = Some("0.6.0".to_string());
         fact.target_version = Some("build-a".to_string());
+        fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+        fact.effective_scope = Some(CompatibilityInspectionScope::ExactGame);
+        fact.middleware_handling = Some(CompatibilityMiddlewareHandling::BlindRelay);
+        fact.inspection_policy_id = Some("exact-game-v1".to_string());
         fact
     }
 
@@ -835,6 +1000,18 @@ mod tests {
             ("address-family", |f| {
                 f.address_family = Some(CompatibilityAddressFamily::Ipv6)
             }),
+            ("requested-scope", |f| {
+                f.requested_scope = Some(CompatibilityRequestedInspectionScope::ExactGame)
+            }),
+            ("effective-scope", |f| {
+                f.effective_scope = Some(CompatibilityInspectionScope::LaunchChain)
+            }),
+            ("middleware-handling", |f| {
+                f.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected)
+            }),
+            ("inspection-policy-id", |f| {
+                f.inspection_policy_id = Some("other-v1".to_string())
+            }),
             ("fragcap-version", |f| {
                 f.fragcap_version = Some("other".to_string())
             }),
@@ -858,6 +1035,13 @@ mod tests {
         legacy.address_family = None;
         assert_eq!(
             legacy.applicability(&current),
+            CompatibilityApplicability::LegacyIncomplete
+        );
+
+        let mut legacy_scope = base.clone();
+        legacy_scope.effective_scope = None;
+        assert_eq!(
+            legacy_scope.applicability(&current),
             CompatibilityApplicability::LegacyIncomplete
         );
         let mut stale = base;

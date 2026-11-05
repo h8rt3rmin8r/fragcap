@@ -14,6 +14,7 @@
 {"section":"Interfaces","name":"adapter","detail":"Ethernet  192.0.2.10","status":"ok","scope":"capture"}
 {"section":"Integration","name":"analyzer extcap","detail":"installed for the current user in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok","scope":"capture"}
 {"section":"Deep Capture","name":"proxy backend","detail":"fragcap-native 0.8.0","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"inspection scope","detail":"launch-chain inspection and exact-game inspection with blind middleware relay are available; target-specific readiness still requires an exact current calibration case","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"IPv4 loopback listener","detail":"exact ephemeral bind to 127.0.0.1 succeeded","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"IPv6 loopback listener","detail":"exact ephemeral bind to ::1 succeeded","status":"ok","scope":"deep_capture"}
 {"section":"Deep Capture","name":"pre-S185 session CA residue","detail":"no old per-session CA trust found","status":"ok","scope":"deep_capture"}

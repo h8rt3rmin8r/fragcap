@@ -23,16 +23,21 @@ fn assert_send_sync<T: Send + Sync>() {}
 #[test]
 fn version_one_inventory_is_curated_and_sorted() {
     assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 163);
+    assert_eq!(STABLE_API_EXPORTS.len(), 168);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
         "Authorization",
         "CancellationToken",
         "CalibrationProposal",
+        "CalibrationScopeRecommendationSource",
+        "CalibrationScopeResolution",
         "ClassificationReason",
         "CalibrationEvidenceAssessment",
         "CompatibilityCase",
+        "CompatibilityInspectionScope",
+        "CompatibilityMiddlewareHandling",
+        "CompatibilityRequestedInspectionScope",
         "DEEP_CAPTURE_API_VERSION",
         "DeepCapture",
         "EvidenceWindow",

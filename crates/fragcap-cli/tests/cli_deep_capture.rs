@@ -14,9 +14,10 @@ use common::{run, run_with_authorization};
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
     resolved_client_launch, ClassificationSource, CompatibilityAddressFamily,
-    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, Selection, Store, TargetClassification,
-    TargetEntry,
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
+    CompatibilityInspectionScope, CompatibilityLaunchCase, CompatibilityMiddlewareHandling,
+    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy,
+    Selection, Store, TargetClassification, TargetEntry,
 };
 
 fn controlled_environment() -> &'static Mutex<()> {
@@ -72,9 +73,13 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for CountingAuthorization {
         true
     }
 
-    fn read_response(&mut self, _plan_id: &str, _exact: bool) -> std::io::Result<Vec<u8>> {
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
         self.reads += 1;
-        Ok(b"yes\n".to_vec())
+        Ok(if exact {
+            format!("{plan_id}\n").into_bytes()
+        } else {
+            b"yes\n".to_vec()
+        })
     }
 }
 
@@ -130,6 +135,10 @@ fn seed_target_with_executable(local: &Path, with_compatibility: bool, executabl
             fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
             fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
             fact.protocol = Some(CompatibilityProtocol::NotApplicable);
+            fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+            fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
             store
                 .insert_compatibility_fact(&fact)
                 .expect("insert compatibility fact");
@@ -885,6 +894,10 @@ fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources()
     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
     fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
     fact.protocol = Some(CompatibilityProtocol::NotApplicable);
+    fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+    fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+    fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+    fact.inspection_policy_id = Some("launch-chain-v1".to_string());
     store.insert_compatibility_fact(&fact).unwrap();
     drop(store);
     let bundle = dir.path().join("bundle");
@@ -1708,6 +1721,64 @@ fn partial_calibration_persists_the_same_failed_terminal_outcome_it_emits() {
     let compatibility: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap()).unwrap();
     assert_eq!(compatibility["calibration"]["outcome"], "failed");
+}
+
+#[test]
+fn declared_game_scope_successor_reuses_the_predecessor_authorization_once() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("launch-chain");
+    let successor_bundle = dir.path().join("launch-chain-game-scope-retry");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "1");
+    let mut authorization = CountingAuthorization::default();
+
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--authorize-stdin",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--inspect-scope",
+            "launch-chain",
+            "--retry-game-scope",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 1, "events:\n{events}");
+    assert_eq!(authorization.reads, 1, "events:\n{events}");
+    assert_eq!(
+        events.matches("deep_capture.authorization_plan").count(),
+        2,
+        "events:\n{events}"
+    );
+    assert!(
+        events.contains("deep_capture.scope_retry"),
+        "events:\n{events}"
+    );
+    assert!(events.contains("predecessor plan"), "events:\n{events}");
+    assert!(bundle.join("manifest.json").is_file());
+    assert!(successor_bundle.join("manifest.json").is_file());
 }
 
 #[test]

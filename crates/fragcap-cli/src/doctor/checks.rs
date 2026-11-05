@@ -484,6 +484,27 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             )
         }
     });
+    checks.push(match (
+        dc.proxy_backend.is_some(),
+        inputs.socket_table_available,
+        inputs.etw_available,
+    ) {
+        (true, Some(_), Some(true)) => Check::ok(
+            DEEP_CAPTURE,
+            "inspection scope",
+            "launch-chain inspection and exact-game inspection with blind middleware relay are available; target-specific readiness still requires an exact current calibration case",
+        ),
+        (true, _, _) => Check::warn(
+            DEEP_CAPTURE,
+            "inspection scope",
+            "launch-chain inspection is available, but exact-game owner evidence is incomplete; run target calibration after restoring socket-table and tracing readiness",
+        ),
+        (false, _, _) => Check::skip(
+            DEEP_CAPTURE,
+            "inspection scope",
+            "native proxy backend is unavailable",
+        ),
+    });
     checks.push(loopback_check(
         "IPv4 loopback listener",
         "127.0.0.1",

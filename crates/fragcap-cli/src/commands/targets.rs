@@ -2112,6 +2112,10 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result
                         "routing_strategy":row.routing_strategy.map(|value| value.as_str()),
                         "address_family":row.address_family.map(|value| value.as_str()),
                         "protocol":row.protocol.map(|value| value.as_str()),
+                        "requested_inspection_scope":row.requested_scope.map(|value| value.as_str()),
+                        "effective_inspection_scope":row.effective_scope.map(|value| value.as_str()),
+                        "middleware_handling":row.middleware_handling.map(|value| value.as_str()),
+                        "inspection_policy_id":row.inspection_policy_id,
                         })).collect::<Vec<_>>(),
                     }),
                 )?;
@@ -2230,6 +2234,18 @@ fn compatibility_fields(matrix: &CompatibilityMatrix) -> Vec<(String, String)> {
             }
             if let Some(protocol) = row.protocol {
                 value.push_str(&format!(" | protocol={}", protocol.as_str()));
+            }
+            if let Some(scope) = row.requested_scope {
+                value.push_str(&format!(" | requested-scope={}", scope.as_str()));
+            }
+            if let Some(scope) = row.effective_scope {
+                value.push_str(&format!(" | effective-scope={}", scope.as_str()));
+            }
+            if let Some(handling) = row.middleware_handling {
+                value.push_str(&format!(" | middleware={}", handling.as_str()));
+            }
+            if let Some(policy_id) = &row.inspection_policy_id {
+                value.push_str(&format!(" | inspection-policy={policy_id}"));
             }
             value.push_str(&format!(
                 " | source={} | freshness={}",

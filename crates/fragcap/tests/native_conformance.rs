@@ -21,7 +21,8 @@ use fragcap::profile::FidelityTier;
 use fragcap::targets::{
     ClassificationSource, CompatibilityAddressFamily, CompatibilityApplicability,
     CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact as StoredCompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
     CompatibilityRoutingStrategy, Store, TargetClassification, TargetEntry,
 };
 use fragcap_proxy::{
@@ -355,6 +356,10 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     protocol,
                     fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
                     target_version: None,
+                    requested_scope: CompatibilityRequestedInspectionScope::Auto,
+                    effective_scope: CompatibilityInspectionScope::ExactGame,
+                    middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+                    inspection_policy_id: "exact-game-v1".to_string(),
                 };
                 for candidate in candidates {
                     let mut fact = StoredCompatibilityFact::new(
@@ -371,6 +376,10 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     fact.address_family = Some(family);
                     fact.protocol = Some(candidate.protocol);
                     fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+                    fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+                    fact.effective_scope = Some(CompatibilityInspectionScope::ExactGame);
+                    fact.middleware_handling = Some(CompatibilityMiddlewareHandling::BlindRelay);
+                    fact.inspection_policy_id = Some("exact-game-v1".to_string());
                     assert_eq!(
                         fact.applicability(&current),
                         CompatibilityApplicability::Applicable

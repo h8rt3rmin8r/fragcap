@@ -30,6 +30,11 @@ Integration
 
 Deep Capture
   proxy backend                  ok    fragcap-native 0.8.0
+  inspection scope               ok    launch-chain inspection and exact-game
+                                       inspection with blind middleware relay
+                                       are available; target-specific readiness
+                                       still requires an exact current
+                                       calibration case
   IPv4 loopback listener         ok    exact ephemeral bind to 127.0.0.1
                                        succeeded
   IPv6 loopback listener         ok    exact ephemeral bind to ::1 succeeded

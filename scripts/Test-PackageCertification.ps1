@@ -584,7 +584,7 @@ Param(
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
             try {
-                $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+                $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
             } catch {
                 throw "$Surface smoke predicates failed: invocation.failed"
             }
@@ -639,7 +639,7 @@ Param(
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
+            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
             if ($run.ElapsedSeconds -lt 120 -or $run.ElapsedSeconds -gt 165) { throw 'installed slow timing did not retain the two-minute observation span' }
             $records = @($run.Stderr -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 32 -ErrorAction Stop })
             $plan = @($records | Where-Object { $_.event -ceq 'deep_capture.authorization_plan' })

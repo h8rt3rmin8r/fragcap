@@ -486,7 +486,7 @@ pub struct CaptureArgs {
 /// Deep Capture requires one stored target and a managed launch so only the
 /// selected game started by this session receives its proxy settings. Raw
 /// process capture remains available through `capture --process`.
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
 pub struct DeepCaptureArgs {
     /// A stored target: an exact handle, a case-insensitive name, or a row number.
@@ -537,6 +537,26 @@ pub struct DeepCaptureArgs {
     /// Write metadata only, no packet payloads.
     #[arg(long, help_heading = "Common options")]
     pub no_payload: bool,
+
+    /// Select which managed process roles may receive application inspection.
+    ///
+    /// Auto selects game-only inspection for launcher-mediated targets and
+    /// launch-chain inspection for direct targets before any effect begins.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = InspectionScopeArg::Auto,
+        help_heading = "Common options"
+    )]
+    pub inspect_scope: InspectionScopeArg,
+
+    /// Permit one fresh game-scope successor after a failed launch-chain attempt.
+    #[arg(long, help_heading = "Advanced compatibility")]
+    pub retry_game_scope: bool,
+
+    /// Permit packet-only Capture when Deep Capture cannot proceed.
+    #[arg(long, help_heading = "Advanced compatibility")]
+    pub fallback_capture: bool,
 
     /// Run one explicit compatibility calibration phase.
     #[arg(
@@ -698,7 +718,7 @@ pub struct CalibrateArgs {
     #[arg(
         long,
         value_name = "WORKFLOW_ID",
-        conflicts_with_all = ["protocol", "candidate", "launch_case", "routing_strategy", "proxy_family"]
+        conflicts_with_all = ["protocol", "candidate", "launch_case", "routing_strategy", "proxy_family", "inspect_scope", "retry_game_scope", "fallback_capture"]
     )]
     pub resume: Option<i64>,
 
@@ -727,6 +747,18 @@ pub struct CalibrateArgs {
     /// Select the exact loopback address family for this workflow.
     #[arg(long, value_enum, conflicts_with = "resume")]
     pub proxy_family: Option<DeepCaptureProxyFamilyArg>,
+
+    /// Select which managed process roles may receive application inspection.
+    #[arg(long, value_enum, conflicts_with = "resume")]
+    pub inspect_scope: Option<InspectionScopeArg>,
+
+    /// Permit one fresh game-scope successor after a failed launch-chain attempt.
+    #[arg(long, conflicts_with = "resume")]
+    pub retry_game_scope: bool,
+
+    /// Permit packet-only Capture when Deep Capture cannot proceed.
+    #[arg(long, conflicts_with = "resume")]
+    pub fallback_capture: bool,
 
     /// The shipped catalog store consulted while resolving target context.
     #[arg(long)]
@@ -893,6 +925,16 @@ pub enum GuidedCalibrationRoutingArg {
     HttpProxy,
     Socks,
     ProtocolSpecific,
+}
+
+/// Public inspection-scope vocabulary shared by calibration and Deep Capture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum InspectionScopeArg {
+    #[default]
+    Auto,
+    #[value(name = "game")]
+    Game,
+    LaunchChain,
 }
 
 /// Exact protocol dimension for one compatibility calibration.
@@ -1674,6 +1716,54 @@ mod tests {
                 assert_eq!(selected.proxy_family, DeepCaptureProxyFamilyArg::Ipv6);
             }
             other => panic!("expected two Deep Capture commands, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inspection_scope_and_fallback_contract_is_shared_and_resume_immutable() {
+        let deep = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--inspect-scope",
+            "game",
+            "--retry-game-scope",
+            "--fallback-capture",
+        ])
+        .expect("deep-capture scope parses");
+        let Some(Command::DeepCapture(deep)) = deep.command else {
+            panic!("deep-capture command");
+        };
+        assert_eq!(deep.inspect_scope, InspectionScopeArg::Game);
+        assert!(deep.retry_game_scope && deep.fallback_capture);
+
+        let guided = Cli::try_parse_from([
+            "fragcap",
+            "calibrate",
+            "target",
+            "--inspect-scope",
+            "launch-chain",
+            "--retry-game-scope",
+            "--fallback-capture",
+        ])
+        .expect("calibration scope parses");
+        let Some(Command::Calibrate(guided)) = guided.command else {
+            panic!("calibrate command");
+        };
+        assert_eq!(guided.inspect_scope, Some(InspectionScopeArg::LaunchChain));
+        assert!(guided.retry_game_scope && guided.fallback_capture);
+
+        for extra in [
+            "--inspect-scope",
+            "--retry-game-scope",
+            "--fallback-capture",
+        ] {
+            let mut argv = vec!["fragcap", "calibrate", "--resume", "7", extra];
+            if extra == "--inspect-scope" {
+                argv.push("game");
+            }
+            assert!(Cli::try_parse_from(argv).is_err());
         }
     }
 

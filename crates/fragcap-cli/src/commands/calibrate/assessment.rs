@@ -500,6 +500,10 @@ impl StoredCaseAssessment {
                 "proxy_backend": self.case.proxy_backend, "proxy_backend_version": self.case.proxy_backend_version,
                 "fragcap_version": self.case.fragcap_version, "target_version": self.case.target_version,
                 "protocol": self.case.protocol.as_str(),
+                "requested_inspection_scope": self.case.requested_scope.as_str(),
+                "effective_inspection_scope": self.case.effective_scope.as_str(),
+                "middleware_handling": self.case.middleware_handling.as_str(),
+                "inspection_policy_id": self.case.inspection_policy_id,
             },
         })
     }
@@ -521,6 +525,10 @@ mod tests {
             protocol,
             fragcap_version: "controlled-version".into(),
             target_version: Some("build1".into()),
+            requested_scope: CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: CompatibilityInspectionScope::ExactGame,
+            middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+            inspection_policy_id: "exact-game-v1".into(),
         }
     }
 
@@ -549,6 +557,10 @@ mod tests {
         });
         fact.fragcap_version = Some(current.fragcap_version.clone());
         fact.target_version = current.target_version.clone();
+        fact.requested_scope = Some(current.requested_scope);
+        fact.effective_scope = Some(current.effective_scope);
+        fact.middleware_handling = Some(current.middleware_handling);
+        fact.inspection_policy_id = Some(current.inspection_policy_id.clone());
         fact
     }
 

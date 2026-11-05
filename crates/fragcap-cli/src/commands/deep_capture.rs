@@ -33,7 +33,8 @@ use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
     CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
     CompatibilityRoutingStrategy, Selection, Store, TargetEntry,
 };
 #[cfg(test)]
@@ -49,7 +50,7 @@ use crate::args::Direction;
 use crate::cli::{
     CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
     DeepCaptureCalibrationProtocolArg, DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg,
-    OfflineArgs, ScopeArg,
+    InspectionScopeArg, OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -113,6 +114,27 @@ pub(crate) fn current_compatibility_case(
     family: DeepCaptureProxyFamilyArg,
     protocol: CompatibilityProtocol,
 ) -> CompatibilityCase {
+    current_scoped_compatibility_case(
+        launch_case,
+        family,
+        protocol,
+        CompatibilityRequestedInspectionScope::LaunchChain,
+        CompatibilityInspectionScope::LaunchChain,
+        CompatibilityMiddlewareHandling::Inspected,
+        "launch-chain-v1",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn current_scoped_compatibility_case(
+    launch_case: CompatibilityLaunchCase,
+    family: DeepCaptureProxyFamilyArg,
+    protocol: CompatibilityProtocol,
+    requested_scope: CompatibilityRequestedInspectionScope,
+    effective_scope: CompatibilityInspectionScope,
+    middleware_handling: CompatibilityMiddlewareHandling,
+    inspection_policy_id: &str,
+) -> CompatibilityCase {
     CompatibilityCase {
         launch_case,
         proxy_backend: "fragcap-native".to_string(),
@@ -122,6 +144,74 @@ pub(crate) fn current_compatibility_case(
         protocol,
         fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
         target_version: None,
+        requested_scope,
+        effective_scope,
+        middleware_handling,
+        inspection_policy_id: inspection_policy_id.to_string(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedCliInspectionScope {
+    pub(crate) requested: CompatibilityRequestedInspectionScope,
+    pub(crate) effective: CompatibilityInspectionScope,
+    pub(crate) middleware_handling: CompatibilityMiddlewareHandling,
+    pub(crate) policy_id: &'static str,
+    pub(crate) recommendation_source: &'static str,
+}
+
+pub(crate) fn compatibility_requested_scope(
+    value: InspectionScopeArg,
+) -> CompatibilityRequestedInspectionScope {
+    match value {
+        InspectionScopeArg::Auto => CompatibilityRequestedInspectionScope::Auto,
+        InspectionScopeArg::Game => CompatibilityRequestedInspectionScope::ExactGame,
+        InspectionScopeArg::LaunchChain => CompatibilityRequestedInspectionScope::LaunchChain,
+    }
+}
+
+fn target_is_launcher_mediated(target: &TargetEntry) -> bool {
+    target
+        .anchor
+        .as_deref()
+        .is_some_and(|anchor| anchor.starts_with("steam:"))
+        || entry_windows_launch_entries(target).len() > 1
+        || entry_windows_launch_entries(target)
+            .iter()
+            .any(|entry| entry.role() == Some("launcher"))
+}
+
+pub(crate) fn resolve_cli_inspection_scope(
+    value: InspectionScopeArg,
+    target: &TargetEntry,
+) -> ResolvedCliInspectionScope {
+    let requested = compatibility_requested_scope(value);
+    let (effective, recommendation_source) = match requested {
+        CompatibilityRequestedInspectionScope::ExactGame => {
+            (CompatibilityInspectionScope::ExactGame, "explicit")
+        }
+        CompatibilityRequestedInspectionScope::LaunchChain => {
+            (CompatibilityInspectionScope::LaunchChain, "explicit")
+        }
+        CompatibilityRequestedInspectionScope::Auto if target_is_launcher_mediated(target) => {
+            (CompatibilityInspectionScope::ExactGame, "launcher-topology")
+        }
+        CompatibilityRequestedInspectionScope::Auto => {
+            (CompatibilityInspectionScope::LaunchChain, "direct-topology")
+        }
+    };
+    ResolvedCliInspectionScope {
+        requested,
+        effective,
+        middleware_handling: match effective {
+            CompatibilityInspectionScope::ExactGame => CompatibilityMiddlewareHandling::BlindRelay,
+            CompatibilityInspectionScope::LaunchChain => CompatibilityMiddlewareHandling::Inspected,
+        },
+        policy_id: match effective {
+            CompatibilityInspectionScope::ExactGame => "exact-game-v1",
+            CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
+        },
+        recommendation_source,
     }
 }
 
@@ -169,10 +259,15 @@ struct AuthorizationTargetAuthority {
     launch_entries: Option<Value>,
     launch_case: CompatibilityLaunchCase,
     resolved_launch: Value,
+    inspection_scope: ResolvedCliInspectionScope,
 }
 
 impl AuthorizationTargetAuthority {
-    fn from_target(target: &TargetEntry, launch_case: CompatibilityLaunchCase) -> Self {
+    fn from_target(
+        target: &TargetEntry,
+        launch_case: CompatibilityLaunchCase,
+        inspection_scope: ResolvedCliInspectionScope,
+    ) -> Self {
         Self {
             row_id: target.id,
             stable_id: target.stable_id,
@@ -183,6 +278,7 @@ impl AuthorizationTargetAuthority {
             launch_entries: target.launch_entries.clone(),
             launch_case,
             resolved_launch: Value::Null,
+            inspection_scope,
         }
     }
 
@@ -197,6 +293,13 @@ impl AuthorizationTargetAuthority {
             "resolved_launch": self.resolved_launch,
             "row_id": self.row_id,
             "stable_id": self.stable_id,
+            "inspection": {
+                "requested_scope": self.inspection_scope.requested.as_str(),
+                "effective_scope": self.inspection_scope.effective.as_str(),
+                "middleware_handling": self.inspection_scope.middleware_handling.as_str(),
+                "policy_id": self.inspection_scope.policy_id,
+                "recommendation_source": self.inspection_scope.recommendation_source,
+            },
         })
     }
 }
@@ -915,7 +1018,11 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
         })?;
         let launch_case = selected_launch_case(&target, self.args)
             .map_err(|error| library_refusal("launch-case", error))?;
-        let mut current_authority = AuthorizationTargetAuthority::from_target(&target, launch_case);
+        let mut current_authority = AuthorizationTargetAuthority::from_target(
+            &target,
+            launch_case,
+            self.authorized.inspection_scope,
+        );
         if self.args.controlled_target {
             current_authority.resolved_launch = controlled_launch_authority();
         } else {
@@ -968,7 +1075,7 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
             self.args.controlled_target,
             &facts,
             target.launch_case,
-            &current_compatibility_case(
+            &current_scoped_compatibility_case(
                 self.selected_launch_case
                     .borrow()
                     .expect("resolved launch case retained"),
@@ -976,6 +1083,10 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
                 config
                     .calibration_protocol
                     .unwrap_or(CompatibilityProtocol::Routing),
+                self.authorized.inspection_scope.requested,
+                self.authorized.inspection_scope.effective,
+                self.authorized.inspection_scope.middleware_handling,
+                self.authorized.inspection_scope.policy_id,
             ),
         )?;
         Ok(())
@@ -1493,6 +1604,7 @@ struct LibraryFactAdapter {
     runtime: Rc<RefCell<LibraryRuntime>>,
     controlled: bool,
     family: DeepCaptureProxyFamilyArg,
+    inspection_scope: ResolvedCliInspectionScope,
 }
 
 impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
@@ -1545,6 +1657,7 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
                 phase: fact.phase,
                 address_family: compatibility_address_family(self.family),
                 protocol: fact.protocol,
+                inspection_scope: self.inspection_scope,
             },
         );
         match result {
@@ -1568,6 +1681,7 @@ struct LibraryArtifactAdapter<'e, 'w> {
     requested_observation: Option<Duration>,
     family: DeepCaptureProxyFamilyArg,
     protocol: Option<CompatibilityProtocol>,
+    inspection_scope: ResolvedCliInspectionScope,
     routing: Option<deep_capture_api::RoutingPlan>,
     owner_lease: Option<crate::doctor::residue::SessionOwnerLease>,
 }
@@ -1758,6 +1872,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             requested_observation: self.requested_observation,
             fact_writes: &fact_writes,
             phase_timing: &runtime.phase_timing,
+            inspection_scope: self.inspection_scope,
         };
         let write_result = write_bundle(&context, &mut self.emitter.borrow_mut());
         let roles = [
@@ -2530,7 +2645,19 @@ fn build_authorization_plan(
             "backend_version": env!("CARGO_PKG_VERSION"),
             "dns_policy": "match requested authority before resolution and check every answer",
             "environment_variables": environment_variables,
-            "fallback": "none",
+            "inspection": {
+                "requested_scope": target_authority.inspection_scope.requested.as_str(),
+                "effective_scope": target_authority.inspection_scope.effective.as_str(),
+                "middleware_handling": target_authority.inspection_scope.middleware_handling.as_str(),
+                "recommendation_source": target_authority.inspection_scope.recommendation_source,
+                "policy_id": target_authority.inspection_scope.policy_id,
+                "unresolved_owner_handling": if target_authority.inspection_scope.effective == CompatibilityInspectionScope::ExactGame { "blind-relay" } else { "inspect-launch-chain" },
+            },
+            "fallback": {
+                "game_scope_retry_allowed": args.retry_game_scope,
+                "packet_capture_allowed": args.fallback_capture,
+                "maximum_game_scope_successors": if args.retry_game_scope { 1 } else { 0 },
+            },
             "listener": "exact loopback address; concrete ephemeral port selected after authorization",
             "normalized_bypass_rules": operator_rules,
             "routing_scope": "managed child environment only",
@@ -2573,6 +2700,7 @@ fn validate_authorization_target(
         require_controlled_target(&target)?;
     }
     let launch_case = selected_launch_case(&target, args)?;
+    let inspection_scope = resolve_cli_inspection_scope(args.inspect_scope, &target);
     if args
         .launch_case
         .map(CompatibilityLaunchCase::from)
@@ -2590,16 +2718,21 @@ fn validate_authorization_target(
         args.controlled_target,
         &facts,
         library_launch_case(launch_case),
-        &current_compatibility_case(
+        &current_scoped_compatibility_case(
             launch_case,
             args.proxy_family,
             protocol.unwrap_or(CompatibilityProtocol::Routing),
+            inspection_scope.requested,
+            inspection_scope.effective,
+            inspection_scope.middleware_handling,
+            inspection_scope.policy_id,
         ),
     )
     .map_err(cli_error_from_library_refusal)?;
     Ok(AuthorizationTargetAuthority::from_target(
         &target,
         launch_case,
+        inspection_scope,
     ))
 }
 
@@ -2608,7 +2741,7 @@ pub fn run(
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
-    let outcome = match run_with_outcome(args, authorization, emitter) {
+    let mut outcome = match run_with_outcome(args, authorization, emitter, None) {
         Ok(outcome) => outcome,
         Err(error) if !emitter.is_json() => {
             let target = crate::workflow_help::target_reference(
@@ -2630,6 +2763,61 @@ pub fn run(
         }
         Err(error) => return Err(error),
     };
+    if outcome.disposition == RunDisposition::Failed
+        && args.retry_game_scope
+        && outcome.inspection_scope.effective == CompatibilityInspectionScope::LaunchChain
+    {
+        let mut retry_args = args.clone();
+        retry_args.inspect_scope = InspectionScopeArg::Game;
+        retry_args.retry_game_scope = false;
+        retry_args.bundle = game_scope_retry_bundle(args.bundle.as_deref())?;
+        let predecessor_attempt = outcome.authorization_plan_id.clone();
+        let predecessor_bundle = outcome.bundle.clone();
+        let retry_outcome = run_with_outcome(
+            &retry_args,
+            authorization,
+            emitter,
+            Some(&predecessor_attempt),
+        )?;
+        emitter.event(&Event::DeepCaptureScopeRetry {
+            predecessor_attempt,
+            successor_attempt: retry_outcome.authorization_plan_id.clone(),
+            predecessor_scope: CompatibilityInspectionScope::LaunchChain
+                .as_str()
+                .to_string(),
+            successor_scope: CompatibilityInspectionScope::ExactGame.as_str().to_string(),
+            predecessor_bundle: predecessor_bundle
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            successor_bundle: retry_outcome
+                .bundle
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        });
+        emitter.progress(
+            "The reviewed plan permits one fresh exact-game successor. The failed launch-chain result and bundle remain unchanged.",
+        );
+        outcome = retry_outcome;
+    }
+    if outcome.disposition == RunDisposition::Failed
+        && args.fallback_capture
+        && outcome.retained_target_packets.is_some()
+    {
+        let retained_target_packets = outcome.retained_target_packets.unwrap_or(0);
+        let (evidence_windows, omissions) = passive_fallback_lineage(&outcome);
+        emitter.event(&Event::DeepCaptureFallback {
+            attempt_identity: outcome.authorization_plan_id.clone(),
+            effective_mode: "capture".to_string(),
+            reason: "deep-capture-failed-passive-evidence-retained".to_string(),
+            retained_target_packets,
+            evidence_windows,
+            omissions,
+        });
+        emitter.progress(&format!(
+            "Deep Capture failed. Packet-only Capture evidence remains under the observed window (retained target packets: {retained_target_packets}); no positive inspection fact was created."
+        ));
+        return Ok(Exit::SUCCESS);
+    }
     match outcome.terminal_error {
         Some(error) if !emitter.is_json() && outcome.disposition == RunDisposition::Interrupted => {
             let target = crate::workflow_help::target_reference(
@@ -2676,12 +2864,52 @@ pub fn run(
     }
 }
 
+fn game_scope_retry_bundle(base: Option<&Path>) -> Result<Option<PathBuf>, CliError> {
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    let file_name = base.file_name().ok_or_else(|| {
+        CliError::usage(format!(
+            "the Deep Capture bundle path {} cannot identify a game-scope retry destination",
+            base.display()
+        ))
+    })?;
+    let mut sibling = file_name.to_os_string();
+    sibling.push("-game-scope-retry");
+    Ok(Some(
+        base.parent().unwrap_or_else(|| Path::new("")).join(sibling),
+    ))
+}
+
+pub(crate) fn passive_fallback_lineage(outcome: &RunOutcome) -> (Vec<String>, Vec<String>) {
+    let mut evidence_windows = outcome
+        .observation_windows
+        .iter()
+        .map(|window| window.as_str().to_string())
+        .collect::<Vec<_>>();
+    evidence_windows.sort();
+    evidence_windows.dedup();
+    let mut omissions = vec!["application-inspection-not-established".to_string()];
+    if evidence_windows.is_empty()
+        || evidence_windows
+            .iter()
+            .any(|window| window == "unavailable")
+    {
+        omissions.push("passive-evidence-window-unavailable".to_string());
+    }
+    (evidence_windows, omissions)
+}
+
 pub(crate) struct RunOutcome {
     pub observations: Vec<deep_capture_api::CompatibilityObservation>,
     pub observation_windows: Vec<deep_capture_api::EvidenceWindow>,
     pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
     pub assessment: Option<crate::commands::calibrate::assessment::AttemptAssessment>,
+    pub retained_target_packets: Option<u64>,
+    pub inspection_scope: ResolvedCliInspectionScope,
+    pub authorization_plan_id: String,
+    pub bundle: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2729,6 +2957,7 @@ pub(crate) fn run_with_outcome(
     args: &DeepCaptureArgs,
     authorization: &mut dyn DeepCaptureAuthorizationInput,
     emitter: &mut Emitter,
+    preauthorized_by: Option<&str>,
 ) -> Result<RunOutcome, CliError> {
     if !args.launch {
         return Err(CliError::usage(
@@ -2809,6 +3038,7 @@ pub(crate) fn run_with_outcome(
         .map_err(cli_error_from_library_refusal)?;
     let mut target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
+    let resolved_inspection_scope = target_authority.inspection_scope;
     let deadlines =
         CalibrationDeadlines::from_args(args).for_launch_case(args, target_authority.launch_case);
     if args.controlled_target {
@@ -2865,28 +3095,40 @@ pub(crate) fn run_with_outcome(
         &prepared_authority,
     )?;
     crate::orchestrator::install_interrupt_handler();
-    match authorize_plan(args, authorization, emitter, &authorization_plan)? {
-        AuthorizationDecision::Authorized => {}
-        AuthorizationDecision::Declined => {
-            emitter.progress("Deep Capture declined; no effects were applied");
-            return Ok(RunOutcome {
-                observations: Vec::new(),
-                observation_windows: Vec::new(),
-                disposition: RunDisposition::Declined,
-                terminal_error: None,
-                assessment: None,
-            });
-        }
-        AuthorizationDecision::Interrupted => {
-            return Ok(RunOutcome {
-                observations: Vec::new(),
-                observation_windows: Vec::new(),
-                disposition: RunDisposition::Interrupted,
-                assessment: None,
-                terminal_error: Some(CliError::failure(
-                    "Deep Capture authorization was interrupted; no effects were applied",
-                )),
-            });
+    if preauthorized_by.is_some() {
+        authorization_plan.emit(emitter)?;
+    } else {
+        match authorize_plan(args, authorization, emitter, &authorization_plan)? {
+            AuthorizationDecision::Authorized => {}
+            AuthorizationDecision::Declined => {
+                emitter.progress("Deep Capture declined; no effects were applied");
+                return Ok(RunOutcome {
+                    observations: Vec::new(),
+                    observation_windows: Vec::new(),
+                    disposition: RunDisposition::Declined,
+                    terminal_error: None,
+                    assessment: None,
+                    retained_target_packets: None,
+                    inspection_scope: resolved_inspection_scope,
+                    authorization_plan_id: authorization_plan.id.clone(),
+                    bundle: None,
+                });
+            }
+            AuthorizationDecision::Interrupted => {
+                return Ok(RunOutcome {
+                    observations: Vec::new(),
+                    observation_windows: Vec::new(),
+                    disposition: RunDisposition::Interrupted,
+                    assessment: None,
+                    retained_target_packets: None,
+                    inspection_scope: resolved_inspection_scope,
+                    authorization_plan_id: authorization_plan.id.clone(),
+                    bundle: None,
+                    terminal_error: Some(CliError::failure(
+                        "Deep Capture authorization was interrupted; no effects were applied",
+                    )),
+                });
+            }
         }
     }
     recipient.revalidate().map_err(|error| {
@@ -2928,15 +3170,18 @@ pub(crate) fn run_with_outcome(
             return Err(CliError::failure("installation CA changed after authorization; no effects were applied; run elevated `fragcap ca repair`"));
         }
     }
+    let authorization_reason = if let Some(predecessor) = preauthorized_by {
+        format!("predecessor plan {predecessor} authorized this one bounded exact-game successor")
+    } else if args.authorize_stdin {
+        "exact plan identifier matched and target authority remained current".to_string()
+    } else {
+        "operator approved exact plan and target authority remained current".to_string()
+    };
     authorization_outcome(
         emitter,
         &authorization_plan,
         "authorized",
-        if args.authorize_stdin {
-            "exact plan identifier matched and target authority remained current"
-        } else {
-            "operator approved exact plan and target authority remained current"
-        },
+        &authorization_reason,
     )?;
     let config = deep_capture_api::SessionConfig {
         target: target_label,
@@ -3015,6 +3260,28 @@ pub(crate) fn run_with_outcome(
             if let Some(identity) = client_identity {
                 proxy = proxy.with_client_identity(identity);
             }
+            if authorization_plan
+                .target_authority
+                .inspection_scope
+                .effective
+                == CompatibilityInspectionScope::ExactGame
+            {
+                let decider = deep_capture_api::ExactGameDecider::new(
+                    observation_context.clone(),
+                    vec!["client".to_string()],
+                );
+                let decider = if authorization_plan
+                    .target_authority
+                    .inspection_scope
+                    .requested
+                    == CompatibilityRequestedInspectionScope::Auto
+                {
+                    decider.with_auto_request()
+                } else {
+                    decider
+                };
+                proxy = proxy.with_inspection_decider(Arc::new(decider));
+            }
             proxy
         }),
         trust: Box::new(LibraryTrustAdapter {
@@ -3041,6 +3308,7 @@ pub(crate) fn run_with_outcome(
             runtime: Rc::clone(&runtime),
             controlled: args.controlled_target,
             family: args.proxy_family,
+            inspection_scope: authorization_plan.target_authority.inspection_scope,
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
             recipient: Rc::clone(&recipient),
@@ -3053,6 +3321,7 @@ pub(crate) fn run_with_outcome(
             requested_observation: args.duration,
             family: args.proxy_family,
             protocol: selected_protocol,
+            inspection_scope: authorization_plan.target_authority.inspection_scope,
             routing: None,
             owner_lease: None,
         }),
@@ -3232,6 +3501,7 @@ pub(crate) fn run_with_outcome(
         .diagnostics
         .as_ref()
         .map_or_else(Vec::new, |value| value.observation_windows.clone());
+    let retained_target_packets = runtime.borrow().retained_target_packets;
     if let Some(root) = paths::deep_capture_session_dir() {
         let maintenance = match crate::session_gc::maintenance(&root, Some(&bundle)) {
             Ok(value) => value,
@@ -3256,6 +3526,10 @@ pub(crate) fn run_with_outcome(
             disposition: RunDisposition::Completed,
             terminal_error: None,
             assessment,
+            retained_target_packets,
+            inspection_scope: resolved_inspection_scope,
+            authorization_plan_id: authorization_plan.id.clone(),
+            bundle: Some(bundle.clone()),
         })
     } else {
         let disposition =
@@ -3276,6 +3550,10 @@ pub(crate) fn run_with_outcome(
             disposition,
             terminal_error: Some(CliError::failure(detail)),
             assessment,
+            retained_target_packets,
+            inspection_scope: resolved_inspection_scope,
+            authorization_plan_id: authorization_plan.id.clone(),
+            bundle: Some(bundle.clone()),
         })
     }
 }
@@ -4282,6 +4560,7 @@ struct BundleContext<'a> {
     requested_observation: Option<Duration>,
     fact_writes: &'a [FactWriteResult],
     phase_timing: &'a [deep_capture_api::PhaseTiming],
+    inspection_scope: ResolvedCliInspectionScope,
 }
 
 fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), CliError> {
@@ -4688,6 +4967,13 @@ fn compatibility_json(
         "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
         "address_family": ctx.session.address_family.as_str(),
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
+        "inspection": {
+            "requested_scope": ctx.inspection_scope.requested.as_str(),
+            "effective_scope": ctx.inspection_scope.effective.as_str(),
+            "middleware_handling": ctx.inspection_scope.middleware_handling.as_str(),
+            "policy_id": ctx.inspection_scope.policy_id,
+            "recommendation_source": ctx.inspection_scope.recommendation_source,
+        },
         "routing_policy": routing_policy_json(&ctx.session.routing),
         "routing_decisions": routing_decisions_json(ctx.observations),
         "process_trace": {
@@ -5056,6 +5342,13 @@ fn manifest_json(
             "listen_port": ctx.session.listen_port,
             "routing_policy": routing_policy_json(&ctx.session.routing),
             "routing_decisions": routing_decisions_json(ctx.observations),
+            "inspection": {
+                "requested_scope": ctx.inspection_scope.requested.as_str(),
+                "effective_scope": ctx.inspection_scope.effective.as_str(),
+                "middleware_handling": ctx.inspection_scope.middleware_handling.as_str(),
+                "policy_id": ctx.inspection_scope.policy_id,
+                "recommendation_source": ctx.inspection_scope.recommendation_source,
+            },
         },
         "trust": {
             "state": ctx.trust.state,
@@ -5294,6 +5587,10 @@ fn insert_fact(
     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
     fact.address_family = Some(ctx.address_family);
     fact.protocol = Some(ctx.protocol);
+    fact.requested_scope = Some(ctx.inspection_scope.requested);
+    fact.effective_scope = Some(ctx.inspection_scope.effective);
+    fact.middleware_handling = Some(ctx.inspection_scope.middleware_handling);
+    fact.inspection_policy_id = Some(ctx.inspection_scope.policy_id.to_string());
     fact.final_owner_executable = ctx
         .final_owner
         .and_then(|owner| owner.process_image.clone());
@@ -5325,6 +5622,7 @@ struct FactContext<'a> {
     phase: CalibrationPhase,
     address_family: CompatibilityAddressFamily,
     protocol: CompatibilityProtocol,
+    inspection_scope: ResolvedCliInspectionScope,
 }
 
 fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<(), CliError> {
@@ -5504,6 +5802,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn explicit_game_scope_retry_uses_a_distinct_sibling_bundle() {
+        let base = Path::new("C:\\evidence\\session.bundle");
+        assert_eq!(
+            game_scope_retry_bundle(Some(base)).unwrap(),
+            Some(PathBuf::from(
+                "C:\\evidence\\session.bundle-game-scope-retry"
+            ))
+        );
+        assert_eq!(game_scope_retry_bundle(None).unwrap(), None);
+        assert!(game_scope_retry_bundle(Some(Path::new("/"))).is_err());
+    }
+
     use super::*;
 
     struct BrokenWarmRead;
@@ -5582,6 +5893,13 @@ mod tests {
             launch_entries: Some(json!([{"path":"target.exe","role":"client"}])),
             launch_case: CompatibilityLaunchCase::DirectExeCold,
             resolved_launch: json!({"kind":"direct"}),
+            inspection_scope: ResolvedCliInspectionScope {
+                requested: CompatibilityRequestedInspectionScope::Auto,
+                effective: CompatibilityInspectionScope::LaunchChain,
+                middleware_handling: CompatibilityMiddlewareHandling::Inspected,
+                policy_id: "launch-chain-v1",
+                recommendation_source: "direct-topology",
+            },
         }
     }
 
@@ -5865,6 +6183,13 @@ mod tests {
             requested_observation: None,
             fact_writes: &[],
             phase_timing: &[],
+            inspection_scope: ResolvedCliInspectionScope {
+                requested: CompatibilityRequestedInspectionScope::Auto,
+                effective: CompatibilityInspectionScope::ExactGame,
+                middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+                policy_id: "exact-game-v1",
+                recommendation_source: "launcher-topology",
+            },
         };
         let trace = fragcap::deep_capture::ProcessTraceSummary {
             finalization: "complete",
@@ -6331,6 +6656,10 @@ mod tests {
             fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
             fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
             fact.protocol = Some(CompatibilityProtocol::NotApplicable);
+            fact.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);
+            fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
             fact.stale = stale;
             fact
         })
@@ -6378,6 +6707,10 @@ mod tests {
         latest.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
         latest.address_family = Some(CompatibilityAddressFamily::Ipv4);
         latest.protocol = Some(CompatibilityProtocol::NotApplicable);
+        latest.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);
+        latest.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+        latest.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+        latest.inspection_policy_id = Some("launch-chain-v1".to_string());
         superseded.push(latest);
         assert!(validate(&superseded).is_err());
     }
