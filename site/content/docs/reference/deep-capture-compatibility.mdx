@@ -3,18 +3,18 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.13](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13).
+Published baseline: [v0.10.14](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14).
 
 <Callout title="Installation CA in v0.10.10">
 v0.10.10 uses one installation CA in `LocalMachine/Root`. The MSI discloses and provisions it for all Windows users after removing identified pre-S185 Fragcap state. Portable users run elevated `fragcap ca install`; `fragcap ca status` is read-only. Both reachability and TLS calibration verify the installation identity before session effects. The plan and manifest carry its fingerprint. Session cleanup, including failed managed-client release, leaves the installation root trusted. If it is missing or unhealthy, use elevated `fragcap ca repair` after reviewing status. Explicit removal requires `fragcap ca remove --fingerprint <SHA-256> --yes`.
 
 v0.10.11 lets an ordinary account confirm that public CA health without reading the protected signer metadata. Deep Capture still proves signing before it starts. HTTPS CONNECT treats an inner authority without an explicit port as port 443, distinguishes a real cross-authority request from a header timeout, and requires completed HTTPS evidence for an HTTPS compatibility result.
 
-v0.10.12 preserves explicit longer observation and launch windows, supports declared publisher stages in cold Steam launches, and records exact process-instance ownership only when socket and launch evidence prove it. Missing or ambiguous ownership remains an explicit evidence gap. v0.10.13 verifies basename-only managed stages against the exact process-instance executable path, reports acquisition timeout at the top-level result, and includes the S188 #547 source correction. Installed-product failures return as version-specific issues.
+v0.10.14 preserves exact managed-client handoff and observation timing, reports causal proxy diagnostics, decides exact-game inspection from process-instance and socket ownership, supports blind middleware relay, and carries requested and effective scope through calibration and artifacts. Missing or ambiguous ownership remains an explicit evidence gap. Installed-product failures return as version-specific issues.
 </Callout>
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.13. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.14. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
