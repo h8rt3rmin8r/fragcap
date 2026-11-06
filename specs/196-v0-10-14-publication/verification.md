@@ -120,6 +120,8 @@ The local records candidate passes:
 
 The immutable registry validator reports that the v0.10.14 published candidate is valid and that independent review has not been performed. PR identity, exact-head hosted checks, hosted reviews, merge, and Pages deployment remain pending.
 
+The first hosted docs run exposed a retained accessibility-contract expectation for the `S154` and `S158` lineage markers on the Native product contract page. The page now keeps those exact historical anchors while presenting v0.10.14 as current. The failed run remains part of the diagnostic history; exact-head rerun evidence supersedes it only after success.
+
 ## Final Public Reconciliation
 
 Pending.
