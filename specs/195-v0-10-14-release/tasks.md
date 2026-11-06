@@ -62,9 +62,9 @@
 - [x] T019 [US3] Complete the post-implementation Spec-Kit convergence review and resolve every finding.
 - [x] T020 [US3] Record exact local verification and explicit unverified boundaries in `specs/195-v0-10-14-release/verification.md`, mark completed tasks, and finalize the candidate commit.
 - [x] T021 [US3] Push `release/0.10.14`, open the official PR with `Closes #566` and a non-closing reference to #567, and move both project items to PR review.
-- [ ] T022 [US3] Monitor every applicable hosted check and obtain exact final-head Windows package-certification evidence.
-- [ ] T023 [US3] Inspect all hosted code and security review surfaces, respond to every comment, apply required corrections, and resolve every thread.
-- [ ] T024 [US3] If useful after round-one reconciliation, request exactly one second hosted Codex round, process it fully, and never request a third.
+- [x] T022 [US3] Monitor every applicable hosted check and obtain exact final-head Windows package-certification evidence.
+- [x] T023 [US3] Inspect all hosted code and security review surfaces, respond to every comment, apply required corrections, and resolve every thread.
+- [x] T024 [US3] If useful after round-one reconciliation, request exactly one second hosted Codex round, process it fully, and never request a third.
 - [ ] T025 [US3] Reconfirm the final head, terminal successful checks, review count, comment disposition, issue/project state, and candidate-only evidence boundary, then hand the PR to the owner for final merge ritual.
 
 **Checkpoint**: S195 is ready for owner review and merge. No merge, tag, publication, installed-product test, or #567 closure has occurred.

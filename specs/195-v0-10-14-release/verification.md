@@ -44,9 +44,17 @@ A strict scan of all 44 changed non-binary files found valid UTF-8, no BOM, LF-o
 
 Post-implementation convergence mapped all eleven functional requirements and five success criteria to the chronological task record and assembled diff. No missing requirement, contradictory deadline, stale issue lifecycle, duplicate implementation task, or constitution conflict remained. The implementation changes only the controlled test timing boundary plus release-candidate authorities; it does not widen production behavior.
 
+## Hosted orchestration record
+
+- PR #568 opened from `release/0.10.14` with #566 closing on merge and #567 referenced without closure. Both project items moved to PR review.
+- The automatic first Codex code-review round completed against implementation head `7b03592dfc6147fc87fb096aa134273b63f77f9e` with no finding, no review thread, and a thumbs-up reaction. The only following source change before hosted qualification recorded the PR number in this Spec-Kit evidence.
+- Every applicable PR check completed successfully against `b7c5fafe6ec792a3b3183d21e9a8553d7b2a3de1`, including Windows and Ubuntu CI, MSRV, platform-neutral build, TShark analyzer consumption, all six fuzz targets, dependency policy, static documentation export, CodeQL, Windows capture, native integration, native performance, and Windows package certification. The manual soak and PR Pages deployment were expected skips.
+- Branch-head Windows package-certification run 42184030117 completed successfully from `b7c5fafe6ec792a3b3183d21e9a8553d7b2a3de1` through exact build, candidate assembly, package lifecycle certification, and distribution and summary uploads.
+- This receipt-only update changes no product, test, release identity, package input, or generated output. Its own final hosted checks, exact-head package rerun, and authorized second code and security reviews remain authoritative in GitHub because writing those terminal outcomes back into the tree would create another unqualified head.
+
 ## Explicitly unverified and excluded
 
-- Official PR #568 is open from `release/0.10.14`; hosted checks, hosted code and security review, unresolved-thread state, and exact branch-head package certification remain pending.
+- The final receipt-only head still requires its terminal hosted rerun, exact-head package certification, and authorized second code and security review before owner handoff.
 - No merge, tag, GitHub release, crate publication, protected-environment approval, public-file readback, registry readback, or current-public marker advance has occurred.
 - No installed candidate or private title was exercised. Installed-product observations occur after publication, and concrete failures return as version-specific GitHub issues.
 - The controlled conformance suite passed; its separate live TShark analyzer tier has not yet run for this candidate.
