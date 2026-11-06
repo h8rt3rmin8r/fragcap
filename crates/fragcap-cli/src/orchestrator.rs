@@ -2101,6 +2101,7 @@ fn is_active(session: &CaptureSession) -> bool {
 
 /// The managed packet gate can meet a bound before the final client acquires.
 /// Its exact admitted count is authoritative even while the session is Watching.
+#[cfg(windows)]
 fn stop_on_managed_volume_bound(
     session: &mut CaptureSession,
     gate: &GateHandle,
