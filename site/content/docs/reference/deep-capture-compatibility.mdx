@@ -119,8 +119,14 @@ Start with the guided front door:
 
 ```powershell
 fragcap calibrate sample-target
-fragcap calibrate --id 42 --protocol https
+fragcap calibrate --id 42 --protocol https --inspect-scope auto
 ```
+
+Inspection scope is part of the exact case. `auto` resolves before effects to
+exact-game inspection with blind middleware relay for Steam or publisher
+topology, and to launch-chain inspection for direct topology. `game` and
+`launch-chain` preserve an explicit choice. A legacy or differently scoped fact
+stays visible but cannot qualify the current case.
 
 Stored resolution takes precedence. On a clean miss, an exact installed Steam application identifier or case-insensitive display name can produce a separately confirmed registration plan. For a Steam target without an authored client, appinfo supplies a launch hint only. Interactive setup can separately confirm a cold Steam launch and observe owned descendants with operating-system socket rows. One complete observed socket owner can be proposed under an exact client-authoring plan; this does not prove packet traffic or proxy reachability. No owner, multiple owners, incomplete observation, or a decline changes no target row. `--client-executable sample.exe` is an explicitly labeled manual declaration when observation is unavailable. Setup ends after the target change; close the title and Steam normally before rerunning calibration for reachability. A content-derived `--candidate` identity selects one current discovery candidate, never a list position. Registration, setup, and each later session require separate fresh authorization; a choice is not consent to traffic inspection.
 
@@ -146,7 +152,7 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 
 The workflow stores an immutable target snapshot and exact-case intent. Resume rebuilds process inventory, fact applicability, proposal, recovery, bundle, plan, and confirmation authority; it never reuses an old plan or response. An in-flight record first becomes an effect-free interruption pause. Login, EULA, update, anti-cheat, gameplay, shutdown, and interruption pauses record operator work, not compatibility proof. Advanced fresh workflows can assert the inferred cold launch case, choose IPv4 or IPv6, and select child-environment routing; other routing strategies remain pre-effect refusals. Resume cannot change those dimensions or the candidate.
 
-If a delegated session fails, the terminal diagnosis names the earliest known stage from retained launch, process, route, fact, and cleanup evidence. An artifact marked written can contain zero retained target packets. A paused failed workflow retains its attempt history, so `--resume` does not automatically retry that failed exact case. Review the cause, correct it, and start a new workflow with the target selector when another measurement is appropriate. A zero-observation attempt may append a launch-case fact while appending no proxy-routing fact; inspect the exact fact-write report.
+If a delegated session fails, the terminal diagnosis names the earliest known stage from retained launch, process, route, fact, and cleanup evidence. An artifact marked written can contain zero retained target packets. A paused failed workflow retains its attempt history, so `--resume` does not automatically retry that failed exact case. A fresh workflow may include `--retry-game-scope` to authorize one new exact-game successor after a failed launch-chain attempt, with a separate attempt bundle and fresh authority. `--fallback-capture` may retain eligible packet-only evidence under its actual window without appending a positive inspection fact. Neither authority can be added on resume. A zero-observation attempt may append a launch-case fact while appending no proxy-routing fact; inspect the exact fact-write report.
 
 Ordinary eligibility uses the latest exact applicable routing row for target/version, launch case, route, loopback family, selected measurement, native backend/version, and fragcap version. A historical `current` display label, imported fact, protocol fact, launcher observation, or another workflow cannot substitute for that decision. See the [CLI reference](/docs/reference/cli#calibrate) for full options.
 
@@ -225,7 +231,7 @@ publisher-launcher chains are supported. Then measure scoped proxy reachability
 without changing certificate trust. This example uses the Steam launch case:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
+fragcap deep-capture sample-target --launch --inspect-scope game --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
 ```
 
 For an eligible stored direct target, use `--launch-case direct-exe-cold` instead. Warm Steam and direct-executable targets are refused before side effects.
@@ -235,7 +241,7 @@ fragcap displays the exact target and launch authority, phase, loopback and rout
 Review the new rows with `fragcap targets show sample-target`. If current evidence for the same launch case says `proxy-routing = reached-client`, a separate TLS phase can measure CA acceptance and inspectability:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
+fragcap deep-capture sample-target --launch --inspect-scope game --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
 
 Windows may show a separate **Security Warning** when it adds this session's CA

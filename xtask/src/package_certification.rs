@@ -104,6 +104,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &[
             "schema_version",
             "release_identity",
+            "controlled_smoke",
             "primary_artifacts",
             "shared_entries",
             "checksum_sidecars",
@@ -124,6 +125,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         problems.push("contract schema_version must be 1".into());
     }
     validate_release_identity(&value["release_identity"], &mut problems);
+    validate_controlled_smoke(&value["controlled_smoke"], &mut problems);
     validate_artifacts(value, &mut problems);
     validate_imports(&value["pe_imports"], &mut problems);
     validate_lifecycle(value, &mut problems);
@@ -148,6 +150,28 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &mut problems,
     );
     problems
+}
+
+fn validate_controlled_smoke(value: &Value, problems: &mut Vec<String>) {
+    exact_keys(
+        value,
+        &[
+            "inspection_scope",
+            "middleware_handling",
+            "inspection_policy_id",
+        ],
+        "controlled_smoke",
+        problems,
+    );
+    for (key, expected) in [
+        ("inspection_scope", "exact-game"),
+        ("middleware_handling", "blind-relay"),
+        ("inspection_policy_id", "exact-game-v1"),
+    ] {
+        if value[key] != expected {
+            problems.push(format!("controlled_smoke.{key} must be {expected}"));
+        }
+    }
 }
 
 fn validate_clean_guest_value(
@@ -642,6 +666,7 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "Get-NetTCPConnection",
             "Get-NetUDPEndpoint",
             "Invoke-ControlledSmoke",
+            "'--inspect-scope', 'game'",
             "Get-ValidatedSmokeSessionEvidence",
             "Get-SmokePredicateFailures",
             "validate-smoke-events",
@@ -743,6 +768,10 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
         .enumerate()
         .filter(|(_, event)| event["event"] == "deep_capture.proxy_started")
         .collect::<Vec<_>>();
+    let plan_events = events
+        .iter()
+        .filter(|event| event["event"] == "deep_capture.authorization_plan")
+        .collect::<Vec<_>>();
     let terminal_events = events
         .iter()
         .enumerate()
@@ -753,11 +782,15 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
     if proxy_events.len() != 1 {
         problems.push("proxy-start.count".into());
     }
+    if plan_events.len() != 1 {
+        problems.push("authorization-plan.count".into());
+    }
     if terminal_events.len() != 1 {
         problems.push("reached-client.count".into());
     }
     let proxy = (proxy_events.len() == 1).then(|| proxy_events[0]);
     let terminal = (terminal_events.len() == 1).then(|| terminal_events[0]);
+    let plan = (plan_events.len() == 1).then(|| plan_events[0]);
     let address_family = proxy.and_then(|(_, event)| {
         event["listen_addr"]
             .as_str()
@@ -800,6 +833,16 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
             problems.push("reached-client.status".into());
         }
     }
+    if let Some(event) = plan {
+        let inspection = &event["plan"]["proxy"]["inspection"];
+        if inspection["requested_scope"] != "exact-game"
+            || inspection["effective_scope"] != "exact-game"
+            || inspection["middleware_handling"] != "blind-relay"
+            || inspection["policy_id"] != "exact-game-v1"
+        {
+            problems.push("authorization-plan.inspection".into());
+        }
+    }
     if let (Some((proxy_position, proxy)), Some((terminal_position, terminal))) = (proxy, terminal)
     {
         if proxy["session_id"]
@@ -820,13 +863,17 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
     }
     let (_, proxy) = proxy.expect("one proxy event was validated");
     Ok(serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "session_id_sha256": sha256(proxy["session_id"].as_str().expect("session id was validated").as_bytes()),
         "proxy_event": "deep_capture.proxy_started",
         "proxy_event_count": 1,
         "proxy_backend": "fragcap-native",
         "proxy_address_family": address_family.expect("address family was validated"),
         "proxy_port_valid": true,
+        "requested_inspection_scope": "exact-game",
+        "effective_inspection_scope": "exact-game",
+        "middleware_handling": "blind-relay",
+        "inspection_policy_id": "exact-game-v1",
         "phase_event": "deep_capture.calibration_phase",
         "terminal_event_count": 1,
         "phase": "reachability",
@@ -1373,6 +1420,10 @@ fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec
             "proxy_backend",
             "proxy_address_family",
             "proxy_port_valid",
+            "requested_inspection_scope",
+            "effective_inspection_scope",
+            "middleware_handling",
+            "inspection_policy_id",
             "phase_event",
             "terminal_event_count",
             "phase",
@@ -1387,7 +1438,7 @@ fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec
     );
     let checks = [
         (
-            evidence["schema_version"] == 1,
+            evidence["schema_version"] == 2,
             "session.schema-version.invalid",
         ),
         (
@@ -1416,6 +1467,13 @@ fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec
         (
             evidence["proxy_port_valid"] == true,
             "session.proxy-port.invalid",
+        ),
+        (
+            evidence["requested_inspection_scope"] == "exact-game"
+                && evidence["effective_inspection_scope"] == "exact-game"
+                && evidence["middleware_handling"] == "blind-relay"
+                && evidence["inspection_policy_id"] == "exact-game-v1",
+            "session.inspection-scope.invalid",
         ),
         (
             evidence["phase_event"] == "deep_capture.calibration_phase",
@@ -1773,6 +1831,19 @@ mod tests {
                 "stage": "complete",
                 "status": "reached-client"
             }),
+            serde_json::json!({
+                "event": "deep_capture.authorization_plan",
+                "plan": {
+                    "proxy": {
+                        "inspection": {
+                            "requested_scope": "exact-game",
+                            "effective_scope": "exact-game",
+                            "middleware_handling": "blind-relay",
+                            "policy_id": "exact-game-v1"
+                        }
+                    }
+                }
+            }),
         ]
     }
 
@@ -1794,6 +1865,7 @@ mod tests {
         assert_eq!(summary["status"], "reached-client");
         assert_eq!(summary["proxy_address_family"], "ipv4");
         assert_eq!(summary["session_id_sha256"], sha256(b"session-1"));
+        assert_eq!(summary["effective_inspection_scope"], "exact-game");
 
         macro_rules! rejects_event {
             ($label:literal, $expected:literal, $mutation:expr) => {{
@@ -1869,6 +1941,14 @@ mod tests {
         >| {
             events[1]["status"] = Value::String("inconclusive".into());
         });
+        rejects_event!(
+            "inspection scope",
+            "authorization-plan.inspection",
+            |events: &mut Vec<Value>| {
+                events[2]["plan"]["proxy"]["inspection"]["effective_scope"] =
+                    Value::String("launch-chain".into());
+            }
+        );
         rejects_event!("session", "session.mismatch", |events: &mut Vec<Value>| {
             events[1]["session_id"] = Value::String("session-2".into());
         });
@@ -1890,6 +1970,7 @@ mod tests {
             vec![
                 "events.invalid-or-unbounded".to_string(),
                 "proxy-start.count".to_string(),
+                "authorization-plan.count".to_string(),
                 "reached-client.count".to_string()
             ]
         );
@@ -2017,13 +2098,17 @@ mod tests {
             "process_observation": "complete",
             "structured_reachability": "proxy-started-and-reached-client",
             "session_evidence": {
-                "schema_version": 1,
+                "schema_version": 2,
                 "session_id_sha256": "d".repeat(64),
                 "proxy_event": "deep_capture.proxy_started",
                 "proxy_event_count": 1,
                 "proxy_backend": "fragcap-native",
                 "proxy_address_family": "ipv4",
                 "proxy_port_valid": true,
+                "requested_inspection_scope": "exact-game",
+                "effective_inspection_scope": "exact-game",
+                "middleware_handling": "blind-relay",
+                "inspection_policy_id": "exact-game-v1",
                 "phase_event": "deep_capture.calibration_phase",
                 "terminal_event_count": 1,
                 "phase": "reachability",
@@ -2238,7 +2323,7 @@ mod tests {
             "session-schema",
             "session.schema-version.invalid",
             |candidate: &mut Value| {
-                candidate["smokes"][0]["session_evidence"]["schema_version"] = Value::from(2);
+                candidate["smokes"][0]["session_evidence"]["schema_version"] = Value::from(1);
             }
         );
         rejects_with!(
@@ -2293,6 +2378,14 @@ mod tests {
             "session.proxy-port.invalid",
             |candidate: &mut Value| {
                 candidate["smokes"][0]["session_evidence"]["proxy_port_valid"] = Value::Bool(false);
+            }
+        );
+        rejects_with!(
+            "inspection-scope",
+            "session.inspection-scope.invalid",
+            |candidate: &mut Value| {
+                candidate["smokes"][0]["session_evidence"]["effective_inspection_scope"] =
+                    Value::String("launch-chain".into());
             }
         );
         rejects_with!(

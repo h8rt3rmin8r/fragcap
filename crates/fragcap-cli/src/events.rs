@@ -17,6 +17,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fragcap::write_json_string;
 
+/// The exact inspection and fallback intent carried by calibration guidance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalibrationInspection {
+    pub requested_scope: String,
+    pub effective_scope: String,
+    pub middleware_handling: String,
+    pub policy_id: String,
+    pub allow_game_scope_retry: bool,
+    pub allow_capture_fallback: bool,
+}
+
 /// A lifecycle event, emitted on standard error under `--json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -152,6 +163,24 @@ pub enum Event {
         status: String,
         reason: String,
     },
+    /// One immutable exact-game successor linked to a failed launch-chain attempt.
+    DeepCaptureScopeRetry {
+        predecessor_attempt: String,
+        successor_attempt: String,
+        predecessor_scope: String,
+        successor_scope: String,
+        predecessor_bundle: Option<String>,
+        successor_bundle: Option<String>,
+    },
+    /// Packet-only evidence retained after an authorized inspected attempt failed.
+    DeepCaptureFallback {
+        attempt_identity: String,
+        effective_mode: String,
+        reason: String,
+        retained_target_packets: u64,
+        evidence_windows: Vec<String>,
+        omissions: Vec<String>,
+    },
     /// One complete discovered-target registration plan, emitted before input.
     CalibrationRegistrationPlan {
         plan_id: String,
@@ -245,6 +274,7 @@ pub enum Event {
         launch_case_assertion: Box<Option<String>>,
         routing_strategy: String,
         address_family: String,
+        inspection: Box<CalibrationInspection>,
         reason: Option<String>,
         images: Vec<String>,
         limitations: Vec<String>,
@@ -422,6 +452,8 @@ impl Event {
             Event::DeepCaptureAuthorization { .. } => "deep_capture.authorization",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
+            Event::DeepCaptureScopeRetry { .. } => "deep_capture.scope_retry",
+            Event::DeepCaptureFallback { .. } => "deep_capture.fallback",
             Event::CalibrationRegistrationPlan { .. } => "calibration.registration_plan",
             Event::CalibrationRegistration { .. } => "calibration.registration",
             Event::CalibrationChoiceRequired { .. } => "calibration.choice_required",
@@ -626,6 +658,48 @@ impl Event {
                 write_json_string(status, &mut line);
                 line.push_str(",\"reason\":");
                 write_json_string(reason, &mut line);
+            }
+            Event::DeepCaptureScopeRetry {
+                predecessor_attempt,
+                successor_attempt,
+                predecessor_scope,
+                successor_scope,
+                predecessor_bundle,
+                successor_bundle,
+            } => {
+                line.push_str(",\"predecessor_attempt\":");
+                write_json_string(predecessor_attempt, &mut line);
+                line.push_str(",\"successor_attempt\":");
+                write_json_string(successor_attempt, &mut line);
+                line.push_str(",\"predecessor_scope\":");
+                write_json_string(predecessor_scope, &mut line);
+                line.push_str(",\"successor_scope\":");
+                write_json_string(successor_scope, &mut line);
+                line.push_str(",\"predecessor_bundle\":");
+                write_optional_json_string(predecessor_bundle.as_deref(), &mut line);
+                line.push_str(",\"successor_bundle\":");
+                write_optional_json_string(successor_bundle.as_deref(), &mut line);
+            }
+            Event::DeepCaptureFallback {
+                attempt_identity,
+                effective_mode,
+                reason,
+                retained_target_packets,
+                evidence_windows,
+                omissions,
+            } => {
+                line.push_str(",\"attempt_identity\":");
+                write_json_string(attempt_identity, &mut line);
+                line.push_str(",\"effective_mode\":");
+                write_json_string(effective_mode, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+                line.push_str(",\"retained_target_packets\":");
+                line.push_str(&retained_target_packets.to_string());
+                line.push_str(",\"evidence_windows\":");
+                write_json_string_array(evidence_windows, &mut line);
+                line.push_str(",\"omissions\":");
+                write_json_string_array(omissions, &mut line);
             }
             Event::DeepCaptureCalibrationPlan {
                 target,
@@ -944,6 +1018,7 @@ impl Event {
                 launch_case_assertion,
                 routing_strategy,
                 address_family,
+                inspection,
                 reason,
                 images,
                 limitations,
@@ -983,6 +1058,26 @@ impl Event {
                 write_json_string(routing_strategy, &mut line);
                 line.push_str(",\"address_family\":");
                 write_json_string(address_family, &mut line);
+                line.push_str(",\"requested_inspection_scope\":");
+                write_json_string(&inspection.requested_scope, &mut line);
+                line.push_str(",\"effective_inspection_scope\":");
+                write_json_string(&inspection.effective_scope, &mut line);
+                line.push_str(",\"middleware_handling\":");
+                write_json_string(&inspection.middleware_handling, &mut line);
+                line.push_str(",\"inspection_policy_id\":");
+                write_json_string(&inspection.policy_id, &mut line);
+                line.push_str(",\"allow_game_scope_retry\":");
+                line.push_str(if inspection.allow_game_scope_retry {
+                    "true"
+                } else {
+                    "false"
+                });
+                line.push_str(",\"allow_capture_fallback\":");
+                line.push_str(if inspection.allow_capture_fallback {
+                    "true"
+                } else {
+                    "false"
+                });
                 line.push_str(",\"reason\":");
                 write_optional_json_string(reason.as_deref(), &mut line);
                 line.push_str(",\"images\":[");
@@ -1373,6 +1468,12 @@ fn write_json_strings(values: &[String], out: &mut String) {
     }
 }
 
+fn write_json_string_array(values: &[String], out: &mut String) {
+    out.push('[');
+    write_json_strings(values, out);
+    out.push(']');
+}
+
 /// Format a `SystemTime` as an RFC3339 UTC timestamp with a `Z` suffix and
 /// second resolution.
 ///
@@ -1664,6 +1765,44 @@ mod tests {
         assert_eq!(stored_client["event"], "calibration.stored_client");
         assert_eq!(stored_client["continued"], true);
 
+        let retry = Event::DeepCaptureScopeRetry {
+            predecessor_attempt: "workflow-17-attempt-1".to_string(),
+            successor_attempt: "workflow-17-attempt-2".to_string(),
+            predecessor_scope: "launch-chain".to_string(),
+            successor_scope: "exact-game".to_string(),
+            predecessor_bundle: Some("attempt-1".to_string()),
+            successor_bundle: Some("attempt-1-game-scope-retry".to_string()),
+        }
+        .render(now);
+        let retry: serde_json::Value = serde_json::from_str(&retry).unwrap();
+        assert_eq!(retry["event"], "deep_capture.scope_retry");
+        assert_eq!(retry["predecessor_attempt"], "workflow-17-attempt-1");
+        assert_eq!(retry["successor_attempt"], "workflow-17-attempt-2");
+        assert_eq!(retry["successor_scope"], "exact-game");
+
+        let fallback = Event::DeepCaptureFallback {
+            attempt_identity: "workflow-17-attempt-2".to_string(),
+            effective_mode: "capture".to_string(),
+            reason: "deep-capture-failed-passive-evidence-retained".to_string(),
+            retained_target_packets: 3,
+            evidence_windows: vec!["observation".to_string()],
+            omissions: vec!["application-inspection-not-established".to_string()],
+        }
+        .render(now);
+        let fallback: serde_json::Value = serde_json::from_str(&fallback).unwrap();
+        assert_eq!(fallback["event"], "deep_capture.fallback");
+        assert_eq!(fallback["attempt_identity"], "workflow-17-attempt-2");
+        assert_eq!(fallback["effective_mode"], "capture");
+        assert_eq!(fallback["retained_target_packets"], 3);
+        assert_eq!(
+            fallback["evidence_windows"],
+            serde_json::json!(["observation"])
+        );
+        assert_eq!(
+            fallback["omissions"],
+            serde_json::json!(["application-inspection-not-established"])
+        );
+
         let guidance = Event::CalibrationGuidance {
             target_id: 75_000,
             target: "sample-target".to_string(),
@@ -1675,6 +1814,14 @@ mod tests {
             launch_case_assertion: Box::new(Some("direct-exe-cold".to_string())),
             routing_strategy: "child-environment".to_string(),
             address_family: "ipv6".to_string(),
+            inspection: Box::new(CalibrationInspection {
+                requested_scope: "auto".to_string(),
+                effective_scope: "exact-game".to_string(),
+                middleware_handling: "blind-relay".to_string(),
+                policy_id: "exact-game-v1".to_string(),
+                allow_game_scope_retry: true,
+                allow_capture_fallback: true,
+            }),
             reason: Some("missing".to_string()),
             images: vec!["client.exe".to_string()],
             limitations: Vec::new(),

@@ -13,6 +13,15 @@ v0.10.12 reports requested and effective Deep Capture observation and managed-la
 
 v0.10.13 reports a managed-stage acquisition timeout at the top-level result and retains path-verification limitations when a basename-only launch event cannot be tied to the exact process instance. The combined live ETW/Npcap regression for #547 remains open.
 
+Current source adds the read-only `inspection scope` check. It reports whether
+the native proxy plus live socket-table and ETW ownership evidence can support
+exact-game decisions and blind middleware relay. This is general machine
+readiness, not proof that a selected target is calibrated. Use
+`fragcap targets show <target>` for scope-specific facts. A legacy,
+launch-chain, stale, or otherwise mismatched row remains history and cannot
+qualify exact-game inspection. Doctor does not create a recommendation, run a
+target, or mutate the store.
+
 ## Read first, repair separately
 
 ```powershell

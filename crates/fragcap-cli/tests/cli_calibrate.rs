@@ -14,7 +14,8 @@ use fragcap::targets::{
     resolved_client_launch, CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase,
     CalibrationWorkflowState, CalibrationWorkflowUpdateOutcome, ClassificationSource,
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
     CompatibilityRoutingStrategy, Store, TargetClassification, TargetEntry,
 };
 
@@ -836,7 +837,7 @@ fn assert_next_command_selects_store(events: &str, subcommand: &str, target_id: 
         .filter(|event| event["event"] == "calibration.guidance")
         .filter_map(|event| event["next_command"].as_str().map(str::to_string))
         .next_back()
-        .expect("one guided next command");
+        .unwrap_or_else(|| panic!("one guided next command; events:\n{events}"));
     let matches = fragcap_cli::command()
         .try_get_matches_from(powershell_words(&command))
         .expect("generated next command parses");
@@ -941,6 +942,7 @@ fn insert_current_routing_fact(store: &mut Store, target_id: i64) {
     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
     fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
     fact.protocol = Some(CompatibilityProtocol::NotApplicable);
+    complete_scope_dimensions(&mut fact, CompatibilityLaunchCase::DirectExeCold);
     store
         .insert_compatibility_fact(&fact)
         .expect("insert compatibility fact");
@@ -961,6 +963,7 @@ fn insert_protocol_fact(store: &mut Store, row_id: i64, protocol: CompatibilityP
     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
     fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
     fact.protocol = Some(protocol);
+    complete_scope_dimensions(&mut fact, CompatibilityLaunchCase::DirectExeCold);
     store
         .insert_compatibility_fact(&fact)
         .expect("insert compatibility fact");
@@ -1031,11 +1034,33 @@ fn insert_routing_fact(
         fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
         fact.address_family = Some(family);
         fact.protocol = Some(CompatibilityProtocol::NotApplicable);
+        complete_scope_dimensions(&mut fact, launch_case);
     }
     fact.stale = stale;
     store
         .insert_compatibility_fact(&fact)
         .expect("insert compatibility fact");
+}
+
+fn complete_scope_dimensions(fact: &mut CompatibilityFact, launch_case: CompatibilityLaunchCase) {
+    fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+    match launch_case {
+        CompatibilityLaunchCase::DirectExeWarm | CompatibilityLaunchCase::DirectExeCold => {
+            fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
+        }
+        CompatibilityLaunchCase::SteamProtocolWarm
+        | CompatibilityLaunchCase::SteamProtocolCold
+        | CompatibilityLaunchCase::PublisherLauncher
+        | CompatibilityLaunchCase::PublisherLauncherWarm
+        | CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
+        | CompatibilityLaunchCase::PublisherLauncherCold => {
+            fact.effective_scope = Some(CompatibilityInspectionScope::ExactGame);
+            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::BlindRelay);
+            fact.inspection_policy_id = Some("exact-game-v1".to_string());
+        }
+    }
 }
 
 #[test]
@@ -1203,7 +1228,20 @@ fn resume_reassesses_current_facts_and_suppresses_completed_work() {
     let mut store = Store::open(&local).unwrap();
     let target = store.target_by_stable_id(STABLE_ID).unwrap().unwrap();
     let workflow = store
-        .create_calibration_workflow(&target, &[CompatibilityProtocol::Https], 100)
+        .create_calibration_workflow_with_scope_intent(
+            &target,
+            &[CompatibilityProtocol::Https],
+            None,
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityAddressFamily::Ipv4,
+            CompatibilityRequestedInspectionScope::Auto,
+            CompatibilityInspectionScope::LaunchChain,
+            CompatibilityMiddlewareHandling::Inspected,
+            "launch-chain-v1",
+            false,
+            false,
+            100,
+        )
         .unwrap();
     insert_protocol_fact(
         &mut store,
@@ -1332,6 +1370,7 @@ fn an_in_flight_checkpoint_resumes_as_an_effect_free_interruption() {
         completed_protocols: Vec::new(),
         remaining_protocols: workflow.remaining_protocols.clone(),
         attempted_case_keys: vec!["case-1".to_string()],
+        game_scope_successor_active: workflow.game_scope_successor_active,
         attempt_ordinal: 1,
         attempt_phase: Some(CalibrationWorkflowPhase::Tls),
         attempt_protocol: Some(CompatibilityProtocol::Https),

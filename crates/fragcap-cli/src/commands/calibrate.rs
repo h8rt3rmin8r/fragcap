@@ -18,7 +18,8 @@ use fragcap::targets::{
     AuthorTargetClientOutcome, CalibrationPauseReason, CalibrationWorkflow,
     CalibrationWorkflowCheckpoint, CalibrationWorkflowPhase, CalibrationWorkflowState,
     CalibrationWorkflowUpdateOutcome, CandidateIdentity, CandidateTarget,
-    CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityAddressFamily, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
     CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, LaunchEntry, Selection, Store,
     TargetEntry,
 };
@@ -28,11 +29,11 @@ use subtle::ConstantTimeEq;
 use crate::cli::{
     CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationArg, DeepCaptureCalibrationProtocolArg,
     DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, GuidedCalibrationPauseArg,
-    GuidedCalibrationProtocolArg, GuidedCalibrationRoutingArg,
+    GuidedCalibrationProtocolArg, GuidedCalibrationRoutingArg, InspectionScopeArg,
 };
 use crate::commands::deep_capture;
 use crate::emit::Emitter;
-use crate::events::Event;
+use crate::events::{CalibrationInspection, Event};
 use crate::exit::{CliError, Exit};
 use crate::DeepCaptureAuthorizationInput;
 
@@ -59,6 +60,27 @@ struct AttemptProgress {
     number: u64,
     phase: deep_capture_api::CalibrationPhase,
     protocol: CompatibilityProtocol,
+    requested_scope: CompatibilityRequestedInspectionScope,
+    effective_scope: CompatibilityInspectionScope,
+    middleware_handling: CompatibilityMiddlewareHandling,
+    inspection_policy_id: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct LowLevelScopeIntent {
+    requested: CompatibilityRequestedInspectionScope,
+    allow_game_scope_retry: bool,
+    allow_capture_fallback: bool,
+}
+
+impl LowLevelScopeIntent {
+    fn from_workflow(workflow: &CalibrationWorkflow) -> Self {
+        Self {
+            requested: workflow.requested_scope,
+            allow_game_scope_retry: workflow.allow_game_scope_retry,
+            allow_capture_fallback: workflow.allow_capture_fallback,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -72,6 +94,10 @@ struct ExactAttemptCase {
     protocol: CompatibilityProtocol,
     fragcap_version: String,
     target_version: Option<String>,
+    requested_scope: CompatibilityRequestedInspectionScope,
+    effective_scope: CompatibilityInspectionScope,
+    middleware_handling: CompatibilityMiddlewareHandling,
+    inspection_policy_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +141,10 @@ impl ExactAttemptCase {
             protocol: step.case.protocol,
             fragcap_version: step.case.fragcap_version.clone(),
             target_version: step.case.target_version.clone(),
+            requested_scope: step.case.requested_scope,
+            effective_scope: step.case.effective_scope,
+            middleware_handling: step.case.middleware_handling,
+            inspection_policy_id: step.case.inspection_policy_id.clone(),
         }
     }
 
@@ -129,6 +159,10 @@ impl ExactAttemptCase {
             "proxy_backend_version": self.proxy_backend_version,
             "routing_strategy": self.routing_strategy.as_str(),
             "target_version": self.target_version,
+            "requested_scope": self.requested_scope.as_str(),
+            "effective_scope": self.effective_scope.as_str(),
+            "middleware_handling": self.middleware_handling.as_str(),
+            "inspection_policy_id": self.inspection_policy_id,
         })
         .to_string()
     }
@@ -163,6 +197,29 @@ fn no_progress_reason(attempted_count: usize, inserted: bool) -> Option<&'static
     } else {
         None
     }
+}
+
+fn should_retry_as_game_scope(
+    inspection_recovery_needed: bool,
+    allowed: bool,
+    requested_scope: CompatibilityRequestedInspectionScope,
+    effective_scope: Option<CompatibilityInspectionScope>,
+    attempt_ordinal: u64,
+) -> bool {
+    inspection_recovery_needed
+        && allowed
+        && requested_scope != CompatibilityRequestedInspectionScope::ExactGame
+        && effective_scope == Some(CompatibilityInspectionScope::LaunchChain)
+        && attempt_ordinal < MAX_GUIDED_ATTEMPTS as u64
+}
+
+fn should_use_passive_fallback(
+    inspection_recovery_needed: bool,
+    retry_selected: bool,
+    allowed: bool,
+    passive_fallback_ready: bool,
+) -> bool {
+    inspection_recovery_needed && !retry_selected && allowed && passive_fallback_ready
 }
 
 const REGISTRATION_PLAN_SCHEMA: &str = "fragcap.target-registration-plan.v1";
@@ -2730,6 +2787,21 @@ fn record_early_stored_case(
         .map(|workflow| workflow.routing_strategy)
         .or(args.routing_strategy.map(compatibility_routing_arg))
         .unwrap_or(CompatibilityRoutingStrategy::ChildEnvironment);
+    if let Some(workflow) = workflow {
+        case.requested_scope = workflow.requested_scope;
+        case.effective_scope = workflow.effective_scope;
+        case.middleware_handling = workflow.middleware_handling;
+        case.inspection_policy_id = workflow.inspection_policy_id.clone();
+    } else {
+        let scope = deep_capture::resolve_cli_inspection_scope(
+            args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
+            target,
+        );
+        case.requested_scope = scope.requested;
+        case.effective_scope = scope.effective;
+        case.middleware_handling = scope.middleware_handling;
+        case.inspection_policy_id = scope.policy_id.to_string();
+    }
     record_current_case(emitter, store, target, &case)?;
     let next = if let Some(workflow) = workflow {
         format!(
@@ -3150,8 +3222,12 @@ fn run_inner(
         if !args.controlled_target {
             validate_current_stored_steam_root(&target)?;
         }
+        let scope = deep_capture::resolve_cli_inspection_scope(
+            args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
+            &target,
+        );
         let workflow = store
-            .create_calibration_workflow_with_intent(
+            .create_calibration_workflow_with_scope_intent(
                 &target,
                 &requested_protocols,
                 args.launch_case.map(compatibility_launch_case_arg),
@@ -3161,6 +3237,12 @@ fn run_inner(
                 args.proxy_family
                     .map(compatibility_family_arg)
                     .unwrap_or(CompatibilityAddressFamily::Ipv4),
+                scope.requested,
+                scope.effective,
+                scope.middleware_handling,
+                scope.policy_id,
+                args.retry_game_scope,
+                args.fallback_capture,
                 workflow_now(),
             )
             .map_err(|error| {
@@ -3181,9 +3263,9 @@ fn run_inner(
         &workflow,
     )?;
     if let Some(launch_case) = proposal_cold_launch_case(&proposal) {
-        let mut case = deep_capture::current_compatibility_case(
+        let mut case = workflow_compatibility_case(
+            &workflow,
             launch_case,
-            proxy_family_arg(workflow.address_family),
             requested_protocols
                 .first()
                 .copied()
@@ -3339,6 +3421,7 @@ fn run_inner(
                 deep_capture_api::CalibrationPhase::Reachability,
                 CompatibilityProtocol::Routing,
                 workflow.address_family,
+                LowLevelScopeIntent::from_workflow(&workflow),
             )?;
             restart_args.restart_warm = true;
             deep_capture::prepare_warm_restart(&restart_args, &store, emitter)?;
@@ -3385,6 +3468,7 @@ fn run_inner(
         deep_capture_api::CalibrationPhase::Reachability,
         CompatibilityProtocol::Routing,
         workflow.address_family,
+        LowLevelScopeIntent::from_workflow(&workflow),
     )?;
     let mut observed_protocols = workflow.observed_protocols.clone();
     let mut attempted = workflow
@@ -3392,6 +3476,12 @@ fn run_inner(
         .iter()
         .cloned()
         .collect::<HashSet<_>>();
+    let mut active_requested_scope = if workflow.game_scope_successor_active {
+        CompatibilityRequestedInspectionScope::ExactGame
+    } else {
+        workflow.requested_scope
+    };
+    let mut successor_authorization = None;
     let (mut last_completed_protocols, mut last_remaining_protocols) =
         coverage_from_proposal(&proposal, &requested_protocols);
 
@@ -3495,13 +3585,14 @@ fn run_inner(
                 "the target authority changed during guided calibration; review a fresh sequence",
             ));
         }
-        let selected = build_proposal(
+        let selected = build_proposal_with_scope(
             &fresh_store,
             &fresh_target,
             process_snapshot(args.controlled_target),
             &all_protocols,
             workflow.routing_strategy,
             workflow.address_family,
+            active_requested_scope,
         )?;
         let (completed_protocols, remaining_protocols) =
             coverage_from_proposal(&selected, &all_protocols);
@@ -3631,11 +3722,11 @@ fn run_inner(
 
         if selected.steps.is_empty() {
             let launch_case = ready_launch_case(&selected)?;
-            let current = deep_capture::current_compatibility_case(
+            let current = proposal_compatibility_case(
+                &selected,
                 launch_case,
-                proxy_family_arg(workflow.address_family),
                 CompatibilityProtocol::Routing,
-            );
+            )?;
             let mut requested_case = current.clone();
             requested_case.protocol = all_protocols
                 .first()
@@ -3689,11 +3780,10 @@ fn run_inner(
                     observed_protocols: protocol_names(&observed_protocols),
                     completed_protocols: protocol_names(&completed_protocols),
                     remaining_protocols: protocol_names(&remaining_protocols),
-                    next_command: Some(target_command(
-                        "deep-capture",
+                    next_command: Some(deep_capture_handoff_command(
                         fresh_target.stable_id,
                         &local_store_argument,
-                        " --launch",
+                        current.requested_scope,
                     )),
                 },
             );
@@ -3762,6 +3852,13 @@ fn run_inner(
             number: attempt_number as u64,
             phase: step.phase,
             protocol: step.case.protocol,
+            requested_scope: step.case.requested_scope,
+            effective_scope: step.case.effective_scope,
+            middleware_handling: step.case.middleware_handling,
+            inspection_policy_id: match step.case.effective_scope {
+                CompatibilityInspectionScope::ExactGame => "exact-game-v1",
+                CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
+            },
         };
         let mut low_level = low_level_args(
             args,
@@ -3770,6 +3867,12 @@ fn run_inner(
             step.phase,
             step.case.protocol,
             workflow.address_family,
+            LowLevelScopeIntent {
+                requested: active_requested_scope,
+                allow_game_scope_retry: workflow.allow_game_scope_retry
+                    && !workflow.game_scope_successor_active,
+                allow_capture_fallback: workflow.allow_capture_fallback,
+            },
         )?;
         low_level.bundle = attempt_bundle(
             args.bundle.as_deref(),
@@ -3858,7 +3961,13 @@ fn run_inner(
             .clone();
         emitter.begin_calibration_attempt(json!({"identity":identity,"verdict":"not-run","reason":"session-not-started","phase":step.phase.as_str(),"protocol":step.case.protocol.as_str()}));
         drop(fresh_store);
-        let outcome = match deep_capture::run_with_outcome(&low_level, authorization, emitter) {
+        let inherited_authorization = successor_authorization.take();
+        let outcome = match deep_capture::run_with_outcome(
+            &low_level,
+            authorization,
+            emitter,
+            inherited_authorization.as_ref(),
+        ) {
             Ok(outcome) => outcome,
             Err(error) => {
                 let refused = error.exit() == Exit::USAGE;
@@ -4000,13 +4109,14 @@ fn run_inner(
                 "the target authority changed during guided calibration; review a fresh sequence",
             ));
         }
-        let completed = match build_proposal(
+        let completed = match build_proposal_with_scope(
             &completed_store,
             &completed_target,
             process_snapshot(args.controlled_target),
             &all_protocols,
             workflow.routing_strategy,
             workflow.address_family,
+            active_requested_scope,
         ) {
             Ok(proposal) => proposal,
             Err(error) => {
@@ -4055,7 +4165,24 @@ fn run_inner(
             .assessment
             .as_ref()
             .is_some_and(|assessment| assessment.reason == "final-client-correlation-missing");
-        let (completed_status, completed_reason) = match outcome.disposition {
+        let selected_effective_scope = selected.scope.as_ref().map(|scope| scope.effective);
+        let inspection_recovery_needed = outcome.inspection_recovery_needed();
+        let retry_as_game_scope = should_retry_as_game_scope(
+            inspection_recovery_needed,
+            workflow.allow_game_scope_retry,
+            active_requested_scope,
+            selected_effective_scope,
+            workflow.attempt_ordinal,
+        );
+        let passive_fallback = should_use_passive_fallback(
+            inspection_recovery_needed,
+            retry_as_game_scope,
+            workflow.allow_capture_fallback,
+            outcome.passive_fallback_ready,
+        );
+        let automatic_inspection_recovery_declared =
+            workflow.allow_game_scope_retry || workflow.allow_capture_fallback;
+        let (base_status, base_reason) = match outcome.disposition {
             deep_capture::RunDisposition::Declined => ("declined", "operator-declined"),
             deep_capture::RunDisposition::Interrupted => {
                 ("interrupted", "delegated-session-interrupted")
@@ -4074,16 +4201,26 @@ fn run_inner(
                 &completed_protocols,
             ),
         };
+        let (completed_status, completed_reason) = if passive_fallback {
+            (
+                "capture-fallback",
+                "deep-capture-failed-passive-evidence-retained",
+            )
+        } else {
+            (base_status, base_reason)
+        };
         let next_command = if correlation_missing {
             Some("fragcap doctor".to_string())
-        } else if outcome.disposition == deep_capture::RunDisposition::Failed {
+        } else if inspection_recovery_needed
+            && (automatic_inspection_recovery_declared
+                || outcome.disposition == deep_capture::RunDisposition::Failed)
+        {
             None
         } else if remaining_protocols.is_empty() && completed.steps.is_empty() {
-            Some(target_command(
-                "deep-capture",
+            Some(deep_capture_handoff_command(
                 completed_target.stable_id,
                 &local_store_argument,
-                " --launch",
+                active_requested_scope,
             ))
         } else {
             Some(calibration_resume_command(
@@ -4091,7 +4228,9 @@ fn run_inner(
                 &local_store_argument,
             ))
         };
-        let (workflow_state, pause_reason) = if correlation_missing {
+        let (workflow_state, pause_reason) = if retry_as_game_scope {
+            (CalibrationWorkflowState::Ready, None)
+        } else if correlation_missing {
             (
                 CalibrationWorkflowState::Paused,
                 Some(CalibrationPauseReason::Failure),
@@ -4099,7 +4238,7 @@ fn run_inner(
         } else {
             terminal_workflow_state(outcome.disposition, completed_status)
         };
-        let checkpoint = progress_checkpoint(
+        let mut checkpoint = progress_checkpoint(
             &workflow,
             &requested_protocols,
             &observed_protocols,
@@ -4109,6 +4248,9 @@ fn run_inner(
             pause_reason,
             None,
         );
+        if retry_as_game_scope {
+            checkpoint.game_scope_successor_active = true;
+        }
         let checkpoint = if outcome.disposition == deep_capture::RunDisposition::Declined {
             retry_current_case(&workflow, checkpoint)
         } else {
@@ -4137,6 +4279,59 @@ fn run_inner(
             },
             progress,
         );
+        if retry_as_game_scope {
+            let successor_bundle = attempt_bundle(
+                args.bundle.as_deref(),
+                attempt_number + 1,
+                step.phase,
+                step.case.protocol,
+            )?;
+            emitter.event(&Event::DeepCaptureScopeRetry {
+                predecessor_attempt: format!(
+                    "workflow-{}-attempt-{}",
+                    workflow.id, progress.number
+                ),
+                successor_attempt: format!(
+                    "workflow-{}-attempt-{}",
+                    workflow.id,
+                    progress.number + 1
+                ),
+                predecessor_scope: CompatibilityInspectionScope::LaunchChain
+                    .as_str()
+                    .to_string(),
+                successor_scope: CompatibilityInspectionScope::ExactGame.as_str().to_string(),
+                predecessor_bundle: outcome
+                    .bundle
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                successor_bundle: successor_bundle
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            });
+            active_requested_scope = CompatibilityRequestedInspectionScope::ExactGame;
+            successor_authorization = Some(outcome.retry_authorization.clone());
+            emitter.progress(&format!(
+                "Calibration attempt {} failed under launch-chain inspection. The reviewed plan permits one fresh game-scope successor; the failed attempt and its bundle remain unchanged.",
+                progress.number
+            ));
+            continue;
+        }
+        if passive_fallback {
+            let (evidence_windows, omissions) = deep_capture::passive_fallback_lineage(&outcome);
+            emitter.event(&Event::DeepCaptureFallback {
+                attempt_identity: format!("workflow-{}-attempt-{}", workflow.id, progress.number),
+                effective_mode: "capture".to_string(),
+                reason: "deep-capture-failed-passive-evidence-retained".to_string(),
+                retained_target_packets: outcome.retained_target_packets.unwrap_or(0),
+                evidence_windows,
+                omissions,
+            });
+            emitter.progress(&format!(
+                "Calibration attempt {} did not establish Deep Capture compatibility. Packet-only Capture evidence was retained under its actual observation window; no positive inspection fact was created.",
+                progress.number
+            ));
+            return Ok(Exit::SUCCESS);
+        }
         if outcome.disposition == deep_capture::RunDisposition::Failed {
             emitter.progress(&format!(
                 "Calibration workflow {} is paused after a failed session. Resume preserves this workflow and does not rerun its failed exact case. Review the diagnosis above; after correcting the cause, start a fresh workflow with {}.",
@@ -4300,6 +4495,7 @@ fn checkpoint_from_workflow(
         completed_protocols: workflow.completed_protocols.clone(),
         remaining_protocols: workflow.remaining_protocols.clone(),
         attempted_case_keys: workflow.attempted_case_keys.clone(),
+        game_scope_successor_active: workflow.game_scope_successor_active,
         attempt_ordinal: workflow.attempt_ordinal,
         attempt_phase: None,
         attempt_protocol: None,
@@ -4337,6 +4533,7 @@ fn progress_checkpoint(
         completed_protocols: completed_protocols.to_vec(),
         remaining_protocols: remaining_protocols.to_vec(),
         attempted_case_keys,
+        game_scope_successor_active: workflow.game_scope_successor_active,
         attempt_ordinal: attempt
             .as_ref()
             .map(|(ordinal, _, _, _)| *ordinal)
@@ -4456,6 +4653,24 @@ fn calibrate_command(
     target_command("calibrate", target_id, local_store, &suffix)
 }
 
+fn deep_capture_handoff_command(
+    target_id: i64,
+    local_store: &str,
+    requested_scope: CompatibilityRequestedInspectionScope,
+) -> String {
+    let scope = match requested_scope {
+        CompatibilityRequestedInspectionScope::Auto => "auto",
+        CompatibilityRequestedInspectionScope::ExactGame => "game",
+        CompatibilityRequestedInspectionScope::LaunchChain => "launch-chain",
+    };
+    target_command(
+        "deep-capture",
+        target_id,
+        local_store,
+        &format!(" --launch --inspect-scope {scope}"),
+    )
+}
+
 #[cfg(test)]
 fn continuation_command(
     proposal: &deep_capture_api::CalibrationProposal,
@@ -4497,11 +4712,10 @@ fn continuation_command(
             all_protocols,
         ))
     } else if remaining_protocols.is_empty() {
-        Some(target_command(
-            "deep-capture",
+        Some(deep_capture_handoff_command(
             target_id,
             local_store,
-            " --launch",
+            proposal.scope.as_ref()?.requested,
         ))
     } else {
         Some(calibrate_command(
@@ -4622,6 +4836,7 @@ fn record_current_case(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_proposal(
     store: &Store,
     target: &TargetEntry,
@@ -4629,6 +4844,27 @@ fn build_proposal(
     protocols: &[CompatibilityProtocol],
     routing_strategy: CompatibilityRoutingStrategy,
     address_family: CompatibilityAddressFamily,
+) -> Result<deep_capture_api::CalibrationProposal, CliError> {
+    build_proposal_with_scope(
+        store,
+        target,
+        snapshot,
+        protocols,
+        routing_strategy,
+        address_family,
+        CompatibilityRequestedInspectionScope::Auto,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_proposal_with_scope(
+    store: &Store,
+    target: &TargetEntry,
+    snapshot: deep_capture_api::CalibrationProcessSnapshot,
+    protocols: &[CompatibilityProtocol],
+    routing_strategy: CompatibilityRoutingStrategy,
+    address_family: CompatibilityAddressFamily,
+    requested_scope: CompatibilityRequestedInspectionScope,
 ) -> Result<deep_capture_api::CalibrationProposal, CliError> {
     let facts = store
         .compatibility_facts_for_target(required_row_id(target)?)
@@ -4642,6 +4878,7 @@ fn build_proposal(
     .with_process_snapshot(snapshot)
     .with_routing_strategy(routing_strategy)
     .with_address_family(address_family)
+    .with_requested_scope(requested_scope)
     .with_protocol_candidates(protocols.iter().copied())
     .with_facts(facts);
     Ok(deep_capture_api::propose_calibration(&request))
@@ -4654,13 +4891,14 @@ fn build_proposal_for_workflow(
     protocols: &[CompatibilityProtocol],
     workflow: &CalibrationWorkflow,
 ) -> Result<deep_capture_api::CalibrationProposal, CliError> {
-    build_proposal(
+    build_proposal_with_scope(
         store,
         target,
         snapshot,
         protocols,
         workflow.routing_strategy,
         workflow.address_family,
+        workflow.requested_scope,
     )
 }
 
@@ -4702,6 +4940,7 @@ fn low_level_args(
     phase: deep_capture_api::CalibrationPhase,
     protocol: CompatibilityProtocol,
     address_family: CompatibilityAddressFamily,
+    scope: LowLevelScopeIntent,
 ) -> Result<DeepCaptureArgs, CliError> {
     let calibration = match phase {
         deep_capture_api::CalibrationPhase::Reachability => DeepCaptureCalibrationArg::Reachability,
@@ -4724,6 +4963,9 @@ fn low_level_args(
         max_bytes: args.max_bytes,
         interface: args.interface.clone(),
         no_payload: args.no_payload,
+        inspect_scope: inspection_scope_arg(scope.requested),
+        retry_game_scope: scope.allow_game_scope_retry,
+        fallback_capture: scope.allow_capture_fallback,
         authorize_stdin: args.authorize_stdin,
         legacy_trust_ca: false,
         legacy_yes: false,
@@ -4739,6 +4981,63 @@ fn low_level_args(
         proxy_bypass: Vec::new(),
         controlled_target: args.controlled_target,
     })
+}
+
+fn inspection_scope_arg(value: CompatibilityRequestedInspectionScope) -> InspectionScopeArg {
+    match value {
+        CompatibilityRequestedInspectionScope::Auto => InspectionScopeArg::Auto,
+        CompatibilityRequestedInspectionScope::ExactGame => InspectionScopeArg::Game,
+        CompatibilityRequestedInspectionScope::LaunchChain => InspectionScopeArg::LaunchChain,
+    }
+}
+
+fn workflow_compatibility_case(
+    workflow: &CalibrationWorkflow,
+    launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+) -> fragcap::targets::CompatibilityCase {
+    deep_capture::current_scoped_compatibility_case(
+        launch_case,
+        proxy_family_arg(workflow.address_family),
+        protocol,
+        workflow.requested_scope,
+        workflow.effective_scope,
+        workflow.middleware_handling,
+        &workflow.inspection_policy_id,
+    )
+}
+
+fn proposal_compatibility_case(
+    proposal: &deep_capture_api::CalibrationProposal,
+    launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+) -> Result<fragcap::targets::CompatibilityCase, CliError> {
+    let scope = proposal.scope.as_ref().ok_or_else(|| {
+        CliError::usage("calibration proposal did not resolve an inspection scope")
+    })?;
+    Ok(resolved_scope_compatibility_case(
+        proposal.address_family,
+        scope,
+        launch_case,
+        protocol,
+    ))
+}
+
+fn resolved_scope_compatibility_case(
+    address_family: CompatibilityAddressFamily,
+    scope: &deep_capture_api::CalibrationScopeResolution,
+    launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+) -> fragcap::targets::CompatibilityCase {
+    deep_capture::current_scoped_compatibility_case(
+        launch_case,
+        proxy_family_arg(address_family),
+        protocol,
+        scope.requested,
+        scope.effective,
+        scope.middleware_handling,
+        scope.policy_id,
+    )
 }
 
 fn attempt_bundle(
@@ -4984,6 +5283,28 @@ fn emit_guidance_with_attempt(
         address_family: workflow
             .map(|(value, _)| value.address_family.as_str().to_string())
             .unwrap_or_else(|| "unavailable".to_string()),
+        inspection: Box::new(CalibrationInspection {
+            requested_scope: attempt
+                .map(|value| value.requested_scope.as_str().to_string())
+                .or_else(|| workflow.map(|(value, _)| value.requested_scope.as_str().to_string()))
+                .unwrap_or_else(|| "unavailable".to_string()),
+            effective_scope: attempt
+                .map(|value| value.effective_scope.as_str().to_string())
+                .or_else(|| workflow.map(|(value, _)| value.effective_scope.as_str().to_string()))
+                .unwrap_or_else(|| "unavailable".to_string()),
+            middleware_handling: attempt
+                .map(|value| value.middleware_handling.as_str().to_string())
+                .or_else(|| {
+                    workflow.map(|(value, _)| value.middleware_handling.as_str().to_string())
+                })
+                .unwrap_or_else(|| "unavailable".to_string()),
+            policy_id: attempt
+                .map(|value| value.inspection_policy_id.to_string())
+                .or_else(|| workflow.map(|(value, _)| value.inspection_policy_id.clone()))
+                .unwrap_or_else(|| "unavailable".to_string()),
+            allow_game_scope_retry: workflow.is_some_and(|(value, _)| value.allow_game_scope_retry),
+            allow_capture_fallback: workflow.is_some_and(|(value, _)| value.allow_capture_fallback),
+        }),
         reason: guidance.reason.clone(),
         images: guidance.images.clone(),
         limitations: guidance.limitations.clone(),
@@ -5008,7 +5329,7 @@ fn emit_guidance_with_attempt(
         resume_command: Box::new(resume_command.clone()),
     });
     emitter.calibration_guidance(json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "target": target.handle, "target_id": target.stable_id,
         "topology": guidance.topology, "status": guidance.status, "reason": guidance.reason,
         "limitations": guidance.limitations,
@@ -5017,6 +5338,14 @@ fn emit_guidance_with_attempt(
         "selected_launch_case": guidance.selected_launch_case,
         "routing_strategy": workflow.map(|(value, _)| value.routing_strategy.as_str()),
         "address_family": workflow.map(|(value, _)| value.address_family.as_str()),
+        "inspection": workflow.map(|(value, _)| json!({
+            "requested_scope": attempt.map(|attempt| attempt.requested_scope).unwrap_or(value.requested_scope).as_str(),
+            "effective_scope": attempt.map(|attempt| attempt.effective_scope).unwrap_or(value.effective_scope).as_str(),
+            "middleware_handling": attempt.map(|attempt| attempt.middleware_handling).unwrap_or(value.middleware_handling).as_str(),
+            "policy_id": attempt.map(|attempt| attempt.inspection_policy_id).unwrap_or(value.inspection_policy_id.as_str()),
+            "allow_game_scope_retry": value.allow_game_scope_retry,
+            "allow_capture_fallback": value.allow_capture_fallback,
+        })),
         "requested_protocols": guidance.requested_protocols,
         "observed_protocols": guidance.observed_protocols,
         "completed_protocols": guidance.completed_protocols,
@@ -5035,6 +5364,29 @@ fn emit_guidance_with_attempt(
         ("Target:".into(), target.handle.clone()),
         ("Action:".into(), guidance.action.into()),
         ("Status:".into(), guidance.status.into()),
+        (
+            "Requested inspection scope:".into(),
+            attempt
+                .map(|value| value.requested_scope.as_str().to_string())
+                .or_else(|| workflow.map(|(value, _)| value.requested_scope.as_str().to_string()))
+                .unwrap_or_default(),
+        ),
+        (
+            "Effective inspection scope:".into(),
+            attempt
+                .map(|value| value.effective_scope.as_str().to_string())
+                .or_else(|| workflow.map(|(value, _)| value.effective_scope.as_str().to_string()))
+                .unwrap_or_default(),
+        ),
+        (
+            "Middleware handling:".into(),
+            attempt
+                .map(|value| value.middleware_handling.as_str().to_string())
+                .or_else(|| {
+                    workflow.map(|(value, _)| value.middleware_handling.as_str().to_string())
+                })
+                .unwrap_or_default(),
+        ),
         (
             "Reason:".into(),
             guidance.reason.clone().unwrap_or_else(|| "none".into()),
@@ -5090,6 +5442,11 @@ mod tests {
             deep_capture_api::CalibrationPhase::Reachability,
             CompatibilityProtocol::Routing,
             CompatibilityAddressFamily::Ipv4,
+            LowLevelScopeIntent {
+                requested: CompatibilityRequestedInspectionScope::Auto,
+                allow_game_scope_retry: false,
+                allow_capture_fallback: false,
+            },
         )
         .unwrap();
         low.bundle = attempt_bundle(
@@ -5628,6 +5985,104 @@ mod tests {
         assert!(!guided_sequence_interrupted(&interrupt));
         interrupt.store(true, Ordering::Relaxed);
         assert!(guided_sequence_interrupted(&interrupt));
+    }
+
+    #[test]
+    fn declared_scope_retry_is_single_directional_and_finite() {
+        assert!(should_retry_as_game_scope(
+            true,
+            true,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            Some(CompatibilityInspectionScope::LaunchChain),
+            1,
+        ));
+        assert!(!should_retry_as_game_scope(
+            false,
+            true,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            Some(CompatibilityInspectionScope::LaunchChain),
+            1,
+        ));
+        assert!(!should_retry_as_game_scope(
+            true,
+            false,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            Some(CompatibilityInspectionScope::LaunchChain),
+            1,
+        ));
+        assert!(!should_retry_as_game_scope(
+            true,
+            true,
+            CompatibilityRequestedInspectionScope::ExactGame,
+            Some(CompatibilityInspectionScope::ExactGame),
+            2,
+        ));
+        assert!(!should_retry_as_game_scope(
+            true,
+            true,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            Some(CompatibilityInspectionScope::LaunchChain),
+            MAX_GUIDED_ATTEMPTS as u64,
+        ));
+    }
+
+    #[test]
+    fn passive_fallback_requires_declared_authority_and_usable_evidence() {
+        assert!(should_use_passive_fallback(true, false, true, true,));
+        assert!(!should_use_passive_fallback(false, false, true, true,));
+        assert!(!should_use_passive_fallback(true, true, true, true,));
+        assert!(!should_use_passive_fallback(true, false, false, true,));
+        assert!(!should_use_passive_fallback(true, false, true, false,));
+    }
+
+    #[test]
+    fn deep_capture_handoff_preserves_the_requested_scope() {
+        for (scope, expected) in [
+            (CompatibilityRequestedInspectionScope::Auto, "auto"),
+            (CompatibilityRequestedInspectionScope::ExactGame, "game"),
+            (
+                CompatibilityRequestedInspectionScope::LaunchChain,
+                "launch-chain",
+            ),
+        ] {
+            assert_eq!(
+                deep_capture_handoff_command(42, "local.db", scope),
+                format!(
+                    "fragcap deep-capture --id 42 --local-db local.db --launch --inspect-scope {expected}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn readiness_case_uses_the_active_successor_scope() {
+        let scope = deep_capture_api::CalibrationScopeResolution {
+            requested: CompatibilityRequestedInspectionScope::ExactGame,
+            effective: CompatibilityInspectionScope::ExactGame,
+            middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+            policy_id: "exact-game-v1",
+            recommendation_source: deep_capture_api::CalibrationScopeRecommendationSource::Explicit,
+        };
+        let case = resolved_scope_compatibility_case(
+            CompatibilityAddressFamily::Ipv6,
+            &scope,
+            CompatibilityLaunchCase::PublisherLauncherCold,
+            CompatibilityProtocol::Routing,
+        );
+        assert_eq!(
+            case.requested_scope,
+            CompatibilityRequestedInspectionScope::ExactGame
+        );
+        assert_eq!(
+            case.effective_scope,
+            CompatibilityInspectionScope::ExactGame
+        );
+        assert_eq!(
+            case.middleware_handling,
+            CompatibilityMiddlewareHandling::BlindRelay
+        );
+        assert_eq!(case.inspection_policy_id, "exact-game-v1");
+        assert_eq!(case.address_family, CompatibilityAddressFamily::Ipv6);
     }
 
     #[test]

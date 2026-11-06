@@ -16,6 +16,18 @@ Committed complete, partial, crash-prefix, and legacy examples live under
 Manifest version 2 also distinguishes `proxy-lifecycle`,
 `cleanup-lifecycle`, `cleanup-summary`, and `resource-journal`; the summary is a
 derived projection whose authority source is `cleanup-lifecycle`.
+Current writers add a `proxy.inspection` projection containing requested and
+effective inspection scope, middleware handling, policy identity, and
+recommendation provenance. These additive fields describe the authorized
+session decision. They do not convert a relay, listener acceptance, packet-only
+fallback, or incomplete owner correlation into positive game inspection.
+
+Target-store version 14 adds exact scope dimensions to compatibility facts and
+calibration workflows. Existing facts retain absent scope dimensions and are
+therefore historical but inapplicable to new exact cases. Existing workflows
+migrate to launch-chain inspection with retry and fallback authority disabled.
+The game-scope successor checkpoint is monotonic so a resumed workflow cannot
+silently return to its predecessor scope.
 Emit the embedded target schema with `fragcap schema print`, and validate target documents with `fragcap schema validate <file>`. These commands do not select the manifest or application contract. Native manifest specimens are validated by the same `ManifestDocument` reader used for bundles through the `published_examples_match_the_versioned_reader` workspace test. Application streams and HAR projections use dedicated product readers and projection checks, not target schema validation.
 
 The schema governs every machine-readable targeting and attribution artifact.

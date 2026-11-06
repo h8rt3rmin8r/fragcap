@@ -5,8 +5,9 @@
 use crate::targets::{
     entry_windows_launch_entries, CompatibilityAddressFamily, CompatibilityApplicability,
     CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
-    CompatibilityLaunchCase, CompatibilityProtocol, CompatibilityRoutingStrategy, LaunchEntry,
-    TargetEntry,
+    CompatibilityInspectionScope, CompatibilityLaunchCase, CompatibilityMiddlewareHandling,
+    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy,
+    LaunchEntry, TargetEntry,
 };
 
 use super::CalibrationPhase;
@@ -48,6 +49,7 @@ pub struct CalibrationProposalRequest {
     address_family: CompatibilityAddressFamily,
     protocol_candidates: Vec<CompatibilityProtocol>,
     facts: Vec<CompatibilityFact>,
+    requested_scope: CompatibilityRequestedInspectionScope,
 }
 
 impl CalibrationProposalRequest {
@@ -70,6 +72,7 @@ impl CalibrationProposalRequest {
             address_family: CompatibilityAddressFamily::Ipv4,
             protocol_candidates: Vec::new(),
             facts: Vec::new(),
+            requested_scope: CompatibilityRequestedInspectionScope::Auto,
         }
     }
 
@@ -106,6 +109,14 @@ impl CalibrationProposalRequest {
         I: IntoIterator<Item = CompatibilityFact>,
     {
         self.facts = facts.into_iter().collect();
+        self
+    }
+
+    pub fn with_requested_scope(
+        mut self,
+        requested_scope: CompatibilityRequestedInspectionScope,
+    ) -> Self {
+        self.requested_scope = requested_scope;
         self
     }
 }
@@ -217,6 +228,32 @@ pub struct DeferredCalibrationProtocol {
     pub reason: CalibrationProposalReason,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CalibrationScopeRecommendationSource {
+    Explicit,
+    LauncherTopology,
+    DirectTopology,
+}
+
+impl CalibrationScopeRecommendationSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::LauncherTopology => "launcher-topology",
+            Self::DirectTopology => "direct-topology",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CalibrationScopeResolution {
+    pub requested: CompatibilityRequestedInspectionScope,
+    pub effective: CompatibilityInspectionScope,
+    pub middleware_handling: CompatibilityMiddlewareHandling,
+    pub policy_id: &'static str,
+    pub recommendation_source: CalibrationScopeRecommendationSource,
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CalibrationProposal {
@@ -224,6 +261,7 @@ pub struct CalibrationProposal {
     pub readiness: CalibrationLaunchReadiness,
     pub routing_strategy: CompatibilityRoutingStrategy,
     pub address_family: CompatibilityAddressFamily,
+    pub scope: Option<CalibrationScopeResolution>,
     pub steps: Vec<CalibrationProposalStep>,
     pub deferred_protocols: Vec<DeferredCalibrationProtocol>,
     pub limitations: Vec<CalibrationProposalLimitation>,
@@ -236,6 +274,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         readiness: CalibrationLaunchReadiness::Unavailable,
         routing_strategy: request.routing_strategy,
         address_family: request.address_family,
+        scope: None,
         steps: Vec::new(),
         deferred_protocols: Vec::new(),
         limitations: Vec::new(),
@@ -250,6 +289,8 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         }
     };
     proposal.topology = Some(topology.kind);
+    let scope = resolve_scope(request.requested_scope, topology.kind);
+    proposal.scope = Some(scope.clone());
     proposal.readiness = readiness(
         &topology,
         &request.process_snapshot,
@@ -266,7 +307,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         CalibrationLaunchReadiness::Ready { launch_case, .. } => launch_case,
         _ => unreachable!("non-ready proposals returned above"),
     };
-    let routing_case = exact_case(request, launch_case, CompatibilityProtocol::Routing);
+    let routing_case = exact_case(request, &scope, launch_case, CompatibilityProtocol::Routing);
     match assess_calibration_evidence(
         &request.facts,
         request.target.id,
@@ -275,7 +316,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         "reached-client",
     ) {
         CalibrationEvidenceAssessment::Positive => {
-            add_protocol_steps(request, launch_case, &mut proposal)
+            add_protocol_steps(request, &scope, launch_case, &mut proposal)
         }
         CalibrationEvidenceAssessment::Needs(reason) => {
             proposal.steps.push(CalibrationProposalStep {
@@ -293,6 +334,50 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         }
     }
     proposal
+}
+
+fn resolve_scope(
+    requested: CompatibilityRequestedInspectionScope,
+    topology: CalibrationTopologyKind,
+) -> CalibrationScopeResolution {
+    let (effective, recommendation_source) = match requested {
+        CompatibilityRequestedInspectionScope::ExactGame => (
+            CompatibilityInspectionScope::ExactGame,
+            CalibrationScopeRecommendationSource::Explicit,
+        ),
+        CompatibilityRequestedInspectionScope::LaunchChain => (
+            CompatibilityInspectionScope::LaunchChain,
+            CalibrationScopeRecommendationSource::Explicit,
+        ),
+        CompatibilityRequestedInspectionScope::Auto
+            if matches!(
+                topology,
+                CalibrationTopologyKind::Steam | CalibrationTopologyKind::Publisher
+            ) =>
+        {
+            (
+                CompatibilityInspectionScope::ExactGame,
+                CalibrationScopeRecommendationSource::LauncherTopology,
+            )
+        }
+        CompatibilityRequestedInspectionScope::Auto => (
+            CompatibilityInspectionScope::LaunchChain,
+            CalibrationScopeRecommendationSource::DirectTopology,
+        ),
+    };
+    CalibrationScopeResolution {
+        requested,
+        effective,
+        middleware_handling: match effective {
+            CompatibilityInspectionScope::ExactGame => CompatibilityMiddlewareHandling::BlindRelay,
+            CompatibilityInspectionScope::LaunchChain => CompatibilityMiddlewareHandling::Inspected,
+        },
+        policy_id: match effective {
+            CompatibilityInspectionScope::ExactGame => "exact-game-v1",
+            CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
+        },
+        recommendation_source,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -569,6 +654,7 @@ fn readiness(
 
 fn exact_case(
     request: &CalibrationProposalRequest,
+    scope: &CalibrationScopeResolution,
     launch_case: CompatibilityLaunchCase,
     protocol: CompatibilityProtocol,
 ) -> CompatibilityCase {
@@ -581,16 +667,21 @@ fn exact_case(
         protocol,
         fragcap_version: request.fragcap_version.clone(),
         target_version: request.target_version.clone(),
+        requested_scope: scope.requested,
+        effective_scope: scope.effective,
+        middleware_handling: scope.middleware_handling,
+        inspection_policy_id: scope.policy_id.to_string(),
     }
 }
 
 fn add_protocol_steps(
     request: &CalibrationProposalRequest,
+    scope: &CalibrationScopeResolution,
     launch_case: CompatibilityLaunchCase,
     proposal: &mut CalibrationProposal,
 ) {
     for protocol in valid_protocols(&request.protocol_candidates) {
-        let case = exact_case(request, launch_case, protocol);
+        let case = exact_case(request, scope, launch_case, protocol);
         if let CalibrationEvidenceAssessment::Needs(reason) = assess_calibration_evidence(
             &request.facts,
             request.target.id,
@@ -786,6 +877,10 @@ mod tests {
         fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
         fact.protocol = Some(protocol);
         fact.fragcap_version = Some("0.9.0".into());
+        fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
+        fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+        fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+        fact.inspection_policy_id = Some("launch-chain-v1".into());
         fact
     }
 
@@ -824,6 +919,40 @@ mod tests {
             }
         ));
         assert!(steam.steps.is_empty());
+    }
+
+    #[test]
+    fn auto_recommends_exact_game_only_for_launcher_mediated_topology() {
+        let direct = propose_calibration(&request(direct_target()));
+        assert_eq!(
+            direct.scope,
+            Some(CalibrationScopeResolution {
+                requested: CompatibilityRequestedInspectionScope::Auto,
+                effective: CompatibilityInspectionScope::LaunchChain,
+                middleware_handling: CompatibilityMiddlewareHandling::Inspected,
+                policy_id: "launch-chain-v1",
+                recommendation_source: CalibrationScopeRecommendationSource::DirectTopology,
+            })
+        );
+
+        let steam = propose_calibration(&request(target(
+            Some("steam:123"),
+            json!([{ "executable": "Game.exe", "role": "client" }]),
+        )));
+        assert_eq!(
+            steam.scope,
+            Some(CalibrationScopeResolution {
+                requested: CompatibilityRequestedInspectionScope::Auto,
+                effective: CompatibilityInspectionScope::ExactGame,
+                middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
+                policy_id: "exact-game-v1",
+                recommendation_source: CalibrationScopeRecommendationSource::LauncherTopology,
+            })
+        );
+        assert!(steam.steps.iter().all(|step| {
+            step.case.effective_scope == CompatibilityInspectionScope::ExactGame
+                && step.case.middleware_handling == CompatibilityMiddlewareHandling::BlindRelay
+        }));
     }
 
     #[test]
@@ -1425,6 +1554,10 @@ mod tests {
             protocol: CompatibilityProtocol::Routing,
             fragcap_version: "0.9.0".into(),
             target_version: None,
+            requested_scope: CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: CompatibilityInspectionScope::LaunchChain,
+            middleware_handling: CompatibilityMiddlewareHandling::Inspected,
+            inspection_policy_id: "launch-chain-v1".into(),
         };
         assert_eq!(
             fact.applicability(&case),

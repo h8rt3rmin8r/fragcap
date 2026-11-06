@@ -80,9 +80,14 @@
 //!
 //! Version 13 (slice S147) extends the closed durable pause vocabulary with update
 //! and anti-cheat operator actions. The table rebuild preserves every row exactly.
+//!
+//! Version 14 (slice S194) adds exact inspection-scope and middleware-handling
+//! dimensions to compatibility facts and immutable workflow intent. Existing
+//! facts keep NULL scope dimensions and therefore remain legacy-incomplete;
+//! existing workflows keep their historical launch-chain behavior explicitly.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -226,6 +231,14 @@ CREATE TABLE deep_capture_facts (
                         'grpc', 'generic-tcp', 'non-http-tls', 'socks5-tcp',
                         'socks5-udp', 'generic-udp', 'quic', 'http3',
                         'not-applicable')),
+    requested_inspection_scope TEXT CHECK (requested_inspection_scope IS NULL OR
+                       requested_inspection_scope IN ('auto', 'exact-game', 'launch-chain')),
+    effective_inspection_scope TEXT CHECK (effective_inspection_scope IS NULL OR
+                       effective_inspection_scope IN ('exact-game', 'launch-chain')),
+    middleware_handling TEXT CHECK (middleware_handling IS NULL OR
+                       middleware_handling IN ('inspected', 'blind-relay')),
+    inspection_policy_id TEXT CHECK (inspection_policy_id IS NULL OR
+                       length(inspection_policy_id) > 0),
     final_owner_executable TEXT
                        CHECK (final_owner_executable IS NULL OR length(final_owner_executable) > 0),
     final_owner_handoff INTEGER NOT NULL DEFAULT 0 CHECK (final_owner_handoff IN (0, 1)),
@@ -297,6 +310,18 @@ CREATE TABLE calibration_workflows (
                              'target-configuration', 'http-proxy', 'socks',
                              'protocol-specific')),
     address_family      TEXT NOT NULL CHECK (address_family IN ('ipv4', 'ipv6')),
+    requested_inspection_scope TEXT NOT NULL CHECK (requested_inspection_scope IN
+                            ('auto', 'exact-game', 'launch-chain')),
+    effective_inspection_scope TEXT NOT NULL CHECK (effective_inspection_scope IN
+                            ('exact-game', 'launch-chain')),
+    middleware_handling TEXT NOT NULL CHECK (middleware_handling IN
+                            ('inspected', 'blind-relay')),
+    inspection_policy_id TEXT NOT NULL CHECK (length(inspection_policy_id) > 0),
+    allow_game_scope_retry INTEGER NOT NULL CHECK (allow_game_scope_retry IN (0, 1)),
+    allow_capture_fallback INTEGER NOT NULL CHECK (allow_capture_fallback IN (0, 1)),
+    game_scope_successor_active INTEGER NOT NULL CHECK (
+        game_scope_successor_active IN (0, 1) AND
+        game_scope_successor_active <= allow_game_scope_retry),
     requested_protocols TEXT NOT NULL,
     observed_protocols  TEXT NOT NULL,
     completed_protocols TEXT NOT NULL,
@@ -329,6 +354,40 @@ CREATE TABLE calibration_workflows (
            (attempt_phase = 'reachability' AND attempt_protocol = 'routing') OR
            (attempt_phase = 'tls' AND attempt_protocol != 'routing'))
 );
+";
+
+/// Add exact scope applicability and immutable fallback authority without
+/// promoting legacy compatibility evidence.
+pub const MIGRATE_13_TO_14: &str = "\
+ALTER TABLE deep_capture_facts ADD COLUMN requested_inspection_scope TEXT
+    CHECK (requested_inspection_scope IS NULL OR
+           requested_inspection_scope IN ('auto', 'exact-game', 'launch-chain'));
+ALTER TABLE deep_capture_facts ADD COLUMN effective_inspection_scope TEXT
+    CHECK (effective_inspection_scope IS NULL OR
+           effective_inspection_scope IN ('exact-game', 'launch-chain'));
+ALTER TABLE deep_capture_facts ADD COLUMN middleware_handling TEXT
+    CHECK (middleware_handling IS NULL OR
+           middleware_handling IN ('inspected', 'blind-relay'));
+ALTER TABLE deep_capture_facts ADD COLUMN inspection_policy_id TEXT
+    CHECK (inspection_policy_id IS NULL OR length(inspection_policy_id) > 0);
+ALTER TABLE calibration_workflows ADD COLUMN requested_inspection_scope TEXT NOT NULL
+    DEFAULT 'launch-chain'
+    CHECK (requested_inspection_scope IN ('auto', 'exact-game', 'launch-chain'));
+ALTER TABLE calibration_workflows ADD COLUMN effective_inspection_scope TEXT NOT NULL
+    DEFAULT 'launch-chain'
+    CHECK (effective_inspection_scope IN ('exact-game', 'launch-chain'));
+ALTER TABLE calibration_workflows ADD COLUMN middleware_handling TEXT NOT NULL
+    DEFAULT 'inspected'
+    CHECK (middleware_handling IN ('inspected', 'blind-relay'));
+ALTER TABLE calibration_workflows ADD COLUMN inspection_policy_id TEXT NOT NULL
+    DEFAULT 'launch-chain-v1' CHECK (length(inspection_policy_id) > 0);
+ALTER TABLE calibration_workflows ADD COLUMN allow_game_scope_retry INTEGER NOT NULL
+    DEFAULT 0 CHECK (allow_game_scope_retry IN (0, 1));
+ALTER TABLE calibration_workflows ADD COLUMN allow_capture_fallback INTEGER NOT NULL
+    DEFAULT 0 CHECK (allow_capture_fallback IN (0, 1));
+ALTER TABLE calibration_workflows ADD COLUMN game_scope_successor_active INTEGER NOT NULL
+    DEFAULT 0 CHECK (game_scope_successor_active IN (0, 1) AND
+                     game_scope_successor_active <= allow_game_scope_retry);
 ";
 
 /// Extend the durable operator-action vocabulary without rewriting any value.

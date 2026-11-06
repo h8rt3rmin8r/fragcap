@@ -7,9 +7,10 @@ use serde_json::Value;
 use fragcap_profile::FidelityTier;
 
 use crate::{
-    ClassificationSource, CompatibilityAddressFamily, CompatibilityLaunchCase,
-    CompatibilityProtocol, CompatibilityRoutingStrategy, DetectionScan, TargetClassification,
-    TargetEntry, TargetsError,
+    ClassificationSource, CompatibilityAddressFamily, CompatibilityInspectionScope,
+    CompatibilityLaunchCase, CompatibilityMiddlewareHandling, CompatibilityProtocol,
+    CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy, DetectionScan,
+    TargetClassification, TargetEntry, TargetsError,
 };
 
 /// The checkpoint record contract understood by this build.
@@ -177,6 +178,13 @@ pub struct CalibrationWorkflow {
     pub selected_launch_case: Option<CompatibilityLaunchCase>,
     pub routing_strategy: CompatibilityRoutingStrategy,
     pub address_family: CompatibilityAddressFamily,
+    pub requested_scope: CompatibilityRequestedInspectionScope,
+    pub effective_scope: CompatibilityInspectionScope,
+    pub middleware_handling: CompatibilityMiddlewareHandling,
+    pub inspection_policy_id: String,
+    pub allow_game_scope_retry: bool,
+    pub allow_capture_fallback: bool,
+    pub game_scope_successor_active: bool,
     pub requested_protocols: Vec<CompatibilityProtocol>,
     pub observed_protocols: Vec<CompatibilityProtocol>,
     pub completed_protocols: Vec<CompatibilityProtocol>,
@@ -201,6 +209,7 @@ pub struct CalibrationWorkflowCheckpoint {
     pub completed_protocols: Vec<CompatibilityProtocol>,
     pub remaining_protocols: Vec<CompatibilityProtocol>,
     pub attempted_case_keys: Vec<String>,
+    pub game_scope_successor_active: bool,
     pub attempt_ordinal: u64,
     pub attempt_phase: Option<CalibrationWorkflowPhase>,
     pub attempt_protocol: Option<CompatibilityProtocol>,

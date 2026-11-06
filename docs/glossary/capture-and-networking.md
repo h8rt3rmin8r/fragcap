@@ -193,13 +193,13 @@ target process.
 
 ## Compatibility calibration
 
-An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, one target-scoped routing strategy, one loopback address family, and either routing or one exact native protocol family.
+An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, one target-scoped routing strategy, one loopback address family, one effective inspection scope and middleware-handling policy, and either routing or one exact native protocol family.
 
 Reachability calibration runs without a certificate trust change. TLS calibration is a separate phase and is available only after exact current evidence shows that the same launch, route, family, backend, product version, and available target version reached the final client through the scoped proxy. Protocol facts also require a matching retained classification. Each phase appends only directly observed facts to the existing local target store and records its run outcome separately; stale, legacy-incomplete, mismatched, and conflicting rows remain visible history.
 
-A calibration proposal is a deterministic read-only projection that identifies a strict stored launch topology, reports whether caller-supplied process evidence proves a cold case, and names only useful exact reachability or protocol measurements. It applies no launch, trust, network, artifact, fact, or store effect.
+A calibration proposal is a deterministic read-only projection that identifies a strict stored launch topology, reports whether caller-supplied process evidence proves a cold case, resolves `auto` to an explicit inspection scope, and names only useful exact reachability or protocol measurements. Launcher-mediated topology recommends exact-game inspection with blind middleware relay; direct topology recommends launch-chain inspection. A recommendation is not an observed compatibility fact. The proposal applies no launch, trust, network, artifact, fact, or store effect.
 
-The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. It either runs one exact reachability proposal through the existing plan-bound executor or reports a durable next command for current, warm, or refused state. Each next command binds its durable identifier to the PowerShell-quoted effective local-store path. It does not register a target, select TLS or protocol work, or run more than one attempt.
+The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. Its immutable workflow records requested and effective scope, handling policy, and separately selected retry and packet-only fallback authority. A declared launch-chain failure can create at most one fresh exact-game successor after cleanup and target authority are revalidated. A declared packet-only fallback retains eligible passive observations under their actual window and does not create positive inspection evidence.
 
 {: .matters }
 > Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.
@@ -303,8 +303,10 @@ SOCKS5 TCP carry opaque bytes; plaintext HTTP and cleartext HTTP/2 still require
 proxy framing. The proxy retains bounded decision, transfer, and terminal
 metadata, but no excluded application content or proxy-owned TLS key material.
 
-The runtime supports an injected exact-game owner decider. The public CLI still
-uses launch-chain inspection until its separate operator-selection work ships.
+The public CLI selects this path with `--inspect-scope game`, or through
+launcher-mediated `--inspect-scope auto`. The authorization plan states the
+requested and effective scope, blind middleware handling, policy identity, and
+any separately allowed retry or packet-only fallback before effects.
 
 **See also:** [Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
 [Raw proxy observation](capture-and-networking.md#raw-proxy-observation)

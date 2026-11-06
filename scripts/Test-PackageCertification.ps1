@@ -507,15 +507,16 @@ Param(
             [string]$Stderr,
 
             [Parameter(Mandatory=$true)]
-            [string]$SurfaceRoot
+            [string]$SurfaceRoot,
+
+            [Parameter(Mandatory=$true)]
+            [string]$ValidationManifest
         )
         $eventFile = Join-Path $SurfaceRoot 'events.ndjson'
         $summaryFile = Join-Path $SurfaceRoot 'session-evidence.json'
         [System.IO.File]::WriteAllText($eventFile, $Stderr, [System.Text.UTF8Encoding]::new($false))
         try {
-            $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-            $manifest = Join-Path $repositoryRoot 'xtask\Cargo.toml'
-            $validation = Invoke-HiddenProcess -FilePath 'cargo.exe' -ArgumentList @('run', '--quiet', '--manifest-path', $manifest, '--', 'package-certification', 'validate-smoke-events', $eventFile, $summaryFile) -TimeoutSeconds 60
+            $validation = Invoke-HiddenProcess -FilePath 'cargo.exe' -ArgumentList @('run', '--quiet', '--manifest-path', $ValidationManifest, '--', 'package-certification', 'validate-smoke-events', $eventFile, $summaryFile) -TimeoutSeconds 60
             if ($validation.ExitCode -ne 0) {
                 $predicateDiagnostics = ([string]$validation.Stderr).Trim()
                 if ([string]::IsNullOrEmpty($predicateDiagnostics)) { throw 'structured-events.invalid' }
@@ -562,7 +563,13 @@ Param(
             [string]$ScratchRoot,
 
             [Parameter(Mandatory=$true)]
-            [hashtable]$BaseEnvironment
+            [hashtable]$BaseEnvironment,
+
+            [Parameter(Mandatory=$true)]
+            [string]$ValidationManifest,
+
+            [Parameter(Mandatory=$true)]
+            [bool]$RequireExactGameInspectionScope
         )
         $surfaceRoot = Join-Path $ScratchRoot "smoke-$Surface"
         $profile = Join-Path $surfaceRoot 'User'
@@ -584,12 +591,14 @@ Param(
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
             try {
-                $smoke = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+                $scopeArguments = if ($RequireExactGameInspectionScope) { @('--inspect-scope', 'game') } else { @() }
+                $arguments = @('--json', 'deep-capture', $targetHandle, '--launch') + $scopeArguments + @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle)
+                $smoke = Invoke-Fragcap -Executable $Executable -Arguments $arguments -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
             } catch {
                 throw "$Surface smoke predicates failed: invocation.failed"
             }
             try {
-                $sessionEvidence = Get-ValidatedSmokeSessionEvidence -Stderr $smoke.Stderr -SurfaceRoot $surfaceRoot
+                $sessionEvidence = Get-ValidatedSmokeSessionEvidence -Stderr $smoke.Stderr -SurfaceRoot $surfaceRoot -ValidationManifest $ValidationManifest
             } catch {
                 $predicateDiagnostics = [string]$_.Exception.Message
                 if ([System.Text.Encoding]::UTF8.GetByteCount($predicateDiagnostics) -gt 1024) { $predicateDiagnostics = 'structured-events.diagnostic-overflow' }
@@ -639,7 +648,7 @@ Param(
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
+            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
             if ($run.ElapsedSeconds -lt 120 -or $run.ElapsedSeconds -gt 165) { throw 'installed slow timing did not retain the two-minute observation span' }
             $records = @($run.Stderr -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 32 -ErrorAction Stop })
             $plan = @($records | Where-Object { $_.event -ceq 'deep_capture.authorization_plan' })
@@ -745,6 +754,16 @@ Param(
         $contractBytes = [System.IO.File]::ReadAllBytes($contractFile)
         $contract = [System.Text.Encoding]::UTF8.GetString($contractBytes) | ConvertFrom-Json -Depth 32
         if ($contract.schema_version -ne 1) { throw 'unsupported package contract schema' }
+        $controlledSmokeProperty = $contract.PSObject.Properties['controlled_smoke']
+        $requireExactGameInspectionScope = $null -ne $controlledSmokeProperty
+        if ($requireExactGameInspectionScope -and
+            ($contract.controlled_smoke.inspection_scope -cne 'exact-game' -or
+             $contract.controlled_smoke.middleware_handling -cne 'blind-relay' -or
+             $contract.controlled_smoke.inspection_policy_id -cne 'exact-game-v1')) {
+            throw 'unsupported controlled smoke contract'
+        }
+        $contractRepositoryRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $contractFile) '..'))
+        $validationManifest = Resolve-FullLiteralPath -Value (Join-Path $contractRepositoryRoot 'xtask\Cargo.toml')
         if ((Get-Sha256 -Path $predecessor) -ne $contract.predecessor.sha256 -or (Get-Item -LiteralPath $predecessor).Length -ne $contract.predecessor.size_bytes) { throw 'predecessor MSI does not match the pinned identity' }
         if ([string]::IsNullOrEmpty($DumpbinPath)) {
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -796,7 +815,7 @@ Param(
         $doctor = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'doctor') -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
         if ($doctor.Stdout -notmatch 'fragcap-native') { throw 'packaged Doctor output does not expose the native backend' }
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
-        $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment
+        $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope
         $portableSmokeLocalDb = Join-Path $scratch 'smoke-portable\local.db'
         $portableSmokeBundle = Join-Path $scratch 'smoke-portable\bundle'
         $installDirectory = Join-Path $scratch 'installed'
@@ -854,7 +873,7 @@ Param(
         if ($seededDefender -and -not (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { throw 'clean install removed the pre-existing Defender exclusion' }
         $lifecycle.Add([pscustomobject]@{ id = 'clean-install'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$clean.ElapsedSeconds; complete = $true })
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
-        $installedSmoke = Invoke-ControlledSmoke -Surface 'installed' -Executable $installedExecutable -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment
+        $installedSmoke = Invoke-ControlledSmoke -Surface 'installed' -Executable $installedExecutable -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'NOTICE'), 'Delete owned file before repair')) { Remove-Item -LiteralPath (Join-Path $installDirectory 'NOTICE') -Force }
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'LICENSE'), 'Alter owned file before repair')) { [System.IO.File]::WriteAllText((Join-Path $installDirectory 'LICENSE'), 'altered', [System.Text.UTF8Encoding]::new($false)) }
         $repair = Invoke-MsiOperation -Case 'repair' -Arguments @('/fa', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'repair.log')

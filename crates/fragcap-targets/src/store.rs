@@ -14,7 +14,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::compatibility::{
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
     CompatibilityRoutingStrategy,
 };
 use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
@@ -23,9 +24,9 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_1_TO_2, MIGRATE_2_TO_3,
-    MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
-    MIGRATE_9_TO_10, SCHEMA_VERSION,
+    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_13_TO_14, MIGRATE_1_TO_2,
+    MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8,
+    MIGRATE_8_TO_9, MIGRATE_9_TO_10, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::workflow::{
@@ -221,6 +222,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 13i64)?;
             tx.commit()?;
             version = 13;
+        }
+
+        if version == 13 {
+            // 13 -> 14: retain legacy facts without scope authority and record
+            // the historical launch-chain workflow behavior explicitly.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_13_TO_14)?;
+            tx.pragma_update(None, "user_version", 14i64)?;
+            tx.commit()?;
+            version = 14;
         }
 
         if version != SCHEMA_VERSION {
@@ -1310,6 +1321,45 @@ impl Store {
         address_family: CompatibilityAddressFamily,
         now: u64,
     ) -> Result<CalibrationWorkflow, TargetsError> {
+        self.create_calibration_workflow_with_scope_intent(
+            target,
+            requested_protocols,
+            selected_launch_case,
+            routing_strategy,
+            address_family,
+            CompatibilityRequestedInspectionScope::LaunchChain,
+            CompatibilityInspectionScope::LaunchChain,
+            CompatibilityMiddlewareHandling::Inspected,
+            "launch-chain-v1",
+            false,
+            false,
+            now,
+        )
+    }
+
+    /// Create one target-bound workflow with immutable exact-case, scope, and
+    /// fallback intent. Resume reads these values and cannot add authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_calibration_workflow_with_scope_intent(
+        &mut self,
+        target: &TargetEntry,
+        requested_protocols: &[CompatibilityProtocol],
+        selected_launch_case: Option<CompatibilityLaunchCase>,
+        routing_strategy: CompatibilityRoutingStrategy,
+        address_family: CompatibilityAddressFamily,
+        requested_scope: CompatibilityRequestedInspectionScope,
+        effective_scope: CompatibilityInspectionScope,
+        middleware_handling: CompatibilityMiddlewareHandling,
+        inspection_policy_id: &str,
+        allow_game_scope_retry: bool,
+        allow_capture_fallback: bool,
+        now: u64,
+    ) -> Result<CalibrationWorkflow, TargetsError> {
+        if inspection_policy_id.is_empty() {
+            return Err(TargetsError::Model(
+                "calibration inspection policy identity cannot be empty".to_string(),
+            ));
+        }
         let target_id = target.id.ok_or_else(|| {
             TargetsError::Model(
                 "a calibration workflow requires a persisted target row".to_string(),
@@ -1321,6 +1371,7 @@ impl Store {
             completed_protocols: Vec::new(),
             remaining_protocols: crate::workflow::canonical_protocols(requested_protocols)?,
             attempted_case_keys: Vec::new(),
+            game_scope_successor_active: false,
             attempt_ordinal: 0,
             attempt_phase: None,
             attempt_protocol: None,
@@ -1342,13 +1393,18 @@ impl Store {
                  target_install_root, target_launch_entries, target_evidence,
                  target_detection_scan, target_folder_name, target_executable_hint,
                  selected_launch_case, routing_strategy, address_family,
+                 requested_inspection_scope, effective_inspection_scope,
+                 middleware_handling, inspection_policy_id,
+                 allow_game_scope_retry, allow_capture_fallback,
+                 game_scope_successor_active,
                  requested_protocols, observed_protocols,
                  completed_protocols, remaining_protocols, attempted_case_keys,
                  attempt_ordinal, attempt_phase, attempt_protocol, attempt_key,
                  state, pause_reason, revision, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                      ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                     ?24, 0, NULL, NULL, NULL, ?25, NULL, 1, ?26, ?26)",
+                     ?24, ?25, 0, ?26, ?27, ?28, ?29, ?30, 0, NULL, NULL, NULL,
+                     ?31, NULL, 1, ?32, ?32)",
             params![
                 CALIBRATION_WORKFLOW_RECORD_VERSION,
                 target_id,
@@ -1369,6 +1425,12 @@ impl Store {
                 selected_launch_case.map(CompatibilityLaunchCase::as_str),
                 routing_strategy.as_str(),
                 address_family.as_str(),
+                requested_scope.as_str(),
+                effective_scope.as_str(),
+                middleware_handling.as_str(),
+                inspection_policy_id,
+                if allow_game_scope_retry { 1i64 } else { 0i64 },
+                if allow_capture_fallback { 1i64 } else { 0i64 },
                 encode_protocols(&checkpoint.requested_protocols)?,
                 encode_protocols(&checkpoint.observed_protocols)?,
                 encode_protocols(&checkpoint.completed_protocols)?,
@@ -1423,8 +1485,9 @@ impl Store {
                  attempted_case_keys = ?5, attempt_ordinal = ?6, attempt_phase = ?7,
                  attempt_protocol = ?8, attempt_key = ?9, state = ?10,
                  pause_reason = ?11, revision = revision + 1,
-                 updated_at = MAX(updated_at, ?12)
-             WHERE id = ?13 AND revision = ?14",
+                 game_scope_successor_active = MAX(game_scope_successor_active, ?12),
+                 updated_at = MAX(updated_at, ?13)
+             WHERE id = ?14 AND revision = ?15",
             params![
                 encode_protocols(&checkpoint.requested_protocols)?,
                 encode_protocols(&checkpoint.observed_protocols)?,
@@ -1437,6 +1500,11 @@ impl Store {
                 checkpoint.attempt_key.as_deref(),
                 checkpoint.state.as_str(),
                 checkpoint.pause_reason.map(|value| value.as_str()),
+                if checkpoint.game_scope_successor_active {
+                    1i64
+                } else {
+                    0i64
+                },
                 now,
                 id,
                 expected_revision,
@@ -1486,10 +1554,12 @@ impl Store {
                 (target_id, fact_key, fact_value, launch_case, evidence_source,
                  observed_at, fragcap_version, target_version, proxy_backend,
                  proxy_backend_version, proxy_mode, routing_strategy,
-                 address_family, protocol_family, final_owner_executable,
+                 address_family, protocol_family, requested_inspection_scope,
+                 effective_inspection_scope, middleware_handling,
+                 inspection_policy_id, final_owner_executable,
                  final_owner_handoff, stale, note)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15, ?16, ?17, ?18)",
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 fact.target_id,
                 fact.key.as_str(),
@@ -1505,6 +1575,10 @@ impl Store {
                 fact.routing_strategy.map(|value| value.as_str()),
                 fact.address_family.map(|value| value.as_str()),
                 fact.protocol.map(|value| value.as_str()),
+                fact.requested_scope.map(|value| value.as_str()),
+                fact.effective_scope.map(|value| value.as_str()),
+                fact.middleware_handling.map(|value| value.as_str()),
+                fact.inspection_policy_id,
                 fact.final_owner_executable,
                 if fact.final_owner_handoff { 1i64 } else { 0i64 },
                 if fact.stale { 1i64 } else { 0i64 },
@@ -1536,7 +1610,9 @@ impl Store {
             "SELECT id, target_id, fact_key, fact_value, launch_case, evidence_source,
                     observed_at, fragcap_version, target_version, proxy_backend,
                     proxy_backend_version, proxy_mode, routing_strategy,
-                    address_family, protocol_family, final_owner_executable,
+                    address_family, protocol_family, requested_inspection_scope,
+                    effective_inspection_scope, middleware_handling,
+                    inspection_policy_id, final_owner_executable,
                     final_owner_handoff, stale, note
              FROM deep_capture_facts
              WHERE target_id = ?1
@@ -1835,6 +1911,10 @@ fn calibration_workflow_from_connection(
                     target_launch_entries, target_evidence, target_detection_scan,
                     target_folder_name, target_executable_hint,
                     selected_launch_case, routing_strategy, address_family,
+                    requested_inspection_scope, effective_inspection_scope,
+                    middleware_handling, inspection_policy_id,
+                    allow_game_scope_retry, allow_capture_fallback,
+                    game_scope_successor_active,
                     requested_protocols, observed_protocols,
                     completed_protocols, remaining_protocols,
                     attempted_case_keys, attempt_ordinal, attempt_phase,
@@ -1871,20 +1951,27 @@ fn read_calibration_workflow_row(
     let selected_launch_case: Option<String> = row.get(17)?;
     let routing_strategy: String = row.get(18)?;
     let address_family: String = row.get(19)?;
-    let requested_protocols: String = row.get(20)?;
-    let observed_protocols: String = row.get(21)?;
-    let completed_protocols: String = row.get(22)?;
-    let remaining_protocols: String = row.get(23)?;
-    let attempted_case_keys: String = row.get(24)?;
-    let attempt_ordinal: i64 = row.get(25)?;
-    let attempt_phase: Option<String> = row.get(26)?;
-    let attempt_protocol: Option<String> = row.get(27)?;
-    let attempt_key: Option<String> = row.get(28)?;
-    let state: String = row.get(29)?;
-    let pause_reason: Option<String> = row.get(30)?;
-    let revision: i64 = row.get(31)?;
-    let created_at: i64 = row.get(32)?;
-    let updated_at: i64 = row.get(33)?;
+    let requested_scope: String = row.get(20)?;
+    let effective_scope: String = row.get(21)?;
+    let middleware_handling: String = row.get(22)?;
+    let inspection_policy_id: String = row.get(23)?;
+    let allow_game_scope_retry: i64 = row.get(24)?;
+    let allow_capture_fallback: i64 = row.get(25)?;
+    let game_scope_successor_active: i64 = row.get(26)?;
+    let requested_protocols: String = row.get(27)?;
+    let observed_protocols: String = row.get(28)?;
+    let completed_protocols: String = row.get(29)?;
+    let remaining_protocols: String = row.get(30)?;
+    let attempted_case_keys: String = row.get(31)?;
+    let attempt_ordinal: i64 = row.get(32)?;
+    let attempt_phase: Option<String> = row.get(33)?;
+    let attempt_protocol: Option<String> = row.get(34)?;
+    let attempt_key: Option<String> = row.get(35)?;
+    let state: String = row.get(36)?;
+    let pause_reason: Option<String> = row.get(37)?;
+    let revision: i64 = row.get(38)?;
+    let created_at: i64 = row.get(39)?;
+    let updated_at: i64 = row.get(40)?;
 
     Ok((|| {
         if record_version != CALIBRATION_WORKFLOW_RECORD_VERSION {
@@ -1898,6 +1985,7 @@ fn read_calibration_workflow_row(
             completed_protocols: decode_protocols(&completed_protocols)?,
             remaining_protocols: decode_protocols(&remaining_protocols)?,
             attempted_case_keys: decode_case_keys(&attempted_case_keys)?,
+            game_scope_successor_active: game_scope_successor_active != 0,
             attempt_ordinal: u64::try_from(attempt_ordinal).map_err(|_| {
                 TargetsError::Model("negative calibration attempt ordinal".to_string())
             })?,
@@ -1917,6 +2005,11 @@ fn read_calibration_workflow_row(
                 .transpose()?,
         };
         checkpoint.validate()?;
+        if checkpoint.game_scope_successor_active && allow_game_scope_retry == 0 {
+            return Err(TargetsError::Model(
+                "a calibration game-scope successor requires immutable retry authority".to_string(),
+            ));
+        }
         Ok(CalibrationWorkflow {
             id,
             record_version,
@@ -1950,6 +2043,13 @@ fn read_calibration_workflow_row(
                 .transpose()?,
             routing_strategy: CompatibilityRoutingStrategy::parse(&routing_strategy)?,
             address_family: CompatibilityAddressFamily::parse(&address_family)?,
+            requested_scope: CompatibilityRequestedInspectionScope::parse(&requested_scope)?,
+            effective_scope: CompatibilityInspectionScope::parse(&effective_scope)?,
+            middleware_handling: CompatibilityMiddlewareHandling::parse(&middleware_handling)?,
+            inspection_policy_id,
+            allow_game_scope_retry: allow_game_scope_retry != 0,
+            allow_capture_fallback: allow_capture_fallback != 0,
+            game_scope_successor_active: checkpoint.game_scope_successor_active,
             requested_protocols: checkpoint.requested_protocols,
             observed_protocols: checkpoint.observed_protocols,
             completed_protocols: checkpoint.completed_protocols,
@@ -1996,10 +2096,14 @@ fn read_compatibility_fact_row(
     let routing_strategy: Option<String> = row.get(12)?;
     let address_family: Option<String> = row.get(13)?;
     let protocol: Option<String> = row.get(14)?;
-    let final_owner_executable: Option<String> = row.get(15)?;
-    let final_owner_handoff: i64 = row.get(16)?;
-    let stale: i64 = row.get(17)?;
-    let note: Option<String> = row.get(18)?;
+    let requested_scope: Option<String> = row.get(15)?;
+    let effective_scope: Option<String> = row.get(16)?;
+    let middleware_handling: Option<String> = row.get(17)?;
+    let inspection_policy_id: Option<String> = row.get(18)?;
+    let final_owner_executable: Option<String> = row.get(19)?;
+    let final_owner_handoff: i64 = row.get(20)?;
+    let stale: i64 = row.get(21)?;
+    let note: Option<String> = row.get(22)?;
 
     Ok((|| {
         let key = CompatibilityFactKey::parse(&key)?;
@@ -2032,6 +2136,19 @@ fn read_compatibility_fact_row(
                 .as_deref()
                 .map(CompatibilityProtocol::parse)
                 .transpose()?,
+            requested_scope: requested_scope
+                .as_deref()
+                .map(CompatibilityRequestedInspectionScope::parse)
+                .transpose()?,
+            effective_scope: effective_scope
+                .as_deref()
+                .map(CompatibilityInspectionScope::parse)
+                .transpose()?,
+            middleware_handling: middleware_handling
+                .as_deref()
+                .map(CompatibilityMiddlewareHandling::parse)
+                .transpose()?,
+            inspection_policy_id,
             final_owner_executable,
             final_owner_handoff: final_owner_handoff != 0,
             stale: stale != 0,
@@ -2286,6 +2403,28 @@ mod tests {
         }
     }
 
+    fn restore_pre_v14_scope_shape(conn: &Connection, workflow_exists: bool) {
+        conn.execute_batch(
+            "ALTER TABLE deep_capture_facts DROP COLUMN inspection_policy_id;
+             ALTER TABLE deep_capture_facts DROP COLUMN middleware_handling;
+             ALTER TABLE deep_capture_facts DROP COLUMN effective_inspection_scope;
+             ALTER TABLE deep_capture_facts DROP COLUMN requested_inspection_scope;",
+        )
+        .expect("restore pre-v14 fact shape");
+        if workflow_exists {
+            conn.execute_batch(
+                "ALTER TABLE calibration_workflows DROP COLUMN game_scope_successor_active;
+                 ALTER TABLE calibration_workflows DROP COLUMN allow_capture_fallback;
+                 ALTER TABLE calibration_workflows DROP COLUMN allow_game_scope_retry;
+                 ALTER TABLE calibration_workflows DROP COLUMN inspection_policy_id;
+                 ALTER TABLE calibration_workflows DROP COLUMN middleware_handling;
+                 ALTER TABLE calibration_workflows DROP COLUMN effective_inspection_scope;
+                 ALTER TABLE calibration_workflows DROP COLUMN requested_inspection_scope;",
+            )
+            .expect("restore pre-v14 workflow shape");
+        }
+    }
+
     #[test]
     fn a_fresh_store_is_at_the_current_version_with_empty_tables() {
         let store = Store::open_in_memory().expect("store");
@@ -2321,6 +2460,7 @@ mod tests {
         let conn = store.conn;
         conn.execute_batch("DROP TABLE calibration_workflows;")
             .expect("restore v10 shape");
+        restore_pre_v14_scope_shape(&conn, false);
         conn.pragma_update(None, "user_version", 10i64)
             .expect("stamp v10");
         conn.execute(
@@ -2357,6 +2497,7 @@ mod tests {
             .expect("create workflow")
             .id;
         let conn = store.conn;
+        restore_pre_v14_scope_shape(&conn, true);
         conn.execute_batch(
             "ALTER TABLE calibration_workflows DROP COLUMN address_family;
              ALTER TABLE calibration_workflows DROP COLUMN routing_strategy;
@@ -2377,6 +2518,21 @@ mod tests {
             CompatibilityRoutingStrategy::ChildEnvironment
         );
         assert_eq!(workflow.address_family, CompatibilityAddressFamily::Ipv4);
+        assert_eq!(
+            workflow.requested_scope,
+            CompatibilityRequestedInspectionScope::LaunchChain
+        );
+        assert_eq!(
+            workflow.effective_scope,
+            CompatibilityInspectionScope::LaunchChain
+        );
+        assert_eq!(
+            workflow.middleware_handling,
+            CompatibilityMiddlewareHandling::Inspected
+        );
+        assert_eq!(workflow.inspection_policy_id, "launch-chain-v1");
+        assert!(!workflow.allow_game_scope_retry);
+        assert!(!workflow.allow_capture_fallback);
     }
 
     #[test]
@@ -2397,6 +2553,7 @@ mod tests {
             completed_protocols: Vec::new(),
             remaining_protocols: workflow.remaining_protocols.clone(),
             attempted_case_keys: Vec::new(),
+            game_scope_successor_active: workflow.game_scope_successor_active,
             attempt_ordinal: 0,
             attempt_phase: None,
             attempt_protocol: None,
@@ -2411,6 +2568,7 @@ mod tests {
             panic!("expected applied pause");
         };
         let conn = store.conn;
+        restore_pre_v14_scope_shape(&conn, true);
         conn.execute_batch(
             "ALTER TABLE calibration_workflows DROP COLUMN address_family;
              ALTER TABLE calibration_workflows DROP COLUMN routing_strategy;
@@ -2437,6 +2595,7 @@ mod tests {
             completed_protocols: paused.completed_protocols.clone(),
             remaining_protocols: paused.remaining_protocols.clone(),
             attempted_case_keys: paused.attempted_case_keys.clone(),
+            game_scope_successor_active: paused.game_scope_successor_active,
             attempt_ordinal: paused.attempt_ordinal,
             attempt_phase: paused.attempt_phase,
             attempt_protocol: paused.attempt_protocol,
@@ -2497,6 +2656,7 @@ mod tests {
             completed_protocols: Vec::new(),
             remaining_protocols: workflow.remaining_protocols.clone(),
             attempted_case_keys: vec!["case-1".to_string()],
+            game_scope_successor_active: workflow.game_scope_successor_active,
             attempt_ordinal: 1,
             attempt_phase: Some(CalibrationWorkflowPhase::Tls),
             attempt_protocol: Some(CompatibilityProtocol::Https),
@@ -2532,12 +2692,18 @@ mod tests {
             .expect("query")
             .expect("target");
         let workflow = store
-            .create_calibration_workflow_with_intent(
+            .create_calibration_workflow_with_scope_intent(
                 &target,
                 &[CompatibilityProtocol::Https],
                 Some(CompatibilityLaunchCase::DirectExeCold),
                 CompatibilityRoutingStrategy::Socks,
                 CompatibilityAddressFamily::Ipv6,
+                CompatibilityRequestedInspectionScope::Auto,
+                CompatibilityInspectionScope::ExactGame,
+                CompatibilityMiddlewareHandling::BlindRelay,
+                "exact-game-v1",
+                true,
+                true,
                 100,
             )
             .expect("create workflow");
@@ -2551,6 +2717,21 @@ mod tests {
             CompatibilityRoutingStrategy::Socks
         );
         assert_eq!(workflow.address_family, CompatibilityAddressFamily::Ipv6);
+        assert_eq!(
+            workflow.requested_scope,
+            CompatibilityRequestedInspectionScope::Auto
+        );
+        assert_eq!(
+            workflow.effective_scope,
+            CompatibilityInspectionScope::ExactGame
+        );
+        assert_eq!(
+            workflow.middleware_handling,
+            CompatibilityMiddlewareHandling::BlindRelay
+        );
+        assert_eq!(workflow.inspection_policy_id, "exact-game-v1");
+        assert!(workflow.allow_game_scope_retry);
+        assert!(workflow.allow_capture_fallback);
 
         let checkpoint = CalibrationWorkflowCheckpoint {
             requested_protocols: workflow.requested_protocols.clone(),
@@ -2558,6 +2739,7 @@ mod tests {
             completed_protocols: workflow.completed_protocols.clone(),
             remaining_protocols: workflow.remaining_protocols.clone(),
             attempted_case_keys: workflow.attempted_case_keys.clone(),
+            game_scope_successor_active: true,
             attempt_ordinal: workflow.attempt_ordinal,
             attempt_phase: None,
             attempt_protocol: None,
@@ -2574,6 +2756,17 @@ mod tests {
         assert_eq!(updated.selected_launch_case, workflow.selected_launch_case);
         assert_eq!(updated.routing_strategy, workflow.routing_strategy);
         assert_eq!(updated.address_family, workflow.address_family);
+        assert!(updated.game_scope_successor_active);
+
+        let mut stale_clear = checkpoint;
+        stale_clear.game_scope_successor_active = false;
+        let CalibrationWorkflowUpdateOutcome::Applied(updated_again) = store
+            .update_calibration_workflow(updated.id, updated.revision, &stale_clear, 102)
+            .expect("second update")
+        else {
+            panic!("expected second workflow update");
+        };
+        assert!(updated_again.game_scope_successor_active);
     }
 
     #[test]
@@ -2701,6 +2894,7 @@ mod tests {
         // both new columns as NULL, exactly "not recorded". Nothing is backfilled.
         let store = Store::open_in_memory().expect("store");
         let conn = store.conn;
+        restore_pre_v14_scope_shape(&conn, true);
         conn.execute_batch(
             "ALTER TABLE targets DROP COLUMN folder_name;
              ALTER TABLE targets DROP COLUMN executable_hint;
@@ -2772,6 +2966,7 @@ mod tests {
     fn a_v9_store_preserves_facts_and_marks_new_case_dimensions_incomplete() {
         let store = Store::open_in_memory().expect("store");
         let conn = store.conn;
+        restore_pre_v14_scope_shape(&conn, true);
         conn.execute_batch(
             "ALTER TABLE deep_capture_facts DROP COLUMN routing_strategy;
              ALTER TABLE deep_capture_facts DROP COLUMN address_family;
@@ -2808,6 +3003,10 @@ mod tests {
         assert_eq!(facts[0].routing_strategy, None);
         assert_eq!(facts[0].address_family, None);
         assert_eq!(facts[0].protocol, None);
+        assert_eq!(facts[0].requested_scope, None);
+        assert_eq!(facts[0].effective_scope, None);
+        assert_eq!(facts[0].middleware_handling, None);
+        assert_eq!(facts[0].inspection_policy_id, None);
     }
 
     #[test]
