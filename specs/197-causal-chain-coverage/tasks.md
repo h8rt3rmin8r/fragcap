@@ -95,7 +95,7 @@
 - [x] T029 Run `cargo xtask ci`, relevant Windows-controlled checks, documentation gates, and encoding/mojibake review at the exact local head; resolve every failure.
 - [x] T030 Complete Spec-Kit analysis, update `specs/197-causal-chain-coverage/` artifacts and checklists, and rerun affected checks after any contract correction.
 - [x] T031 Commit, push the explicitly authorized `codex/s197-causal-chain-coverage` branch, and open the official PR with issue closure and evidence references.
-- [ ] T032 Wait for exact-head CI and all initial external reviews, address every actionable comment, then request no more than one second round with `@Codex` if needed; resolve that round and leave the green PR for owner final review and merge.
+- [x] T032 Wait for exact-head CI and all initial external reviews, address every actionable comment, then request no more than one second round with `@Codex` if needed; resolve that round and leave the green PR for owner final review and merge.
 
 ## Dependencies and Execution Order
 
