@@ -26,7 +26,7 @@ The real matrix covers clean install, repair after controlled file damage, exact
 
 S137 extends the report with a closed fresh-start proof. The real ordinary uninstall still hashes and preserves every seeded user fixture. The packaged executable's synthetic command cases use an explicit scratch `User\.fragcap\roaming` and `User\.fragcap\local` pair, proving current-user cleanup, Doctor recovery, custom database and bundle exclusion, independent Wireshark registration preservation, and clean reinstall. The MSI's own optional fresh-start case operates only in the disposable runner account's real profile and verifies the impersonated user context before removing the exact new roots. The ordinary installed default-path case clears the scratch override and reads back its real database and session bundle. S192 also checks independent ordinary processes under one account with different AppData variables and compares opened-file destinations; this does not emulate an arbitrary MSIX host. Actual packaged-host behavior is observed after release, and any defect returns as a GitHub issue. Private owner data never participates in certification.
 
-Published v0.10.13 package replay uses the released executable's AppData fixture paths. The S192 candidate path uses `.fragcap` fixtures and records a fresh-start transition suppression marker beside them, so retained legacy AppData state cannot restore a cleaned store.
+Published v0.10.14 package replay uses the released executable's `.fragcap` fixture paths and records a fresh-start transition suppression marker beside them, so retained legacy AppData state cannot restore a cleaned store. Historical v0.10.13 replay continues to use that release's AppData fixture paths.
 
 ## Current integrity policy
 
