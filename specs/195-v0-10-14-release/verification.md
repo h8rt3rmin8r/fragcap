@@ -46,7 +46,7 @@ Post-implementation convergence mapped all eleven functional requirements and fi
 
 ## Explicitly unverified and excluded
 
-- Hosted PR checks, hosted code and security review, unresolved-thread state, and exact branch-head package certification are pending the official push and PR.
+- Official PR #568 is open from `release/0.10.14`; hosted checks, hosted code and security review, unresolved-thread state, and exact branch-head package certification remain pending.
 - No merge, tag, GitHub release, crate publication, protected-environment approval, public-file readback, registry readback, or current-public marker advance has occurred.
 - No installed candidate or private title was exercised. Installed-product observations occur after publication, and concrete failures return as version-specific GitHub issues.
 - The controlled conformance suite passed; its separate live TShark analyzer tier has not yet run for this candidate.
