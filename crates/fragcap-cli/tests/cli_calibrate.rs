@@ -1042,25 +1042,11 @@ fn insert_routing_fact(
         .expect("insert compatibility fact");
 }
 
-fn complete_scope_dimensions(fact: &mut CompatibilityFact, launch_case: CompatibilityLaunchCase) {
+fn complete_scope_dimensions(fact: &mut CompatibilityFact, _launch_case: CompatibilityLaunchCase) {
     fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
-    match launch_case {
-        CompatibilityLaunchCase::DirectExeWarm | CompatibilityLaunchCase::DirectExeCold => {
-            fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
-            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
-        }
-        CompatibilityLaunchCase::SteamProtocolWarm
-        | CompatibilityLaunchCase::SteamProtocolCold
-        | CompatibilityLaunchCase::PublisherLauncher
-        | CompatibilityLaunchCase::PublisherLauncherWarm
-        | CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
-        | CompatibilityLaunchCase::PublisherLauncherCold => {
-            fact.effective_scope = Some(CompatibilityInspectionScope::ExactGame);
-            fact.middleware_handling = Some(CompatibilityMiddlewareHandling::BlindRelay);
-            fact.inspection_policy_id = Some("exact-game-v1".to_string());
-        }
-    }
+    fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
+    fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
+    fact.inspection_policy_id = Some("launch-chain-v2".to_string());
 }
 
 #[test]
@@ -1237,7 +1223,7 @@ fn resume_reassesses_current_facts_and_suppresses_completed_work() {
             CompatibilityRequestedInspectionScope::Auto,
             CompatibilityInspectionScope::LaunchChain,
             CompatibilityMiddlewareHandling::Inspected,
-            "launch-chain-v1",
+            "launch-chain-v2",
             false,
             false,
             100,
@@ -3166,7 +3152,7 @@ fn missing_routing_runs_reachability_then_observed_protocol() {
     );
     assert_eq!(
         plan["plan"]["capture"]["scope"],
-        "selected target process tree"
+        "exact session-created launch chain, including proven intermediate and helper generations"
     );
     assert_eq!(plan["plan"]["cleanup"].as_array().unwrap().len(), 5);
     assert_eq!(

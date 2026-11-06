@@ -11,7 +11,7 @@
   "controlled_smoke": {
     "inspection_scope": "exact-game",
     "middleware_handling": "blind-relay",
-    "inspection_policy_id": "exact-game-v1"
+    "inspection_policy_id": "exact-game-v2"
   },
   "primary_artifacts": [
     {"id": "portable-zip", "filename": "fragcap-{version}-x86_64-pc-windows-msvc.zip", "signature": "not_applicable", "size_ceiling_bytes": 33554432},

@@ -359,7 +359,7 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     requested_scope: CompatibilityRequestedInspectionScope::Auto,
                     effective_scope: CompatibilityInspectionScope::ExactGame,
                     middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
-                    inspection_policy_id: "exact-game-v1".to_string(),
+                    inspection_policy_id: "exact-game-v2".to_string(),
                 };
                 for candidate in candidates {
                     let mut fact = StoredCompatibilityFact::new(
@@ -379,7 +379,7 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
                     fact.effective_scope = Some(CompatibilityInspectionScope::ExactGame);
                     fact.middleware_handling = Some(CompatibilityMiddlewareHandling::BlindRelay);
-                    fact.inspection_policy_id = Some("exact-game-v1".to_string());
+                    fact.inspection_policy_id = Some("exact-game-v2".to_string());
                     assert_eq!(
                         fact.applicability(&current),
                         CompatibilityApplicability::Applicable

@@ -213,10 +213,46 @@ pub trait Sink: Send {
 /// is counted by the pipeline in `gate_dropped` (specification section 12.4,
 /// constitution P-4), a term of the conservation identity, so no gated packet
 /// escapes the accounting. Added by slice 017.
+/// The observed reason a gate withheld a packet from every sink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GateRejection {
+    Waiting,
+    OutOfWindow,
+    OutOfScope,
+    Unresolved,
+    Direction,
+    DirectionUnknown,
+    VolumeReached,
+}
+
+/// A packet gate decision before the sink fan-out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GateDecision {
+    Admit,
+    Reject(GateRejection),
+    /// The writer holds only this head packet for a finite proof interval.
+    Pending,
+}
+
 pub trait WriteGate: Send + Sync {
     /// Whether this packet is admitted to the sinks. `false` withholds it from
     /// every sink, and the output loop counts it in `gate_dropped`.
     fn admit(&self, packet: &CapturedPacket) -> bool;
+
+    /// Return the exact rejection reason when the gate can provide it.
+    /// Older gates retain their conservative scope-withheld result.
+    fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+        if self.admit(packet) {
+            GateDecision::Admit
+        } else {
+            GateDecision::Reject(GateRejection::OutOfScope)
+        }
+    }
+
+    /// Complete a pending head decision within the caller's finite allowance.
+    fn finish_pending(&self, _packet: &CapturedPacket, _timeout: Duration) -> GateDecision {
+        GateDecision::Reject(GateRejection::Unresolved)
+    }
 }
 
 /// Protocol dissection.

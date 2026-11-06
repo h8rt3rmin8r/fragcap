@@ -50,25 +50,23 @@ pub(super) fn missing_evidence() -> ShutdownOutcome {
 }
 
 fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
-    left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+    let normalized = |path: &std::path::Path| {
+        let value = path.to_string_lossy();
+        let ordinary = value.strip_prefix(r"\\?\").unwrap_or(&value);
+        ordinary.replace('/', "\\").to_lowercase()
+    };
+    normalized(left) == normalized(right)
 }
 
-fn depth_to_root(pid: u32, root: u32, starts: &[(u32, u32, fragcap::Timestamp)]) -> Option<usize> {
-    let mut current = pid;
-    for depth in 0..=64 {
-        if current == root {
-            return Some(depth);
-        }
-        let mut matches = starts
-            .iter()
-            .filter(|(candidate, _, _)| *candidate == current);
-        let (_, parent, _) = matches.next()?;
-        if matches.next().is_some() || *parent == current {
-            return None;
-        }
-        current = *parent;
+fn event_path_matches(image: &str, identity: &ProcessIdentity) -> bool {
+    if image.contains(['\\', '/']) {
+        same_path(std::path::Path::new(image), &identity.path)
+    } else {
+        identity
+            .path
+            .file_name()
+            .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(image))
     }
-    None
 }
 
 fn exited_after(evidence: &CaptureProcessEvidence, pid: u32, started: fragcap::Timestamp) -> bool {
@@ -83,16 +81,6 @@ fn live_helpers(evidence: &CaptureProcessEvidence) -> Vec<(u32, String)> {
     let Some(root) = evidence.launch_pid else {
         return Vec::new();
     };
-    let starts: Vec<_> = evidence
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            ProcessEvent::Started {
-                pid, parent, at, ..
-            } => Some((*pid, *parent, *at)),
-            _ => None,
-        })
-        .collect();
     evidence
         .events
         .iter()
@@ -101,7 +89,7 @@ fn live_helpers(evidence: &CaptureProcessEvidence) -> Vec<(u32, String)> {
                 return None;
             };
             if *pid == root
-                || depth_to_root(*pid, root, &starts).is_none()
+                || !evidence.possible_descendant(*pid)
                 || exited_after(evidence, *pid, *at)
             {
                 return None;
@@ -167,16 +155,18 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<OwnerSelection, St
             continue;
         };
         let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
-        if !evidence.shutdown_scope.iter().any(|path| {
+        let declared = evidence.shutdown_scope.iter().any(|path| {
             path.file_name()
-                .is_some_and(|file| file.to_string_lossy().to_lowercase() == name.to_lowercase())
-        }) {
+                .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+        });
+        let depth = evidence.causal_depth(*pid, *at);
+        if !declared && depth.is_none() {
             continue;
         }
-        let Some(depth) = depth_to_root(*pid, root, &starts) else {
+        let Some(depth) = depth else {
             if *at >= earliest && !exited_after(evidence, *pid, *at) {
                 unresolved.push(format!(
-                    "declared image pid {pid} has no proven ancestry to the created root"
+                    "candidate pid {pid} has no proven ancestry to the created root"
                 ));
             }
             continue;
@@ -194,7 +184,7 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<OwnerSelection, St
                 continue;
             }
             unresolved.push(format!(
-                "exact process-object receipt unavailable for declared owner pid {pid}"
+                "exact process-object receipt unavailable for causal owner pid {pid}"
             ));
             continue;
         }
@@ -208,12 +198,16 @@ fn select_owners(evidence: &CaptureProcessEvidence) -> Result<OwnerSelection, St
             unresolved.push(reason);
             continue;
         }
-        if !identity.same_user_session(&current)
-            || !evidence
+        let path_proven = if declared {
+            evidence
                 .shutdown_scope
                 .iter()
                 .any(|path| same_path(path, &identity.path))
-        {
+                && event_path_matches(image, identity)
+        } else {
+            event_path_matches(image, identity)
+        };
+        if !identity.same_user_session(&current) || !path_proven {
             let reason =
                 format!("account, session, or canonical path mismatch for owner pid {pid}");
             if *pid == root {
@@ -251,18 +245,8 @@ pub(super) fn owner_exit_prerequisite(
     evidence: &CaptureProcessEvidence,
 ) -> Option<Vec<(u32, i64)>> {
     select_owners(evidence).ok()?;
-    let root = evidence.launch_pid?;
+    evidence.launch_pid?;
     let earliest = evidence.launch_earliest_at?;
-    let starts: Vec<_> = evidence
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            ProcessEvent::Started {
-                pid, parent, at, ..
-            } => Some((*pid, *parent, *at)),
-            _ => None,
-        })
-        .collect();
     let mut pending = Vec::new();
     for event in &evidence.events {
         let ProcessEvent::Started { pid, image, at, .. } = event else {
@@ -276,7 +260,7 @@ pub(super) fn owner_exit_prerequisite(
             path.file_name()
                 .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
         });
-        if declared || depth_to_root(*pid, root, &starts).is_some() {
+        if declared || evidence.possible_descendant(*pid) {
             pending.push((*pid, at.as_nanos()));
         }
     }
@@ -521,6 +505,43 @@ mod tests {
     }
 
     #[test]
+    fn receipt_backed_undeclared_helper_is_closed_after_client_observation() {
+        let root = child();
+        let helper = child();
+        let mut unrelated = child();
+        let mut evidence = child_evidence(&root);
+        let identity = ProcessIdentity::observe(helper.0.id()).unwrap();
+        let at = fragcap::Timestamp::from_nanos(identity.created_unix_nanos() as i64);
+        evidence.events.push(ProcessEvent::started(
+            identity.pid,
+            root.0.id(),
+            identity.path.display().to_string(),
+            "",
+            at,
+        ));
+        evidence.managed_instances.push(ManagedProcessInstance {
+            event_at: at,
+            identity,
+        });
+        let outcome = release_with_grace(
+            &evidence,
+            Budget::new(Duration::from_secs(3)),
+            Duration::from_millis(50),
+        );
+        assert_eq!(
+            outcome.result.status,
+            CleanupStatus::Released,
+            "{:?}",
+            outcome.steps
+        );
+        assert!(outcome
+            .steps
+            .iter()
+            .any(|step| { step["action"] == "force-request" && step["pid"] == helper.0.id() }));
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
     fn same_name_unrelated_process_receives_no_control_request() {
         let owned = child();
         let mut unrelated = child();
@@ -547,6 +568,17 @@ mod tests {
                 Some("graceful-request" | "force-request")
             ) && step["pid"] == unrelated.0.id()
         }));
+    }
+
+    #[test]
+    fn full_event_path_must_match_the_canonical_owned_path() {
+        let owned = child();
+        let mut evidence = child_evidence(&owned);
+        if let ProcessEvent::Started { image, .. } = &mut evidence.events[0] {
+            *image = r"C:\different\same-name.exe".into();
+        }
+        assert!(select_owners(&evidence).is_err());
+        assert!(!evidence.managed_instances[0].identity.exited().unwrap());
     }
 
     #[test]
@@ -780,19 +812,22 @@ mod tests {
     #[test]
     fn publisher_depth_requires_unambiguous_chain() {
         let at = fragcap::Timestamp::from_nanos(1);
-        assert_eq!(
-            depth_to_root(30, 10, &[(10, 0, at), (20, 10, at), (30, 20, at)]),
-            Some(2)
-        );
-        assert_eq!(
-            depth_to_root(
-                30,
-                10,
-                &[(10, 0, at), (20, 10, at), (20, 99, at), (30, 20, at)]
-            ),
-            None
-        );
-        assert_eq!(depth_to_root(30, 10, &[(10, 0, at), (30, 99, at)]), None);
+        let mut evidence = CaptureProcessEvidence {
+            launch_pid: Some(10),
+            launch_earliest_at: Some(at),
+            launch_at: Some(at),
+            ..CaptureProcessEvidence::default()
+        };
+        evidence.events.extend([
+            ProcessEvent::started(10, 0, "root.exe", "", at),
+            ProcessEvent::started(20, 10, "publisher.exe", "", at),
+            ProcessEvent::started(30, 20, "client.exe", "", at),
+        ]);
+        assert_eq!(evidence.causal_depth(30, at), Some(2));
+        evidence
+            .events
+            .push(ProcessEvent::started(20, 99, "other.exe", "", at));
+        assert_eq!(evidence.causal_depth(30, at), None);
     }
 
     #[test]

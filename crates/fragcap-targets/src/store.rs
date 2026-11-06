@@ -1330,7 +1330,7 @@ impl Store {
             CompatibilityRequestedInspectionScope::LaunchChain,
             CompatibilityInspectionScope::LaunchChain,
             CompatibilityMiddlewareHandling::Inspected,
-            "launch-chain-v1",
+            "launch-chain-v2",
             false,
             false,
             now,

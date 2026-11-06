@@ -303,10 +303,7 @@ fn both_families_preserve_real_endpoints_and_owned_platform_client_packet_truth(
         assert_eq!(summaries[1].unretained_observations, 1);
         assert_eq!(summaries[1].omissions.len(), 1);
         assert_eq!(summaries[1].omissions[0].first, at(1));
-        assert_eq!(
-            summaries[1].omissions[0].cause,
-            FlowOmissionCause::ScopeWithheld
-        );
+        assert_eq!(summaries[1].omissions[0].cause, FlowOmissionCause::Waiting);
         let evidence = CaptureProcessEvidence {
             launch_pid: Some(PLATFORM),
             launch_at: Some(at(6)),

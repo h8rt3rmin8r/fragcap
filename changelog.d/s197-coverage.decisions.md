@@ -1,0 +1,2 @@
+<!-- spec-impact: 10, 15.7, 17.4, 27.3 -->
+2026-11-06: Keep one bounded packet queue and one writer-held head while awaiting late process proof, and keep the packet sink active until route-owner release. Version the inspection policy as v2 so prior positive facts remain historical evidence, and retain the existing database schema because the policy identity is already stored. Advance the candidate Windows package smoke contract and its exact validator to `exact-game-v2`; published-package replay continues to use its released v1 source and contract.

@@ -87,7 +87,7 @@ impl InspectionDecision {
             action: InspectionAction::Inspect,
             reason: InspectionReason::LaunchChain,
             decided_after_ms: 0,
-            policy_id: "launch-chain-v1",
+            policy_id: "launch-chain-v2",
             owner_proof: "explicit-launch-chain",
         }
     }
@@ -99,7 +99,7 @@ impl InspectionDecision {
             action: InspectionAction::Uninspected,
             reason,
             decided_after_ms,
-            policy_id: "exact-game-v1",
+            policy_id: "exact-game-v2",
             owner_proof: "unproven",
         }
     }
@@ -111,7 +111,7 @@ impl InspectionDecision {
             action: InspectionAction::Inspect,
             reason: InspectionReason::VerifiedGame,
             decided_after_ms,
-            policy_id: "exact-game-v1",
+            policy_id: "exact-game-v2",
             owner_proof: "client-socket-and-managed-process-instance",
         }
     }

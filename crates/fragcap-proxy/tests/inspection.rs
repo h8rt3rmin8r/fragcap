@@ -302,7 +302,7 @@ fn native_owner_decision_precedes_all_protocol_and_tls_work() {
     assert_eq!(decision.action, InspectionAction::Uninspected);
     assert_eq!(decision.reason, InspectionReason::KnownMiddleware);
     assert_eq!(decision.requested_scope, "exact-game");
-    assert_eq!(decision.policy_id, "exact-game-v1");
+    assert_eq!(decision.policy_id, "exact-game-v2");
     assert_eq!(decision.owner_proof, "unproven");
     assert!(diagnostic.stages.iter().all(|stage| {
         !matches!(

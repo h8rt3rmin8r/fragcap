@@ -93,7 +93,7 @@ use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
 use crate::stats::CaptureStats;
-use crate::traits::{FlowAttributor, PacketSource, Sink, WriteGate};
+use crate::traits::{FlowAttributor, GateDecision, GateRejection, PacketSource, Sink, WriteGate};
 use crate::FlowRegistry;
 
 use buffer::Item;
@@ -1092,17 +1092,39 @@ fn output_loop(
         // what makes `gate_dropped` a single capture-wide term of the
         // conservation identity: a gate drop is withheld from every sink at once.
         if let Some(gate) = gate.as_ref() {
-            if !gate.admit(&packet) {
+            let decision = match gate.decide(&packet) {
+                GateDecision::Pending => {
+                    match gate.finish_pending(&packet, Duration::from_millis(250)) {
+                        GateDecision::Pending => GateDecision::Reject(GateRejection::Unresolved),
+                        decision => decision,
+                    }
+                }
+                decision => decision,
+            };
+            if let GateDecision::Reject(reason) = decision {
                 // The packet still existed as correlation evidence even though
                 // capture policy withheld it from every sink. Preserve that
                 // fact conservatively so a later packet on a reused tuple
                 // cannot become a false sole match.
                 if let Some(flow) = packet.flow {
-                    flow_registry.mark_unretained_at(
-                        flow,
-                        packet.ts,
-                        crate::flow::FlowOmissionCause::ScopeWithheld,
-                    );
+                    let cause = match reason {
+                        GateRejection::Waiting => crate::flow::FlowOmissionCause::Waiting,
+                        GateRejection::OutOfWindow => crate::flow::FlowOmissionCause::OutOfWindow,
+                        GateRejection::OutOfScope => crate::flow::FlowOmissionCause::ScopeWithheld,
+                        GateRejection::Unresolved => {
+                            crate::flow::FlowOmissionCause::ScopeUnresolved
+                        }
+                        GateRejection::Direction => {
+                            crate::flow::FlowOmissionCause::DirectionWithheld
+                        }
+                        GateRejection::DirectionUnknown => {
+                            crate::flow::FlowOmissionCause::DirectionUnknown
+                        }
+                        GateRejection::VolumeReached => {
+                            crate::flow::FlowOmissionCause::VolumeReached
+                        }
+                    };
+                    flow_registry.mark_unretained_at(flow, packet.ts, cause);
                 }
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;

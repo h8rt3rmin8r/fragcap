@@ -92,12 +92,12 @@ For missing or incomplete evidence, start guided calibration:
 fragcap calibrate sample-target
 ```
 
-For launcher-mediated targets, the default `--inspect-scope auto` recommends
-exact-game inspection and keeps middleware on the authenticated blind-relay
-path. Direct targets resolve `auto` to launch-chain inspection. The complete
-plan shows the requested and effective scope before any effect. Use
-`--inspect-scope launch-chain` only when you deliberately want middleware
-diagnosis.
+The source default `--inspect-scope auto` selects launch-chain inspection for
+every managed launch topology. The complete plan shows the requested and
+effective scope before any effect. Choose `--inspect-scope game` explicitly
+when only game application content should be inspected; middleware then uses
+authenticated blind relay. Both choices retain exact launch-chain packet
+evidence through route-owner release.
 
 If a stored Steam target was moved to another library, check its stored root
 with `fragcap targets show sample-target` before calibrating. In v0.10.9,

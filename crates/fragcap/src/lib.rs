@@ -307,7 +307,8 @@ pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use crate::session::{
     BindingPublisher, CaptureScope, CaptureSession, GateHandle, PacketDisposition,
-    RoleStampingAttributor, SessionConfig, SessionGate, SessionState, SessionStats, StopReason,
+    RoleBindingInterval, RoleStampingAttributor, SessionConfig, SessionGate, SessionState,
+    SessionStats, StopReason,
 };
 #[cfg(all(feature = "etw", windows))]
 pub use attr::EtwWatcher;

@@ -38,7 +38,7 @@ use fragcap_core::packet::{CapturedPacket, RawPacket, Timestamp};
 use fragcap_core::process::tree::NodeId;
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
 use fragcap_core::stats::SourceStats;
-use fragcap_core::traits::{FlowAttributor, PacketSource, WriteGate};
+use fragcap_core::traits::{FlowAttributor, GateDecision, GateRejection, PacketSource, WriteGate};
 
 use fragcap_profile::matching::{stage_for, stage_identity_holds};
 use fragcap_profile::schema::{Lifecycle, Profile};
@@ -1055,6 +1055,7 @@ fn bound_at(map: &BindingMap, pid: u32, at: Timestamp) -> Option<&RoleBindingInt
 #[derive(Clone, Default)]
 pub struct BindingPublisher {
     cell: Arc<Mutex<Arc<BindingMap>>>,
+    revision: Arc<(Mutex<u64>, std::sync::Condvar)>,
 }
 
 impl BindingPublisher {
@@ -1087,11 +1088,38 @@ impl BindingPublisher {
             map.entry(binding.pid).or_default().push(binding);
         }
         *self.cell.lock().expect("binding publisher lock") = Arc::new(map);
+        let (lock, changed) = &*self.revision;
+        let mut revision = lock.lock().expect("binding revision lock");
+        *revision = revision.saturating_add(1);
+        changed.notify_all();
     }
 
     /// The current snapshot, cloned by pointer.
     fn snapshot(&self) -> Arc<BindingMap> {
         Arc::clone(&self.cell.lock().expect("binding publisher lock"))
+    }
+
+    fn contains_at(&self, pid: u32, at: Timestamp) -> bool {
+        bound_at(&self.snapshot(), pid, at).is_some()
+    }
+
+    fn wait_for_match(&self, pid: u32, at: Timestamp, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let (lock, changed) = &*self.revision;
+        let mut revision = lock.lock().expect("binding revision lock");
+        loop {
+            if self.contains_at(pid, at) {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, _) = changed
+                .wait_timeout(revision, remaining)
+                .expect("binding revision lock");
+            revision = next;
+        }
     }
 }
 
@@ -1283,10 +1311,10 @@ const NANOS_NO_STOP: i64 = i64::MAX;
 /// waits on the receiver, ends. Sharing it would keep the channel open for as long
 /// as the driver held its handle, which is the whole run.
 struct GateShared {
-    /// The first capture instant admitted (the acquisition instant, in nanos).
-    /// A packet captured before it is a watch-time frame. `NANOS_WATCHING`
-    /// (`i64::MAX`) before acquisition, so every frame is watch-time; the driver
-    /// sets it to the acquisition instant (or `i64::MIN` offline, admitting all).
+    /// The first capture instant admitted (acquisition for ordinary Capture,
+    /// launch inception for a managed Deep Capture route, in nanos).
+    /// `NANOS_WATCHING` (`i64::MAX`) before that instant counts every earlier
+    /// packet as waiting; replay uses `i64::MIN` to admit from its first frame.
     admit_from: AtomicI64,
     /// The first capture instant no longer admitted (the stop instant, in nanos).
     /// A packet captured at or after it is out of window. `NANOS_NO_STOP`
@@ -1311,6 +1339,11 @@ struct GateShared {
     out_of_window_discarded: AtomicU64,
     /// What reaches the sinks (slice S064).
     scope: CaptureScope,
+    /// Exact managed generations, independent of application inspection scope.
+    causal: Option<BindingPublisher>,
+    /// A short per-PID timeout avoids stalling the writer on every unrelated
+    /// packet; a newly published exact binding always takes precedence.
+    pending_cooldown: Mutex<HashMap<u32, std::time::Instant>>,
     /// The requested known direction, applied after ownership scope.
     direction: Option<PacketDirection>,
     /// The `--roles` set, read only under [`CaptureScope::Target`].
@@ -1360,6 +1393,8 @@ impl GateShared {
             watch_discarded: AtomicU64::new(0),
             out_of_window_discarded: AtomicU64::new(0),
             scope: config.scope,
+            causal: None,
+            pending_cooldown: Mutex::new(HashMap::new()),
             direction: config.direction,
             allowed_roles: config.allowed_roles.clone(),
             scope_discarded: AtomicU64::new(0),
@@ -1417,14 +1452,29 @@ impl SessionGate {
     /// A new gate over a session's bounds, forwarding admitted packets on `tee`,
     /// together with the driver's handle onto the same state.
     ///
-    /// The window starts empty (`admit_from` at `i64::MAX`), so on the live path,
-    /// where the pipeline runs from arm, every frame captured before acquisition is
-    /// a watch-time discard until the driver opens the window from the acquisition
-    /// instant. The offline driver opens the window from `i64::MIN` before it starts
-    /// the pipeline, so every replayed frame is in window and the classification
-    /// reduces to the bound alone.
+    /// The window starts empty (`admit_from` at `i64::MAX`). The live driver
+    /// opens it at acquisition for ordinary Capture or launch inception for a
+    /// managed route. The offline driver opens it from `i64::MIN` before replay.
     pub fn new(config: &SessionConfig, tee: Sender<(u32, Timestamp)>) -> (Self, GateHandle) {
         Self::with_replay_duration(config, tee, None)
+    }
+
+    /// Deep Capture packet membership follows the exact created launch chain.
+    pub fn new_managed(
+        config: &SessionConfig,
+        tee: Sender<(u32, Timestamp)>,
+        publisher: BindingPublisher,
+    ) -> (Self, GateHandle) {
+        let mut state = GateShared::new(config);
+        state.causal = Some(publisher);
+        let shared = Arc::new(state);
+        (
+            SessionGate {
+                shared: Arc::clone(&shared),
+                tee,
+            },
+            GateHandle { shared },
+        )
     }
 
     /// Build a replay gate whose packet-time duration is enforced before sinks.
@@ -1577,8 +1627,8 @@ impl PacketSource for ReplayOriginSource {
     }
 }
 
-impl WriteGate for SessionGate {
-    fn admit(&self, packet: &CapturedPacket) -> bool {
+impl SessionGate {
+    fn decide_inner(&self, packet: &CapturedPacket, allow_pending: bool) -> GateDecision {
         let len = packet.data.as_ref().len() as u64;
         let ts = packet.ts.as_nanos();
         let shared = &self.shared;
@@ -1594,7 +1644,7 @@ impl WriteGate for SessionGate {
                 shared
                     .out_of_window_discarded
                     .fetch_add(1, Ordering::Relaxed);
-                return false;
+                return GateDecision::Reject(GateRejection::OutOfWindow);
             }
         }
         // Classify by the packet's own capture instant, not the window state at
@@ -1602,7 +1652,7 @@ impl WriteGate for SessionGate {
         // even if it was buffered and is only now being processed.
         if ts < shared.admit_from.load(Ordering::Relaxed) {
             shared.watch_discarded.fetch_add(1, Ordering::Relaxed);
-            return false;
+            return GateDecision::Reject(GateRejection::Waiting);
         }
         // A frame captured at or after the stop instant is out of window even if
         // it is still draining.
@@ -1610,7 +1660,7 @@ impl WriteGate for SessionGate {
             shared
                 .out_of_window_discarded
                 .fetch_add(1, Ordering::Relaxed);
-            return false;
+            return GateDecision::Reject(GateRejection::OutOfWindow);
         }
         // Out of scope: the packet was observed, resolved, and belongs to
         // something this capture does not cover. Specification section 12.3
@@ -1625,31 +1675,57 @@ impl WriteGate for SessionGate {
         // been the target's, dropped because the socket table had not published
         // yet; a packet attributed to an unbound process certainly was not. See
         // `GateShared::scope_unresolved_discarded`.
-        if !shared
-            .scope
-            .admits(packet.attribution.as_ref(), shared.allowed_roles.as_deref())
-        {
-            if packet.attribution.is_some() {
+        let in_scope = if let Some(causal) = &shared.causal {
+            packet
+                .attribution
+                .as_ref()
+                .is_some_and(|attribution| causal.contains_at(attribution.pid, packet.ts))
+        } else {
+            shared
+                .scope
+                .admits(packet.attribution.as_ref(), shared.allowed_roles.as_deref())
+        };
+        if !in_scope {
+            if allow_pending && shared.causal.is_some() {
+                if let Some(attribution) = &packet.attribution {
+                    let now = std::time::Instant::now();
+                    let cooldown = shared.pending_cooldown.lock().expect("pending cache lock");
+                    if cooldown
+                        .get(&attribution.pid)
+                        .is_none_or(|until| now >= *until)
+                    {
+                        return GateDecision::Pending;
+                    }
+                }
+            }
+            let reason = if shared.causal.is_some() {
+                shared
+                    .scope_unresolved_discarded
+                    .fetch_add(1, Ordering::Relaxed);
+                GateRejection::Unresolved
+            } else if packet.attribution.is_some() {
                 shared.scope_discarded.fetch_add(1, Ordering::Relaxed);
+                GateRejection::OutOfScope
             } else {
                 shared
                     .scope_unresolved_discarded
                     .fetch_add(1, Ordering::Relaxed);
-            }
-            return false;
+                GateRejection::Unresolved
+            };
+            return GateDecision::Reject(reason);
         }
         if let Some(required) = shared.direction {
             match packet.direction {
                 Some(actual) if actual == required => {}
                 Some(_) => {
                     shared.direction_discarded.fetch_add(1, Ordering::Relaxed);
-                    return false;
+                    return GateDecision::Reject(GateRejection::Direction);
                 }
                 None => {
                     shared
                         .direction_unknown_discarded
                         .fetch_add(1, Ordering::Relaxed);
-                    return false;
+                    return GateDecision::Reject(GateRejection::DirectionUnknown);
                 }
             }
         }
@@ -1667,7 +1743,7 @@ impl WriteGate for SessionGate {
             shared
                 .out_of_window_discarded
                 .fetch_add(1, Ordering::Relaxed);
-            return false;
+            return GateDecision::Reject(GateRejection::VolumeReached);
         }
         let n = shared.admitted.fetch_add(1, Ordering::Relaxed) + 1;
         let bytes = shared.admitted_bytes.fetch_add(len, Ordering::Relaxed) + len;
@@ -1682,7 +1758,42 @@ impl WriteGate for SessionGate {
         // happens only as the run tears down; nothing the session needs is lost,
         // so the failure is ignored.
         let _ = self.tee.send((len as u32, packet.ts));
-        true
+        GateDecision::Admit
+    }
+}
+
+impl WriteGate for SessionGate {
+    fn admit(&self, packet: &CapturedPacket) -> bool {
+        match self.decide(packet) {
+            GateDecision::Pending => {
+                self.finish_pending(packet, Duration::from_millis(10)) == GateDecision::Admit
+            }
+            decision => decision == GateDecision::Admit,
+        }
+    }
+
+    fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+        self.decide_inner(packet, true)
+    }
+
+    fn finish_pending(&self, packet: &CapturedPacket, timeout: Duration) -> GateDecision {
+        if let (Some(causal), Some(attribution)) = (&self.shared.causal, &packet.attribution) {
+            if !causal.wait_for_match(attribution.pid, packet.ts, timeout) {
+                let mut cooldown = self
+                    .shared
+                    .pending_cooldown
+                    .lock()
+                    .expect("pending cache lock");
+                if cooldown.len() >= 256 {
+                    cooldown.clear();
+                }
+                cooldown.insert(
+                    attribution.pid,
+                    std::time::Instant::now() + Duration::from_millis(100),
+                );
+            }
+        }
+        self.decide_inner(packet, false)
     }
 }
 
@@ -1844,6 +1955,139 @@ mod gate_tests {
         let (tx, rx) = mpsc::channel();
         let (gate, handle) = SessionGate::new(&config, tx);
         (gate, handle, rx)
+    }
+
+    #[test]
+    fn the_gate_reports_the_actual_rejection_reason() {
+        use fragcap_core::traits::{GateDecision, GateRejection};
+
+        let (watch, window, _) = gate(unscoped());
+        assert_eq!(
+            watch.decide(&packet(64, 10)),
+            GateDecision::Reject(GateRejection::Waiting)
+        );
+        window.open_from(Timestamp::from_nanos(0));
+        window.close_at(Timestamp::from_nanos(20));
+        assert_eq!(
+            watch.decide(&packet(64, 20)),
+            GateDecision::Reject(GateRejection::OutOfWindow)
+        );
+
+        let (scoped, scoped_window, _) = gate(SessionConfig::default());
+        scoped_window.open_from(Timestamp::from_nanos(0));
+        assert_eq!(
+            scoped.decide(&unbound_packet(64, 10)),
+            GateDecision::Reject(GateRejection::OutOfScope)
+        );
+        assert_eq!(
+            scoped.decide(&packet(64, 11)),
+            GateDecision::Reject(GateRejection::Unresolved)
+        );
+    }
+
+    #[test]
+    fn managed_packet_membership_includes_unprofiled_generation_only() {
+        let publisher = BindingPublisher::default();
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&unscoped(), tx, publisher.clone());
+        handle.open_from(Timestamp::from_nanos(10));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 4242,
+            started: Some(Timestamp::from_nanos(10)),
+            exited: Some(Timestamp::from_nanos(30)),
+            role: None,
+            stage: None,
+        }]);
+        let mut helper = packet(32, 15);
+        helper.attribution = Some(Attribution::new(4242, "updater.exe", Fidelity::Live));
+        assert!(gate.admit(&helper));
+        helper.ts = Timestamp::from_nanos(30);
+        assert!(!gate.admit(&helper));
+        let unrelated = unbound_packet(32, 16);
+        assert!(!gate.admit(&unrelated));
+        assert_eq!(handle.admitted(), 1);
+        assert_eq!(handle.scope_unresolved_discarded(), 2);
+    }
+
+    #[test]
+    fn managed_chain_packets_span_launch_observation_and_release() {
+        let publisher = BindingPublisher::default();
+        let (tx, rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&unscoped(), tx, publisher.clone());
+        handle.open_from(Timestamp::from_nanos(10));
+        publisher.publish_exact(vec![
+            RoleBindingInterval {
+                pid: 101,
+                started: Some(Timestamp::from_nanos(10)),
+                exited: Some(Timestamp::from_nanos(40)),
+                role: None,
+                stage: None,
+            },
+            RoleBindingInterval {
+                pid: 102,
+                started: Some(Timestamp::from_nanos(20)),
+                exited: Some(Timestamp::from_nanos(50)),
+                role: Some("client".into()),
+                stage: None,
+            },
+            RoleBindingInterval {
+                pid: 103,
+                started: Some(Timestamp::from_nanos(30)),
+                exited: Some(Timestamp::from_nanos(60)),
+                role: None,
+                stage: None,
+            },
+        ]);
+        for (pid, image, at) in [
+            (101, "launcher.exe", 15),
+            (102, "client.exe", 25),
+            (103, "updater.exe", 45),
+        ] {
+            let mut observed = packet(32, at);
+            observed.attribution = Some(Attribution::new(pid, image, Fidelity::Live));
+            assert!(gate.admit(&observed), "owned generation {pid} at {at}");
+        }
+        let mut reused_pid = packet(32, 55);
+        reused_pid.attribution = Some(Attribution::new(101, "launcher.exe", Fidelity::Live));
+        assert!(
+            !gate.admit(&reused_pid),
+            "a reused PID has no chain membership"
+        );
+        let mut unrelated = packet(32, 35);
+        unrelated.attribution = Some(Attribution::new(104, "updater.exe", Fidelity::Live));
+        assert!(!gate.admit(&unrelated), "a same-name sibling is not owned");
+        handle.close_at(Timestamp::from_nanos(60));
+        let mut late = packet(32, 60);
+        late.attribution = Some(Attribution::new(103, "updater.exe", Fidelity::Live));
+        assert!(!gate.admit(&late), "release closes the packet window");
+        let receipts: Vec<_> = rx.try_iter().collect();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(handle.admitted(), 3);
+        assert_eq!(handle.scope_unresolved_discarded(), 2);
+        assert_eq!(handle.out_of_window_discarded(), 1);
+    }
+
+    #[test]
+    fn managed_head_waits_for_one_late_exact_binding() {
+        let publisher = BindingPublisher::default();
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&unscoped(), tx, publisher.clone());
+        handle.open_from(Timestamp::from_nanos(10));
+        let mut packet = packet(32, 15);
+        packet.attribution = Some(Attribution::new(4242, "launcher.exe", Fidelity::Live));
+        assert_eq!(gate.decide(&packet), GateDecision::Pending);
+        let writer =
+            std::thread::spawn(move || gate.finish_pending(&packet, Duration::from_millis(50)));
+        std::thread::sleep(Duration::from_millis(2));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 4242,
+            started: Some(Timestamp::from_nanos(10)),
+            exited: None,
+            role: None,
+            stage: None,
+        }]);
+        assert_eq!(writer.join().unwrap(), GateDecision::Admit);
+        assert_eq!(handle.admitted(), 1);
     }
 
     // SC-003. A watch-time frame is read, discarded, and counted. The gate starts
