@@ -330,7 +330,10 @@ impl CaptureProcessEvidence {
                 .shutdown_scope
                 .iter()
                 .any(|path| case_equal(image_name(&path.to_string_lossy()), name));
-            let causal = source_retained && self.causal_depth(*pid, *at).is_some();
+            let causal = source_retained
+                && !self.shutdown_scope.is_empty()
+                && self.launch_identity.is_some()
+                && self.causal_depth(*pid, *at).is_some();
             if declared || causal {
                 let needs_verified_path = !image.contains(['\\', '/']);
                 if self.managed_instances.len() >= 64 {
@@ -1028,6 +1031,28 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn passive_launch_never_acquires_managed_shutdown_receipts() {
+        let current = ProcessIdentity::current().expect("current process identity");
+        let at = Timestamp::from_nanos(current.created_unix_nanos() as i64);
+        let mut evidence = CaptureProcessEvidence {
+            launch_pid: Some(current.pid),
+            launch_earliest_at: Some(at),
+            launch_at: Some(at),
+            ..Default::default()
+        };
+        let event = ProcessEvent::started(
+            current.pid,
+            std::process::id(),
+            current.path.display().to_string(),
+            "",
+            at,
+        );
+        evidence.observe_managed(&event);
+        assert!(evidence.managed_instances.is_empty());
+    }
 
     #[test]
     fn event_bound_path_rejects_reused_pid_wrong_path_and_missing_authority() {

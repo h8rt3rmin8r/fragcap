@@ -281,6 +281,80 @@ fn managed_chain_writes_launch_client_and_release_packets_in_one_run() {
     }
 }
 
+#[cfg(feature = "deep-capture")]
+#[test]
+fn delayed_loopback_binding_reorients_the_writer_held_packet() {
+    use fragcap::{
+        BindingPublisher, RoleBindingInterval, RoleStampingAttributor, SessionConfig, SessionGate,
+    };
+    use fragcap_core::{
+        Attribution, Endpoint, Fidelity, FlowAttributor, FlowKey, Timestamp, WriteGate,
+    };
+    use std::sync::Arc;
+
+    struct LoopbackOwners(FlowKey);
+    impl FlowAttributor for LoopbackOwners {
+        fn resolve(&self, key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            let (pid, image) = if key.local == self.0.local {
+                (9000, "fragcap.exe")
+            } else {
+                (4242, "client.exe")
+            };
+            Some(Attribution::new(pid, image, Fidelity::Live))
+        }
+
+        fn refresh(&self) -> Result<(), fragcap_core::AttrError> {
+            Ok(())
+        }
+
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            Vec::new()
+        }
+    }
+
+    let (packets, _) = common::replay("loopback");
+    let canonical = packets[0].flow.expect("loopback fixture has a flow");
+    let first = packets.iter().map(|packet| packet.ts).min().unwrap();
+    let last = packets.iter().map(|packet| packet.ts).max().unwrap();
+    let stamper = RoleStampingAttributor::new(Arc::new(LoopbackOwners(canonical)));
+    let publisher: BindingPublisher = stamper.publisher();
+    assert_eq!(stamper.resolve(&canonical, first).unwrap().pid, 9000);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let (gate, handle) = SessionGate::new_managed(&SessionConfig::default(), tx, publisher.clone());
+    handle.open_from(first);
+    handle.close_at(Timestamp::from_nanos(last.as_nanos() + 1));
+    let publish = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 7777,
+            started: Some(first),
+            exited: None,
+            role: None,
+            stage: None,
+        }]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 4242,
+            started: Some(first),
+            exited: None,
+            role: Some("client".into()),
+            stage: None,
+        }]);
+    });
+    let run = common::render_via_pipeline_with(
+        "loopback",
+        ROOMY,
+        Box::new(stamper),
+        Some(Arc::new(gate) as Arc<dyn WriteGate>),
+    );
+    publish.join().unwrap();
+    assert_eq!(run.report.stats.gate_dropped, 0);
+    assert_eq!(handle.admitted(), packets.len() as u64);
+    let json = String::from_utf8(run.jsonl).unwrap();
+    assert!(json.contains("\"pid\":4242"));
+    assert!(!json.contains("\"pid\":9000"));
+}
+
 // T073, SC-009.
 #[test]
 fn two_runs_over_one_fixture_produce_identical_bytes() {

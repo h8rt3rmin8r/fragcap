@@ -1121,6 +1121,17 @@ impl BindingPublisher {
             revision = next;
         }
     }
+
+    fn wait_for_revision(&self, timeout: Duration) {
+        let (lock, changed) = &*self.revision;
+        let revision = lock.lock().expect("binding revision lock");
+        let current = *revision;
+        drop(
+            changed
+                .wait_timeout_while(revision, timeout, |value| *value == current)
+                .expect("binding revision lock"),
+        );
+    }
 }
 
 /// A [`FlowAttributor`] decorator that stamps the profile role and stage onto
@@ -1774,6 +1785,12 @@ impl WriteGate for SessionGate {
 
     fn decide(&self, packet: &CapturedPacket) -> GateDecision {
         self.decide_inner(packet, true)
+    }
+
+    fn await_pending(&self, _packet: &CapturedPacket, timeout: Duration) {
+        if let Some(causal) = &self.shared.causal {
+            causal.wait_for_revision(timeout);
+        }
     }
 
     fn finish_pending(&self, packet: &CapturedPacket, timeout: Duration) -> GateDecision {

@@ -249,6 +249,12 @@ pub trait WriteGate: Send + Sync {
         }
     }
 
+    /// Wait for evidence that may settle a pending head without counting a
+    /// decision. The output path then refreshes attribution before finalizing.
+    fn await_pending(&self, _packet: &CapturedPacket, timeout: Duration) {
+        std::thread::sleep(timeout);
+    }
+
     /// Complete a pending head decision within the caller's finite allowance.
     fn finish_pending(&self, _packet: &CapturedPacket, _timeout: Duration) -> GateDecision {
         GateDecision::Reject(GateRejection::Unresolved)

@@ -1125,6 +1125,13 @@ fn capture_live(
     // instant rather than by the window state at write time (review of PR #26).
     let mut acquired_at: Option<Timestamp> = None;
     loop {
+        if stop_on_managed_volume_bound(
+            &mut session,
+            &gate_handle,
+            !config.shutdown_scope.is_empty(),
+        ) {
+            break;
+        }
         if session.acquired() {
             break;
         }
@@ -1333,6 +1340,12 @@ fn capture_live(
     // inactive session and stops the pipeline within a tick.
     if zero_volume_bound(config) {
         session.on_volume_reached();
+    } else {
+        let _ = stop_on_managed_volume_bound(
+            &mut session,
+            &gate_handle,
+            !config.shutdown_scope.is_empty(),
+        );
     }
 
     if config.shutdown_scope.is_empty() {
@@ -1626,6 +1639,7 @@ fn drive_live(
         // A busy queue may never time out. Tick after every kind of message,
         // using the same monotonic clock as a silent capture.
         advance_live_deadline(session, started);
+        let _ = stop_on_managed_volume_bound(session, gate_handle, managed_route);
         let progress_happened = emitter.progress_written() != progress_before;
         if progress_happened {
             // A real progress line (a stage match/exit, a filter-narrowing
@@ -2085,6 +2099,21 @@ fn is_active(session: &CaptureSession) -> bool {
     )
 }
 
+/// The managed packet gate can meet a bound before the final client acquires.
+/// Its exact admitted count is authoritative even while the session is Watching.
+fn stop_on_managed_volume_bound(
+    session: &mut CaptureSession,
+    gate: &GateHandle,
+    managed_route: bool,
+) -> bool {
+    if managed_route && gate.bound_hit() && is_active(session) {
+        session.on_volume_reached();
+        true
+    } else {
+        false
+    }
+}
+
 /// Whether a zero volume bound is configured (`--max-packets 0` or
 /// `--max-bytes 0`). Such a bound is met before any packet is retained, so the
 /// session's per-packet volume check never fires it; the driver stops for it
@@ -2285,6 +2314,50 @@ mod tests {
     use fragcap::ProcessEvent;
     use fragcap::{StageId, StopReason, Timestamp};
     use std::sync::Arc;
+
+    #[test]
+    fn launch_packets_can_end_a_managed_session_before_client_acquisition() {
+        use fragcap::core::{
+            Attribution, CapturedPacket, Fidelity, InterfaceId, Payload, RawPacket,
+        };
+        use fragcap::{
+            BindingPublisher, CaptureScope, RoleBindingInterval, SessionGate, WriteGate,
+        };
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#).unwrap();
+        let config = fragcap::SessionConfig {
+            packet_bound: Some(1),
+            scope: CaptureScope::Target,
+            ..Default::default()
+        };
+        let mut session = fragcap::CaptureSession::new(profile, config.clone());
+        let at = fragcap::Timestamp::from_nanos(10);
+        session.attach(at);
+        assert!(!session.acquired());
+        let publisher = BindingPublisher::default();
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 101,
+            started: Some(at),
+            exited: None,
+            role: None,
+            stage: None,
+        }]);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&config, tx, publisher);
+        handle.open_from(at);
+        let mut packet = CapturedPacket::from_raw(
+            RawPacket::new(at, Payload::copy_from_slice(&[0; 32]), 32),
+            InterfaceId::default(),
+        );
+        packet.attribution = Some(Attribution::new(101, "launcher.exe", Fidelity::Live));
+        assert!(gate.admit(&packet));
+        assert!(super::stop_on_managed_volume_bound(
+            &mut session,
+            &handle,
+            true
+        ));
+        assert_eq!(session.stop_reason(), Some(StopReason::VolumeReached));
+        assert!(!super::is_active(&session));
+    }
 
     #[cfg(all(feature = "etw", windows))]
     #[test]
