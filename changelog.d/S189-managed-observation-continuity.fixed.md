@@ -1,2 +1,0 @@
-<!-- spec-impact: 10.6, 17.2.1, 25.2, 27.3 -->
-Managed Deep Capture keeps a proven client-to-launcher handoff alive, binds only an exact successor, and reports an incomplete handoff when none arrives within the finite wait. Its requested observation duration begins at verified client acquisition, with topology-aware defaults and plan-visible phase budgets; ordinary Capture retains its existing timing and terminal-exit behavior.

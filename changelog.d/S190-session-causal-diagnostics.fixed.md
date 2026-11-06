@@ -1,2 +1,0 @@
-<!-- spec-impact: 13.7, 27.3 -->
-Native Deep Capture retains bounded per-connection stage and failure evidence, including client TLS success before an upstream failure and completed HTTP work before a later idle timeout. The session bundle, calibration assessment, terminal event, and manifest expose diagnostic loss and measured lifecycle phase time under the existing connection and authorization identities.

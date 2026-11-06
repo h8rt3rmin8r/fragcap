@@ -40,13 +40,13 @@
 
 - [x] T009 [US2] Repair the dated-lead format in `changelog.d/S193-native-blind-relay.decisions.md` and `changelog.d/S194-scope-calibration-journey.decisions.md` without weakening the validator.
 - [x] T010 [US2] Add the S195 timing and candidate decision/fix fragments under `changelog.d/`.
-- [ ] T011 [US2] Commit the complete Spec-Kit record, #566 correction, and fragment readiness repair so cargo-release can run from a clean branch.
-- [ ] T012 [US2] Execute cargo-release 0.10.14 for the workspace and verify it changes only first-party version identity.
-- [ ] T013 [US2] Update embedded v0.10.14 test and conformance identities, then regenerate repository-owned goldens.
-- [ ] T014 [US2] Refresh first-party identity in every isolated lockfile and refresh the supply-chain inventory without accepting third-party drift.
-- [ ] T015 [US2] Assemble the 2026-11-06 v0.10.14 changelog and create concise `release-notes/v0.10.14.md`, consuming every fragment once.
-- [ ] T016 [US2] Reconcile `docs/fragcap-specification.md`, `docs/plans/README.md`, `CONTRIBUTING.md`, and current security documentation, removing stale #547-open prose while preserving verified v0.10.13 public markers.
-- [ ] T017 [US2] Run notes, specification, documentation, changelog, conformance, graph, and generated-file validation and correct every candidate inconsistency.
+- [x] T011 [US2] Commit the complete Spec-Kit record, #566 correction, and fragment readiness repair so cargo-release can run from a clean branch.
+- [x] T012 [US2] Execute cargo-release 0.10.14 for the workspace and verify it changes only first-party version identity.
+- [x] T013 [US2] Update embedded v0.10.14 test and conformance identities, then regenerate repository-owned goldens.
+- [x] T014 [US2] Refresh first-party identity in every isolated lockfile and refresh the supply-chain inventory without accepting third-party drift.
+- [x] T015 [US2] Assemble the 2026-11-06 v0.10.14 changelog and create concise `release-notes/v0.10.14.md`, consuming every fragment once.
+- [x] T016 [US2] Reconcile `docs/fragcap-specification.md`, `docs/plans/README.md`, `CONTRIBUTING.md`, and current security documentation, removing stale #547-open prose while preserving verified v0.10.13 public markers.
+- [x] T017 [US2] Run notes, specification, documentation, changelog, conformance, graph, and generated-file validation and correct every candidate inconsistency.
 
 **Checkpoint**: One v0.10.14 candidate exists, and no publication claim has advanced.
 
@@ -58,9 +58,9 @@
 
 **Independent Test**: The final PR head has terminal successful applicable checks, exact-head package evidence, every actual review comment answered, zero unresolved threads, and no more than two Codex rounds.
 
-- [ ] T018 [US3] Run complete local `cargo xtask ci`, MSRV, neutral, documentation build, notes, supply-chain, dependency-policy, isolated-graph, text, encoding, and mojibake checks.
-- [ ] T019 [US3] Complete the post-implementation Spec-Kit convergence review and resolve every finding.
-- [ ] T020 [US3] Record exact local verification and explicit unverified boundaries in `specs/195-v0-10-14-release/verification.md`, mark completed tasks, and finalize the candidate commit.
+- [x] T018 [US3] Run complete local `cargo xtask ci`, MSRV, neutral, documentation build, notes, supply-chain, dependency-policy, isolated-graph, text, encoding, and mojibake checks.
+- [x] T019 [US3] Complete the post-implementation Spec-Kit convergence review and resolve every finding.
+- [x] T020 [US3] Record exact local verification and explicit unverified boundaries in `specs/195-v0-10-14-release/verification.md`, mark completed tasks, and finalize the candidate commit.
 - [ ] T021 [US3] Push `release/0.10.14`, open the official PR with `Closes #566` and a non-closing reference to #567, and move both project items to PR review.
 - [ ] T022 [US3] Monitor every applicable hosted check and obtain exact final-head Windows package-certification evidence.
 - [ ] T023 [US3] Inspect all hosted code and security review surfaces, respond to every comment, apply required corrections, and resolve every thread.

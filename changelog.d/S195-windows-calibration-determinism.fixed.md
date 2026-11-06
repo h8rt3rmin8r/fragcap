@@ -1,1 +1,0 @@
-The controlled Windows setup-to-fresh-calibration regression now uses a finite launch allowance that tolerates ordinary hosted-runner scheduling, instead of racing a one-second startup budget. Product timeout defaults, explicit operator deadlines, and the one-second controlled observation remain unchanged.
