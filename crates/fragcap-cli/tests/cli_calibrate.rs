@@ -2163,7 +2163,10 @@ fn steam_client_setup_reports_completion_then_reaches_fresh_calibration() {
         "--local-db",
         local.to_str().unwrap(),
         "--wait",
-        "1s",
+        // Keep the controlled end-to-end launch finite without turning hosted
+        // runner scheduling into the behavior under test. Adjacent controlled
+        // calibration paths use the same allowance; observation stays at 1s.
+        "7s",
         "--duration",
         "1s",
     ]);

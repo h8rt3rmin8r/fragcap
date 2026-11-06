@@ -10,6 +10,58 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-11-06
+
+### Fixed
+
+Managed Deep Capture keeps a proven client-to-launcher handoff alive, binds only an exact successor, and reports an incomplete handoff when none arrives within the finite wait. Its requested observation duration begins at verified client acquisition, with topology-aware defaults and plan-visible phase budgets; ordinary Capture retains its existing timing and terminal-exit behavior.
+
+Native Deep Capture retains bounded per-connection stage and failure evidence, including client TLS success before an upstream failure and completed HTTP work before a later idle timeout. The session bundle, calibration assessment, terminal event, and manifest expose diagnostic loss and measured lifecycle phase time under the existing connection and authorization identities.
+
+S191: Extend controlled managed-client handoff coverage for #552 and add the #558 library-first pre-inspection decision for exact game ownership. Native TCP connections and UDP associations decide from bounded client-side socket and managed process evidence before TLS or content inspection. Current public Deep Capture remains launch-chain; blind forwarding and public selection follow in separate issues. The Npcap SDK import library remains required for each live-capture build and is acquired at build time.
+
+S192: Move Windows default user storage to the current account's `.fragcap` directory so ordinary and packaged launches resolve one location. Copy an unambiguous legacy SQLite store and authored profiles without removing the source, retain historical sessions at their original paths for Doctor recovery, and report selected and effective storage destinations. Align fresh-start and MSI cleanup with the new roots.
+
+S193: Implement #559 native blind relay for middleware and unresolved owner decisions. Authenticated HTTP/1 CONNECT, HTTP/2 CONNECT, SOCKS TCP, and SOCKS UDP preserve original client-origin traffic without excluded application content or proxy-owned TLS keys. Plaintext HTTP/1 and HTTP/2 keep correct framing while suppressing excluded application exports. UDP QUIC Initial packets bypass native QUIC termination for excluded owners. Directional relay totals and frozen decisions enter bounded diagnostics. Public exact-game selection and calibration remain separate follow-up issues.
+
+S194: Complete #560 and #561 with one scope-aware calibration and Deep Capture journey. `--inspect-scope auto|game|launch-chain` resolves before effects, launcher-mediated `auto` selects exact-game inspection with blind middleware relay, and exact scope and handling dimensions now bind compatibility facts and workflow attempts. Generated handoffs preserve the requested scope. An initial workflow may separately authorize one linked exact-game retry and packet-only evidence fallback from an unsuccessful typed inspection result, independently from lifecycle completion. Retry inheritance requires unchanged target and resolved launch authority; fallback success requires reconciled capture output, required artifacts, event delivery, and cleanup. Authorization, Targets, Doctor, human and JSON guidance, native artifacts, and Windows package certification report the same contract. Legacy facts remain history and cannot qualify scope-specific cases.
+
+The controlled Windows setup-to-fresh-calibration regression now uses a finite launch allowance that tolerates ordinary hosted-runner scheduling, instead of racing a one-second startup budget. Product timeout defaults, explicit operator deadlines, and the one-second controlled observation remain unchanged.
+
+Current documentation and frozen replay authority identify the independently verified v0.10.13 files and all ten published crates. Basename-only managed-stage path verification, top-level acquisition timeout, and the combined live #547 source correction are described as shipped; later installed-product findings return as version-specific issues.
+
+### Decisions
+
+2026-11-04: Keep the native proxy's inspection decision interface platform neutral and inject the facade's exact Windows socket and managed-process authority. Freeze one decision per TCP connection and per admitted UDP association before TLS or content work. Reuse the attribution index's socket-match rank so exact, wildcard, and dual-stack UDP binds agree with packet attribution; equal-ranked competing owners remain ambiguous. Bound active and timed-out lookup workers with a separate session semaphore and retain uncertainty rather than promoting a late owner match. Preserve the current launch-chain CLI path until the separate blind relay and operator integration work exists. Treat the Npcap SDK import library as a recurring link-time dependency acquired for each build; its short-lived CI copy does not make the build dependency optional or remove the separate runtime Npcap prerequisite.
+
+2026-11-04: Preserve the PowerShell script-block braces and type brackets through MSI SetProperty formatting so the current-user fresh-start identity check reaches PowerShell intact. WixQuietExec passes that already formatted command to PowerShell, so each literal requires exactly one MSI escape layer. Add and then trim a trailing dot on AppData arguments so their terminal backslashes cannot consume closing command-line quotes. Use ordinary string characters for the adjacent Defender add, rollback, and remove path trimming, avoiding type brackets in those commands. 2026-11-04: Keep `scripts/Test-PackageCertification.ps1` compatible with published v0.10.13 package replay by selecting its AppData fixtures when the replay workflow supplies `FRAGCAP_REVIEW_ARTIFACTS`; certify S192's `.fragcap` roots and independent ordinary-process readback for the new candidate. A confirmed fresh start writes a durable marker beside the new data roots before deletion, preventing retained legacy AppData state from being imported on the next start. Compare SQLite schema and row values instead of DB and WAL file bytes so an idle checkpoint does not create a false transition conflict.
+
+**2026-11-04** Reuse the S191 frozen owner decision on the existing authenticated listener. A hostname bypass or second listener would break same-origin game and launcher separation and duplicate destination and route-owner authority.
+
+Relay HTTP/1 CONNECT and SOCKS TCP as original bytes. Plaintext HTTP/1 and cleartext HTTP/2 still use their framing engines, with excluded application event sinks and retention disabled; retained connection diagnostics carry the relay decision and transfer totals.
+
+Keep UDP association ownership independent from its TCP control decision. An excluded association forwards QUIC Initial as an original datagram and cannot create the session-CA QUIC gateway.
+
+Preserve the public CLI's launch-chain behavior until #561. This slice supplies the runtime branch consumed by that operator integration and by #560 calibration; it does not claim #542's launcher failure resolved or a pre-release installed-product test.
+
+**2026-11-05** Seal the public scope vocabulary as `auto|game|launch-chain`. Resolve `auto` before effects, using exact-game inspection with blind relay for launcher-mediated targets and launch-chain inspection for direct targets.
+
+Make requested scope, effective scope, middleware handling, and policy identity exact applicability dimensions. Store version 14 preserves legacy facts with absent dimensions, so they remain readable but inapplicable to new exact cases.
+
+Keep fallback authority in the initial immutable workflow and select recovery from the typed inspection result independently from lifecycle completion. One unsuccessful launch-chain inspection may produce one fresh exact-game successor only when that authority was reviewed and fresh resolution reproduces its target and resolved launch authority apart from the scope transition. Packet-only fallback retains its actual passive observation without creating a positive Deep Capture fact only after capture output, required artifacts, event delivery, and cleanup reconcile; otherwise the original failure remains authoritative.
+
+Certify the parser and exact-game authorization contract from the packaged executable in CI. Installed-product and private-title observations occur after release and any defect returns as a GitHub issue.
+
+**2026-11-06** Correct the hosted Windows calibration regression at its test-only timing boundary: the controlled setup-to-fresh-calibration path uses the same finite seven-second launch allowance as adjacent calibration cases, while production defaults and exact operator deadlines remain unchanged.
+
+Prepare S189 through S194 and the timing correction as v0.10.14 candidate source on the required release branch. Candidate version, generated output, conformance identity, dependency authorities, specification applicability, changelog, notes, and package identity advance together. Verified current-public and frozen-review records remain on v0.10.13 until separately authorized publication and independent readback.
+
+Close #566 through the candidate correction and keep release-delivery issue #567 open through tag, asset, registry, and current-marker reconciliation. Installed-product and private-title observations occur only after release; any concrete failure returns as a version-specific issue.
+
+**2026-11-06** The v0.10.14 release bump changes only the eleven first-party package versions across the three locked dependency graphs. Rebind the measured graph digests and the unchanged unsafe implementation inventory without changing third-party packages, sources, features, providers, package counts, edge counts, exception inventory, or review expiry. Synchronize the nine first-party identities in each isolated fuzz and native-performance lockfile; their third-party resolutions remain unchanged. The not-started independent-review template moves to 0.10.14 without claiming a review.
+
+2026-11-02: Advance current v0.10.13 publication markers, documentation coverage, frozen review candidate, and six exact asset authorities only after merged source, annotated tag, all ten post-merge main workflows, all four tagged jobs, normal protected registry approval, six independently downloaded files, and ten non-yanked registry archives reconcile. Retarget the published replay label to these verified bytes. Preserve the v0.8.0 predecessor, historical evidence, and unperformed independent whole-product review status. Hosted certification did not exercise a private title on the operator workstation or establish universal title compatibility; later installed-product failures return as version-specific issues.
+
 ## [0.10.13] - 2026-11-02
 
 ### Fixed
@@ -2564,6 +2616,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.10.14]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14
 [0.10.13]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13
 [0.10.12]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.12
 [0.10.11]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.11

@@ -1,2 +1,0 @@
-<!-- spec-impact: 15.3, 24, 27 -->
-S192: Move Windows default user storage to the current account's `.fragcap` directory so ordinary and packaged launches resolve one location. Copy an unambiguous legacy SQLite store and authored profiles without removing the source, retain historical sessions at their original paths for Doctor recovery, and report selected and effective storage destinations. Align fresh-start and MSI cleanup with the new roots.

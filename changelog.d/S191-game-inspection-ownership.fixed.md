@@ -1,2 +1,0 @@
-<!-- spec-impact: 27.3 -->
-S191: Extend controlled managed-client handoff coverage for #552 and add the #558 library-first pre-inspection decision for exact game ownership. Native TCP connections and UDP associations decide from bounded client-side socket and managed process evidence before TLS or content inspection. Current public Deep Capture remains launch-chain; blind forwarding and public selection follow in separate issues. The Npcap SDK import library remains required for each live-capture build and is acquired at build time.
