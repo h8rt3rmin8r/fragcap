@@ -3072,7 +3072,7 @@ mod tests {
         trace.complete(crate::ConnectionStage::ClientTls);
         trace.reach(crate::ConnectionStage::UpstreamTls);
         trace.fail("upstream-tls", None, Some("connection-reset"), None);
-        let detail = trace.into_diagnostic(17, "failed", Some("tls-refusal-unknown"));
+        let detail = trace.into_diagnostic(17, "failed", Some("tls-transport-ended"));
         assert_eq!(detail.schema_version, 1);
         assert_eq!(detail.last_completed, crate::ConnectionStage::ClientTls);
         assert_eq!(detail.last_reached, crate::ConnectionStage::UpstreamTls);
@@ -3106,6 +3106,28 @@ mod tests {
             Some("after-completed-exchange")
         );
         assert_eq!(detail.last_completed, crate::ConnectionStage::FirstRequest);
+        assert_eq!(detail.boundary, Some("client-facing"));
+    }
+
+    #[test]
+    fn header_timeout_before_first_request_has_no_completed_exchange() {
+        let mut observed = observation();
+        let mut trace = ConnectionTrace::default();
+        trace.reach(crate::ConnectionStage::FirstRequest);
+        trace.fail("client-facing", None, Some("timeout"), None);
+        record_connection_diagnostic_with_trace(
+            &mut observed,
+            19,
+            "failed",
+            Some("http-header-timeout"),
+            4,
+            trace,
+            crate::ProtocolAccounting::default(),
+        );
+        let detail = &observed.connection_diagnostics[0];
+        assert_eq!(detail.completed_exchanges, 0);
+        assert_eq!(detail.header_timeout_phase, Some("before-first-request"));
+        assert_eq!(detail.last_reached, crate::ConnectionStage::FirstRequest);
         assert_eq!(detail.boundary, Some("client-facing"));
     }
 
@@ -3204,6 +3226,8 @@ mod tests {
             ("http-authority-missing", Cause::Protocol),
             ("http2-authority-mismatch", Cause::Protocol),
             ("tls-tunnel-authority-mismatch", Cause::Protocol),
+            ("tls-invalid-message", Cause::Protocol),
+            ("tls-transport-ended", Cause::Transport),
             ("http2-auth-timeout", Cause::Timeout),
             ("socks-auth-write-failed", Cause::Transport),
             ("upstream-connect-failed", Cause::Upstream),

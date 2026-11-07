@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{Read, Seek, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fragcap_proxy::{
     tls_client_config_with_roots, tls_client_config_with_roots_and_identity, ApplicationEvent,
@@ -20,6 +20,199 @@ impl ApplicationEventSink for Collector {
         self.0.lock().unwrap().push(event);
         EventDisposition::Accepted
     }
+}
+
+struct InspectLaunchChain;
+
+impl fragcap_proxy::InspectionDecider for InspectLaunchChain {
+    fn requested_scope(&self) -> &'static str {
+        "launch-chain"
+    }
+
+    fn decide(
+        &self,
+        _request: fragcap_proxy::InspectionRequest,
+        _budget: Duration,
+    ) -> fragcap_proxy::InspectionDecision {
+        fragcap_proxy::InspectionDecision::launch_chain()
+    }
+}
+
+fn refused_client_tls_after_connect(bytes: Option<&[u8]>, code: &str, transport: &str) {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s198-client-refusal")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(InspectLaunchChain))
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(
+        client,
+        "CONNECT {address} HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\n\r\n",
+        auth.as_str()
+    )
+    .unwrap();
+    assert_eq!(
+        read_head(&mut client),
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+    if let Some(bytes) = bytes {
+        client.write_all(bytes).unwrap();
+    }
+    client.shutdown(Shutdown::Write).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if lease
+            .observation(Duration::from_millis(100))
+            .is_ok_and(|observation| observation.failed_connections == 1)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.accepted_connections, 1);
+    assert_eq!(report.observation.failed_connections, 1);
+    assert_eq!(report.observation.protocol.client_tls_completed, 0);
+    assert_eq!(report.observation.protocol.upstream_tls_completed, 0);
+    let detail = &report.observation.connection_diagnostics[0];
+    assert_eq!(detail.connection_id, 1);
+    assert_eq!(detail.code, Some(code));
+    assert_eq!(detail.boundary, Some("client-tls"));
+    assert_eq!(detail.transport_category, Some(transport));
+    assert_eq!(detail.tls_alert, None);
+    assert_eq!(
+        detail.last_reached,
+        fragcap_proxy::ConnectionStage::ClientTls
+    );
+    assert_eq!(
+        detail.last_completed,
+        fragcap_proxy::ConnectionStage::TunnelResponse
+    );
+    assert_eq!(
+        detail.inspection.unwrap().action,
+        fragcap_proxy::InspectionAction::Inspect
+    );
+    assert_eq!(detail.header_timeout_phase, None);
+    assert_eq!(detail.completed_exchanges, 0);
+    assert!(report
+        .observation
+        .application
+        .iter()
+        .all(|item| item.inspectability != "full"));
+}
+
+#[test]
+fn launch_chain_connect_eof_is_a_transport_end_without_tls_alert() {
+    refused_client_tls_after_connect(None, "tls-transport-ended", "unexpected-eof");
+}
+
+#[test]
+fn launch_chain_connect_invalid_tls_is_a_malformed_message() {
+    refused_client_tls_after_connect(
+        Some(b"GET /not-tls HTTP/1.1\r\n\r\n"),
+        "tls-invalid-message",
+        "invalid-data",
+    );
+}
+
+#[test]
+fn launch_chain_upstream_transport_end_keeps_client_tls_completion() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = origin.accept().unwrap();
+        drop(tcp);
+    });
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s198-upstream-refusal")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(InspectLaunchChain))
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut tcp = TcpStream::connect(lease.endpoint()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(
+        tcp,
+        "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\nProxy-Authorization: {}\r\n\r\n",
+        address.port(),
+        address.port(),
+        auth.as_str()
+    )
+    .unwrap();
+    assert_eq!(
+        read_head(&mut tcp),
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(lease.ca_der().to_vec()))
+        .unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connection = rustls::ClientConnection::new(
+        Arc::new(client_config),
+        ServerName::try_from("localhost").unwrap().to_owned(),
+    )
+    .unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, tcp);
+    let _ = tls.write_all(b"GET /secure HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let mut response = Vec::new();
+    let _ = tls.read_to_end(&mut response);
+    assert!(response.is_empty());
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.failed_connections, 1);
+    assert_eq!(report.observation.protocol.client_tls_completed, 1);
+    assert_eq!(report.observation.protocol.upstream_tls_completed, 0);
+    let detail = &report.observation.connection_diagnostics[0];
+    assert_eq!(detail.code, Some("tls-transport-ended"));
+    assert_eq!(detail.boundary, Some("upstream-tls"));
+    assert!(detail.stages.iter().any(|stage| {
+        stage.stage == fragcap_proxy::ConnectionStage::ClientTls && stage.completed_ms.is_some()
+    }));
+    assert_eq!(detail.tls_alert, None);
+    assert!(matches!(
+        detail.transport_category,
+        Some("unexpected-eof" | "connection-reset" | "connection-aborted" | "broken-pipe")
+    ));
+    assert!(!report
+        .observation
+        .application
+        .iter()
+        .any(|item| item.protocol == "https" && item.inspectability == "full"));
 }
 
 fn read_head(stream: &mut impl Read) -> Vec<u8> {
@@ -258,6 +451,114 @@ fn round_trip(
             .any(|line| line.starts_with("SERVER_TRAFFIC_SECRET_0 ")));
     }
     assert_eq!(key_log.status().records, secrets.lines().count() as u64);
+}
+
+#[test]
+fn launch_chain_inspects_independent_launcher_and_updater_tls_exchanges() {
+    let (launcher, launcher_cert, launcher_task) = tls_origin(&rustls::version::TLS13, "GET");
+    let (updater, updater_cert, updater_task) = tls_origin(&rustls::version::TLS13, "GET");
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s198-launcher-pair")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(launcher);
+    policy.grant_for_test(updater);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(launcher_cert).unwrap();
+    roots.add(updater_cert).unwrap();
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(InspectLaunchChain))
+        .with_tls_client_config(tls_client_config_with_roots(roots).unwrap())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    for address in [launcher, updater] {
+        let mut tcp = TcpStream::connect(lease.endpoint()).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(
+            tcp,
+            "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\nProxy-Authorization: {}\r\n\r\n",
+            address.port(),
+            address.port(),
+            auth.as_str()
+        )
+        .unwrap();
+        assert_eq!(
+            read_head(&mut tcp),
+            b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        );
+        let mut client_roots = rustls::RootCertStore::empty();
+        client_roots
+            .add(CertificateDer::from(lease.ca_der().to_vec()))
+            .unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(client_roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let mut connection = rustls::ClientConnection::new(
+            Arc::new(client_config),
+            ServerName::try_from("localhost").unwrap().to_owned(),
+        )
+        .unwrap();
+        connection
+            .writer()
+            .write_all(
+                format!(
+                    "GET /secure HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+                    address.port()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, tcp);
+        tls.flush().unwrap();
+        let mut response = String::new();
+        if let Err(error) = tls.read_to_string(&mut response) {
+            assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof, "{error}");
+        }
+        assert!(response.ends_with("SECURE"), "{response}");
+    }
+    launcher_task.join().unwrap();
+    updater_task.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.accepted_connections, 2);
+    assert_eq!(report.observation.failed_connections, 0);
+    assert_eq!(report.observation.protocol.client_tls_completed, 2);
+    assert_eq!(report.observation.protocol.upstream_tls_completed, 2);
+    assert_eq!(report.observation.protocol.requests, 2);
+    assert_eq!(report.observation.protocol.responses, 2);
+    assert_eq!(report.observation.connection_diagnostics.len(), 2);
+    for (id, detail) in report.observation.connection_diagnostics.iter().enumerate() {
+        assert_eq!(detail.connection_id, id as u64 + 1);
+        assert_eq!(detail.code, None);
+        assert_eq!(detail.completed_exchanges, 1);
+        assert!(detail.stages.iter().any(|stage| {
+            stage.stage == fragcap_proxy::ConnectionStage::ClientTls && stage.completed_ms.is_some()
+        }));
+        assert!(detail.stages.iter().any(|stage| {
+            stage.stage == fragcap_proxy::ConnectionStage::UpstreamTls
+                && stage.completed_ms.is_some()
+        }));
+    }
+    assert_eq!(
+        report
+            .observation
+            .application
+            .iter()
+            .filter(|item| item.protocol == "https" && item.inspectability == "full")
+            .count(),
+        2
+    );
 }
 
 #[test]

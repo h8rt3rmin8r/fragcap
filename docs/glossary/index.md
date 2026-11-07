@@ -256,6 +256,7 @@ the owning category page.
 - [Test tier](rust-and-tooling.md#test-tier)
 - [Third-party notices](platform-and-distribution.md#third-party-notices)
 - [Threat registry](capture-and-networking.md#threat-registry)
+- [TLS refusal diagnostic](command-line-and-diagnostics.md#tls-refusal-diagnostic)
 - [Trace session](process-and-attribution.md#trace-session)
 - [Trailer record](file-and-wire-formats.md#trailer-record)
 - [Transport](capture-and-networking.md#transport)

@@ -56,6 +56,17 @@ Progress distinguishes resource readiness from traffic observation and evidence 
 
 - [Progress and failure reporting](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#263-diagnostics) (project primary source for progress, output modes, and recovery).
 
+## TLS refusal diagnostic
+
+A native Deep Capture connection record that names the accepted connection, reached TLS stage, observed boundary, stable failure code, and any explicit peer alert or transport category.
+
+`tls-transport-ended` means the handshake ended at the transport (for example, EOF or reset) without a structured TLS cause. `tls-invalid-message` requires a structured malformed TLS message; a generic invalid-data error does not prove that cause. A CONNECT 200 records tunnel setup only. Inspected HTTP evidence requires completed TLS and application work, while a later `http-header-timeout` retains the count of already completed exchanges.
+
+{: .matters }
+> The diagnostic does not identify which peer intentionally closed the connection or prove trust rejection or pinning without its own signal. Packet and process ownership require independent correlation, and launcher-only traffic does not establish final-client compatibility.
+
+**See also:** [Session progress](command-line-and-diagnostics.md#session-progress), [Deep Capture](capture-and-networking.md#deep-capture)
+
 ## Terminal report
 
 An immutable result that distinguishes an operation's outcome from its evidence completeness and resource cleanup.
