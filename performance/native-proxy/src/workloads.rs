@@ -558,7 +558,7 @@ fn quic(capture: bool) -> io::Result<Measurement> {
         direct_roots
             .add(direct_ca.der().clone())
             .map_err(io::Error::other)?;
-        let direct = quic_exchange(direct_origin, direct_roots, None, "localhost", 1024 * 1024)
+        let direct = quic_exchange(direct_origin, direct_roots, "localhost", 1024 * 1024)
             .await
             .map_err(|error| io::Error::other(format!("direct QUIC exchange: {error}")))?;
         direct_task
@@ -647,9 +647,8 @@ async fn proxied_quic_exchange(
     let shuttle = UdpSocket::bind("127.0.0.1:0")?;
     shuttle.set_read_timeout(Some(Duration::from_millis(50)))?;
     let shuttle_address = shuttle.local_addr()?;
-    let client_probe = UdpSocket::bind("127.0.0.1:0")?;
-    let client_address = client_probe.local_addr()?;
-    drop(client_probe);
+    let client_endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap())?;
+    let client_address = client_endpoint.local_addr()?;
     let (control, relay) = authenticate_and_associate(
         native.endpoint(),
         native.capability_proof().proxy_password().as_bytes(),
@@ -690,10 +689,10 @@ async fn proxied_quic_exchange(
     client_roots
         .add(native.ca_der().to_vec().into())
         .map_err(io::Error::other)?;
-    let result = quic_exchange(
+    let result = quic_exchange_on_client(
         shuttle_address,
         client_roots,
-        Some(client_address),
+        client_endpoint,
         server_name,
         payload_bytes,
     )
@@ -783,7 +782,17 @@ async fn quic_origin(
 async fn quic_exchange(
     endpoint: SocketAddr,
     roots: RootCertStore,
-    bind: Option<SocketAddr>,
+    server_name: &str,
+    payload_bytes: usize,
+) -> io::Result<u64> {
+    let client = Endpoint::client("127.0.0.1:0".parse().unwrap())?;
+    quic_exchange_on_client(endpoint, roots, client, server_name, payload_bytes).await
+}
+
+async fn quic_exchange_on_client(
+    endpoint: SocketAddr,
+    roots: RootCertStore,
+    mut client: Endpoint,
     server_name: &str,
     payload_bytes: usize,
 ) -> io::Result<u64> {
@@ -799,14 +808,6 @@ async fn quic_exchange(
     quic_limits.max_socks_udp_datagram_bytes = 8192;
     let client_config = build_quic_client_config(&tls, &quic_limits)
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
-    let local = bind.unwrap_or("127.0.0.1:0".parse().unwrap());
-    let mut client = Endpoint::client(local)?;
-    let client_address = client.local_addr()?;
-    if let Some(expected) = bind
-        && client_address != expected
-    {
-        return Err(io::Error::other("QUIC client reservation changed"));
-    }
     client.set_default_client_config(client_config);
     let connection = client
         .connect(endpoint, server_name)

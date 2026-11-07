@@ -41,7 +41,7 @@
 ## Phase 5: Verification and publication
 
 - [x] T017 Run focused Rust tests, `cargo xtask ci`, applicable Windows-controlled checks, formatting, encoding/mojibake review, and `git diff --check` on the exact local head.
-- [ ] T018 Commit the verified S198 slice, push the explicitly authorized branch, and open an official PR with `Closes #574` and concrete evidence.
+- [x] T018 Commit the verified S198 slice, push the explicitly authorized branch, and open an official PR with `Closes #574` and concrete evidence.
 - [ ] T019 Wait for exact-head hosted CI and all arriving external reviews, fix and answer every actionable comment, request at most one second `@codex` round, and leave the green PR for owner final review and merge.
 
 ## Dependencies and Execution Order
