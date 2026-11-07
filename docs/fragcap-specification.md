@@ -206,6 +206,7 @@ enforcement.
 | 0.1.116-draft | 2026-11-05 | Codex | S194 carries requested and effective inspection scope through calibration, compatibility, authorization, operator output, artifacts, and package certification, with one separately authorized exact-game retry or packet-only fallback. Updates sections 15.7, 17.4, 19.3, and 27.3; public v0.10.13 identity remains unchanged. |
 | 0.1.117-draft | 2026-11-06 | Codex | S195 prepares the v0.10.14 source candidate from S189 through S194, corrects the controlled Windows calibration timing regression without changing production deadlines, and preserves verified v0.10.13 public authorities until later publication. Updates sections 1, 25.2, and 27.3. |
 | 0.1.118-draft | 2026-11-06 | Codex | S196 reconciles exact v0.10.14 tag, protected publication, six public files, ten registry archives, hosted package certification, portable default-path observation, and current public records. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.120-draft | 2026-11-06 | Codex | S198 distinguishes observed TLS transport ending from structured invalid TLS messages in launch-chain inspection, retaining exact stage, alert, owner, and completed-work evidence. Updates sections 13.7 and 27.3 without changing published v0.10.14 identity. |
 | 0.1.119-draft | 2026-11-06 | Codex | S197 gives managed Deep Capture one exact launch-chain packet scope from launch inception through route-owner release, makes full-chain application inspection the ordinary default, and includes receipt-backed causal helpers in bounded shutdown. Updates sections 10, 15.7, 17.4, and 27.3 without changing published v0.10.14 identity. |
 
 ## 2. Purpose and Problem Statement
@@ -2102,6 +2103,18 @@ request evidence and, when independently proven, exact process-instance
 correlation in `application.jsonl`. Missing or ambiguous ownership remains
 explicit. Compact diagnostics omit raw authority, payload, credentials, and
 private certificate material.
+
+For client-facing and upstream TLS handshakes, a transport EOF, reset, abort,
+or broken pipe without a structured TLS cause is `tls-transport-ended`. A
+structured rustls invalid message in the bounded error source chain is
+`tls-invalid-message`; an unstructured `invalid-data` I/O error remains
+`tls-refusal-unknown`. An explicit peer alert retains its alert and existing
+trust, client-auth, pinning-signal, or protocol class. These codes report the
+observed failure boundary, not the identity or intent of the closing peer.
+An inspected handshake failure remains failed without blind relay. An HTTP
+header timeout after completed work remains a separate terminal with its
+completed-exchange count and phase. A CONNECT 200 proves tunnel setup, not
+TLS completion or inspected application traffic.
 
 `resource-journal.jsonl` is the synchronized ownership authority.
 `cleanup.json` is a derived compatibility projection of a completed
@@ -5193,6 +5206,8 @@ S195 (`specs/195-v0-10-14-release`) prepares v0.10.14 candidate source from S189
 S196 (`specs/196-v0-10-14-publication`) publishes the exact merged S195 source as v0.10.14, approves the normal protected registry deployment, independently reads back six public GitHub files and ten non-yanked crate archives, and advances current records only after those authorities reconcile. Hosted certification completes portable and installed package lifecycle evidence. The separately downloaded portable executable reports official identity and selects the current-user `.fragcap` root; the unelevated workstation cannot replace its existing machine-wide v0.10.13 installation, so local installed v0.10.14 and private-title behavior remain unobserved rather than inferred.
 
 S197 (`specs/197-causal-chain-coverage`) addresses #570, #571, and #573. Managed Deep Capture packet admission follows exact created-root process generations, including undeclared causal helpers, from launch inception through finite route-owner release. A bounded writer-held head waits briefly for late process proof in the existing single packet queue; unknown, unrelated, out-of-window, bounded, and lost packets retain distinct accounting. Application inspection defaults to full launch-chain across topologies; explicit game-only keeps blind middleware handling without reducing packet scope. Policy version 2 prevents older positive facts from qualifying this behavior and resume refuses drift before effects. Pre-effect authorization includes receipt-backed causal helpers, and release requests graceful close then bounded force only for proven same-account, same-session, canonical-path generations. Missing proof leaves a named unresolved obligation and never authorizes process control. The native proxy remains active until route-owner release; packet capture ends after that decision. Direct-socket routing and generic TLS refusal follow-ups remain #572 and #574. No new dependency or storage migration is added. Real private-title behavior remains unverified.
+
+S198 (`specs/198-launcher-tls-refusals`) addresses #574. An observed client-facing or upstream TLS transport end now has a stable code distinct from a structured invalid TLS message. Nested structured rustls causes and explicit alerts retain their boundary; generic invalid I/O does not imply malformed TLS, trust failure, or pinning. Controlled full-chain launcher/updater-like connections prove independent authenticated CONNECT, client TLS, verified upstream TLS, and inspected HTTP evidence; refusal cases retain accepted connection IDs and failed stages without blind relay. Exact packet and process ownership remains independently joined, and launcher-only success cannot establish a final-client compatibility fact. Header timeout before a first request and after completed exchanges stays distinct. No new dependency, schema, or migration is added. The installed private title remains unverified, and direct-socket reachability remains #572.
 
 v0.10.10 publishes S184 and S185 from merged PR #532 at `00d98c1c0fa0770eb7f3d38346247a35942915e9`; annotated tag v0.10.10 selects that exact source. All nine post-merge main workflows and four tagged release jobs passed after normal owner approval of the protected registry environment. Six public assets, three checksum sidecars, and ten non-yanked downloaded crate archives reconciled before current markers and replay authority advanced. Hosted certification exercised controlled package and clean-install behavior; no public MSI was installed on the operator workstation in this session, no real title was exercised, and independent whole-product review remains unperformed.
 

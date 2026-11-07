@@ -1358,6 +1358,7 @@ fn controlled_ordinary_session_runs_past_calibration_limit_with_plan_and_cleanup
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("bundle");
@@ -1407,8 +1408,14 @@ fn controlled_ordinary_session_runs_past_calibration_limit_with_plan_and_cleanup
     let status = child.wait().unwrap();
     let elapsed = started.elapsed();
     assert!(status.success(), "events: {records:#?}");
-    assert!(elapsed >= Duration::from_secs(60), "elapsed {elapsed:?}");
-    assert!(elapsed < Duration::from_secs(80), "elapsed {elapsed:?}");
+    assert!(
+        elapsed >= Duration::from_secs(60),
+        "elapsed {elapsed:?}; events: {records:#?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(80),
+        "elapsed {elapsed:?}; events: {records:#?}"
+    );
     let plan = records
         .iter()
         .find(|record| record["event"] == "deep_capture.authorization_plan")

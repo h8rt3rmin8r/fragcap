@@ -2578,6 +2578,52 @@ mod tests {
     }
 
     #[test]
+    fn launcher_pair_connection_ids_keep_distinct_non_client_owners() {
+        let registry = FlowRegistry::default();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let pair = [
+            (1_u64, "127.0.0.1:41000", 77_u32, "launcher.exe", "platform"),
+            (2_u64, "127.0.0.1:41001", 88_u32, "updater.exe", "publisher"),
+        ];
+        for (_, peer, pid, image, role) in pair {
+            let client: SocketAddr = peer.parse().unwrap();
+            registry.observe_at(
+                FlowKey::new(Proto::Tcp, client, proxy),
+                Timestamp::from_nanos(20),
+                Some(&Attribution::new(pid, image, Fidelity::Live).with_role(role)),
+            );
+        }
+        let joined: Vec<_> = pair
+            .into_iter()
+            .map(|(id, peer, _, _, _)| {
+                let client = peer.parse().unwrap();
+                (
+                    id,
+                    correlate_native_observation(&registry, client, proxy, 10, 30),
+                )
+            })
+            .collect();
+        assert_eq!(joined[0].0, 1);
+        assert_eq!((joined[0].1).1, Some(77));
+        assert_eq!((joined[0].1).3.as_deref(), Some("platform"));
+        assert_eq!(joined[1].0, 2);
+        assert_eq!((joined[1].1).1, Some(88));
+        assert_eq!((joined[1].1).3.as_deref(), Some("publisher"));
+        assert!(joined.iter().all(|(_, value)| {
+            value.7 == CorrelationState::Matched && value.3.as_deref() != Some("client")
+        }));
+        let missing = correlate_native_observation(
+            &registry,
+            "127.0.0.1:41002".parse().unwrap(),
+            proxy,
+            10,
+            30,
+        );
+        assert_eq!(missing.7, CorrelationState::Unavailable);
+        assert!(missing.1.is_none());
+    }
+
+    #[test]
     fn mixed_live_and_retained_evidence_reports_the_weaker_fidelity() {
         let registry = FlowRegistry::default();
         let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();

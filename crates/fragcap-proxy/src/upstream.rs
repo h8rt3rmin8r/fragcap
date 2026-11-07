@@ -336,6 +336,8 @@ pub enum TlsRefusalClass {
     ProtocolMismatch,
     ClientTrustRejection,
     CertificatePinned,
+    TransportEnded,
+    InvalidMessage,
     Unknown,
 }
 
@@ -348,6 +350,8 @@ impl TlsRefusalClass {
             Self::ProtocolMismatch => "protocol-mismatch",
             Self::ClientTrustRejection => "client-trust-rejection",
             Self::CertificatePinned => "certificate-pinned",
+            Self::TransportEnded => "tls-transport-ended",
+            Self::InvalidMessage => "tls-invalid-message",
             Self::Unknown => "tls-refusal-unknown",
         }
     }
@@ -359,11 +363,14 @@ pub fn classify_tls_io_error(
     identity_configured: bool,
 ) -> TlsRefusalClass {
     use rustls::{AlertDescription as Alert, Error};
-    let Some(error) = error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<Error>())
-    else {
-        return TlsRefusalClass::Unknown;
+    let Some(error) = rustls_io_source(error) else {
+        return match error.kind() {
+            std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe => TlsRefusalClass::TransportEnded,
+            _ => TlsRefusalClass::Unknown,
+        };
     };
     match error {
         Error::AlertReceived(Alert::BadCertificateHashValue) if client_facing => {
@@ -396,6 +403,7 @@ pub fn classify_tls_io_error(
             | Alert::AccessDenied,
         ) if identity_configured => TlsRefusalClass::ClientCertificateRejected,
         Error::InvalidCertificate(_) => TlsRefusalClass::CertificateValidation,
+        Error::InvalidMessage(_) => TlsRefusalClass::InvalidMessage,
         Error::PeerIncompatible(_)
         | Error::NoApplicationProtocol
         | Error::AlertReceived(
@@ -403,6 +411,22 @@ pub fn classify_tls_io_error(
         ) => TlsRefusalClass::ProtocolMismatch,
         _ => TlsRefusalClass::Unknown,
     }
+}
+
+/// An I/O adapter can wrap the structured TLS cause. Bound the walk so a
+/// malformed custom error chain cannot stall connection termination.
+fn rustls_io_source(error: &std::io::Error) -> Option<&rustls::Error> {
+    let mut source = error
+        .get_ref()
+        .map(|value| value as &(dyn std::error::Error + 'static));
+    for _ in 0..8 {
+        let current = source?;
+        if let Some(tls) = current.downcast_ref::<rustls::Error>() {
+            return Some(tls);
+        }
+        source = current.source();
+    }
+    None
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -515,13 +539,10 @@ impl UpstreamError {
 }
 
 pub(crate) fn diagnostic_io(error: &std::io::Error) -> (Option<String>, &'static str, Option<i32>) {
-    let alert = error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<rustls::Error>())
-        .and_then(|source| match source {
-            rustls::Error::AlertReceived(alert) => Some(format!("{alert:?}")),
-            _ => None,
-        });
+    let alert = rustls_io_source(error).and_then(|source| match source {
+        rustls::Error::AlertReceived(alert) => Some(format!("{alert:?}")),
+        _ => None,
+    });
     let category = if alert.is_some() {
         "tls-alert"
     } else {
@@ -1315,11 +1336,73 @@ mod tls_refusal_tests {
                 true,
                 false,
             ),
-            TlsRefusalClass::Unknown
+            TlsRefusalClass::TransportEnded
         );
         assert_eq!(
             classify_tls_io_error(&io(rustls::Error::NoApplicationProtocol), false, false,),
             TlsRefusalClass::ProtocolMismatch
         );
+    }
+
+    #[test]
+    fn transport_end_and_invalid_tls_remain_separate_from_unknown_io() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            let error = std::io::Error::from(kind);
+            assert_eq!(
+                classify_tls_io_error(&error, true, false).code(),
+                "tls-transport-ended"
+            );
+            let (alert, transport, _) = diagnostic_io(&error);
+            assert!(alert.is_none());
+            assert_ne!(transport, "tls-alert");
+        }
+        let malformed = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidMessage(rustls::InvalidMessage::InvalidContentType),
+        );
+        assert_eq!(
+            classify_tls_io_error(&malformed, true, false).code(),
+            "tls-invalid-message"
+        );
+        assert_eq!(diagnostic_io(&malformed).1, "invalid-data");
+        let unrelated = std::io::Error::from(std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            classify_tls_io_error(&unrelated, true, false),
+            TlsRefusalClass::Unknown
+        );
+        assert_eq!(diagnostic_io(&unrelated).1, "invalid-data");
+    }
+
+    #[derive(Debug)]
+    struct WrappedTls(rustls::Error);
+
+    impl std::fmt::Display for WrappedTls {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("wrapped TLS error")
+        }
+    }
+
+    impl std::error::Error for WrappedTls {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn nested_rustls_cause_preserves_alert_and_classification() {
+        let error = std::io::Error::other(WrappedTls(rustls::Error::AlertReceived(
+            rustls::AlertDescription::UnknownCA,
+        )));
+        assert_eq!(
+            classify_tls_io_error(&error, true, false),
+            TlsRefusalClass::ClientTrustRejection
+        );
+        assert_eq!(diagnostic_io(&error).0.as_deref(), Some("UnknownCA"));
+        assert_eq!(diagnostic_io(&error).1, "tls-alert");
     }
 }
