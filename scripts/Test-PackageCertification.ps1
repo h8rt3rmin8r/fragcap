@@ -759,7 +759,7 @@ Param(
         if ($requireExactGameInspectionScope -and
             ($contract.controlled_smoke.inspection_scope -cne 'exact-game' -or
              $contract.controlled_smoke.middleware_handling -cne 'blind-relay' -or
-             $contract.controlled_smoke.inspection_policy_id -cne 'exact-game-v1')) {
+             $contract.controlled_smoke.inspection_policy_id -cnotin @('exact-game-v1', 'exact-game-v2'))) {
             throw 'unsupported controlled smoke contract'
         }
         $contractRepositoryRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $contractFile) '..'))

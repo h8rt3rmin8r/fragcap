@@ -35,6 +35,8 @@ use fragcap::core::CaptureStats;
 // filter-narrowed event; the trait brings the method into scope.
 use fragcap::core::FlowAttributor;
 use fragcap::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
+#[cfg(all(feature = "etw", windows))]
+use fragcap::RoleBindingInterval;
 use fragcap::{
     BindingPublisher, CaptureScope, CaptureSession, GateHandle, LiveStats, Pipeline,
     PipelineConfig, PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle,
@@ -190,6 +192,21 @@ pub struct ProcessReleaseWatch {
     receiver: Receiver<DriverMsg>,
     #[cfg(all(feature = "etw", windows))]
     forwarder: Option<std::thread::JoinHandle<()>>,
+    #[cfg(all(feature = "etw", windows))]
+    packet_capture: Option<PacketReleaseCapture>,
+}
+
+#[cfg(all(feature = "etw", windows))]
+struct PacketReleaseCapture {
+    handle: std::thread::JoinHandle<PipelineReport>,
+    stop: StopHandle,
+    packet_forward: Option<std::thread::JoinHandle<()>>,
+    gate: GateHandle,
+    session: CaptureSession,
+    acquired: bool,
+    publisher: BindingPublisher,
+    stream_reports: Vec<assemble::StreamReports>,
+    ring_evicted: Option<Arc<AtomicU64>>,
 }
 
 impl ProcessReleaseWatch {
@@ -201,6 +218,7 @@ impl ProcessReleaseWatch {
             watcher: Some(watcher),
             receiver,
             forwarder: Some(forwarder),
+            packet_capture: None,
         }
     }
 
@@ -212,6 +230,7 @@ impl ProcessReleaseWatch {
             watcher: None,
             receiver,
             forwarder: Some(forwarder),
+            packet_capture: None,
         }
     }
 
@@ -231,6 +250,9 @@ impl ProcessReleaseWatch {
                 evidence.unparseable_events = watcher.unparsed_events();
                 evidence.watcher_report = Some(watcher.report());
                 evidence.rundown_ignored = watcher.rundown_ignored();
+            }
+            if let Some(capture) = &self.packet_capture {
+                publish_managed_bindings(&capture.session, evidence, &capture.publisher);
             }
         }
         #[cfg(not(all(feature = "etw", windows)))]
@@ -257,9 +279,55 @@ impl ProcessReleaseWatch {
                     evidence.observe(&event);
                 }
             }
+            if let Some(capture) = &self.packet_capture {
+                publish_managed_bindings(&capture.session, evidence, &capture.publisher);
+            }
         }
         #[cfg(not(all(feature = "etw", windows)))]
         let _ = evidence;
+    }
+
+    /// Finalize the single packet pipeline only after route-owner release.
+    pub fn finish_packet_capture(&mut self, emitter: &mut Emitter) -> Option<PipelineReport> {
+        #[cfg(all(feature = "etw", windows))]
+        {
+            let lease = self.packet_capture.take()?;
+            lease.stop.stop();
+            let report = lease
+                .handle
+                .join()
+                .expect("the packet pipeline did not panic");
+            if let Some(forwarder) = lease.packet_forward {
+                let _ = forwarder.join();
+            }
+            emit_stream_reports(&lease.stream_reports, emitter);
+            emit_ring_report(&lease.ring_evicted, emitter);
+            emitter.summary(&build_summary(
+                lease.acquired,
+                &lease.session,
+                &report.stats,
+                Some(&lease.gate),
+            ));
+            Some(report)
+        }
+        #[cfg(not(all(feature = "etw", windows)))]
+        {
+            let _ = emitter;
+            None
+        }
+    }
+}
+
+impl Drop for ProcessReleaseWatch {
+    fn drop(&mut self) {
+        #[cfg(all(feature = "etw", windows))]
+        if let Some(lease) = self.packet_capture.take() {
+            lease.stop.stop();
+            let _ = lease.handle.join();
+            if let Some(forwarder) = lease.packet_forward {
+                let _ = forwarder.join();
+            }
+        }
     }
 }
 
@@ -670,10 +738,21 @@ fn spawn_pipeline(
         .take()
         .expect("the stamper is taken exactly once");
 
+    // The managed writer may briefly hold one packet while ETW catches up.
+    // Npcap's 65,535-byte snap length, 511 queued packets, and one writer-held
+    // head bound pending payload storage below 32 MiB, with drop-oldest counts.
+    let pipeline_config = if config.shutdown_scope.is_empty() {
+        PipelineConfig::default()
+    } else {
+        PipelineConfig {
+            capacity: 511,
+            ..PipelineConfig::default()
+        }
+    };
     let mut pipeline = Pipeline::new(
         std::mem::take(&mut components.sources),
         Box::new(stamper),
-        PipelineConfig::default(),
+        pipeline_config,
     )?;
     components.configure_pipeline_filters(&mut pipeline);
     if let Some(registry) = components.flow_registry.take() {
@@ -948,7 +1027,11 @@ fn capture_live(
     // clone of the stamper, since the stamper itself is moved into the pipeline
     // here and the filter-narrowed count is read after acquisition.
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (gate, gate_handle) = SessionGate::new(&config.session_config(), tee_tx);
+    let (gate, gate_handle) = if config.shutdown_scope.is_empty() {
+        SessionGate::new(&config.session_config(), tee_tx)
+    } else {
+        SessionGate::new_managed(&config.session_config(), tee_tx, publisher.clone())
+    };
     let stamper_reader = components.stamper.clone();
     let (handle, stop, stream_reports, ring_evicted, live) =
         spawn_pipeline(config, &mut components, gate)?;
@@ -979,6 +1062,11 @@ fn capture_live(
         };
         emitter.progress(&format!("launching {description}"));
         let launch_earliest = wall_timestamp();
+        if !config.shutdown_scope.is_empty() {
+            if let Some(at) = launch_earliest {
+                gate_handle.open_from(at);
+            }
+        }
         match request.execute_with_shutdown_receipt(!config.shutdown_scope.is_empty()) {
             Ok(receipt) => {
                 process_evidence.launch_pid = receipt.process_id();
@@ -1037,6 +1125,13 @@ fn capture_live(
     // instant rather than by the window state at write time (review of PR #26).
     let mut acquired_at: Option<Timestamp> = None;
     loop {
+        if stop_on_managed_volume_bound(
+            &mut session,
+            &gate_handle,
+            !config.shutdown_scope.is_empty(),
+        ) {
+            break;
+        }
         if session.acquired() {
             break;
         }
@@ -1078,7 +1173,11 @@ fn capture_live(
                     context.record_live_process_evidence(process_evidence);
                 }
                 let bindings = session.role_bindings();
-                publisher.publish_exact(session.role_binding_intervals());
+                if config.shutdown_scope.is_empty() {
+                    publisher.publish_exact(session.role_binding_intervals());
+                } else {
+                    publish_managed_bindings(&session, process_evidence, &publisher);
+                }
                 if is_active(&session) && platform_dispatch.observe(&bindings) {
                     let dispatch = config.launch.as_ref().and_then(|launch| match launch {
                         fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
@@ -1115,8 +1214,11 @@ fn capture_live(
         // is stopped and joined before reporting; its watch-time frames are in
         // the gate's tallies and surface in the summary. A managed Deep Capture
         // retains its watcher for route-owner release even without acquisition.
-        stop.stop();
-        let mut release_watch = if !config.shutdown_scope.is_empty() {
+        let managed_route = !config.shutdown_scope.is_empty();
+        if !managed_route {
+            stop.stop();
+        }
+        let mut release_watch = if managed_route {
             components
                 .watcher
                 .take()
@@ -1132,9 +1234,19 @@ fn capture_live(
         if let Some(watch) = &mut release_watch {
             watch.drain_into(process_evidence);
         }
-        let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-        emit_stream_reports(&stream_reports, emitter);
-        emit_ring_report(&ring_evicted, emitter);
+        let mut handle = Some(handle);
+        let report = if managed_route {
+            None
+        } else {
+            let report: PipelineReport = handle
+                .take()
+                .unwrap()
+                .join()
+                .expect("the pipeline thread did not panic");
+            emit_stream_reports(&stream_reports, emitter);
+            emit_ring_report(&ring_evicted, emitter);
+            Some(report)
+        };
         // Fire the acquisition timeout, if set and the session is still watching,
         // so the summary can name it; an interrupt or a duration bound has
         // already stopped the session and set its reason.
@@ -1149,8 +1261,18 @@ fn capture_live(
         // so every frame the pipeline read is already a watch-time discard in the
         // gate's tallies; there is nothing to close.
         session.finalize();
-        let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
-        emitter.summary(&summary);
+        let provisional_stats = CaptureStats::default();
+        let summary = build_summary(
+            false,
+            &session,
+            report
+                .as_ref()
+                .map_or(&provisional_stats, |report| &report.stats),
+            Some(&gate_handle),
+        );
+        if !managed_route {
+            emitter.summary(&summary);
+        }
         // A clean operator interrupt exits zero; every other way of capturing
         // nothing (timeout, duration, disconnect) is the target-never-acquired
         // failure that exits one. Nothing was captured, so nothing was observed.
@@ -1167,6 +1289,32 @@ fn capture_live(
                 Exit::FAILURE
             });
         outcome.stop_reason = session.stop_reason();
+        if managed_route {
+            if let Some(watch) = release_watch.as_mut() {
+                let packet_forward = std::thread::spawn(move || while tee_rx.recv().is_ok() {});
+                watch.packet_capture = Some(PacketReleaseCapture {
+                    handle: handle.take().unwrap(),
+                    stop,
+                    packet_forward: Some(packet_forward),
+                    gate: gate_handle.clone(),
+                    session,
+                    acquired: false,
+                    publisher,
+                    stream_reports,
+                    ring_evicted,
+                });
+                if let Some(capture) = &watch.packet_capture {
+                    publish_managed_bindings(
+                        &capture.session,
+                        process_evidence,
+                        &capture.publisher,
+                    );
+                }
+            } else {
+                stop.stop();
+                let _ = handle.take().unwrap().join();
+            }
+        }
         outcome.process_evidence = process_evidence.clone();
         outcome.process_release_watch = release_watch;
         outcome.acquisition_elapsed = Some(acquisition_elapsed);
@@ -1184,15 +1332,27 @@ fn capture_live(
     // watch-time discard even though the window is now open (review of PR #26).
     // The acquiring event set `acquired_at`; fall back to the arm instant if it is
     // somehow unset (it never is once the session is Capturing).
-    gate_handle.open_from(acquired_at.unwrap_or(ARMED_AT));
+    if config.shutdown_scope.is_empty() {
+        gate_handle.open_from(acquired_at.unwrap_or(ARMED_AT));
+    }
     // A zero volume bound is met before any packet is retained; stop for it now so
     // the reason is volume-reached (review of PR #26). drive_live observes the
     // inactive session and stops the pipeline within a tick.
     if zero_volume_bound(config) {
         session.on_volume_reached();
+    } else {
+        let _ = stop_on_managed_volume_bound(
+            &mut session,
+            &gate_handle,
+            !config.shutdown_scope.is_empty(),
+        );
     }
 
-    publisher.publish_exact(session.role_binding_intervals());
+    if config.shutdown_scope.is_empty() {
+        publisher.publish_exact(session.role_binding_intervals());
+    } else {
+        publish_managed_bindings(&session, process_evidence, &publisher);
+    }
     // Drive an initial refresh so the count reflects the first real snapshot.
     // The pipeline's control thread also drives refreshes, but reading the count
     // through the retained stamper reader here keeps the filter-narrowed event
@@ -1214,10 +1374,15 @@ fn capture_live(
     // The merged channel. Two forwarders fold the two source channels into it so
     // the driver reads one totally ordered stream.
     let (merged_tx, merged_rx) = mpsc::channel::<DriverMsg>();
+    let forward_packet_events = Arc::new(AtomicBool::new(true));
     let packet_forward = {
         let merged_tx = merged_tx.clone();
+        let forward_packet_events = Arc::clone(&forward_packet_events);
         std::thread::spawn(move || {
             while let Ok((len, ts)) = tee_rx.recv() {
+                if !forward_packet_events.load(Ordering::Relaxed) {
+                    continue;
+                }
                 if merged_tx.send(DriverMsg::Packet(len, ts)).is_err() {
                     break;
                 }
@@ -1264,6 +1429,7 @@ fn capture_live(
         process_evidence,
         inspection_context.as_ref(),
         components.watcher.as_ref(),
+        !config.shutdown_scope.is_empty(),
     );
     let observation_elapsed = observation_started.elapsed();
     let return_started = Instant::now();
@@ -1273,21 +1439,39 @@ fn capture_live(
     // capture instant inside drive_live, so a post-stop frame still draining is out
     // of window; an interrupt or duration stop left the window open, keeping what
     // was captured before it (specification FR-005).
-    let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-    emit_stream_reports(&stream_reports, emitter);
-    emit_ring_report(&ring_evicted, emitter);
+    let managed_route = !config.shutdown_scope.is_empty();
+    let mut handle = Some(handle);
+    let mut packet_forward = Some(packet_forward);
+    if managed_route {
+        forward_packet_events.store(false, Ordering::Relaxed);
+    }
+    let report = if managed_route {
+        None
+    } else {
+        let report: PipelineReport = handle
+            .take()
+            .unwrap()
+            .join()
+            .expect("the pipeline thread did not panic");
+        emit_stream_reports(&stream_reports, emitter);
+        emit_ring_report(&ring_evicted, emitter);
+        Some(report)
+    };
 
     // Slice 015: the socket-table refresh is driven by the pipeline's own
     // section 8.6 control thread and ends with the pipeline, so there is no
     // separate refresh thread to stop here.
 
-    let _ = packet_forward.join();
+    if !managed_route {
+        let _ = packet_forward.take().unwrap().join();
+    }
     let process_release_watch = if !config.shutdown_scope.is_empty() {
         components.watcher.take().map(|watcher| {
             let mut release_watch = ProcessReleaseWatch {
                 watcher: Some(watcher),
                 receiver: merged_rx,
                 forwarder: Some(event_forward),
+                packet_capture: None,
             };
             release_watch.drain_into(process_evidence);
             release_watch
@@ -1309,8 +1493,38 @@ fn capture_live(
     }
     session.finalize();
 
-    let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
-    emitter.summary(&summary);
+    let provisional_stats = CaptureStats::default();
+    let summary = build_summary(
+        true,
+        &session,
+        report
+            .as_ref()
+            .map_or(&provisional_stats, |report| &report.stats),
+        Some(&gate_handle),
+    );
+    if !managed_route {
+        emitter.summary(&summary);
+    }
+    let mut process_release_watch = process_release_watch;
+    if managed_route {
+        if let Some(watch) = process_release_watch.as_mut() {
+            watch.packet_capture = Some(PacketReleaseCapture {
+                handle: handle.take().unwrap(),
+                stop,
+                packet_forward: Some(packet_forward.take().unwrap()),
+                gate: gate_handle.clone(),
+                session,
+                acquired: true,
+                publisher,
+                stream_reports,
+                ring_evicted,
+            });
+        } else {
+            stop.stop();
+            let _ = handle.take().unwrap().join();
+            let _ = packet_forward.take().unwrap().join();
+        }
+    }
 
     process_evidence.terminal_state = process_terminal_state(summary.stop_reason).to_string();
     process_evidence.stop_reason = summary
@@ -1319,11 +1533,15 @@ fn capture_live(
     process_evidence.watcher_ended = summary.stop_reason == Some(StopReason::ProcessWatcherLost);
     let outcome = CaptureOutcome {
         exit: final_exit(
-            !report.sink_failures.is_empty(),
+            report
+                .as_ref()
+                .is_some_and(|report| !report.sink_failures.is_empty()),
             sink_failure_is_clean,
             summary.stop_reason,
         ),
-        observed_holder: report.stats.dominant_holder(),
+        observed_holder: report
+            .as_ref()
+            .and_then(|report| report.stats.dominant_holder()),
         stop_reason: summary.stop_reason,
         process_evidence: process_evidence.clone(),
         process_release_watch,
@@ -1368,6 +1586,7 @@ fn drive_live(
     process_evidence: &mut CaptureProcessEvidence,
     inspection_context: Option<&fragcap::deep_capture::NativeObservationContext>,
     watcher: Option<&fragcap::EtwWatcher>,
+    managed_route: bool,
 ) {
     loop {
         let now = std::time::Instant::now();
@@ -1392,8 +1611,12 @@ fn drive_live(
                 let was_active = is_active(session);
                 record_bound_image(&event, bound_images);
                 apply_event(event, session, bound, emitter, process_evidence);
-                publisher.publish_exact(session.role_binding_intervals());
-                if was_active && !is_active(session) {
+                if managed_route {
+                    publish_managed_bindings(session, process_evidence, publisher);
+                } else {
+                    publisher.publish_exact(session.role_binding_intervals());
+                }
+                if was_active && !is_active(session) && !managed_route {
                     gate_handle.close_at(event_at);
                 }
             }
@@ -1416,6 +1639,7 @@ fn drive_live(
         // A busy queue may never time out. Tick after every kind of message,
         // using the same monotonic clock as a silent capture.
         advance_live_deadline(session, started);
+        let _ = stop_on_managed_volume_bound(session, gate_handle, managed_route);
         let progress_happened = emitter.progress_written() != progress_before;
         if progress_happened {
             // A real progress line (a stage match/exit, a filter-narrowing
@@ -1433,7 +1657,9 @@ fn drive_live(
             session.on_interrupt();
         }
         if !is_active(session) {
-            stop.stop();
+            if !managed_route {
+                stop.stop();
+            }
             break;
         }
         // Rate-limited independent of how often a message arrives (Codex
@@ -1482,6 +1708,42 @@ fn drain_queued_process_evidence(
             process_evidence.observe(&event);
         }
     }
+}
+
+/// Publish profile roles and unprofiled exact descendants through one immutable
+/// packet ownership snapshot. A profiled generation keeps its real role.
+#[cfg(all(feature = "etw", windows))]
+fn publish_managed_bindings(
+    session: &CaptureSession,
+    evidence: &CaptureProcessEvidence,
+    publisher: &BindingPublisher,
+) {
+    publisher.publish_exact(exact_managed_bindings(
+        session.role_binding_intervals(),
+        evidence.causal_intervals(),
+    ));
+}
+
+#[cfg(all(feature = "etw", windows))]
+fn exact_managed_bindings(
+    profiled: Vec<RoleBindingInterval>,
+    causal: Vec<(u32, Timestamp, Option<Timestamp>)>,
+) -> Vec<RoleBindingInterval> {
+    causal
+        .into_iter()
+        .map(|(pid, started, exited)| {
+            let stage = profiled
+                .iter()
+                .find(|binding| binding.pid == pid && binding.started == Some(started));
+            RoleBindingInterval {
+                pid,
+                started: Some(started),
+                exited,
+                role: stage.and_then(|binding| binding.role.clone()),
+                stage: stage.and_then(|binding| binding.stage.clone()),
+            }
+        })
+        .collect()
 }
 
 /// Everything the live status display needs across a run: which terminal
@@ -1837,6 +2099,22 @@ fn is_active(session: &CaptureSession) -> bool {
     )
 }
 
+/// The managed packet gate can meet a bound before the final client acquires.
+/// Its exact admitted count is authoritative even while the session is Watching.
+#[cfg(any(windows, test))]
+fn stop_on_managed_volume_bound(
+    session: &mut CaptureSession,
+    gate: &GateHandle,
+    managed_route: bool,
+) -> bool {
+    if managed_route && gate.bound_hit() && is_active(session) {
+        session.on_volume_reached();
+        true
+    } else {
+        false
+    }
+}
+
 /// Whether a zero volume bound is configured (`--max-packets 0` or
 /// `--max-bytes 0`). Such a bound is met before any packet is retained, so the
 /// session's per-packet volume check never fires it; the driver stops for it
@@ -2037,6 +2315,120 @@ mod tests {
     use fragcap::ProcessEvent;
     use fragcap::{StageId, StopReason, Timestamp};
     use std::sync::Arc;
+
+    #[test]
+    fn launch_packets_can_end_a_managed_session_before_client_acquisition() {
+        use fragcap::core::{
+            Attribution, CapturedPacket, Fidelity, InterfaceId, Payload, RawPacket,
+        };
+        use fragcap::{
+            BindingPublisher, CaptureScope, RoleBindingInterval, SessionGate, WriteGate,
+        };
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#).unwrap();
+        let config = fragcap::SessionConfig {
+            packet_bound: Some(1),
+            scope: CaptureScope::Target,
+            ..Default::default()
+        };
+        let mut session = fragcap::CaptureSession::new(profile, config.clone());
+        let at = fragcap::Timestamp::from_nanos(10);
+        session.attach(at);
+        assert!(!session.acquired());
+        let publisher = BindingPublisher::default();
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 101,
+            started: Some(at),
+            exited: None,
+            role: None,
+            stage: None,
+        }]);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&config, tx, publisher);
+        handle.open_from(at);
+        let mut packet = CapturedPacket::from_raw(
+            RawPacket::new(at, Payload::copy_from_slice(&[0; 32]), 32),
+            InterfaceId::default(),
+        );
+        packet.attribution = Some(Attribution::new(101, "launcher.exe", Fidelity::Live));
+        assert!(gate.admit(&packet));
+        assert!(super::stop_on_managed_volume_bound(
+            &mut session,
+            &handle,
+            true
+        ));
+        assert_eq!(session.stop_reason(), Some(StopReason::VolumeReached));
+        assert!(!super::is_active(&session));
+    }
+
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn managed_publication_excludes_profiled_but_unowned_processes() {
+        let at = fragcap::Timestamp::from_nanos(10);
+        let profiled = vec![
+            fragcap::RoleBindingInterval {
+                pid: 101,
+                started: Some(at),
+                exited: None,
+                role: Some("client".into()),
+                stage: None,
+            },
+            fragcap::RoleBindingInterval {
+                pid: 202,
+                started: Some(at),
+                exited: None,
+                role: Some("client".into()),
+                stage: None,
+            },
+        ];
+        let bindings = super::exact_managed_bindings(profiled, vec![(101, at, None)]);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pid, 101);
+        assert_eq!(bindings[0].role.as_deref(), Some("client"));
+    }
+
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn abandoned_release_watch_stops_its_packet_pipeline() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#).unwrap();
+        let session = fragcap::CaptureSession::new(profile, fragcap::SessionConfig::default());
+        let (tee, _rx) = std::sync::mpsc::channel();
+        let (_, gate) = fragcap::SessionGate::new(&fragcap::SessionConfig::default(), tee);
+        let stop = fragcap::StopHandle::default();
+        let stopped = stop.clone();
+        let joined = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&joined);
+        let handle = std::thread::spawn(move || {
+            while !stopped.is_stopped() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            done.store(true, Ordering::SeqCst);
+            fragcap::PipelineReport {
+                stats: fragcap::core::CaptureStats::default(),
+                ended: fragcap::EndReason::Stopped,
+                sink_failures: Vec::new(),
+                retirements: Vec::new(),
+            }
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        let mut watch = super::ProcessReleaseWatch::test_receiver(rx);
+        watch.packet_capture = Some(super::PacketReleaseCapture {
+            handle,
+            stop: stop.clone(),
+            packet_forward: None,
+            gate,
+            session,
+            acquired: false,
+            publisher: fragcap::BindingPublisher::default(),
+            stream_reports: Vec::new(),
+            ring_evicted: None,
+        });
+        assert!(!stop.is_stopped());
+        drop(watch);
+        assert!(stop.is_stopped());
+        assert!(joined.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn completed_acquisition_keeps_its_status_when_observation_ends_early() {

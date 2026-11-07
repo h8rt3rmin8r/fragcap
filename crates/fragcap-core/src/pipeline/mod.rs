@@ -93,7 +93,7 @@ use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
 use crate::stats::CaptureStats;
-use crate::traits::{FlowAttributor, PacketSource, Sink, WriteGate};
+use crate::traits::{FlowAttributor, GateDecision, GateRejection, PacketSource, Sink, WriteGate};
 use crate::FlowRegistry;
 
 use buffer::Item;
@@ -572,10 +572,12 @@ impl Pipeline {
             flow_registry,
         } = self;
         let source_count = sources.len();
+        let attributor: Arc<dyn FlowAttributor> = Arc::from(attributor);
 
         let (tx, rx) = buffer::channel(config.capacity);
         let output_stop = stop.clone();
         let output_flow_registry = Arc::clone(&flow_registry);
+        let output_attributor = Arc::clone(&attributor);
         let handle = std::thread::spawn(move || {
             // Ends the acquisition loop however this thread terminates,
             // including an unwinding panic from a sink. Without it a panicking
@@ -585,7 +587,15 @@ impl Pipeline {
             // ordinary path this is a no-op: the output thread only returns
             // after acquisition has already ended and sent its terminal item.
             let _end_acquisition = StopOnDrop(output_stop.clone());
-            output_loop(rx, sinks, output_stop, gate, live, output_flow_registry)
+            output_loop(
+                rx,
+                sinks,
+                output_stop,
+                gate,
+                live,
+                output_flow_registry,
+                output_attributor,
+            )
         });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
@@ -611,8 +621,6 @@ impl Pipeline {
         // left here to lock. The conversion is free and invisible to callers,
         // because `Arc<dyn T>` is constructible from the `Box<dyn T>` that
         // `Pipeline::new` still takes.
-        let attributor: Arc<dyn FlowAttributor> = Arc::from(attributor);
-
         // The control thread, specification section 8.6, filled in by slice S13.
         // It reads the attribution map and hands each capture thread its current
         // filter over a private channel; the capture thread installs it on its
@@ -1055,6 +1063,7 @@ fn output_loop(
     gate: Option<Arc<dyn WriteGate>>,
     live: LiveStats,
     flow_registry: Arc<FlowRegistry>,
+    attributor: Arc<dyn FlowAttributor>,
 ) -> OutputOutcome {
     let mut failures: Vec<SinkFailure> = Vec::new();
     let mut retired = vec![false; sinks.len()];
@@ -1092,17 +1101,54 @@ fn output_loop(
         // what makes `gate_dropped` a single capture-wide term of the
         // conservation identity: a gate drop is withheld from every sink at once.
         if let Some(gate) = gate.as_ref() {
-            if !gate.admit(&packet) {
+            let mut decision = gate.decide(&packet);
+            if decision == GateDecision::Pending {
+                let deadline = Instant::now() + Duration::from_millis(250);
+                loop {
+                    if let Some(flow) = packet.flow {
+                        packet.attribution = attributor.resolve(&flow, packet.ts);
+                    }
+                    decision = gate.decide(&packet);
+                    if decision != GateDecision::Pending {
+                        break;
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        decision = match gate.finish_pending(&packet, Duration::ZERO) {
+                            GateDecision::Pending => {
+                                GateDecision::Reject(GateRejection::Unresolved)
+                            }
+                            final_decision => final_decision,
+                        };
+                        break;
+                    }
+                    gate.await_pending(&packet, remaining);
+                }
+            }
+            if let GateDecision::Reject(reason) = decision {
                 // The packet still existed as correlation evidence even though
                 // capture policy withheld it from every sink. Preserve that
                 // fact conservatively so a later packet on a reused tuple
                 // cannot become a false sole match.
                 if let Some(flow) = packet.flow {
-                    flow_registry.mark_unretained_at(
-                        flow,
-                        packet.ts,
-                        crate::flow::FlowOmissionCause::ScopeWithheld,
-                    );
+                    let cause = match reason {
+                        GateRejection::Waiting => crate::flow::FlowOmissionCause::Waiting,
+                        GateRejection::OutOfWindow => crate::flow::FlowOmissionCause::OutOfWindow,
+                        GateRejection::OutOfScope => crate::flow::FlowOmissionCause::ScopeWithheld,
+                        GateRejection::Unresolved => {
+                            crate::flow::FlowOmissionCause::ScopeUnresolved
+                        }
+                        GateRejection::Direction => {
+                            crate::flow::FlowOmissionCause::DirectionWithheld
+                        }
+                        GateRejection::DirectionUnknown => {
+                            crate::flow::FlowOmissionCause::DirectionUnknown
+                        }
+                        GateRejection::VolumeReached => {
+                            crate::flow::FlowOmissionCause::VolumeReached
+                        }
+                    };
+                    flow_registry.mark_unretained_at(flow, packet.ts, cause);
                 }
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;

@@ -138,7 +138,7 @@ fn seed_target_with_executable(local: &Path, with_compatibility: bool, executabl
             fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
             fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
             fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
+            fact.inspection_policy_id = Some("launch-chain-v2".to_string());
             store
                 .insert_compatibility_fact(&fact)
                 .expect("insert compatibility fact");
@@ -897,7 +897,7 @@ fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources()
     fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
     fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
     fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-    fact.inspection_policy_id = Some("launch-chain-v1".to_string());
+    fact.inspection_policy_id = Some("launch-chain-v2".to_string());
     store.insert_compatibility_fact(&fact).unwrap();
     drop(store);
     let bundle = dir.path().join("bundle");

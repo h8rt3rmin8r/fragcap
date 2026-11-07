@@ -179,6 +179,182 @@ fn the_holder_tally_counts_only_gate_admitted_packets() {
     assert_eq!(stats.dominant_holder(), None, "no holder is observed");
 }
 
+// S197: one real packet pipeline and both output files see the whole managed
+// chain, including the unprofiled helper after client observation has ended.
+#[cfg(feature = "deep-capture")]
+#[test]
+fn managed_chain_writes_launch_client_and_release_packets_in_one_run() {
+    use fragcap::{
+        BindingPublisher, CaptureScope, RoleBindingInterval, SessionConfig, SessionGate,
+    };
+    use fragcap_core::{Attribution, Fidelity, FlowAttributor, FlowKey, Timestamp, WriteGate};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    struct TimedOwners(BTreeMap<i64, (u32, &'static str)>);
+    impl FlowAttributor for TimedOwners {
+        fn resolve(&self, _key: &FlowKey, at: Timestamp) -> Option<Attribution> {
+            let (pid, image) = self.0.get(&at.as_nanos())?;
+            Some(Attribution::new(*pid, *image, Fidelity::Live))
+        }
+
+        fn refresh(&self) -> Result<(), fragcap_core::AttrError> {
+            Ok(())
+        }
+
+        fn active_endpoints(&self) -> Vec<fragcap_core::Endpoint> {
+            Vec::new()
+        }
+    }
+
+    let (packets, _) = common::replay("tcp-session");
+    assert_eq!(packets.len(), 6);
+    let times: Vec<i64> = packets.iter().map(|packet| packet.ts.as_nanos()).collect();
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+    let owners = BTreeMap::from([
+        (times[0], (101, "launcher.exe")),
+        (times[1], (101, "launcher.exe")),
+        (times[2], (102, "client.exe")),
+        (times[3], (102, "client.exe")),
+        (times[4], (103, "updater.exe")),
+        (times[5], (103, "updater.exe")),
+    ]);
+    let publisher = BindingPublisher::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (gate, handle) = SessionGate::new_managed(
+        &SessionConfig {
+            scope: CaptureScope::Target,
+            ..SessionConfig::default()
+        },
+        tx,
+        publisher.clone(),
+    );
+    handle.open_from(Timestamp::from_nanos(times[0]));
+    handle.close_at(Timestamp::from_nanos(times[5] + 1));
+    publisher.publish_exact(vec![
+        RoleBindingInterval {
+            pid: 101,
+            started: Some(Timestamp::from_nanos(times[0])),
+            exited: Some(Timestamp::from_nanos(times[2])),
+            role: None,
+            stage: None,
+        },
+        RoleBindingInterval {
+            pid: 102,
+            started: Some(Timestamp::from_nanos(times[2])),
+            exited: Some(Timestamp::from_nanos(times[4])),
+            role: Some("client".into()),
+            stage: None,
+        },
+        RoleBindingInterval {
+            pid: 103,
+            started: Some(Timestamp::from_nanos(times[4])),
+            exited: None,
+            role: None,
+            stage: None,
+        },
+    ]);
+    let run = common::render_via_pipeline_with(
+        "tcp-session",
+        ROOMY,
+        Box::new(TimedOwners(owners)),
+        Some(Arc::new(gate) as Arc<dyn WriteGate>),
+    );
+    assert_eq!(run.report.stats.packets_captured, 6);
+    assert_eq!(run.report.stats.gate_dropped, 0);
+    assert_eq!(run.report.stats.packets_attributed, 6);
+    assert_eq!(handle.admitted(), 6);
+    assert_eq!(rx.try_iter().count(), 6);
+    assert!(!run.pcapng.is_empty());
+    let json = String::from_utf8(run.jsonl).unwrap();
+    assert_eq!(
+        json.lines()
+            .filter(|line| line.contains("\"pid\":"))
+            .count(),
+        6
+    );
+    for pid in [101, 102, 103] {
+        assert!(
+            json.contains(&format!("\"pid\":{pid}")),
+            "missing {pid} in packet file"
+        );
+    }
+}
+
+#[cfg(feature = "deep-capture")]
+#[test]
+fn delayed_loopback_binding_reorients_the_writer_held_packet() {
+    use fragcap::{
+        BindingPublisher, RoleBindingInterval, RoleStampingAttributor, SessionConfig, SessionGate,
+    };
+    use fragcap_core::{
+        Attribution, Endpoint, Fidelity, FlowAttributor, FlowKey, Timestamp, WriteGate,
+    };
+    use std::sync::Arc;
+
+    struct LoopbackOwners(FlowKey);
+    impl FlowAttributor for LoopbackOwners {
+        fn resolve(&self, key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            let (pid, image) = if key.local == self.0.local {
+                (9000, "fragcap.exe")
+            } else {
+                (4242, "client.exe")
+            };
+            Some(Attribution::new(pid, image, Fidelity::Live))
+        }
+
+        fn refresh(&self) -> Result<(), fragcap_core::AttrError> {
+            Ok(())
+        }
+
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            Vec::new()
+        }
+    }
+
+    let (packets, _) = common::replay("loopback");
+    let canonical = packets[0].flow.expect("loopback fixture has a flow");
+    let first = packets.iter().map(|packet| packet.ts).min().unwrap();
+    let last = packets.iter().map(|packet| packet.ts).max().unwrap();
+    let stamper = RoleStampingAttributor::new(Arc::new(LoopbackOwners(canonical)));
+    let publisher: BindingPublisher = stamper.publisher();
+    assert_eq!(stamper.resolve(&canonical, first).unwrap().pid, 9000);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let (gate, handle) = SessionGate::new_managed(&SessionConfig::default(), tx, publisher.clone());
+    handle.open_from(first);
+    handle.close_at(Timestamp::from_nanos(last.as_nanos() + 1));
+    let publish = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 7777,
+            started: Some(first),
+            exited: None,
+            role: None,
+            stage: None,
+        }]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        publisher.publish_exact(vec![RoleBindingInterval {
+            pid: 4242,
+            started: Some(first),
+            exited: None,
+            role: Some("client".into()),
+            stage: None,
+        }]);
+    });
+    let run = common::render_via_pipeline_with(
+        "loopback",
+        ROOMY,
+        Box::new(stamper),
+        Some(Arc::new(gate) as Arc<dyn WriteGate>),
+    );
+    publish.join().unwrap();
+    assert_eq!(run.report.stats.gate_dropped, 0);
+    assert_eq!(handle.admitted(), packets.len() as u64);
+    let json = String::from_utf8(run.jsonl).unwrap();
+    assert!(json.contains("\"pid\":4242"));
+    assert!(!json.contains("\"pid\":9000"));
+}
+
 // T073, SC-009.
 #[test]
 fn two_runs_over_one_fixture_produce_identical_bytes() {

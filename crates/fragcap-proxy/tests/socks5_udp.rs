@@ -112,7 +112,7 @@ fn association_decision_uses_udp_client_socket_before_forwarding() {
     );
     assert_eq!(
         diagnostic.association_inspection.unwrap().policy_id,
-        "exact-game-v1"
+        "exact-game-v2"
     );
 }
 

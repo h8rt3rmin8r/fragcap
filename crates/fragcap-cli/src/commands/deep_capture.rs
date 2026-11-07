@@ -121,7 +121,7 @@ pub(crate) fn current_compatibility_case(
         CompatibilityRequestedInspectionScope::LaunchChain,
         CompatibilityInspectionScope::LaunchChain,
         CompatibilityMiddlewareHandling::Inspected,
-        "launch-chain-v1",
+        "launch-chain-v2",
     )
 }
 
@@ -170,20 +170,8 @@ pub(crate) fn compatibility_requested_scope(
     }
 }
 
-fn target_is_launcher_mediated(target: &TargetEntry) -> bool {
-    target
-        .anchor
-        .as_deref()
-        .is_some_and(|anchor| anchor.starts_with("steam:"))
-        || entry_windows_launch_entries(target).len() > 1
-        || entry_windows_launch_entries(target)
-            .iter()
-            .any(|entry| entry.role() == Some("launcher"))
-}
-
 pub(crate) fn resolve_cli_inspection_scope(
     value: InspectionScopeArg,
-    target: &TargetEntry,
 ) -> ResolvedCliInspectionScope {
     let requested = compatibility_requested_scope(value);
     let (effective, recommendation_source) = match requested {
@@ -193,11 +181,8 @@ pub(crate) fn resolve_cli_inspection_scope(
         CompatibilityRequestedInspectionScope::LaunchChain => {
             (CompatibilityInspectionScope::LaunchChain, "explicit")
         }
-        CompatibilityRequestedInspectionScope::Auto if target_is_launcher_mediated(target) => {
-            (CompatibilityInspectionScope::ExactGame, "launcher-topology")
-        }
         CompatibilityRequestedInspectionScope::Auto => {
-            (CompatibilityInspectionScope::LaunchChain, "direct-topology")
+            (CompatibilityInspectionScope::LaunchChain, "default")
         }
     };
     ResolvedCliInspectionScope {
@@ -208,8 +193,8 @@ pub(crate) fn resolve_cli_inspection_scope(
             CompatibilityInspectionScope::LaunchChain => CompatibilityMiddlewareHandling::Inspected,
         },
         policy_id: match effective {
-            CompatibilityInspectionScope::ExactGame => "exact-game-v1",
-            CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
+            CompatibilityInspectionScope::ExactGame => "exact-game-v2",
+            CompatibilityInspectionScope::LaunchChain => "launch-chain-v2",
         },
         recommendation_source,
     }
@@ -1185,6 +1170,7 @@ struct LibraryRuntime {
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
     process_release_watch: Option<crate::orchestrator::ProcessReleaseWatch>,
     retained_target_packets: Option<u64>,
+    capture_terminal_failure: Option<String>,
     flow_summaries: Vec<fragcap::FlowSummary>,
     globally_unretained_flow_observations: u64,
     interrupted: bool,
@@ -1551,6 +1537,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             };
         }
         let mut runtime = self.runtime.borrow_mut();
+        let mut packet_report = None;
         let outcome = if let LibraryRuntime {
             process_evidence: Some(process),
             process_release_watch: Some(watch),
@@ -1559,11 +1546,38 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         {
             let outcome = shutdown::release(process, budget, watch);
             watch.finish_into(process);
+            packet_report = watch.finish_packet_capture(&mut self.emitter.borrow_mut());
             self.observation_context.record_process_evidence(process);
             outcome
         } else {
             shutdown::missing_evidence()
         };
+        if let Some(report) = packet_report {
+            if !matches!(report.ended, fragcap::EndReason::Stopped) {
+                runtime.capture_terminal_failure = Some(format!(
+                    "managed packet capture ended before verified route release: {}",
+                    report.ended
+                ));
+            } else if !report.sink_failures.is_empty() {
+                runtime.capture_terminal_failure = Some(format!(
+                    "{} packet sink(s) failed while the managed route was active",
+                    report.sink_failures.len()
+                ));
+            }
+            runtime.retained_target_packets = Some(
+                report
+                    .stats
+                    .packets_captured
+                    .saturating_sub(report.stats.gate_dropped)
+                    .saturating_sub(report.stats.buffer_dropped),
+            );
+            let registry = self.observation_context.flow_registry();
+            runtime.flow_summaries = registry.summaries();
+            runtime.globally_unretained_flow_observations = registry.globally_unretained();
+        } else {
+            runtime.capture_terminal_failure =
+                Some("managed packet capture did not return a final report".to_string());
+        }
         runtime.process_release_watch.take();
         drop(runtime);
         self.route_owner_steps = outcome.steps;
@@ -1586,10 +1600,18 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     }
 
     fn stop(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
-        deep_capture_api::CleanupResult {
-            resource: "capture".to_string(),
-            status: deep_capture_api::CleanupStatus::NotNeeded,
-            reason: "ordinary Capture returned after its own bounded stop".to_string(),
+        match self.runtime.borrow().capture_terminal_failure.as_ref() {
+            Some(reason) => deep_capture_api::CleanupResult {
+                resource: "capture".to_string(),
+                status: deep_capture_api::CleanupStatus::Failed,
+                reason: reason.clone(),
+            },
+            None => deep_capture_api::CleanupResult {
+                resource: "capture".to_string(),
+                status: deep_capture_api::CleanupStatus::NotNeeded,
+                reason: "capture already finalized after the finite route-owner decision"
+                    .to_string(),
+            },
         }
     }
 }
@@ -2615,10 +2637,12 @@ fn build_authorization_plan(
             "max_bytes": args.max_bytes,
             "max_packets": args.max_packets,
             "payload_retention": !args.no_payload,
-            "scope": "selected target process tree",
+            "scope": "exact session-created launch chain, including proven intermediate and helper generations",
+            "window": "launch inception through verified route-owner release or finite release deadline",
+            "pending_packet_bytes_ceiling": 33_553_920_u64,
         },
         "cleanup": [
-            "request graceful close of exact session-owned applications, force still-owned processes after grace, and verify exit within the route-owner release deadline while the proxy remains active",
+            "request graceful close of exact session-created launch descendants, including undeclared helpers after client acquisition; force still-owned generations after grace and verify exit within the route-owner release deadline while proxy and packet capture remain active",
             "stop proxy and capture within their deadlines",
             "retain installation CA trust across sessions and ordinary uninstall",
             "zero process-local private authority material when ownership ends",
@@ -2659,8 +2683,9 @@ fn build_authorization_plan(
         "launch": {
             "declared_case": args.launch_case.map(CompatibilityLaunchCase::from).map(|value| value.as_str()),
             "observed_case": target_authority.launch_case.as_str(),
-            "process_control": if args.controlled_target { "none" } else { "automatic exact session-owned process close and bounded force after observation" },
+            "process_control": if args.controlled_target { "none" } else { "automatic graceful close and bounded force for exact receipt-backed causal descendants, including undeclared helpers, after observation" },
             "shutdown_scope": if args.controlled_target { Value::Null } else { target_authority.resolved_launch.pointer("/shutdown_scope").cloned().unwrap_or(Value::Null) },
+            "additional_shutdown_class": if args.controlled_target { "none" } else { "same-account, same-session, canonical-path and generation-proven descendants of the exact created root; incomplete proof receives no control and blocks release" },
             "grace_seconds": if args.controlled_target { Value::Null } else { json!(60) },
             "force_by_seconds": if args.controlled_target { Value::Null } else { json!(90) },
             "release_ceiling_seconds": if args.controlled_target { Value::Null } else { json!(120) },
@@ -2728,7 +2753,7 @@ fn validate_authorization_target(
         require_controlled_target(&target)?;
     }
     let launch_case = selected_launch_case(&target, args)?;
-    let inspection_scope = resolve_cli_inspection_scope(args.inspect_scope, &target);
+    let inspection_scope = resolve_cli_inspection_scope(args.inspect_scope);
     if args
         .launch_case
         .map(CompatibilityLaunchCase::from)
@@ -6014,8 +6039,8 @@ mod tests {
                 requested: CompatibilityRequestedInspectionScope::Auto,
                 effective: CompatibilityInspectionScope::LaunchChain,
                 middleware_handling: CompatibilityMiddlewareHandling::Inspected,
-                policy_id: "launch-chain-v1",
-                recommendation_source: "direct-topology",
+                policy_id: "launch-chain-v2",
+                recommendation_source: "default",
             },
         }
     }
@@ -6087,7 +6112,7 @@ mod tests {
             requested: CompatibilityRequestedInspectionScope::ExactGame,
             effective: CompatibilityInspectionScope::ExactGame,
             middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
-            policy_id: "exact-game-v1",
+            policy_id: "exact-game-v2",
             recommendation_source: "explicit",
         };
         assert!(inherited_retry_target_matches(&predecessor, &successor));
@@ -6407,8 +6432,8 @@ mod tests {
                 requested: CompatibilityRequestedInspectionScope::Auto,
                 effective: CompatibilityInspectionScope::ExactGame,
                 middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
-                policy_id: "exact-game-v1",
-                recommendation_source: "launcher-topology",
+                policy_id: "exact-game-v2",
+                recommendation_source: "explicit",
             },
         };
         let trace = fragcap::deep_capture::ProcessTraceSummary {
@@ -6879,7 +6904,7 @@ mod tests {
             fact.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);
             fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
             fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-            fact.inspection_policy_id = Some("launch-chain-v1".to_string());
+            fact.inspection_policy_id = Some("launch-chain-v2".to_string());
             fact.stale = stale;
             fact
         })
@@ -6930,7 +6955,7 @@ mod tests {
         latest.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);
         latest.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
         latest.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-        latest.inspection_policy_id = Some("launch-chain-v1".to_string());
+        latest.inspection_policy_id = Some("launch-chain-v2".to_string());
         superseded.push(latest);
         assert!(validate(&superseded).is_err());
     }

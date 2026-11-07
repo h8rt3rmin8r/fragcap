@@ -231,6 +231,7 @@ pub struct DeferredCalibrationProtocol {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CalibrationScopeRecommendationSource {
     Explicit,
+    Default,
     LauncherTopology,
     DirectTopology,
 }
@@ -239,6 +240,7 @@ impl CalibrationScopeRecommendationSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Explicit => "explicit",
+            Self::Default => "default",
             Self::LauncherTopology => "launcher-topology",
             Self::DirectTopology => "direct-topology",
         }
@@ -289,7 +291,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         }
     };
     proposal.topology = Some(topology.kind);
-    let scope = resolve_scope(request.requested_scope, topology.kind);
+    let scope = resolve_scope(request.requested_scope);
     proposal.scope = Some(scope.clone());
     proposal.readiness = readiness(
         &topology,
@@ -336,10 +338,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
     proposal
 }
 
-fn resolve_scope(
-    requested: CompatibilityRequestedInspectionScope,
-    topology: CalibrationTopologyKind,
-) -> CalibrationScopeResolution {
+fn resolve_scope(requested: CompatibilityRequestedInspectionScope) -> CalibrationScopeResolution {
     let (effective, recommendation_source) = match requested {
         CompatibilityRequestedInspectionScope::ExactGame => (
             CompatibilityInspectionScope::ExactGame,
@@ -349,20 +348,9 @@ fn resolve_scope(
             CompatibilityInspectionScope::LaunchChain,
             CalibrationScopeRecommendationSource::Explicit,
         ),
-        CompatibilityRequestedInspectionScope::Auto
-            if matches!(
-                topology,
-                CalibrationTopologyKind::Steam | CalibrationTopologyKind::Publisher
-            ) =>
-        {
-            (
-                CompatibilityInspectionScope::ExactGame,
-                CalibrationScopeRecommendationSource::LauncherTopology,
-            )
-        }
         CompatibilityRequestedInspectionScope::Auto => (
             CompatibilityInspectionScope::LaunchChain,
-            CalibrationScopeRecommendationSource::DirectTopology,
+            CalibrationScopeRecommendationSource::Default,
         ),
     };
     CalibrationScopeResolution {
@@ -373,8 +361,8 @@ fn resolve_scope(
             CompatibilityInspectionScope::LaunchChain => CompatibilityMiddlewareHandling::Inspected,
         },
         policy_id: match effective {
-            CompatibilityInspectionScope::ExactGame => "exact-game-v1",
-            CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
+            CompatibilityInspectionScope::ExactGame => "exact-game-v2",
+            CompatibilityInspectionScope::LaunchChain => "launch-chain-v2",
         },
         recommendation_source,
     }
@@ -880,7 +868,7 @@ mod tests {
         fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
         fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
         fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
-        fact.inspection_policy_id = Some("launch-chain-v1".into());
+        fact.inspection_policy_id = Some("launch-chain-v2".into());
         fact
     }
 
@@ -922,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_recommends_exact_game_only_for_launcher_mediated_topology() {
+    fn auto_recommends_full_chain_for_every_topology() {
         let direct = propose_calibration(&request(direct_target()));
         assert_eq!(
             direct.scope,
@@ -930,8 +918,8 @@ mod tests {
                 requested: CompatibilityRequestedInspectionScope::Auto,
                 effective: CompatibilityInspectionScope::LaunchChain,
                 middleware_handling: CompatibilityMiddlewareHandling::Inspected,
-                policy_id: "launch-chain-v1",
-                recommendation_source: CalibrationScopeRecommendationSource::DirectTopology,
+                policy_id: "launch-chain-v2",
+                recommendation_source: CalibrationScopeRecommendationSource::Default,
             })
         );
 
@@ -943,15 +931,15 @@ mod tests {
             steam.scope,
             Some(CalibrationScopeResolution {
                 requested: CompatibilityRequestedInspectionScope::Auto,
-                effective: CompatibilityInspectionScope::ExactGame,
-                middleware_handling: CompatibilityMiddlewareHandling::BlindRelay,
-                policy_id: "exact-game-v1",
-                recommendation_source: CalibrationScopeRecommendationSource::LauncherTopology,
+                effective: CompatibilityInspectionScope::LaunchChain,
+                middleware_handling: CompatibilityMiddlewareHandling::Inspected,
+                policy_id: "launch-chain-v2",
+                recommendation_source: CalibrationScopeRecommendationSource::Default,
             })
         );
         assert!(steam.steps.iter().all(|step| {
-            step.case.effective_scope == CompatibilityInspectionScope::ExactGame
-                && step.case.middleware_handling == CompatibilityMiddlewareHandling::BlindRelay
+            step.case.effective_scope == CompatibilityInspectionScope::LaunchChain
+                && step.case.middleware_handling == CompatibilityMiddlewareHandling::Inspected
         }));
     }
 
@@ -1557,10 +1545,16 @@ mod tests {
             requested_scope: CompatibilityRequestedInspectionScope::Auto,
             effective_scope: CompatibilityInspectionScope::LaunchChain,
             middleware_handling: CompatibilityMiddlewareHandling::Inspected,
-            inspection_policy_id: "launch-chain-v1".into(),
+            inspection_policy_id: "launch-chain-v2".into(),
         };
         assert_eq!(
             fact.applicability(&case),
+            CompatibilityApplicability::Applicable
+        );
+        let mut historical = fact;
+        historical.inspection_policy_id = Some("launch-chain-v1".into());
+        assert_ne!(
+            historical.applicability(&case),
             CompatibilityApplicability::Applicable
         );
     }

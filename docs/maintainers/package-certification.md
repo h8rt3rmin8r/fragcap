@@ -39,6 +39,11 @@ the existing reached-client result. This certifies the exact package bytes and
 parser contract. Installed-product and private-title behavior is assessed only
 after release, and any defect returns as a GitHub issue.
 
+S197 source advances the same controlled policy identity to `exact-game-v2`.
+Version 1 remains the published v0.10.14 case and cannot qualify a version 2
+candidate. The controlled smoke must compare the candidate's exact version 2
+policy while tagged replay keeps its released contract.
+
 The package contract carries those three controlled-smoke values explicitly.
 Published-package replay uses the contract and smoke-event validator from the
 published source tree. A historical contract without `controlled_smoke` keeps

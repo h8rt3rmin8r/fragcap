@@ -1784,6 +1784,12 @@ fn correlate_native_observation(
     }) {
         let reason = match omission.cause {
             fragcap_core::FlowOmissionCause::ScopeWithheld => "packet-scope-withheld",
+            fragcap_core::FlowOmissionCause::Waiting => "packet-waiting-withheld",
+            fragcap_core::FlowOmissionCause::OutOfWindow => "packet-out-of-window",
+            fragcap_core::FlowOmissionCause::ScopeUnresolved => "packet-scope-unresolved",
+            fragcap_core::FlowOmissionCause::DirectionWithheld => "packet-direction-withheld",
+            fragcap_core::FlowOmissionCause::DirectionUnknown => "packet-direction-unresolved",
+            fragcap_core::FlowOmissionCause::VolumeReached => "packet-volume-reached",
             fragcap_core::FlowOmissionCause::HistoryCapacity => "packet-history-bound-exceeded",
             fragcap_core::FlowOmissionCause::Unknown => "packet-omission-unlocalized",
         };

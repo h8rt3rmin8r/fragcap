@@ -55,7 +55,7 @@ struct Guidance {
     next_command: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct AttemptProgress {
     number: u64,
     phase: deep_capture_api::CalibrationPhase,
@@ -63,7 +63,7 @@ struct AttemptProgress {
     requested_scope: CompatibilityRequestedInspectionScope,
     effective_scope: CompatibilityInspectionScope,
     middleware_handling: CompatibilityMiddlewareHandling,
-    inspection_policy_id: &'static str,
+    inspection_policy_id: String,
 }
 
 #[derive(Clone, Copy)]
@@ -2795,7 +2795,6 @@ fn record_early_stored_case(
     } else {
         let scope = deep_capture::resolve_cli_inspection_scope(
             args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
-            target,
         );
         case.requested_scope = scope.requested;
         case.effective_scope = scope.effective;
@@ -3032,6 +3031,22 @@ fn run_inner(
         if !args.controlled_target {
             validate_current_stored_steam_root(&target)?;
         }
+        let current_scope =
+            deep_capture::resolve_cli_inspection_scope(match workflow.requested_scope {
+                CompatibilityRequestedInspectionScope::Auto => InspectionScopeArg::Auto,
+                CompatibilityRequestedInspectionScope::ExactGame => InspectionScopeArg::Game,
+                CompatibilityRequestedInspectionScope::LaunchChain => {
+                    InspectionScopeArg::LaunchChain
+                }
+            });
+        if workflow.effective_scope != current_scope.effective
+            || workflow.middleware_handling != current_scope.middleware_handling
+            || workflow.inspection_policy_id != current_scope.policy_id
+        {
+            return Err(CliError::usage(format!(
+                "calibration workflow {workflow_id} inspection policy changed; start a fresh workflow"
+            )));
+        }
         if workflow.state == CalibrationWorkflowState::Refused {
             return Err(CliError::usage(format!(
                 "calibration workflow {workflow_id} was refused and cannot start another session"
@@ -3224,7 +3239,6 @@ fn run_inner(
         }
         let scope = deep_capture::resolve_cli_inspection_scope(
             args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
-            &target,
         );
         let workflow = store
             .create_calibration_workflow_with_scope_intent(
@@ -3855,10 +3869,7 @@ fn run_inner(
             requested_scope: step.case.requested_scope,
             effective_scope: step.case.effective_scope,
             middleware_handling: step.case.middleware_handling,
-            inspection_policy_id: match step.case.effective_scope {
-                CompatibilityInspectionScope::ExactGame => "exact-game-v1",
-                CompatibilityInspectionScope::LaunchChain => "launch-chain-v1",
-            },
+            inspection_policy_id: step.case.inspection_policy_id.clone(),
         };
         let mut low_level = low_level_args(
             args,
@@ -3949,7 +3960,7 @@ fn run_inner(
                 remaining_protocols: protocol_names(&remaining_protocols),
                 next_command: None,
             },
-            progress,
+            progress.clone(),
         );
         record_current_case(emitter, &fresh_store, &fresh_target, &step.case)?;
         let identity = assessment::StoredCaseAssessment::from_facts(
@@ -4277,7 +4288,7 @@ fn run_inner(
                 remaining_protocols: protocol_names(&remaining_protocols),
                 next_command,
             },
-            progress,
+            progress.clone(),
         );
         if retry_as_game_scope {
             let successor_bundle = attempt_bundle(
@@ -5285,21 +5296,25 @@ fn emit_guidance_with_attempt(
             .unwrap_or_else(|| "unavailable".to_string()),
         inspection: Box::new(CalibrationInspection {
             requested_scope: attempt
+                .as_ref()
                 .map(|value| value.requested_scope.as_str().to_string())
                 .or_else(|| workflow.map(|(value, _)| value.requested_scope.as_str().to_string()))
                 .unwrap_or_else(|| "unavailable".to_string()),
             effective_scope: attempt
+                .as_ref()
                 .map(|value| value.effective_scope.as_str().to_string())
                 .or_else(|| workflow.map(|(value, _)| value.effective_scope.as_str().to_string()))
                 .unwrap_or_else(|| "unavailable".to_string()),
             middleware_handling: attempt
+                .as_ref()
                 .map(|value| value.middleware_handling.as_str().to_string())
                 .or_else(|| {
                     workflow.map(|(value, _)| value.middleware_handling.as_str().to_string())
                 })
                 .unwrap_or_else(|| "unavailable".to_string()),
             policy_id: attempt
-                .map(|value| value.inspection_policy_id.to_string())
+                .as_ref()
+                .map(|value| value.inspection_policy_id.clone())
                 .or_else(|| workflow.map(|(value, _)| value.inspection_policy_id.clone()))
                 .unwrap_or_else(|| "unavailable".to_string()),
             allow_game_scope_retry: workflow.is_some_and(|(value, _)| value.allow_game_scope_retry),
@@ -5314,10 +5329,14 @@ fn emit_guidance_with_attempt(
         remaining_protocols: guidance.remaining_protocols.clone(),
         process_control: "none".to_string(),
         next_command: Box::new(guidance.next_command.clone()),
-        attempt: attempt.map(|value| value.number),
-        maximum_attempts: attempt.map(|_| MAX_GUIDED_ATTEMPTS as u64),
-        phase: attempt.map(|value| value.phase.as_str().to_string()),
-        protocol: attempt.map(|value| value.protocol.as_str().to_string()),
+        attempt: attempt.as_ref().map(|value| value.number),
+        maximum_attempts: attempt.as_ref().map(|_| MAX_GUIDED_ATTEMPTS as u64),
+        phase: attempt
+            .as_ref()
+            .map(|value| value.phase.as_str().to_string()),
+        protocol: attempt
+            .as_ref()
+            .map(|value| value.protocol.as_str().to_string()),
         workflow_id: workflow.map(|(value, _)| value.id),
         workflow_revision: workflow.map(|(value, _)| value.revision),
         workflow_state: Box::new(workflow.map(|(value, _)| value.state.as_str().to_string())),
@@ -5339,10 +5358,10 @@ fn emit_guidance_with_attempt(
         "routing_strategy": workflow.map(|(value, _)| value.routing_strategy.as_str()),
         "address_family": workflow.map(|(value, _)| value.address_family.as_str()),
         "inspection": workflow.map(|(value, _)| json!({
-            "requested_scope": attempt.map(|attempt| attempt.requested_scope).unwrap_or(value.requested_scope).as_str(),
-            "effective_scope": attempt.map(|attempt| attempt.effective_scope).unwrap_or(value.effective_scope).as_str(),
-            "middleware_handling": attempt.map(|attempt| attempt.middleware_handling).unwrap_or(value.middleware_handling).as_str(),
-            "policy_id": attempt.map(|attempt| attempt.inspection_policy_id).unwrap_or(value.inspection_policy_id.as_str()),
+            "requested_scope": attempt.as_ref().map(|attempt| attempt.requested_scope).unwrap_or(value.requested_scope).as_str(),
+            "effective_scope": attempt.as_ref().map(|attempt| attempt.effective_scope).unwrap_or(value.effective_scope).as_str(),
+            "middleware_handling": attempt.as_ref().map(|attempt| attempt.middleware_handling).unwrap_or(value.middleware_handling).as_str(),
+            "policy_id": attempt.as_ref().map(|attempt| attempt.inspection_policy_id.as_str()).unwrap_or(value.inspection_policy_id.as_str()),
             "allow_game_scope_retry": value.allow_game_scope_retry,
             "allow_capture_fallback": value.allow_capture_fallback,
         })),
@@ -5354,9 +5373,9 @@ fn emit_guidance_with_attempt(
         "workflow_revision": workflow.map(|(value, _)| value.revision),
         "workflow_state": workflow.map(|(value, _)| value.state.as_str()),
         "pause_reason": workflow.and_then(|(value, _)| value.pause_reason).map(|value| value.as_str()),
-        "phase": attempt.map(|value| value.phase.as_str()),
-        "protocol": attempt.map(|value| value.protocol.as_str()),
-        "attempt": attempt.map(|value| value.number),
+        "phase": attempt.as_ref().map(|value| value.phase.as_str()),
+        "protocol": attempt.as_ref().map(|value| value.protocol.as_str()),
+        "attempt": attempt.as_ref().map(|value| value.number),
         "next_command": guidance.next_command,
         "resume_command": resume_command,
     }));
@@ -5367,6 +5386,7 @@ fn emit_guidance_with_attempt(
         (
             "Requested inspection scope:".into(),
             attempt
+                .as_ref()
                 .map(|value| value.requested_scope.as_str().to_string())
                 .or_else(|| workflow.map(|(value, _)| value.requested_scope.as_str().to_string()))
                 .unwrap_or_default(),
@@ -5374,6 +5394,7 @@ fn emit_guidance_with_attempt(
         (
             "Effective inspection scope:".into(),
             attempt
+                .as_ref()
                 .map(|value| value.effective_scope.as_str().to_string())
                 .or_else(|| workflow.map(|(value, _)| value.effective_scope.as_str().to_string()))
                 .unwrap_or_default(),
@@ -5381,6 +5402,7 @@ fn emit_guidance_with_attempt(
         (
             "Middleware handling:".into(),
             attempt
+                .as_ref()
                 .map(|value| value.middleware_handling.as_str().to_string())
                 .or_else(|| {
                     workflow.map(|(value, _)| value.middleware_handling.as_str().to_string())

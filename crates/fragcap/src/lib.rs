@@ -26,7 +26,7 @@ pub mod core {
     /// parses `30m` and `4mb` through the same code a profile does.
     pub use fragcap_core::{duration, size};
 
-    pub use fragcap_core::attribution::{Attribution, StageId};
+    pub use fragcap_core::attribution::{Attribution, Fidelity, StageId};
     pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{
@@ -307,7 +307,8 @@ pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use crate::session::{
     BindingPublisher, CaptureScope, CaptureSession, GateHandle, PacketDisposition,
-    RoleStampingAttributor, SessionConfig, SessionGate, SessionState, SessionStats, StopReason,
+    RoleBindingInterval, RoleStampingAttributor, SessionConfig, SessionGate, SessionState,
+    SessionStats, StopReason,
 };
 #[cfg(all(feature = "etw", windows))]
 pub use attr::EtwWatcher;

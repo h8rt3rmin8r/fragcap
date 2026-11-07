@@ -27,11 +27,10 @@ impl RequestedInspectionScope {
         }
     }
 
-    /// Resolve before effects. The caller establishes whether exact game
+    /// Resolve before effects. The caller establishes whether explicit game-only
     /// ownership and uninspected forwarding are available for this plan.
     pub const fn resolve(self, game_only_available: bool) -> Option<ResolvedInspectionScope> {
         let effective = match self {
-            Self::Auto if game_only_available => InspectionScope::ExactGame,
             Self::Auto | Self::LaunchChain => InspectionScope::LaunchChain,
             Self::ExactGame if game_only_available => InspectionScope::ExactGame,
             Self::ExactGame => return None,
@@ -40,8 +39,8 @@ impl RequestedInspectionScope {
             requested: self,
             effective,
             policy_id: match effective {
-                InspectionScope::ExactGame => "exact-game-v1",
-                InspectionScope::LaunchChain => "launch-chain-v1",
+                InspectionScope::ExactGame => "exact-game-v2",
+                InspectionScope::LaunchChain => "launch-chain-v2",
             },
         })
     }
@@ -65,7 +64,7 @@ mod tests {
                 .resolve(true)
                 .unwrap()
                 .effective,
-            InspectionScope::ExactGame
+            InspectionScope::LaunchChain
         );
         assert!(RequestedInspectionScope::ExactGame.resolve(false).is_none());
         assert_eq!(
@@ -73,7 +72,7 @@ mod tests {
                 .resolve(true)
                 .unwrap()
                 .policy_id,
-            "exact-game-v1"
+            "exact-game-v2"
         );
     }
 }

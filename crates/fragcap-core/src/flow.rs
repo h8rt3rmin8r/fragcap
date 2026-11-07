@@ -158,6 +158,12 @@ struct RegisteredFlow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlowOmissionCause {
     ScopeWithheld,
+    Waiting,
+    OutOfWindow,
+    ScopeUnresolved,
+    DirectionWithheld,
+    DirectionUnknown,
+    VolumeReached,
     HistoryCapacity,
     Unknown,
 }

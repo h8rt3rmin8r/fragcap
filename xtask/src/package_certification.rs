@@ -166,7 +166,7 @@ fn validate_controlled_smoke(value: &Value, problems: &mut Vec<String>) {
     for (key, expected) in [
         ("inspection_scope", "exact-game"),
         ("middleware_handling", "blind-relay"),
-        ("inspection_policy_id", "exact-game-v1"),
+        ("inspection_policy_id", "exact-game-v2"),
     ] {
         if value[key] != expected {
             problems.push(format!("controlled_smoke.{key} must be {expected}"));
@@ -838,7 +838,7 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
         if inspection["requested_scope"] != "exact-game"
             || inspection["effective_scope"] != "exact-game"
             || inspection["middleware_handling"] != "blind-relay"
-            || inspection["policy_id"] != "exact-game-v1"
+            || inspection["policy_id"] != "exact-game-v2"
         {
             problems.push("authorization-plan.inspection".into());
         }
@@ -873,7 +873,7 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
         "requested_inspection_scope": "exact-game",
         "effective_inspection_scope": "exact-game",
         "middleware_handling": "blind-relay",
-        "inspection_policy_id": "exact-game-v1",
+        "inspection_policy_id": "exact-game-v2",
         "phase_event": "deep_capture.calibration_phase",
         "terminal_event_count": 1,
         "phase": "reachability",
@@ -1472,7 +1472,7 @@ fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec
             evidence["requested_inspection_scope"] == "exact-game"
                 && evidence["effective_inspection_scope"] == "exact-game"
                 && evidence["middleware_handling"] == "blind-relay"
-                && evidence["inspection_policy_id"] == "exact-game-v1",
+                && evidence["inspection_policy_id"] == "exact-game-v2",
             "session.inspection-scope.invalid",
         ),
         (
@@ -1839,7 +1839,7 @@ mod tests {
                             "requested_scope": "exact-game",
                             "effective_scope": "exact-game",
                             "middleware_handling": "blind-relay",
-                            "policy_id": "exact-game-v1"
+                            "policy_id": "exact-game-v2"
                         }
                     }
                 }
@@ -2108,7 +2108,7 @@ mod tests {
                 "requested_inspection_scope": "exact-game",
                 "effective_inspection_scope": "exact-game",
                 "middleware_handling": "blind-relay",
-                "inspection_policy_id": "exact-game-v1",
+                "inspection_policy_id": "exact-game-v2",
                 "phase_event": "deep_capture.calibration_phase",
                 "terminal_event_count": 1,
                 "phase": "reachability",

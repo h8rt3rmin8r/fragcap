@@ -183,6 +183,125 @@ impl Default for CaptureProcessEvidence {
 }
 
 impl CaptureProcessEvidence {
+    /// Prove one start event belongs to the exact created root generation.
+    /// Every parent link must have one live earlier generation; a reused PID or
+    /// missing event makes the chain indeterminate rather than owned.
+    pub fn causal_depth(&self, pid: u32, at: Timestamp) -> Option<usize> {
+        let root = self.launch_pid?;
+        let earliest = self.launch_earliest_at?;
+        let latest = self.launch_at?;
+        if self
+            .events
+            .iter()
+            .filter(|event| matches!(event, ProcessEvent::Started { pid, .. } if *pid == root))
+            .count()
+            != 1
+        {
+            return None;
+        }
+        let mut current = (pid, at);
+        for depth in 0..=64 {
+            let event = self.events.iter().find(|event| {
+                matches!(event, ProcessEvent::Started { pid, at, .. } if *pid == current.0 && *at == current.1)
+            })?;
+            if current.0 == root {
+                let receipt_matches = self.launch_identity.as_ref().is_none_or(|identity| {
+                    identity.pid == root
+                        && (identity.created_unix_nanos() - i128::from(current.1.as_nanos())).abs()
+                            <= 1_000_000_000
+                });
+                return (receipt_matches
+                    && current.1.nanos_since(earliest) >= -1_000_000_000
+                    && current.1.nanos_since(latest) <= 1_000_000_000)
+                    .then_some(depth);
+            }
+            let ProcessEvent::Started { parent, .. } = event else {
+                unreachable!()
+            };
+            if *parent == current.0 {
+                return None;
+            }
+            let candidates: Vec<_> = self.events.iter().filter_map(|candidate| match candidate {
+                ProcessEvent::Started { pid, at, .. } if *pid == *parent && *at <= current.1 => {
+                    let exited = self.events.iter().any(|exit| {
+                        matches!(exit, ProcessEvent::Exited { pid, at: exit_at } if *pid == *parent && *exit_at >= *at && *exit_at < current.1)
+                    });
+                    (!exited).then_some(*at)
+                }
+                _ => None,
+            }).collect();
+            let [parent_at] = candidates.as_slice() else {
+                return None;
+            };
+            current = (*parent, *parent_at);
+        }
+        None
+    }
+
+    /// Conservative route obligation when event timing cannot prove control.
+    /// This never authorizes a process action.
+    pub fn possible_descendant(&self, pid: u32) -> bool {
+        let Some(root) = self.launch_pid else {
+            return false;
+        };
+        let mut current = pid;
+        for _ in 0..=64 {
+            if current == root {
+                return true;
+            }
+            let parents: Vec<_> = self
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    ProcessEvent::Started { pid, parent, .. } if *pid == current => Some(*parent),
+                    _ => None,
+                })
+                .collect();
+            let [parent] = parents.as_slice() else {
+                return false;
+            };
+            if *parent == current {
+                return false;
+            }
+            current = *parent;
+        }
+        false
+    }
+
+    /// Exact start and exit intervals eligible for packet membership.
+    pub fn causal_intervals(&self) -> Vec<(u32, Timestamp, Option<Timestamp>)> {
+        if self.launch_identity.is_none()
+            || self.events_unretained > 0
+            || self.unparseable_events > 0
+            || self
+                .watcher_report
+                .is_some_and(|report| report.lost_anything())
+        {
+            return Vec::new();
+        }
+        self.events
+            .iter()
+            .filter_map(|event| {
+                let ProcessEvent::Started { pid, at, .. } = event else {
+                    return None;
+                };
+                self.causal_depth(*pid, *at)?;
+                let exited = self
+                    .events
+                    .iter()
+                    .filter_map(|candidate| match candidate {
+                        ProcessEvent::Exited {
+                            pid: exited_pid,
+                            at: exited_at,
+                        } if *exited_pid == *pid && *exited_at >= *at => Some(*exited_at),
+                        _ => None,
+                    })
+                    .min();
+                Some((*pid, *at, exited))
+            })
+            .collect()
+    }
+
     pub fn observe(&mut self, event: &ProcessEvent) -> bool {
         self.observe_managed(event).source_retained
     }
@@ -196,6 +315,13 @@ impl CaptureProcessEvidence {
     }
 
     pub fn observe_managed(&mut self, event: &ProcessEvent) -> ManagedEventObservation {
+        let source_retained = if self.events.len() < self.event_limit {
+            self.events.push(event.clone());
+            true
+        } else {
+            self.events_unretained = self.events_unretained.saturating_add(1);
+            false
+        };
         let mut verified_path = None;
         let mut limitation = None;
         if let ProcessEvent::Started { pid, image, at, .. } = event {
@@ -204,7 +330,11 @@ impl CaptureProcessEvidence {
                 .shutdown_scope
                 .iter()
                 .any(|path| case_equal(image_name(&path.to_string_lossy()), name));
-            if declared {
+            let causal = source_retained
+                && !self.shutdown_scope.is_empty()
+                && self.launch_identity.is_some()
+                && self.causal_depth(*pid, *at).is_some();
+            if declared || causal {
                 let needs_verified_path = !image.contains(['\\', '/']);
                 if self.managed_instances.len() >= 64 {
                     self.managed_instance_limit_reached = true;
@@ -226,13 +356,31 @@ impl CaptureProcessEvidence {
                         }
                     }
                     let same_path = self.shutdown_scope.iter().any(|path| {
-                        path.to_string_lossy().to_lowercase()
-                            == identity.path.to_string_lossy().to_lowercase()
+                        case_equal(
+                            &path_spelling(&path.to_string_lossy()),
+                            &path_spelling(&identity.path.to_string_lossy()),
+                        )
                     });
                     let event_nanos = i128::from(at.nanos_since(Timestamp::from_nanos(0)));
                     let close_to_event =
                         (identity.created_unix_nanos() - event_nanos).abs() <= 5_000_000_000;
-                    if self.managed_instances.len() < 64 && same_path && close_to_event {
+                    let same_image = case_equal(image_name(&identity.path.to_string_lossy()), name);
+                    let event_path_matches = if image.contains(['\\', '/']) {
+                        case_equal(
+                            &path_spelling(image),
+                            &path_spelling(&identity.path.to_string_lossy()),
+                        )
+                    } else {
+                        same_image
+                    };
+                    let same_account = ProcessIdentity::current()
+                        .is_ok_and(|current| identity.same_user_session(&current));
+                    if self.managed_instances.len() < 64
+                        && (same_path || causal)
+                        && event_path_matches
+                        && same_account
+                        && close_to_event
+                    {
                         self.managed_instances.push(ManagedProcessInstance {
                             event_at: *at,
                             identity,
@@ -246,13 +394,6 @@ impl CaptureProcessEvidence {
         if let Some(reason) = limitation {
             self.note_stage_limitation(reason);
         }
-        let source_retained = if self.events.len() < self.event_limit {
-            self.events.push(event.clone());
-            true
-        } else {
-            self.events_unretained = self.events_unretained.saturating_add(1);
-            false
-        };
         ManagedEventObservation {
             source_retained,
             verified_path,
@@ -890,6 +1031,28 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn passive_launch_never_acquires_managed_shutdown_receipts() {
+        let current = ProcessIdentity::current().expect("current process identity");
+        let at = Timestamp::from_nanos(current.created_unix_nanos() as i64);
+        let mut evidence = CaptureProcessEvidence {
+            launch_pid: Some(current.pid),
+            launch_earliest_at: Some(at),
+            launch_at: Some(at),
+            ..Default::default()
+        };
+        let event = ProcessEvent::started(
+            current.pid,
+            std::process::id(),
+            current.path.display().to_string(),
+            "",
+            at,
+        );
+        evidence.observe_managed(&event);
+        assert!(evidence.managed_instances.is_empty());
+    }
 
     #[test]
     fn event_bound_path_rejects_reused_pid_wrong_path_and_missing_authority() {
