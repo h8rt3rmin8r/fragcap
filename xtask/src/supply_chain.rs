@@ -580,6 +580,19 @@ fn validate_packages(
     findings: &mut Vec<String>,
 ) {
     let allowed: BTreeSet<String> = strings(object.get("allowed_sources")).into_iter().collect();
+    let ordinary_licenses: BTreeSet<String> = [
+        "MIT",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "ISC",
+        "Unicode-3.0",
+        "Unicode-DFS-2016",
+        "Zlib",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
     for graph in graphs {
         for package in graph.packages.values() {
             if let Some(source) = &package.source {
@@ -598,6 +611,20 @@ fn validate_packages(
                 if package.license.is_none() {
                     findings.push(format!(
                         "license-metadata: {} has no declared license",
+                        package.key
+                    ));
+                }
+                if package.license.as_deref().is_some_and(|license| {
+                    license.contains("0BSD")
+                        && !license_expression_satisfied(license, &ordinary_licenses)
+                })
+                    && !matches!(
+                        (package.name.as_str(), package.version.as_str()),
+                        ("smoltcp", "0.12.0") | ("managed", "0.8.0")
+                    )
+                {
+                    findings.push(format!(
+                        "license-exception: {} is outside the reviewed 0BSD pair",
                         package.key
                     ));
                 }
