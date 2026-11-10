@@ -1008,9 +1008,10 @@ mod tests {
     use bytes::Buf;
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
     use fragcap_proxy::{
-        DestinationAuthority, DestinationPolicy, InspectionAction, InspectionDecider,
-        InspectionDecision, InspectionReason, InspectionRequest, LeafCache, NativeProxyBackend,
-        NativeProxyConfig, ProtocolLimits,
+        ApplicationEvent, ApplicationEventSink, DestinationAuthority, DestinationPolicy,
+        EventDisposition, InspectionAction, InspectionDecider, InspectionDecision,
+        InspectionReason, InspectionRequest, LeafCache, NativeProxyBackend, NativeProxyConfig,
+        ProtocolLimits,
     };
     use h3_quinn::Connection;
     use hyper::{Request, Response};
@@ -1023,6 +1024,14 @@ mod tests {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     struct UninspectedDirectOwner;
+
+    struct RetiredApplicationSink;
+
+    impl ApplicationEventSink for RetiredApplicationSink {
+        fn try_emit(&self, _event: ApplicationEvent) -> EventDisposition {
+            EventDisposition::Retired
+        }
+    }
 
     impl InspectionDecider for UninspectedDirectOwner {
         fn decide(&self, _request: InspectionRequest, _budget: Duration) -> InspectionDecision {
@@ -1653,7 +1662,7 @@ mod tests {
         release_client(&mut child);
         finish_client(child);
         server.join().unwrap();
-        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST), false);
     }
 
     #[test]
@@ -1740,8 +1749,14 @@ mod tests {
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_direct_runtime_routes_exact_generation() {
-        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        live_tcp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST), false);
+        live_tcp_case(IpAddr::V6(Ipv6Addr::LOCALHOST), false);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_writer_retirement_preserves_direct_route_and_counts_loss() {
+        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST), true);
     }
 
     #[test]
@@ -1803,7 +1818,7 @@ mod tests {
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 2);
     }
 
-    fn live_tcp_case(ip: IpAddr) {
+    fn live_tcp_case(ip: IpAddr, writer_retired: bool) {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
         let origin = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
@@ -1844,6 +1859,9 @@ mod tests {
                 context.clone(),
                 vec!["client".into()],
             )));
+        if writer_retired {
+            proxy = proxy.with_application_event_sink(Arc::new(RetiredApplicationSink));
+        }
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
         let mut runtime = DirectPacketRuntime::start(
             Path::new(&root),
@@ -1873,6 +1891,9 @@ mod tests {
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
+        if writer_retired {
+            assert!(proxy_report.observation.protocol.application_events_dropped > 0);
+        }
     }
 
     #[test]
