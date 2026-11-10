@@ -3,6 +3,8 @@
 //! Exact WinDivert 2.2.2-A x64 ABI, loaded only by an authorized route lease.
 
 #[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use std::sync::Mutex;
 use std::{
     ffi::{c_void, CStr, CString},
@@ -68,12 +70,26 @@ const SHUTDOWN_RECV: i32 = 1;
 
 #[cfg(test)]
 static INJECT_SEND_FAILURE_FOR: Mutex<Option<DirectTuple>> = Mutex::new(None);
+#[cfg(test)]
+static INJECT_NETWORK_OPEN_FAILURE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static INJECT_NETWORK_RECV_FAILURE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 pub(super) fn fail_next_send_for(tuple: DirectTuple) {
     *INJECT_SEND_FAILURE_FOR
         .lock()
         .expect("send failure hook lock") = Some(tuple);
+}
+
+#[cfg(test)]
+pub(super) fn fail_next_network_open() {
+    INJECT_NETWORK_OPEN_FAILURE.store(true, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(super) fn fail_next_network_recv() {
+    INJECT_NETWORK_RECV_FAILURE.store(true, Ordering::Release);
 }
 
 /// Matches the exact `WINDIVERT_ADDRESS` from the pinned vendor header.
@@ -266,6 +282,10 @@ impl Api {
     }
 
     fn open_cstr(self: &Arc<Self>, filter: &CStr, layer: i32, flags: u64) -> io::Result<Handle> {
+        #[cfg(test)]
+        if layer == NETWORK_LAYER && INJECT_NETWORK_OPEN_FAILURE.swap(false, Ordering::AcqRel) {
+            return Err(io::Error::other("injected WinDivert network open failure"));
+        }
         let raw = unsafe { (self.open)(filter.as_ptr(), layer, 0, flags) };
         if raw == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
@@ -273,6 +293,8 @@ impl Api {
         Ok(Handle {
             api: Arc::clone(self),
             raw,
+            #[cfg(test)]
+            layer,
         })
     }
 }
@@ -286,10 +308,19 @@ impl Drop for Api {
 pub(super) struct Handle {
     api: Arc<Api>,
     raw: isize,
+    #[cfg(test)]
+    layer: i32,
 }
 
 impl Handle {
     pub fn recv(&self, packet: &mut [u8], address: &mut Address) -> io::Result<usize> {
+        #[cfg(test)]
+        if self.layer == NETWORK_LAYER && INJECT_NETWORK_RECV_FAILURE.swap(false, Ordering::AcqRel)
+        {
+            return Err(io::Error::other(
+                "injected WinDivert network receive failure",
+            ));
+        }
         let length = u32::try_from(packet.len()).map_err(io::Error::other)?;
         let mut received = 0;
         let ok = unsafe {

@@ -294,6 +294,7 @@ impl ProxyRoute {
 
     /// Internal bridge credential from this session's exact native SOCKS URL.
     /// The returned slice remains owned by the secret-bearing route object.
+    #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn socks5_password(&self) -> Option<&str> {
         let userinfo = self.socks5h_url.strip_prefix("socks5h://")?;
         let (username, credential) = userinfo.split_once(':')?;

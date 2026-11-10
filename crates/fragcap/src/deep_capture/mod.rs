@@ -24,6 +24,7 @@ mod diagnostics;
 mod direct_bridge;
 #[cfg(all(windows, feature = "direct-route"))]
 mod direct_observer;
+#[cfg(any(test, all(windows, feature = "direct-route")))]
 mod direct_route;
 #[cfg(all(windows, feature = "direct-route"))]
 mod direct_runtime;

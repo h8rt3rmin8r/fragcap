@@ -27,8 +27,11 @@
     {"id":"different-destination-sentinels","tier":"windows-driver","transport":"udp","family":"ipv4","owner":"mixed","event":"before-initial","expected":"unrelated-unaffected","probe":"disposable_direct_runtime_routes_udp_datagram"},
     {"id":"helper-loopback-exclusion","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"helper","event":"before-initial","expected":"bypassed","probe":"disposable_direct_runtime_routes_two_parallel_clients"},
     {"id":"cancel-and-restart","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"released","probe":"disposable_cancel_then_restart_releases_route"},
+    {"id":"driver-open-failure","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"none","event":"open","expected":"refused-and-released","probe":"disposable_driver_open_and_receive_failures_release_handle"},
+    {"id":"driver-receive-failure","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"none","event":"receive","expected":"failed-and-released","probe":"disposable_driver_open_and_receive_failures_release_handle"},
     {"id":"driver-send-failure","tier":"windows-driver","transport":"udp","family":"ipv4","owner":"unrelated","event":"pass-through","expected":"lost-accounted","probe":"disposable_send_failure_releases_broad_handle_and_counts_packet"},
-    {"id":"proxy-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused","probe":"disposable_proxy_refusal_reinjects_selected_first_packet"},
+    {"id":"proxy-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused","probe":"disposable_proxy_auth_failure_reinjects_selected_first_packet"},
+    {"id":"listener-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused-without-loss","probe":"disposable_proxy_refusal_reinjects_selected_first_packet"},
     {"id":"writer-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"loss-accounted","probe":"disposable_writer_retirement_preserves_direct_route_and_counts_loss"},
     {"id":"cleanup-failure","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"none","event":"cleanup","expected":"recovery-required","probe":"disposable_cleanup_failure_reports_uncertainty_and_releases_handle"}
   ],

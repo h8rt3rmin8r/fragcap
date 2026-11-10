@@ -385,6 +385,7 @@ impl NativeObservationContext {
 
     /// Read the current retained generation proof for a pending direct SYN.
     /// The route samples only while a first packet is awaiting admission.
+    #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn direct_process_evidence(&self) -> Option<super::CaptureProcessEvidence> {
         self.process_evidence
             .lock()

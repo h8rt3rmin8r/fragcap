@@ -1795,6 +1795,54 @@ mod tests {
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_driver_open_and_receive_failures_release_handle() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        for stage in ["open", "receive"] {
+            if stage == "open" {
+                super::super::windivert::fail_next_network_open();
+            } else {
+                super::super::windivert::fail_next_network_recv();
+            }
+            let started = DirectPacketRuntime::start(
+                Path::new(&root),
+                NativeObservationContext::default(),
+                format!("s200-driver-{stage}-fault"),
+                "127.0.0.1:9".parse().unwrap(),
+                Zeroizing::new("unused-capability".to_string()),
+                4,
+            );
+            let error = match started {
+                Ok(mut runtime) => runtime.stop().unwrap_err().to_string(),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains(&format!("network {stage} failure")),
+                "{error}"
+            );
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                stream.write_all(&byte).unwrap();
+            });
+            let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client.write_all(b"x").unwrap();
+            let mut reply = [0];
+            client.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"x");
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_send_failure_releases_broad_handle_and_counts_packet() {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
@@ -1872,6 +1920,56 @@ mod tests {
         assert_eq!(stats.packets.consumed, 0);
         assert_eq!(stats.packets.lost, 0);
         assert!(stats.packets.reinjected > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_proxy_auth_failure_reinjects_selected_first_packet() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            assert_eq!(body, b"runtime-client-request");
+            stream.write_all(b"runtime-origin-reply").unwrap();
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_session_id("s200-proxy-auth-refusal")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut lease = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .start(Duration::from_secs(2))
+            .unwrap();
+        let mut child = spawn_client("tcp", original);
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            client_context(child.id()),
+            "s200-proxy-auth-refusal".into(),
+            lease.endpoint(),
+            Zeroizing::new("wrong-capability".to_string()),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        let stats = runtime.stop().unwrap();
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(2));
+        assert!(report.observation.protocol.socks_auth_refused > 0);
+        assert!(stats.proxy_refused > 0);
+        assert_eq!(stats.packets.consumed, 0);
+        assert_eq!(stats.packets.lost, 0);
     }
 
     #[test]
