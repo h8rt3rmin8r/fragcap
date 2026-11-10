@@ -1059,6 +1059,16 @@ mod tests {
             let mut response = [0u8; 128];
             let length = client.recv(&mut response).unwrap();
             assert_eq!(&response[..length], b"runtime-udp-reply");
+        } else if protocol == "sentinel-udp" {
+            let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
+            client.connect(original).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.send(b"sentinel-udp-request").unwrap();
+            let mut response = [0u8; 128];
+            let length = client.recv(&mut response).unwrap();
+            assert_eq!(&response[..length], b"sentinel-udp-reply");
         } else if protocol == "http" {
             let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
             client
@@ -1475,6 +1485,22 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
         let original = origin.local_addr().unwrap();
+        let sentinel = UdpSocket::bind(SocketAddr::new(ip, 0)).unwrap();
+        sentinel
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let sentinel_address = sentinel.local_addr().unwrap();
+        let sentinel_server = thread::spawn(move || {
+            for _ in 0..3 {
+                let mut body = [0u8; 128];
+                let (length, peer) = sentinel.recv_from(&mut body).unwrap();
+                assert_eq!(&body[..length], b"sentinel-udp-request");
+                sentinel.send_to(b"sentinel-udp-reply", peer).unwrap();
+            }
+        });
+        let mut before = spawn_client("sentinel-udp", sentinel_address);
+        release_client(&mut before);
+        finish_client(before);
         let server = thread::spawn(move || {
             let mut body = [0u8; 128];
             let (length, peer) = origin.recv_from(&mut body).unwrap();
@@ -1501,6 +1527,9 @@ mod tests {
             4,
         )
         .unwrap();
+        let mut during = spawn_client("sentinel-udp", sentinel_address);
+        release_client(&mut during);
+        finish_client(during);
         release_client(&mut child);
         let output = child.wait_with_output().unwrap();
         let stop_result = runtime.stop();
@@ -1519,6 +1548,10 @@ mod tests {
         );
         assert_eq!(stats.packets.lost, 0);
         assert_eq!(stats.synthetic_reply_lost, 0);
+        let mut after = spawn_client("sentinel-udp", sentinel_address);
+        release_client(&mut after);
+        finish_client(after);
+        sentinel_server.join().unwrap();
         server.join().unwrap();
         assert_eq!(
             proxy_report
@@ -1527,5 +1560,6 @@ mod tests {
                 .socks_udp_associate_succeeded,
             1
         );
+        assert_eq!(proxy_report.observation.accepted_connections, 1);
     }
 }

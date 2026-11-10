@@ -505,6 +505,10 @@ mod tests {
             during[EXCHANGES * 99 / 100].as_micros(),
             after[EXCHANGES * 99 / 100].as_micros(),
         );
+        let p99_bound = Duration::from_millis(50).max(before[EXCHANGES * 99 / 100] * 4);
+        assert!(during[EXCHANGES * 99 / 100] <= p99_bound);
+        assert!(loaded_samples[loaded_samples.len() * 99 / 100] <= p99_bound);
+        assert!(after[EXCHANGES * 99 / 100] <= p99_bound);
         assert!(forwarded.load(Ordering::Relaxed) >= (EXCHANGES * 2 + 4000) as u64);
     }
 
