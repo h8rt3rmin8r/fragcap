@@ -34,14 +34,14 @@
 
 - [x] T015 Run focused tests, `cargo xtask ci`, package contract check, Windows package certification, encoding/mojibake and `git diff --check`.
 - [x] T016 Commit, push the authorized branch and open an official PR with `Closes #577` and `Closes #579`.
-- [ ] T017 Wait for exact-head CI and all reviews, answer every actionable comment, request at most one second `@Codex` round, and leave a green PR for owner final review and merge.
+- [x] T017 Wait for exact-head CI and all reviews, answer every actionable comment, request at most one second `@Codex` round, and leave a green PR for owner final review and merge.
 
 ## Phase 6: Hosted gate repair (discovered after PR publication)
 
 - [x] T018 Repair RUSTSEC-2026-0459 with patched bundled SQLite, reconcile MSRV, supply-chain policy, specification and changelog, then rerun local gates.
 - [x] T019 Make pinned package-tool installation check native exit status and retry transient CycloneDX download failure; rerun hosted Windows package certification.
 - [x] T020 Refresh the two isolated lockfiles carrying SQLite and rerun their hosted audit and short campaign.
-- [ ] T021 Replace the false full-source-observation assertion in the volume-bound CLI test and verify the final head in hosted CI.
+- [x] T021 Replace the false full-source-observation assertion in the volume-bound CLI test and verify the final head in hosted CI.
 
 ## Dependencies
 

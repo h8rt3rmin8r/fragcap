@@ -1,7 +1,7 @@
 # Spec-Kit Analysis: S199
 
 **Date**: 2026-11-09
-**State**: Implementation and package certification passed; final-head CI rerun pending after test correction.
+**State**: Implementation, review closeout and final implementation-head CI passed; owner final review pending.
 
 ## Coverage
 
@@ -78,3 +78,7 @@ while keeping exact output and stop assertions. Final-head CI must verify it.
 The authorized second Codex code review of `29778bd` completed with no
 findings and a thumbs-up. No separate security-review receipt arrived; no
 third review round will be requested.
+Implementation head `077ee2c` passed all 25 hosted checks, including the
+previously failing Ubuntu test and [Windows package lifecycle certification](https://github.com/h8rt3rmin8r/fragcap/actions/runs/42756520011).
+The only later change is this Spec-Kit status closeout; its own exact-head CI
+must pass before the owner handoff.
