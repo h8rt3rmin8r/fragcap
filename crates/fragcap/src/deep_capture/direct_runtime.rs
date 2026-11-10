@@ -66,6 +66,7 @@ pub struct DirectRuntimeStats {
     pub candidate_capacity_bypassed: u64,
     pub bypass_reasons: BTreeMap<&'static str, u64>,
     pub proxy_refused: u64,
+    pub udp_relay_resets: u64,
     pub synthetic_reply_lost: u64,
     pub event_history_overflow: bool,
     pub pre_receive_loss_unmeasurable: bool,
@@ -84,6 +85,7 @@ struct SharedStats {
     candidate_capacity_bypassed: AtomicU64,
     bypass_reasons: Mutex<BTreeMap<&'static str, u64>>,
     proxy_refused: AtomicU64,
+    udp_relay_resets: AtomicU64,
     synthetic_reply_lost: AtomicU64,
     event_history_overflow: AtomicBool,
 }
@@ -101,6 +103,7 @@ impl SharedStats {
             candidate_capacity_bypassed: AtomicU64::new(0),
             bypass_reasons: Mutex::new(BTreeMap::new()),
             proxy_refused: AtomicU64::new(0),
+            udp_relay_resets: AtomicU64::new(0),
             synthetic_reply_lost: AtomicU64::new(0),
             event_history_overflow: AtomicBool::new(false),
         }
@@ -707,8 +710,18 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         for (tuple, flow) in &active_udp {
             stats.processor_progress();
             for _ in 0..8 {
-                let Some(payload) = flow.association.poll_reply()? else {
-                    break;
+                let payload = match flow.association.poll_reply() {
+                    Ok(Some(payload)) => payload,
+                    Ok(None) => break,
+                    Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                        // Windows reports an ICMP port-unreachable on a connected
+                        // UDP socket as WSAECONNRESET. No reply packet was
+                        // delivered; a completed QUIC peer can cause this on
+                        // close. Keep the association and count the signal.
+                        stats.udp_relay_resets.fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                    Err(error) => return Err(error),
                 };
                 let reply = build_udp_reply(*tuple, &payload)?;
                 inject_replies(&handle, &stats, vec![reply], flow.address)?;
@@ -980,6 +993,7 @@ impl DirectPacketRuntime {
                 .expect("bypass reason lock")
                 .clone(),
             proxy_refused: self.stats.proxy_refused.load(Ordering::Relaxed),
+            udp_relay_resets: self.stats.udp_relay_resets.load(Ordering::Relaxed),
             synthetic_reply_lost: self.stats.synthetic_reply_lost.load(Ordering::Relaxed),
             event_history_overflow: self.stats.event_history_overflow.load(Ordering::Relaxed),
             pre_receive_loss_unmeasurable: true,
