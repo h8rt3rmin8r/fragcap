@@ -102,6 +102,7 @@ impl Address {
         self.flags & (1 << 18) != 0
     }
 
+    #[cfg(test)]
     pub fn ipv6(self) -> bool {
         self.flags & (1 << 20) != 0
     }

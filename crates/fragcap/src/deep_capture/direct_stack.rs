@@ -101,7 +101,7 @@ impl Device for PacketDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        (self.egress.len() < self.capacity).then(|| PacketTx(&mut self.egress))
+        (self.egress.len() < self.capacity).then_some(PacketTx(&mut self.egress))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {

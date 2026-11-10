@@ -237,7 +237,7 @@ impl<A> CandidateBuffer<A> {
         packet: Vec<u8>,
         address: A,
         now_ns: u64,
-    ) -> Result<(), PendingCandidate<A>> {
+    ) -> Result<(), Box<PendingCandidate<A>>> {
         let candidate = PendingCandidate {
             head,
             deadline_ns: now_ns.saturating_add(self.wait_ns),
@@ -252,7 +252,7 @@ impl<A> CandidateBuffer<A> {
                 .checked_add(candidate.packet.len())
                 .is_none_or(|total| total > self.max_bytes)
         {
-            return Err(candidate);
+            return Err(Box::new(candidate));
         }
         self.held_bytes += candidate.packet.len();
         self.pending.push_back(candidate);
@@ -643,8 +643,7 @@ mod tests {
             .expect("opaque candidate admitted");
         let overflow = buffer
             .enqueue(packet(40001), b"other".to_vec(), 2, 0)
-            .err()
-            .expect("bounded candidate queue");
+            .expect_err("bounded candidate queue");
         assert_eq!(overflow.packet, b"other");
         assert_eq!(overflow.address, 2);
         let decisions = buffer.resolve(Some(&evidence()), &[event(13, 40000)], 100);

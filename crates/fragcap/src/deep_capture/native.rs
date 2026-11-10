@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(all(windows, feature = "direct-route"))]
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -317,9 +319,22 @@ pub struct NativeObservationContext {
     flow_registry: Arc<FlowRegistry>,
     controlled_process_id: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
     #[cfg(all(windows, feature = "socket-table"))]
     socket_collector: Arc<SocketInceptionCollector>,
 }
+
+#[cfg(all(windows, feature = "direct-route"))]
+#[derive(Clone, Debug)]
+struct DirectHelperOwner {
+    flow: super::direct_route::OriginalFlow,
+    opened_earliest_ns: u64,
+    opened_latest_ns: u64,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+type DirectHelperRegistry = BTreeMap<(SocketAddr, SocketAddr), Vec<DirectHelperOwner>>;
 
 impl NativeObservationContext {
     /// Publish only newly retained process facts during an active capture.
@@ -371,6 +386,63 @@ impl NativeObservationContext {
             .clone()
     }
 
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn register_direct_helper(
+        &self,
+        helper_local: SocketAddr,
+        proxy_local: SocketAddr,
+        flow: super::direct_route::OriginalFlow,
+        opened_earliest_ns: u64,
+        opened_latest_ns: u64,
+    ) -> Result<(), &'static str> {
+        if opened_earliest_ns > opened_latest_ns || helper_local == proxy_local {
+            return Err("invalid-direct-helper-window");
+        }
+        let mut registry = self.direct_helpers.lock().expect("direct helper lock");
+        if registry.values().map(Vec::len).sum::<usize>() >= 256 {
+            return Err("direct-helper-registry-full");
+        }
+        let owners = registry.entry((helper_local, proxy_local)).or_default();
+        if owners.iter().any(|owner| {
+            owner.opened_earliest_ns <= opened_latest_ns
+                && opened_earliest_ns <= owner.opened_latest_ns
+        }) {
+            return Err("direct-helper-window-overlap");
+        }
+        owners.push(DirectHelperOwner {
+            flow,
+            opened_earliest_ns,
+            opened_latest_ns,
+        });
+        Ok(())
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn direct_helper_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        if descriptor.transport != "tcp" {
+            return Ok(None);
+        }
+        let registry = self.direct_helpers.lock().expect("direct helper lock");
+        let Some(owners) = registry.get(&(descriptor.client_peer, descriptor.proxy_local)) else {
+            return Ok(None);
+        };
+        let mut matching = owners.iter().filter(|owner| {
+            owner.opened_earliest_ns.saturating_sub(5_000_000) <= opened_at_ns
+                && opened_at_ns <= owner.opened_latest_ns.saturating_add(5_000_000)
+        });
+        let Some(owner) = matching.next() else {
+            return Ok(None);
+        };
+        if matching.next().is_some() {
+            return Err("direct-helper-window-ambiguous");
+        }
+        Ok(Some(owner.flow.clone()))
+    }
+
     fn socket_inception(
         &self,
         descriptor: ConnectionDescriptor,
@@ -401,6 +473,28 @@ impl NativeObservationContext {
         &self,
         window: &ApplicationConnectionWindow,
     ) -> super::ConnectionOwnerEvidence {
+        #[cfg(all(windows, feature = "direct-route"))]
+        match self.direct_helper_flow(window.descriptor, window.opened_at_ns) {
+            Ok(Some(flow)) => {
+                return super::ConnectionOwnerEvidence {
+                    state: "exact".into(),
+                    reason: "direct-route-receipt".into(),
+                    pid: Some(flow.pid),
+                    process_instance_id: Some(flow.process_instance_id),
+                    process_image: None,
+                    role: Some("client".into()),
+                    original_destination: Some(flow.tuple.remote),
+                }
+            }
+            Err(reason) => {
+                return super::ConnectionOwnerEvidence {
+                    state: "ambiguous".into(),
+                    reason: reason.into(),
+                    ..Default::default()
+                }
+            }
+            Ok(None) => {}
+        }
         let inception = *window.inception.lock().expect("inception result lock");
         if inception.state != "exact" {
             return super::ConnectionOwnerEvidence {
@@ -436,6 +530,75 @@ impl NativeObservationContext {
             0 => None,
             process_id => Some(process_id),
         }
+    }
+}
+
+#[cfg(all(test, windows, feature = "direct-route"))]
+mod direct_helper_tests {
+    use super::*;
+    use crate::deep_capture::direct_route::{DirectTuple, OriginalFlow};
+
+    #[test]
+    fn helper_receipt_restores_original_owner_only_for_exact_accept_window() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:31001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:31002".parse().unwrap();
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "127.0.0.1:31003".parse().unwrap(),
+                remote: "127.0.0.1:31004".parse().unwrap(),
+            },
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+        };
+        context
+            .register_direct_helper(helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(flow.clone())
+        );
+        let window = ApplicationConnectionWindow {
+            descriptor,
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let owner = context.connection_owner(&window);
+        assert_eq!(owner.state, "exact");
+        assert_eq!(owner.reason, "direct-route-receipt");
+        assert_eq!(owner.pid, Some(42));
+        assert_eq!(
+            owner.original_destination,
+            Some("127.0.0.1:31004".parse().unwrap())
+        );
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 6_000_000).unwrap(),
+            None
+        );
+        assert_eq!(
+            context
+                .direct_helper_flow(
+                    ConnectionDescriptor {
+                        client_peer: "127.0.0.1:31005".parse().unwrap(),
+                        ..descriptor
+                    },
+                    150
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            context.register_direct_helper(helper, proxy, flow, 150, 250),
+            Err("direct-helper-window-overlap")
+        );
     }
 }
 
@@ -1718,6 +1881,7 @@ pub(super) fn bind_inception_process(
         process_instance_id: Some(format!("process-{pid}-{}", started.as_nanos())),
         process_image: Some(image),
         role,
+        original_destination: None,
     }
 }
 

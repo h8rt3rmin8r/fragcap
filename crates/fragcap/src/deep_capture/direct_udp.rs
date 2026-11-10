@@ -109,6 +109,10 @@ impl DirectUdpAssociation {
         Ok(Some(payload.to_vec()))
     }
 
+    pub fn control_local(&self) -> io::Result<SocketAddr> {
+        self.control.local_addr()
+    }
+
     pub fn control_peer(&self) -> io::Result<SocketAddr> {
         self.control.peer_addr()
     }

@@ -12,7 +12,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use fragcap_core::{
@@ -26,7 +26,7 @@ use super::{
     direct_observer::{DirectSocketObserver, SocketObserverStats},
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
-        DirectSocketEvent, DirectTuple, PacketDisposition,
+        DirectSocketEvent, DirectTuple, PacketDisposition, RouteReceiptId,
     },
     direct_udp::{build_udp_reply, DirectUdpAssociation},
     windivert::{sample_qpc_anchor, Address, Api, Handle, NETWORK_LAYER},
@@ -39,17 +39,26 @@ const CANDIDATE_WAIT_NS: u64 = 10_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 
+fn unix_now_ns() -> io::Result<u64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| io::Error::other("system clock before Unix epoch"))?;
+    u64::try_from(duration.as_nanos())
+        .map_err(|_| io::Error::other("system clock beyond route timestamp range"))
+}
+
 enum WorkPacket {
     Candidate(super::direct_route::DirectPacketHead, Vec<u8>, Address),
     Selected(DirectTuple, Vec<u8>, Address),
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DirectRuntimeStats {
     pub packets: DirectPacketAccounting,
     pub socket_events: SocketObserverStats,
     pub admission_busy_bypassed: u64,
     pub candidate_capacity_bypassed: u64,
+    pub bypass_reasons: BTreeMap<&'static str, u64>,
     pub proxy_refused: u64,
     pub synthetic_reply_lost: u64,
     pub event_history_overflow: bool,
@@ -65,6 +74,7 @@ struct SharedStats {
     stop_watchdog: AtomicBool,
     admission_busy_bypassed: AtomicU64,
     candidate_capacity_bypassed: AtomicU64,
+    bypass_reasons: Mutex<BTreeMap<&'static str, u64>>,
     proxy_refused: AtomicU64,
     synthetic_reply_lost: AtomicU64,
     event_history_overflow: AtomicBool,
@@ -80,6 +90,7 @@ impl SharedStats {
             stop_watchdog: AtomicBool::new(false),
             admission_busy_bypassed: AtomicU64::new(0),
             candidate_capacity_bypassed: AtomicU64::new(0),
+            bypass_reasons: Mutex::new(BTreeMap::new()),
             proxy_refused: AtomicU64::new(0),
             synthetic_reply_lost: AtomicU64::new(0),
             event_history_overflow: AtomicBool::new(false),
@@ -100,6 +111,12 @@ impl SharedStats {
             self.started.elapsed().as_millis() as u64 + 1,
             Ordering::Release,
         );
+    }
+
+    fn record_bypass(&self, reason: &'static str) {
+        let mut reasons = self.bypass_reasons.lock().expect("bypass reason lock");
+        let count = reasons.entry(reason).or_insert(0);
+        *count = count.checked_add(1).expect("bounded route bypass count");
     }
 }
 
@@ -250,7 +267,7 @@ struct ActiveUdp {
     address: Address,
 }
 
-fn process_packets(
+struct ProcessRuntimeInputs {
     receiver: Receiver<WorkPacket>,
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
@@ -263,7 +280,23 @@ fn process_packets(
     proxy: std::net::SocketAddr,
     password: Zeroizing<String>,
     max_flows: usize,
-) -> io::Result<()> {
+}
+
+fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
+    let ProcessRuntimeInputs {
+        receiver,
+        handle,
+        observer,
+        context,
+        selected,
+        excluded,
+        connecting,
+        stats,
+        session_id,
+        proxy,
+        password,
+        max_flows,
+    } = inputs;
     let started = Instant::now();
     let mut candidates = CandidateBuffer::new(PACKET_QUEUE, CANDIDATE_BYTES, CANDIDATE_WAIT_NS)
         .expect("fixed candidate bounds");
@@ -271,6 +304,7 @@ fn process_packets(
     let mut active = BTreeMap::<DirectTuple, ActiveTcp>::new();
     let mut active_udp = BTreeMap::<DirectTuple, ActiveUdp>::new();
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
+    let mut issued_receipts = Vec::<RouteReceiptId>::new();
     let mut helper_id = 0u64;
     loop {
         stats.processor_progress();
@@ -335,11 +369,19 @@ fn process_packets(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 for decision in candidates.drain() {
                     if let CandidateDecision::PassThrough {
-                        packet, address, ..
+                        reason,
+                        packet,
+                        address,
                     } = decision
                     {
+                        stats.record_bypass(reason);
                         reinject(&handle, &stats, &packet, &address)?;
                     }
+                }
+                for receipt in issued_receipts {
+                    receipts.retire(receipt).map_err(|error| {
+                        io::Error::other(format!("retire route receipt: {error:?}"))
+                    })?;
                 }
                 return Ok(());
             }
@@ -373,8 +415,11 @@ fn process_packets(
         for decision in decisions {
             match decision {
                 CandidateDecision::PassThrough {
-                    packet, address, ..
+                    reason,
+                    packet,
+                    address,
                 } => {
+                    stats.record_bypass(reason);
                     reinject(&handle, &stats, &packet, &address)?;
                 }
                 CandidateDecision::Selected {
@@ -399,6 +444,7 @@ fn process_packets(
                                 continue;
                             }
                         };
+                        let helper_open_earliest = unix_now_ns()?;
                         connecting.store(true, Ordering::Release);
                         let association = DirectUdpAssociation::new(
                             proxy,
@@ -415,6 +461,7 @@ fn process_packets(
                                 continue;
                             }
                         };
+                        let helper_open_latest = unix_now_ns()?;
                         excluded
                             .lock()
                             .expect("helper route lock")
@@ -431,6 +478,21 @@ fn process_packets(
                             .map_err(|error| {
                                 io::Error::other(format!("consume UDP receipt: {error:?}"))
                             })?;
+                        if let Err(reason) = context.register_direct_helper(
+                            association.control_local()?,
+                            association.control_peer()?,
+                            flow.clone(),
+                            helper_open_earliest,
+                            helper_open_latest,
+                        ) {
+                            receipts.retire(receipt).map_err(|error| {
+                                io::Error::other(format!("retire refused UDP receipt: {error:?}"))
+                            })?;
+                            stats.record_bypass(reason);
+                            reinject(&handle, &stats, &packet, &address)?;
+                            continue;
+                        }
+                        issued_receipts.push(receipt);
                         if let Err(error) = association.send(datagram.payload) {
                             packet_finished(&stats, PacketDisposition::Lost)?;
                             return Err(io::Error::other(format!(
@@ -455,6 +517,7 @@ fn process_packets(
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
                     }
+                    let helper_open_earliest = unix_now_ns()?;
                     connecting.store(true, Ordering::Release);
                     let helper = connect_authenticated_socks5(
                         proxy,
@@ -471,6 +534,7 @@ fn process_packets(
                             continue;
                         }
                     };
+                    let helper_open_latest = unix_now_ns()?;
                     excluded
                         .lock()
                         .expect("helper route lock")
@@ -491,6 +555,21 @@ fn process_packets(
                         .map_err(|error| {
                             io::Error::other(format!("consume route receipt: {error:?}"))
                         })?;
+                    if let Err(reason) = context.register_direct_helper(
+                        helper.local_addr()?,
+                        helper.peer_addr()?,
+                        flow.clone(),
+                        helper_open_earliest,
+                        helper_open_latest,
+                    ) {
+                        receipts.retire(receipt).map_err(|error| {
+                            io::Error::other(format!("retire refused route receipt: {error:?}"))
+                        })?;
+                        stats.record_bypass(reason);
+                        reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    }
+                    issued_receipts.push(receipt);
                     let mut bridge =
                         DirectTcpBridge::new(flow.tuple, helper).map_err(io::Error::other)?;
                     selected
@@ -607,9 +686,9 @@ impl DirectPacketRuntime {
             let launched = thread::Builder::new()
                 .name("fragcap-direct-process".into())
                 .spawn(move || {
-                    let result = process_packets(
+                    let result = process_packets(ProcessRuntimeInputs {
                         receiver,
-                        Arc::clone(&process_handle),
+                        handle: Arc::clone(&process_handle),
                         observer,
                         context,
                         selected,
@@ -620,7 +699,7 @@ impl DirectPacketRuntime {
                         proxy,
                         password,
                         max_flows,
-                    );
+                    });
                     if result.is_err() {
                         let _ = process_handle.stop();
                     }
@@ -761,6 +840,12 @@ impl DirectPacketRuntime {
                 .stats
                 .candidate_capacity_bypassed
                 .load(Ordering::Relaxed),
+            bypass_reasons: self
+                .stats
+                .bypass_reasons
+                .lock()
+                .expect("bypass reason lock")
+                .clone(),
             proxy_refused: self.stats.proxy_refused.load(Ordering::Relaxed),
             synthetic_reply_lost: self.stats.synthetic_reply_lost.load(Ordering::Relaxed),
             event_history_overflow: self.stats.event_history_overflow.load(Ordering::Relaxed),
