@@ -50,11 +50,15 @@ pub struct DirectRuntimeStats {
     pub synthetic_reply_lost: u64,
     pub event_history_overflow: bool,
     pub pre_receive_loss_unmeasurable: bool,
+    pub watchdog_released: bool,
 }
 
-#[derive(Default)]
 struct SharedStats {
+    started: Instant,
     packets: Mutex<DirectPacketAccounting>,
+    oldest_pending_ms: AtomicU64,
+    watchdog_released: AtomicBool,
+    stop_watchdog: AtomicBool,
     admission_busy_bypassed: AtomicU64,
     candidate_capacity_bypassed: AtomicU64,
     proxy_refused: AtomicU64,
@@ -62,22 +66,52 @@ struct SharedStats {
     event_history_overflow: AtomicBool,
 }
 
+impl SharedStats {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            packets: Mutex::new(DirectPacketAccounting::default()),
+            oldest_pending_ms: AtomicU64::new(0),
+            watchdog_released: AtomicBool::new(false),
+            stop_watchdog: AtomicBool::new(false),
+            admission_busy_bypassed: AtomicU64::new(0),
+            candidate_capacity_bypassed: AtomicU64::new(0),
+            proxy_refused: AtomicU64::new(0),
+            synthetic_reply_lost: AtomicU64::new(0),
+            event_history_overflow: AtomicBool::new(false),
+        }
+    }
+
+    fn stalled_packet(&self, now_ms: u64) -> bool {
+        let pending = self.oldest_pending_ms.load(Ordering::Acquire);
+        pending != 0 && now_ms.saturating_sub(pending) >= 100
+    }
+}
+
 fn packet_received(stats: &SharedStats) -> io::Result<()> {
-    stats
-        .packets
-        .lock()
-        .expect("route accounting lock")
+    let mut accounting = stats.packets.lock().expect("route accounting lock");
+    let first = accounting.in_flight == 0;
+    accounting
         .receive()
-        .map_err(|error| io::Error::other(format!("packet receive accounting: {error:?}")))
+        .map_err(|error| io::Error::other(format!("packet receive accounting: {error:?}")))?;
+    if first {
+        stats.oldest_pending_ms.store(
+            stats.started.elapsed().as_millis() as u64 + 1,
+            Ordering::Release,
+        );
+    }
+    Ok(())
 }
 
 fn packet_finished(stats: &SharedStats, disposition: PacketDisposition) -> io::Result<()> {
-    stats
-        .packets
-        .lock()
-        .expect("route accounting lock")
+    let mut accounting = stats.packets.lock().expect("route accounting lock");
+    accounting
         .finish(disposition)
-        .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))
+        .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))?;
+    if accounting.in_flight == 0 {
+        stats.oldest_pending_ms.store(0, Ordering::Release);
+    }
+    Ok(())
 }
 
 fn reinject(
@@ -364,6 +398,7 @@ pub struct DirectPacketRuntime {
     observer: Arc<Mutex<DirectSocketObserver>>,
     receive_worker: Option<JoinHandle<io::Result<()>>>,
     process_worker: Option<JoinHandle<io::Result<()>>>,
+    watchdog_worker: Option<JoinHandle<()>>,
     stats: Arc<SharedStats>,
 }
 
@@ -392,7 +427,7 @@ impl DirectPacketRuntime {
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
         let connecting = Arc::new(AtomicBool::new(false));
-        let stats = Arc::new(SharedStats::default());
+        let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let handle = Arc::clone(&handle);
             let selected = Arc::clone(&selected);
@@ -400,53 +435,138 @@ impl DirectPacketRuntime {
             let stats = Arc::clone(&stats);
             thread::Builder::new()
                 .name("fragcap-direct-receive".into())
-                .spawn(move || receive_packets(handle, sender, selected, connecting, stats))?
+                .spawn(move || {
+                    let result =
+                        receive_packets(Arc::clone(&handle), sender, selected, connecting, stats);
+                    if result.is_err() {
+                        let _ = handle.stop();
+                    }
+                    result
+                })?
         };
         let process_worker = {
-            let handle = Arc::clone(&handle);
+            let process_handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
-            thread::Builder::new()
+            let launched = thread::Builder::new()
                 .name("fragcap-direct-process".into())
                 .spawn(move || {
-                    process_packets(
-                        receiver, handle, observer, context, selected, connecting, stats,
-                        session_id, proxy, password, max_flows,
-                    )
-                })?
+                    let result = process_packets(
+                        receiver,
+                        Arc::clone(&process_handle),
+                        observer,
+                        context,
+                        selected,
+                        connecting,
+                        stats,
+                        session_id,
+                        proxy,
+                        password,
+                        max_flows,
+                    );
+                    if result.is_err() {
+                        let _ = process_handle.stop();
+                    }
+                    result
+                });
+            match launched {
+                Ok(worker) => worker,
+                Err(error) => {
+                    let _ = handle.stop_receiving();
+                    let _ = receive_worker.join();
+                    return Err(error);
+                }
+            }
+        };
+        let watchdog_worker = {
+            let watchdog_handle = Arc::clone(&handle);
+            let watchdog_stats = Arc::clone(&stats);
+            let launched = thread::Builder::new()
+                .name("fragcap-direct-watchdog".into())
+                .spawn(move || {
+                    while !watchdog_stats.stop_watchdog.load(Ordering::Acquire) {
+                        let now = watchdog_stats.started.elapsed().as_millis() as u64 + 1;
+                        if watchdog_stats.stalled_packet(now) {
+                            watchdog_stats
+                                .watchdog_released
+                                .store(true, Ordering::Release);
+                            let _ = watchdog_handle.stop();
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                });
+            match launched {
+                Ok(worker) => worker,
+                Err(error) => {
+                    let _ = handle.stop();
+                    let _ = receive_worker.join();
+                    let _ = process_worker.join();
+                    return Err(error);
+                }
+            }
         };
         Ok(Self {
             handle,
             observer,
             receive_worker: Some(receive_worker),
             process_worker: Some(process_worker),
+            watchdog_worker: Some(watchdog_worker),
             stats,
         })
     }
 
     pub fn stop(&mut self) -> io::Result<DirectRuntimeStats> {
+        let was_running = self.receive_worker.is_some() || self.process_worker.is_some();
+        let mut first_error = None;
         if self.receive_worker.is_some() {
-            self.handle.stop_receiving()?;
-            self.receive_worker
+            if let Err(error) = self.handle.stop_receiving() {
+                first_error = Some(error);
+                let _ = self.handle.stop();
+            }
+            if let Err(error) = self
+                .receive_worker
                 .take()
                 .unwrap()
                 .join()
-                .map_err(|_| io::Error::other("direct receive worker panicked"))??;
+                .map_err(|_| io::Error::other("direct receive worker panicked"))
+                .and_then(|result| result)
+            {
+                first_error.get_or_insert(error);
+            }
         }
         if let Some(worker) = self.process_worker.take() {
-            worker
+            if let Err(error) = worker
                 .join()
-                .map_err(|_| io::Error::other("direct process worker panicked"))??;
+                .map_err(|_| io::Error::other("direct process worker panicked"))
+                .and_then(|result| result)
+            {
+                first_error.get_or_insert(error);
+            }
         }
-        self.observer.lock().expect("socket observer lock").stop()?;
-        self.handle.stop()?;
+        self.stats.stop_watchdog.store(true, Ordering::Release);
+        if let Some(worker) = self.watchdog_worker.take() {
+            if worker.join().is_err() {
+                first_error.get_or_insert(io::Error::other("direct watchdog panicked"));
+            }
+        }
+        if let Err(error) = self.observer.lock().expect("socket observer lock").stop() {
+            first_error.get_or_insert(error);
+        }
+        if was_running && !self.stats.watchdog_released.load(Ordering::Acquire) {
+            if let Err(error) = self.handle.stop() {
+                first_error.get_or_insert(error);
+            }
+        }
         let packets = *self.stats.packets.lock().expect("route accounting lock");
-        packets
-            .release()
-            .map_err(|error| io::Error::other(format!("unfinished direct packets: {error:?}")))?;
-        Ok(DirectRuntimeStats {
+        if let Err(error) = packets.release() {
+            first_error.get_or_insert(io::Error::other(format!(
+                "unfinished direct packets: {error:?}"
+            )));
+        }
+        let report = DirectRuntimeStats {
             packets,
             socket_events: self.observer.lock().expect("socket observer lock").stats(),
             admission_busy_bypassed: self.stats.admission_busy_bypassed.load(Ordering::Relaxed),
@@ -458,7 +578,15 @@ impl DirectPacketRuntime {
             synthetic_reply_lost: self.stats.synthetic_reply_lost.load(Ordering::Relaxed),
             event_history_overflow: self.stats.event_history_overflow.load(Ordering::Relaxed),
             pre_receive_loss_unmeasurable: true,
-        })
+            watchdog_released: self.stats.watchdog_released.load(Ordering::Relaxed),
+        };
+        if let Some(error) = first_error {
+            Err(io::Error::other(format!(
+                "direct route cleanup: {error}; counts: {report:?}"
+            )))
+        } else {
+            Ok(report)
+        }
     }
 }
 
@@ -482,6 +610,19 @@ mod tests {
     use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
 
     use crate::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
+
+    #[test]
+    fn watchdog_checks_oldest_unfinished_packet_only() {
+        let stats = SharedStats::new();
+        assert!(!stats.stalled_packet(1_000));
+        packet_received(&stats).unwrap();
+        stats.oldest_pending_ms.store(10, Ordering::Release);
+        assert!(!stats.stalled_packet(109));
+        assert!(stats.stalled_packet(110));
+        packet_finished(&stats, PacketDisposition::Reinjected).unwrap();
+        assert!(!stats.stalled_packet(1_000));
+        stats.packets.lock().unwrap().release().unwrap();
+    }
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
