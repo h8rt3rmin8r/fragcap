@@ -18,8 +18,8 @@ use std::{
 use windows_sys::Win32::{
     Foundation::INVALID_HANDLE_VALUE,
     Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     },
 };
 
@@ -91,7 +91,7 @@ fn lock_directory(path: &Path) -> io::Result<File> {
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
+            FILE_LIST_DIRECTORY,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
