@@ -184,10 +184,11 @@ impl TcpFlowStack {
         let ParseOutcome::Parsed { flow, .. } = self.parser.parse(LinkType::RAW, packet) else {
             return Err(StackError::FlowMismatch);
         };
-        if flow.proto != self.tuple.transport
-            || flow.local != self.tuple.local
-            || flow.remote != self.tuple.remote
-        {
+        let exact = flow.local == self.tuple.local && flow.remote == self.tuple.remote;
+        let loopback_canonical = self.tuple.local.ip() == self.tuple.remote.ip()
+            && flow.local == self.tuple.remote
+            && flow.remote == self.tuple.local;
+        if flow.proto != self.tuple.transport || !(exact || loopback_canonical) {
             return Err(StackError::FlowMismatch);
         }
         self.device.push(packet)?;

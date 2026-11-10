@@ -502,6 +502,125 @@ mod tests {
             && bytes[transport + 13] & 0x02 != 0
     }
 
+    /// Prove that the local stack can terminate the first diverted SYN and
+    /// return bytes through WinDivert without involving the bound OS listener.
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_broad_smoltcp_terminates_tcp() {
+        use std::{
+            io::{Read, Write},
+            net::{Ipv4Addr, TcpListener, TcpStream},
+            thread,
+            time::{Duration, Instant as WallInstant},
+        };
+
+        use crate::deep_capture::{direct_route::DirectTuple, direct_stack::TcpFlowStack};
+        use fragcap_core::Proto;
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let api = Api::load_verified(Path::new(&root)).expect("load verified component");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let destination = listener.local_addr().unwrap();
+        let handle = Arc::new(
+            api.open("tcp or udp", NETWORK_LAYER, 0)
+                .expect("prearm broad rule"),
+        );
+        let worker_handle = Arc::clone(&handle);
+        let worker = thread::spawn(move || -> io::Result<Vec<u8>> {
+            let start = WallInstant::now();
+            let mut packet = [0u8; 65_535];
+            let mut selected = None::<DirectTuple>;
+            let mut stack = None::<TcpFlowStack>;
+            let mut client_bytes = Vec::new();
+            let mut replied = false;
+            loop {
+                let mut address = Address::default();
+                let length = match worker_handle.recv(&mut packet, &mut address) {
+                    Ok(length) => length,
+                    Err(error) if error.raw_os_error() == Some(232) => return Ok(client_bytes),
+                    Err(error) => return Err(error),
+                };
+                let endpoints = ipv4_tcp_endpoints(&packet[..length]);
+                if selected.is_none() && ipv4_tcp_syn_to(&packet[..length], destination.port()) {
+                    let (local, remote) =
+                        endpoints.ok_or_else(|| io::Error::other("missing SYN endpoints"))?;
+                    let tuple = DirectTuple {
+                        transport: Proto::Tcp,
+                        local,
+                        remote,
+                    };
+                    stack = Some(
+                        TcpFlowStack::new(tuple)
+                            .map_err(|error| io::Error::other(format!("stack: {error:?}")))?,
+                    );
+                    selected = Some(tuple);
+                }
+                let selected_packet = selected.is_some_and(|tuple| {
+                    endpoints == Some((tuple.local, tuple.remote))
+                        || endpoints == Some((tuple.remote, tuple.local))
+                });
+                if selected_packet {
+                    let now = start.elapsed().as_millis() as i64;
+                    let stack = stack.as_mut().unwrap();
+                    stack
+                        .ingest(&packet[..length], now)
+                        .map_err(|error| io::Error::other(format!("ingest: {error:?}")))?;
+                    let mut body = [0u8; 32];
+                    let count = stack.receive_bytes(&mut body);
+                    client_bytes.extend_from_slice(&body[..count]);
+                    if !replied && client_bytes == b"stack-in" {
+                        let sent = stack.send_bytes(b"stack-out", now);
+                        assert_eq!(sent, 9);
+                        replied = true;
+                    }
+                    while let Some(response) = stack.pop_egress() {
+                        let sent = worker_handle.send(&response, &address)?;
+                        if sent != response.len() {
+                            return Err(io::Error::other("short stack reinjection"));
+                        }
+                    }
+                } else {
+                    let sent = worker_handle.send(&packet[..length], &address)?;
+                    if sent != length {
+                        return Err(io::Error::other("short unrelated reinjection"));
+                    }
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect_timeout(&destination, Duration::from_secs(2)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client.write_all(b"stack-in").unwrap();
+        let mut reply = [0u8; 9];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"stack-out");
+        handle.stop_receiving().unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), b"stack-in");
+    }
+
+    fn ipv4_tcp_endpoints(bytes: &[u8]) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
+        use std::net::{Ipv4Addr, SocketAddr};
+        if bytes.len() < 40 || bytes[0] >> 4 != 4 || bytes[9] != 6 {
+            return None;
+        }
+        let offset = usize::from(bytes[0] & 0x0f) * 4;
+        if offset < 20 || bytes.len() < offset + 20 {
+            return None;
+        }
+        let source = SocketAddr::from((
+            Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]),
+            u16::from_be_bytes([bytes[offset], bytes[offset + 1]]),
+        ));
+        let destination = SocketAddr::from((
+            Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]),
+            u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]),
+        ));
+        Some((source, destination))
+    }
+
     #[test]
     fn pinned_abi_layout_and_flag_decode() {
         assert_eq!(mem::size_of::<Address>(), 80);
