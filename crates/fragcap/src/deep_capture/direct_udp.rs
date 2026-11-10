@@ -37,8 +37,7 @@ impl DirectUdpAssociation {
         }
         let bind = SocketAddr::new(proxy.ip(), 0);
         let relay = UdpSocket::bind(bind)?;
-        relay.set_read_timeout(Some(Duration::from_millis(1)))?;
-        relay.set_write_timeout(Some(Duration::from_millis(1)))?;
+        relay.set_nonblocking(true)?;
         let mut control = authenticate_socks5(proxy, password, timeout)?;
         control.write_all(&socks5_request(3, relay.local_addr()?))?;
         let relay_address = read_socks5_reply(&mut control)?;

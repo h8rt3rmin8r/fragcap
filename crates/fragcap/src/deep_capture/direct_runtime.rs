@@ -513,6 +513,7 @@ fn process_packets(
             }
         }
         for flow in active.values_mut() {
+            stats.processor_progress();
             let replies = flow
                 .bridge
                 .poll(started.elapsed().as_millis() as i64)
@@ -520,7 +521,11 @@ fn process_packets(
             inject_replies(&handle, &stats, replies, flow.address)?;
         }
         for (tuple, flow) in &active_udp {
-            while let Some(payload) = flow.association.poll_reply()? {
+            stats.processor_progress();
+            for _ in 0..8 {
+                let Some(payload) = flow.association.poll_reply()? else {
+                    break;
+                };
                 let reply = build_udp_reply(*tuple, &payload)?;
                 inject_replies(&handle, &stats, vec![reply], flow.address)?;
             }
@@ -530,7 +535,7 @@ fn process_packets(
 
 /// Stop must be called before the native proxy lease is released.
 pub struct DirectPacketRuntime {
-    handle: Arc<Handle>,
+    handle: Option<Arc<Handle>>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     receive_worker: Option<JoinHandle<io::Result<()>>>,
     process_worker: Option<JoinHandle<io::Result<()>>>,
@@ -655,7 +660,7 @@ impl DirectPacketRuntime {
             }
         };
         Ok(Self {
-            handle,
+            handle: Some(handle),
             observer,
             receive_worker: Some(receive_worker),
             process_worker: Some(process_worker),
@@ -668,9 +673,10 @@ impl DirectPacketRuntime {
         let was_running = self.receive_worker.is_some() || self.process_worker.is_some();
         let mut first_error = None;
         if self.receive_worker.is_some() {
-            if let Err(error) = self.handle.stop_receiving() {
+            let handle = self.handle.as_ref().expect("running route handle");
+            if let Err(error) = handle.stop_receiving() {
                 first_error = Some(error);
-                let _ = self.handle.stop();
+                let _ = handle.stop();
             }
             if let Err(error) = self
                 .receive_worker
@@ -702,8 +708,23 @@ impl DirectPacketRuntime {
             first_error.get_or_insert(error);
         }
         if was_running && !self.stats.watchdog_released.load(Ordering::Acquire) {
-            if let Err(error) = self.handle.stop() {
+            if let Err(error) = self.handle.as_ref().expect("running route handle").stop() {
                 first_error.get_or_insert(error);
+            }
+        }
+        if let Some(handle) = self.handle.take() {
+            match Arc::try_unwrap(handle) {
+                Ok(handle) => {
+                    if let Err(error) = handle.close() {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                Err(handle) => {
+                    first_error.get_or_insert(io::Error::other(
+                        "direct packet handle still shared at cleanup",
+                    ));
+                    drop(handle);
+                }
             }
         }
         let packets = {
@@ -938,7 +959,11 @@ mod tests {
         let mut response = [0u8; 128];
         let read_result = client.recv(&mut response);
         let stop_result = runtime.stop();
-        eprintln!("direct UDP runtime probe: read={read_result:?}, stop={stop_result:?}");
+        let proxy_report = lease.cleanup(Duration::from_secs(2));
+        eprintln!(
+            "direct UDP runtime probe: read={read_result:?}, stop={stop_result:?}, proxy={:?}",
+            proxy_report.observation.protocol
+        );
         let length = read_result.unwrap();
         assert_eq!(&response[..length], b"runtime-udp-reply");
         let stats = stop_result.unwrap();
@@ -949,7 +974,6 @@ mod tests {
         assert_eq!(stats.packets.lost, 0);
         assert_eq!(stats.synthetic_reply_lost, 0);
         server.join().unwrap();
-        let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(
             proxy_report
                 .observation
