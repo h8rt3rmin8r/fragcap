@@ -869,7 +869,7 @@ Param(
         $doctor = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'doctor') -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
         if ($doctor.Stdout -notmatch 'fragcap-native') { throw 'packaged Doctor output does not expose the native backend' }
         if ($hasWinDivert) {
-            $componentChecks = @($doctor.Stdout -split "`r?`n" | Where-Object { $null -ne $_.PSObject.Properties['name'] -and $_.name -eq 'WinDivert component' })
+            $componentChecks = @($doctor.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop } | Where-Object { $null -ne $_.PSObject.Properties['name'] -and $_.name -eq 'WinDivert component' })
             if ($componentChecks.Count -ne 1 -or $componentChecks[0].status -ne 'ok' -or $componentChecks[0].detail -notmatch 'driver load and policy compatibility unverified') { throw 'packaged Doctor does not report exact static WinDivert readiness' }
         }
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }

@@ -51,3 +51,9 @@ Windows package certification completed the official release build, then
 stopped because a transient `cargo-cyclonedx` download failure was not checked
 at installation. The setup step now checks native exit codes and retries that
 pinned download; exact-head reruns must establish the outcome.
+The next hosted package run passed tool installation, official component
+acquisition, release build, evidence generation and package assembly. Lifecycle
+certification then found that its new Doctor filter had not parsed JSON Lines.
+The filter now parses each record before checking exact component readiness;
+a local Doctor fixture containing the official component returned one `ok`
+record. The hosted lifecycle rerun remains the completion gate.

@@ -33,3 +33,9 @@ minimum-toolchain gate, audit toolchain and reviewed graph digests together.
 No new package or graph edge is introduced by this repair.
 The two isolated `fuzz` and `performance/native-proxy` lockfiles also carry
 the patched versions so their locked audit and short campaign can run.
+
+2026-11-09: The first complete hosted package assembly reached lifecycle
+certification and exposed a verifier error: Doctor emits JSON Lines, but the
+new component filter treated each line as a parsed object. Parse each nonempty
+record before selecting the component check; a local exact-component Doctor
+fixture confirms the `ok` readiness record without opening the driver.
