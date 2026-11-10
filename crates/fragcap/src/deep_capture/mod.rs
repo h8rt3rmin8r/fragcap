@@ -21,6 +21,8 @@ mod classification;
 mod collection;
 mod diagnostics;
 mod direct_route;
+#[cfg(all(windows, feature = "direct-route"))]
+mod direct_stack;
 #[doc(hidden)]
 pub mod fuzz_support;
 mod har;

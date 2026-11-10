@@ -39,6 +39,7 @@ pub struct DirectPacketHead {
     pub tuple: DirectTuple,
     pub at_qpc: i64,
     pub at_unix_ns: i64,
+    pub clock_error_ns: u64,
     pub initial: bool,
 }
 
@@ -91,6 +92,7 @@ pub fn select_direct_flow(
         return DirectAdmission::Bypassed("socket-closed-before-packet");
     }
     if event.clock_error_ns > MAX_CLOCK_ERROR_NS
+        || packet.clock_error_ns > MAX_CLOCK_ERROR_NS
         || event.at_unix_ns < 0
         || packet.at_unix_ns < event.at_unix_ns
     {
@@ -341,6 +343,7 @@ mod tests {
             tuple: tuple(port),
             at_qpc: 101,
             at_unix_ns: 1300,
+            clock_error_ns: 1,
             initial: true,
         }
     }
@@ -394,6 +397,34 @@ mod tests {
     }
 
     #[test]
+    fn reused_pid_and_uncertain_packet_clock_never_select() {
+        let mut reused = evidence();
+        reused.events.push(ProcessEvent::Exited {
+            pid: 12,
+            at: Timestamp::from_nanos(1270),
+        });
+        reused.events.push(ProcessEvent::started(
+            12,
+            1,
+            "unrelated.exe",
+            "",
+            Timestamp::from_nanos(1280),
+        ));
+        assert!(matches!(
+            select_direct_flow(&reused, &[event(12, 40000)], packet(40000)),
+            DirectAdmission::Unavailable("process-generation-unproven")
+        ));
+        let uncertain = DirectPacketHead {
+            clock_error_ns: MAX_CLOCK_ERROR_NS + 1,
+            ..packet(40000)
+        };
+        assert!(matches!(
+            select_direct_flow(&evidence(), &[event(12, 40000)], uncertain),
+            DirectAdmission::Unavailable("socket-clock-uncertain")
+        ));
+    }
+
+    #[test]
     fn receipt_is_session_and_tuple_bound_and_one_use() {
         let DirectAdmission::Selected(flow) =
             select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000))
@@ -425,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn every_diverted_packet_has_one_exclusive_terminal_disposition() {
+    fn every_received_packet_has_one_exclusive_terminal_disposition() {
         let mut counts = DirectPacketAccounting::default();
         for _ in 0..3 {
             counts.receive().unwrap();
