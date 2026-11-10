@@ -1,2 +1,0 @@
-<!-- spec-impact: 10, 15.7, 17.4, 27.3 -->
-Managed Deep Capture now defaults to full launch-chain application inspection and retains packet evidence for exact session-created launch processes through route-owner release, including proven intermediate and helper processes. Explicit game-only inspection still uses blind middleware relay without narrowing packet evidence; older scope-policy facts cannot qualify the new default.

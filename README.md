@@ -37,7 +37,7 @@ Download the [latest public release](https://github.com/h8rt3rmin8r/fragcap/rele
 
 Live packet recording also requires a separately installed [Npcap](https://npcap.com) in **WinPcap API-compatible mode** and an elevated terminal. fragcap does not bundle Npcap. [Wireshark](https://www.wireshark.org) is an optional analyzer. The MSI can add a best-effort Windows Defender exclusion for its install directory; review the [packaging and migration guide](https://fragcap.com/docs/guides/packaging-and-migration) for installation, updates, and removal before choosing the installer.
 
-Plain `fragcap doctor`, `fragcap ca status`, offline commands, and per-user Wireshark extcap registration do not require Administrator. Live Capture, extcap live capture, installation CA changes, and the S201 source-candidate `--direct-route` session do. The S201 Windows candidate bundles the exact signed WinDivert driver and companion files beside `fragcap.exe`; it needs no separate WinDivert installer. Published v0.10.14 downloads do not contain this direct route.
+Plain `fragcap doctor`, `fragcap ca status`, offline commands, and per-user Wireshark extcap registration do not require Administrator. Live Capture, extcap live capture, installation CA changes, and the v0.11.0 candidate `--direct-route` session do. The v0.11.0 Windows candidate bundles the exact signed WinDivert driver and companion files beside `fragcap.exe`; it needs no separate WinDivert installer. Published v0.10.14 downloads do not contain this direct route.
 
 ## Make your first capture
 

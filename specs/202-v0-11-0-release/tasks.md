@@ -13,15 +13,15 @@
 
 ## Phase 2: Coherent Candidate
 
-- [ ] T005 Run the repository's release-preparation dry run on `release/0.11.0`; record the exact expected edits and any blocker (FR-001, FR-002).
-- [ ] T006 Advance all first-party version and generated identities to v0.11.0 using the repository release authority, with no tag, push, or publication side effect (FR-002).
-- [ ] T007 Assemble all unreleased S197-S201 fragments into one chronological changelog and write concise v0.11.0 release highlights (FR-001, FR-002).
-- [ ] T008 Reconcile package, dependency, conformance, CLI, and golden identities without accepting unrelated third-party drift (FR-002, FR-004).
-- [ ] T009 Reconcile specification, README, contributor guidance, security handoff, site, and parser examples as v0.11.0 candidate material while the current-public marker stays v0.10.14 (FR-002, FR-003).
-- [ ] T010 Validate the exact candidate version, notes, changelog, documentation, link and parser examples, dependency policy, supply-chain notices, and package contents (FR-002 to FR-004).
-- [ ] T011 Run the complete local repository gate and relevant Windows or package checks in the foreground; record exact outcomes and evidence limits in `verification.md` (FR-004, FR-010).
-- [ ] T012 Run post-implementation Spec-Kit convergence and address every substantive finding without widening release scope (FR-004).
-- [ ] T013 Mark completed candidate tasks, commit the complete release source, and verify the clean branch and exact diff from accepted `main` (FR-001 to FR-004).
+- [x] T005 Run the repository's release-preparation dry run on `release/0.11.0`; record the exact expected edits and any blocker (FR-001, FR-002).
+- [x] T006 Advance all first-party version and generated identities to v0.11.0 using the repository release authority, with no tag, push, or publication side effect (FR-002).
+- [x] T007 Assemble all unreleased S197-S201 fragments into one chronological changelog and write concise v0.11.0 release highlights (FR-001, FR-002).
+- [x] T008 Reconcile package, dependency, conformance, CLI, and golden identities without accepting unrelated third-party drift (FR-002, FR-004).
+- [x] T009 Reconcile specification, README, contributor guidance, security handoff, site, and parser examples as v0.11.0 candidate material while the current-public marker stays v0.10.14 (FR-002, FR-003).
+- [x] T010 Validate the exact candidate version, notes, changelog, documentation, link and parser examples, dependency policy, supply-chain notices, and package contents (FR-002 to FR-004).
+- [x] T011 Run the complete local repository gate and relevant Windows or package checks in the foreground; record exact outcomes and evidence limits in `verification.md` (FR-004, FR-010).
+- [x] T012 Run post-implementation Spec-Kit convergence and address every substantive finding without widening release scope (FR-004).
+- [x] T013 Mark completed candidate tasks, commit the complete release source, and verify the clean branch and exact diff from accepted `main` (FR-001 to FR-004).
 
 ## Phase 3: Official Candidate Review
 
