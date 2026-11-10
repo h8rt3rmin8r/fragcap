@@ -10,7 +10,7 @@ use std::{
 use fragcap_core::{HeaderParser, InterfaceAddrs, LinkType, ParseOutcome, Proto};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
-    phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
+    phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken},
     socket::tcp,
     time::Instant,
     wire::{HardwareAddress, IpAddress, IpCidr},
@@ -110,6 +110,11 @@ impl Device for PacketDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ip;
         capabilities.max_transmission_unit = MAX_RAW_PACKET;
+        // Windows loopback diversion can yield an uncomputed IPv4 header
+        // checksum even when TCP checksum validation succeeds. The packet
+        // comes from WinDivert's kernel boundary; emitted headers remain
+        // software checksummed by the stack.
+        capabilities.checksum.ipv4 = Checksum::Tx;
         capabilities
     }
 }
@@ -279,8 +284,8 @@ mod tests {
     fn tcp_stack_conserves_raw_bytes_and_reply_across_packet_boundary() {
         let tuple = DirectTuple {
             transport: Proto::Tcp,
-            local: SocketAddr::from(([192, 0, 2, 2], 40000)),
-            remote: SocketAddr::from(([192, 0, 2, 1], 23000)),
+            local: SocketAddr::from(([127, 0, 0, 1], 40000)),
+            remote: SocketAddr::from(([127, 0, 0, 1], 23000)),
         };
         let mut server = TcpFlowStack::new(tuple).unwrap();
         let mut client_device = PacketDevice::new(16).unwrap();
