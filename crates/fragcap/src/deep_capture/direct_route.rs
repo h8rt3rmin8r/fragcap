@@ -223,6 +223,7 @@ pub struct PendingCandidate<A> {
     pub packet: Vec<u8>,
     pub address: A,
     deadline_ns: u64,
+    #[cfg(all(windows, feature = "direct-route"))]
     received_ns: u64,
 }
 
@@ -231,12 +232,14 @@ pub enum CandidateDecision<A> {
         flow: OriginalFlow,
         packet: Vec<u8>,
         address: A,
+        #[cfg(all(windows, feature = "direct-route"))]
         received_ns: u64,
     },
     PassThrough {
         reason: &'static str,
         packet: Vec<u8>,
         address: A,
+        #[cfg(all(windows, feature = "direct-route"))]
         received_ns: u64,
     },
 }
@@ -279,6 +282,7 @@ impl<A> CandidateBuffer<A> {
         let candidate = PendingCandidate {
             head,
             deadline_ns: now_ns.saturating_add(self.wait_ns),
+            #[cfg(all(windows, feature = "direct-route"))]
             received_ns: now_ns,
             packet,
             address,
@@ -347,6 +351,7 @@ impl<A> CandidateBuffer<A> {
                         flow,
                         packet: candidate.packet,
                         address: candidate.address,
+                        #[cfg(all(windows, feature = "direct-route"))]
                         received_ns: candidate.received_ns,
                     });
                 }
@@ -356,6 +361,7 @@ impl<A> CandidateBuffer<A> {
                         reason,
                         packet: candidate.packet,
                         address: candidate.address,
+                        #[cfg(all(windows, feature = "direct-route"))]
                         received_ns: candidate.received_ns,
                     });
                 }
@@ -372,6 +378,7 @@ impl<A> CandidateBuffer<A> {
                 reason: "route-stopped",
                 packet: candidate.packet,
                 address: candidate.address,
+                #[cfg(all(windows, feature = "direct-route"))]
                 received_ns: candidate.received_ns,
             })
             .collect()

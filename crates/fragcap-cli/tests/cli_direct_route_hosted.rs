@@ -30,9 +30,9 @@ fn staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up() {
     let row_id = store
         .insert_target(&TargetEntry {
             id: None,
-            stable_id: 75_201,
-            handle: "s201-controlled-client".into(),
-            name: "S201 Controlled Client".into(),
+            stable_id: 75_000,
+            handle: "sample-target".into(),
+            name: "Sample Target".into(),
             classification: TargetClassification::Game,
             classification_source: ClassificationSource::User,
             fidelity: FidelityTier::Authored,
@@ -53,7 +53,7 @@ fn staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up() {
             "--json",
             "deep-capture",
             "--id",
-            "75201",
+            "75000",
             "--launch",
             "--direct-route",
             "--authorize-stdin",
