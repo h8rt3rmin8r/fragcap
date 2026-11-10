@@ -425,37 +425,26 @@ pub(crate) async fn serve_socks5(
         && direct_owner
         && decision.action == crate::InspectionAction::Inspect
     {
-        let authority = request.authority.clone();
-        let server_config = {
-            let mut cache = leaf_cache.lock().await;
-            match crate::tls::client_server_config(
-                &authority,
-                &certificate_authority,
-                &mut cache,
-                key_log,
-            ) {
-                Ok(config) => config,
-                Err(error) => {
-                    return HttpRun {
-                        observations: Vec::new(),
-                        accounting,
-                        failure: Some(error),
-                    }
+        on_stage(crate::ConnectionStage::ClientTls, false);
+        let (mut client_tls, authority) = match crate::tls::accept_direct_client_tls(
+            client,
+            &request.authority,
+            &certificate_authority,
+            &leaf_cache,
+            key_log.clone(),
+            limits,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return HttpRun {
+                    observations: Vec::new(),
+                    accounting,
+                    failure: Some(error),
                 }
             }
         };
-        on_stage(crate::ConnectionStage::ClientTls, false);
-        let mut client_tls =
-            match crate::tls::accept_client_tls(client, &authority, server_config, limits).await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    return HttpRun {
-                        observations: Vec::new(),
-                        accounting,
-                        failure: Some(error),
-                    }
-                }
-            };
         on_stage(crate::ConnectionStage::ClientTls, true);
         accounting.client_tls_completed = 1;
         let client_alpn = client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);

@@ -7,7 +7,7 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::{ClientConfig, ServerConfig};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at, Instant};
 use tokio_rustls::server::TlsStream;
 
 use crate::{
@@ -88,16 +88,66 @@ pub(crate) async fn accept_client_tls(
     let tls = timeout(limits.tls_handshake_timeout, acceptor.accept(stream))
         .await
         .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
-        .map_err(|error| {
-            let class = crate::classify_tls_io_error(&error, true, false);
-            let (tls_alert, transport_category, os_error_code) =
-                crate::upstream::diagnostic_io(&error);
-            let mut protocol = ProtocolError::new(class.code(), error.to_string());
-            protocol.tls_alert = tls_alert;
-            protocol.transport_category = Some(transport_category);
-            protocol.os_error_code = os_error_code;
-            protocol
-        })?;
+        .map_err(client_tls_error)?;
+    validate_client_tls(tls, authority)
+}
+
+pub(crate) async fn accept_direct_client_tls(
+    stream: TcpStream,
+    original_authority: &DestinationAuthority,
+    certificate_authority: &SessionCertificateAuthority,
+    leaf_cache: &tokio::sync::Mutex<LeafCache>,
+    key_log: Option<Arc<SessionKeyLog>>,
+    limits: &ProtocolLimits,
+) -> Result<(TlsStream<TcpStream>, DestinationAuthority), ProtocolError> {
+    let deadline = Instant::now() + limits.tls_handshake_timeout;
+    let start = timeout_at(
+        deadline,
+        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream),
+    )
+    .await
+    .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
+    .map_err(client_tls_error)?;
+    let authority = match start.client_hello().server_name() {
+        Some(server_name) => {
+            if let AuthorityHost::Dns(expected) = original_authority.host() {
+                if !expected.eq_ignore_ascii_case(server_name) {
+                    return Err(ProtocolError::new(
+                        "client-tls-sni-mismatch",
+                        "client SNI does not match the direct route authority",
+                    ));
+                }
+            }
+            DestinationAuthority::parse(&format!("{server_name}:{}", original_authority.port()))
+                .map_err(|error| ProtocolError::new("direct-tls-sni-invalid", error.to_string()))?
+        }
+        None => original_authority.clone(),
+    };
+    let server_config = {
+        let mut cache = leaf_cache.lock().await;
+        client_server_config(&authority, certificate_authority, &mut cache, key_log)?
+    };
+    let tls = timeout_at(deadline, start.into_stream(server_config))
+        .await
+        .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
+        .map_err(client_tls_error)?;
+    Ok((validate_client_tls(tls, &authority)?, authority))
+}
+
+fn client_tls_error(error: std::io::Error) -> ProtocolError {
+    let class = crate::classify_tls_io_error(&error, true, false);
+    let (tls_alert, transport_category, os_error_code) = crate::upstream::diagnostic_io(&error);
+    let mut protocol = ProtocolError::new(class.code(), error.to_string());
+    protocol.tls_alert = tls_alert;
+    protocol.transport_category = Some(transport_category);
+    protocol.os_error_code = os_error_code;
+    protocol
+}
+
+fn validate_client_tls(
+    tls: TlsStream<TcpStream>,
+    authority: &DestinationAuthority,
+) -> Result<TlsStream<TcpStream>, ProtocolError> {
     if let (AuthorityHost::Dns(expected), Some(observed)) =
         (authority.host(), tls.get_ref().1.server_name())
     {

@@ -21,6 +21,26 @@ use super::{
 
 const SOCKET_FILTER: &str = "(event == CONNECT or event == CLOSE) and (tcp or udp)";
 
+fn update_current_owner(
+    owners: &mut BTreeMap<DirectTuple, (u64, u32)>,
+    event: DirectSocketEvent,
+    capacity: usize,
+) -> bool {
+    match event.kind {
+        SocketEventKind::Open if owners.len() < capacity || owners.contains_key(&event.tuple) => {
+            owners.insert(event.tuple, (event.endpoint_id, event.pid));
+            true
+        }
+        SocketEventKind::Open => false,
+        SocketEventKind::Close => {
+            if owners.get(&event.tuple) == Some(&(event.endpoint_id, event.pid)) {
+                owners.remove(&event.tuple);
+            }
+            true
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SocketObserverStats {
     pub received: u64,
@@ -42,7 +62,7 @@ struct Counters {
 pub struct DirectSocketObserver {
     handle: Arc<Handle>,
     events: Arc<Mutex<VecDeque<DirectSocketEvent>>>,
-    current_owners: Arc<Mutex<BTreeMap<DirectTuple, u32>>>,
+    current_owners: Arc<Mutex<BTreeMap<DirectTuple, (u64, u32)>>>,
     counters: Arc<Counters>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
@@ -103,21 +123,10 @@ impl DirectSocketObserver {
                             {
                                 let mut owners =
                                     worker_owners.lock().expect("socket owner map lock");
-                                match kind {
-                                    SocketEventKind::Open
-                                        if owners.len() < capacity
-                                            || owners.contains_key(&tuple) =>
-                                    {
-                                        owners.insert(tuple, socket.pid);
-                                    }
-                                    SocketEventKind::Open => {
-                                        worker_counters
-                                            .capacity_lost
-                                            .fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    SocketEventKind::Close => {
-                                        owners.remove(&tuple);
-                                    }
+                                if !update_current_owner(&mut owners, event, capacity) {
+                                    worker_counters
+                                        .capacity_lost
+                                        .fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             let mut queue = worker_events.lock().expect("socket event queue lock");
@@ -157,7 +166,15 @@ impl DirectSocketObserver {
             .lock()
             .expect("socket owner map lock")
             .get(&tuple)
-            .copied()
+            .map(|owner| owner.1)
+    }
+
+    pub fn current_owner_endpoint_id(&self, tuple: DirectTuple) -> Option<u64> {
+        self.current_owners
+            .lock()
+            .expect("socket owner map lock")
+            .get(&tuple)
+            .map(|owner| owner.0)
     }
 
     pub fn stats(&self) -> SocketObserverStats {
@@ -195,6 +212,47 @@ mod tests {
         path::Path,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn stale_close_cannot_remove_reused_tuple_owner() {
+        let tuple = DirectTuple {
+            transport: fragcap_core::Proto::Udp,
+            local: "127.0.0.1:41001".parse().unwrap(),
+            remote: "127.0.0.1:41002".parse().unwrap(),
+        };
+        let event = |endpoint_id, pid, kind| DirectSocketEvent {
+            tuple,
+            endpoint_id,
+            pid,
+            at_qpc: 1,
+            at_unix_ns: 1,
+            clock_error_ns: 0,
+            kind,
+        };
+        let mut owners = BTreeMap::new();
+        assert!(update_current_owner(
+            &mut owners,
+            event(7, 42, SocketEventKind::Open),
+            2
+        ));
+        assert!(update_current_owner(
+            &mut owners,
+            event(8, 99, SocketEventKind::Open),
+            2
+        ));
+        assert!(update_current_owner(
+            &mut owners,
+            event(7, 42, SocketEventKind::Close),
+            2
+        ));
+        assert_eq!(owners.get(&tuple), Some(&(8, 99)));
+        assert!(update_current_owner(
+            &mut owners,
+            event(8, 99, SocketEventKind::Close),
+            2
+        ));
+        assert!(owners.is_empty());
+    }
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]

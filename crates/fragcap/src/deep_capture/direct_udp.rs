@@ -135,6 +135,14 @@ impl DirectUdpAssociation {
             remote: self.relay.peer_addr()?,
         })
     }
+
+    pub fn control_tuple(&self) -> io::Result<DirectTuple> {
+        Ok(DirectTuple {
+            transport: Proto::Tcp,
+            local: self._control.local_addr()?,
+            remote: self._control.peer_addr()?,
+        })
+    }
 }
 
 fn parse_udp_reply(frame: &[u8]) -> io::Result<(SocketAddr, &[u8])> {

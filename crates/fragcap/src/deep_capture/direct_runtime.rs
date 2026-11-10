@@ -153,12 +153,16 @@ fn packet_finished(stats: &SharedStats, disposition: PacketDisposition) -> io::R
         .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))
 }
 
-fn mark_refused_flow(refused: &Mutex<BTreeSet<DirectTuple>>, tuple: DirectTuple) -> bool {
+fn mark_refused_flow(
+    refused: &Mutex<BTreeMap<DirectTuple, u64>>,
+    tuple: DirectTuple,
+    endpoint_id: u64,
+) -> bool {
     let mut flows = refused.lock().expect("refused route lock");
-    if flows.len() >= REFUSED_FLOWS && !flows.contains(&tuple) {
+    if flows.len() >= REFUSED_FLOWS && !flows.contains_key(&tuple) {
         return false;
     }
-    flows.insert(tuple);
+    flows.insert(tuple, endpoint_id);
     true
 }
 
@@ -201,9 +205,9 @@ struct ReceiveRuntimeInputs {
     handle: Arc<Handle>,
     sender: SyncSender<WorkPacket>,
     observer: Arc<Mutex<DirectSocketObserver>>,
-    selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    refused: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
 }
@@ -236,11 +240,18 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 local: head.source,
                 remote: head.destination,
             };
-            selected
+            let selected_endpoint = selected
                 .lock()
                 .expect("selected route lock")
-                .contains(&tuple)
-                .then_some(tuple)
+                .get(&tuple)
+                .copied();
+            (selected_endpoint.is_some()
+                && selected_endpoint
+                    == observer
+                        .lock()
+                        .expect("socket observer lock")
+                        .current_owner_endpoint_id(tuple))
+            .then_some(tuple)
         });
         if let Some(tuple) = selected_tuple {
             if sender
@@ -269,14 +280,22 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 })
         });
         let is_refused = head.as_ref().is_some_and(|head| {
-            refused
+            let tuple = DirectTuple {
+                transport: head.transport,
+                local: head.source,
+                remote: head.destination,
+            };
+            let refused_endpoint = refused
                 .lock()
                 .expect("refused route lock")
-                .contains(&DirectTuple {
-                    transport: head.transport,
-                    local: head.source,
-                    remote: head.destination,
-                })
+                .get(&tuple)
+                .copied();
+            refused_endpoint.is_some()
+                && refused_endpoint
+                    == observer
+                        .lock()
+                        .expect("socket observer lock")
+                        .current_owner_endpoint_id(tuple)
         });
         let busy_unowned = connecting.load(Ordering::Acquire)
             && head.as_ref().is_none_or(|head| {
@@ -323,11 +342,18 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
 struct ActiveTcp {
     bridge: DirectTcpBridge,
     address: Address,
+    endpoint_id: u64,
+    receipt: RouteReceiptId,
+    helper: DirectTuple,
 }
 
 struct ActiveUdp {
     association: DirectUdpAssociation,
     address: Address,
+    endpoint_id: u64,
+    receipt: RouteReceiptId,
+    relay: DirectTuple,
+    control: DirectTuple,
 }
 
 struct ProcessRuntimeInputs {
@@ -335,9 +361,9 @@ struct ProcessRuntimeInputs {
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     context: NativeObservationContext,
-    selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    refused: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
@@ -382,7 +408,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 if refused
                     .lock()
                     .expect("refused route lock")
-                    .contains(&head.tuple)
+                    .get(&head.tuple)
+                    .copied()
+                    .is_some_and(|endpoint| {
+                        observer
+                            .lock()
+                            .expect("socket observer lock")
+                            .current_owner_endpoint_id(head.tuple)
+                            == Some(endpoint)
+                    })
                 {
                     stats.record_bypass("proxy-refused-flow");
                     reinject(&handle, &stats, &packet, &address)?;
@@ -470,6 +504,58 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         // They cannot be promoted to target ownership even if a test or
         // stale process snapshot happens to name this process as a client.
         new_events.retain(|event| event.pid != std::process::id());
+        for event in new_events
+            .iter()
+            .filter(|event| event.kind == super::direct_route::SocketEventKind::Close)
+        {
+            if refused
+                .lock()
+                .expect("refused route lock")
+                .get(&event.tuple)
+                .copied()
+                == Some(event.endpoint_id)
+            {
+                refused
+                    .lock()
+                    .expect("refused route lock")
+                    .remove(&event.tuple);
+            }
+            if selected
+                .lock()
+                .expect("selected route lock")
+                .get(&event.tuple)
+                .copied()
+                != Some(event.endpoint_id)
+            {
+                continue;
+            }
+            selected
+                .lock()
+                .expect("selected route lock")
+                .remove(&event.tuple);
+            let retired = if let Some(flow) = active.remove(&event.tuple) {
+                debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+                excluded
+                    .lock()
+                    .expect("helper route lock")
+                    .remove(&flow.helper);
+                Some(flow.receipt)
+            } else if let Some(flow) = active_udp.remove(&event.tuple) {
+                debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+                let mut helpers = excluded.lock().expect("helper route lock");
+                helpers.remove(&flow.relay);
+                helpers.remove(&flow.control);
+                Some(flow.receipt)
+            } else {
+                None
+            };
+            if let Some(receipt) = retired {
+                receipts.retire(receipt).map_err(|error| {
+                    io::Error::other(format!("retire closed route receipt: {error:?}"))
+                })?;
+                issued_receipts.retain(|issued| *issued != receipt);
+            }
+        }
         if events.len().saturating_add(new_events.len()) > SOCKET_EVENTS {
             stats.event_history_overflow.store(true, Ordering::Release);
         } else {
@@ -508,7 +594,9 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     if refused
                         .lock()
                         .expect("refused route lock")
-                        .contains(&flow.tuple)
+                        .get(&flow.tuple)
+                        .copied()
+                        == Some(flow.endpoint_id)
                     {
                         stats.record_bypass("proxy-refused-flow");
                         reinject(&handle, &stats, &packet, &address)?;
@@ -573,7 +661,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     ))
                                 })?;
                                 stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
-                                if !mark_refused_flow(&refused, flow.tuple) {
+                                if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
                                     reinject(&handle, &stats, &packet, &address)?;
                                     return Err(io::Error::other("refused route ledger full"));
                                 }
@@ -582,6 +670,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             }
                         };
                         let relay = association.relay_tuple()?;
+                        let control = association.control_tuple()?;
                         let registered_at = unix_now_ns()?;
                         context
                             .register_direct_helper(
@@ -593,7 +682,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 registered_at.saturating_add(10_000_000_000),
                             )
                             .map_err(io::Error::other)?;
-                        excluded.lock().expect("helper route lock").insert(relay);
+                        {
+                            let mut helpers = excluded.lock().expect("helper route lock");
+                            helpers.insert(relay);
+                            helpers.insert(control);
+                        }
                         issued_receipts.push(receipt);
                         if let Err(error) = association.send(datagram.payload) {
                             packet_finished(&stats, PacketDisposition::Lost)?;
@@ -604,13 +697,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         selected
                             .lock()
                             .expect("selected route lock")
-                            .insert(flow.tuple);
+                            .insert(flow.tuple, flow.endpoint_id);
                         packet_finished(&stats, PacketDisposition::Consumed)?;
                         active_udp.insert(
                             flow.tuple,
                             ActiveUdp {
                                 association,
                                 address,
+                                endpoint_id: flow.endpoint_id,
+                                receipt,
+                                relay,
+                                control,
                             },
                         );
                         continue;
@@ -659,7 +756,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 io::Error::other(format!("retire refused route receipt: {error:?}"))
                             })?;
                             stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
-                            if !mark_refused_flow(&refused, flow.tuple) {
+                            if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
                                 reinject(&handle, &stats, &packet, &address)?;
                                 return Err(io::Error::other("refused route ledger full"));
                             }
@@ -667,21 +764,22 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             continue;
                         }
                     };
+                    let helper_tuple = DirectTuple {
+                        transport: Proto::Tcp,
+                        local: helper.local_addr()?,
+                        remote: helper.peer_addr()?,
+                    };
                     excluded
                         .lock()
                         .expect("helper route lock")
-                        .insert(DirectTuple {
-                            transport: Proto::Tcp,
-                            local: helper.local_addr()?,
-                            remote: helper.peer_addr()?,
-                        });
+                        .insert(helper_tuple);
                     issued_receipts.push(receipt);
                     let mut bridge =
                         DirectTcpBridge::new(flow.tuple, helper).map_err(io::Error::other)?;
                     selected
                         .lock()
                         .expect("selected route lock")
-                        .insert(flow.tuple);
+                        .insert(flow.tuple, flow.endpoint_id);
                     let replies = match bridge.ingest_diverted(
                         &packet,
                         address.ip_checksum_valid(),
@@ -696,7 +794,16 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         }
                     };
                     packet_finished(&stats, PacketDisposition::Consumed)?;
-                    active.insert(flow.tuple, ActiveTcp { bridge, address });
+                    active.insert(
+                        flow.tuple,
+                        ActiveTcp {
+                            bridge,
+                            address,
+                            endpoint_id: flow.endpoint_id,
+                            receipt,
+                            helper: helper_tuple,
+                        },
+                    );
                     inject_replies(&handle, &stats, replies, address)?;
                 }
             }
@@ -766,9 +873,9 @@ impl DirectPacketRuntime {
         let handle = Arc::new(api.open(PACKET_FILTER, NETWORK_LAYER, 0)?);
         handle.set_queue(4096, 100, 16 * 1024 * 1024)?;
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
-        let selected = Arc::new(Mutex::new(BTreeSet::new()));
+        let selected = Arc::new(Mutex::new(BTreeMap::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
-        let refused = Arc::new(Mutex::new(BTreeSet::new()));
+        let refused = Arc::new(Mutex::new(BTreeMap::new()));
         let connecting = Arc::new(AtomicBool::new(false));
         let route_context = context.clone();
         let stats = Arc::new(SharedStats::new());
@@ -1338,6 +1445,25 @@ mod tests {
             let mut response = [0u8; 128];
             let length = client.recv(&mut response).unwrap();
             assert_eq!(&response[..length], b"runtime-udp-reply");
+        } else if protocol == "udp-reuse" {
+            let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
+            let local = client.local_addr().unwrap();
+            client.connect(original).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.send(b"first-socket").unwrap();
+            let mut response = [0u8; 128];
+            let length = client.recv(&mut response).unwrap();
+            assert_eq!(&response[..length], b"first-reply");
+            drop(client);
+            thread::sleep(Duration::from_millis(100));
+            let next = UdpSocket::bind(local).unwrap();
+            next.connect(original).unwrap();
+            next.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            next.send(b"second-socket").unwrap();
+            let length = next.recv(&mut response).unwrap();
+            assert_eq!(&response[..length], b"second-reply");
         } else if protocol == "sentinel-udp" {
             let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
             client.connect(original).unwrap();
@@ -1362,7 +1488,7 @@ mod tests {
             client.read_to_end(&mut response).unwrap();
             assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
             assert!(response.ends_with(b"DIRECT"));
-        } else if protocol == "tls" {
+        } else if protocol == "tls" || protocol == "tls-dns" {
             let ca = base64::engine::general_purpose::STANDARD
                 .decode(std::env::var("FRAGCAP_S200_CHILD_CA").unwrap())
                 .unwrap();
@@ -1372,7 +1498,13 @@ mod tests {
                 .unwrap();
             let mut config = fragcap_proxy::tls_client_config_with_roots(roots).unwrap();
             Arc::make_mut(&mut config).alpn_protocols = vec![b"http/1.1".to_vec()];
-            let server_name = rustls::pki_types::ServerName::IpAddress(original.ip().into());
+            let server_name = if protocol == "tls-dns" {
+                rustls::pki_types::ServerName::try_from("localhost")
+                    .unwrap()
+                    .to_owned()
+            } else {
+                rustls::pki_types::ServerName::IpAddress(original.ip().into())
+            };
             let connection = rustls::ClientConnection::new(config, server_name).unwrap();
             let tcp = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
             tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -2121,23 +2253,29 @@ mod tests {
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_direct_runtime_classifies_http_tls_and_opaque() {
-        live_inspected_tcp_case(false, false);
-        live_inspected_tcp_case(true, false);
-        live_inspected_tcp_case(true, true);
+        live_inspected_tcp_case(false, false, false);
+        live_inspected_tcp_case(true, false, false);
+        live_inspected_tcp_case(true, false, true);
+        live_inspected_tcp_case(true, true, false);
     }
 
-    fn live_inspected_tcp_case(tls: bool, opaque: bool) {
+    fn live_inspected_tcp_case(tls: bool, opaque: bool, hostname: bool) {
         use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
-        eprintln!("direct TCP protocol case: tls={tls}, opaque={opaque}");
+        eprintln!("direct TCP protocol case: tls={tls}, opaque={opaque}, hostname={hostname}");
 
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
         let origin = TcpListener::bind("127.0.0.1:0").unwrap();
         let original = origin.local_addr().unwrap();
         let (origin_config, origin_root) = if tls {
-            let generated =
-                rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+            let generated = rcgen::generate_simple_self_signed(vec![if hostname {
+                "localhost"
+            } else {
+                "127.0.0.1"
+            }
+            .to_string()])
+            .unwrap();
             let certificate = CertificateDer::from(generated.cert);
             let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
             let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -2203,7 +2341,15 @@ mod tests {
             .unwrap(),
         );
         let mut child = spawn_client_with_ca(
-            if tls { "tls" } else { "http" },
+            if tls {
+                if hostname {
+                    "tls-dns"
+                } else {
+                    "tls"
+                }
+            } else {
+                "http"
+            },
             original,
             if opaque {
                 origin_root.as_ref().map(|root| root.as_ref())
@@ -2407,6 +2553,67 @@ mod tests {
     fn disposable_direct_runtime_routes_udp_datagram() {
         live_udp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
         live_udp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_selected_udp_endpoint_reuse_starts_new_association() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+        origin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for (request, reply) in [
+                (b"first-socket".as_slice(), b"first-reply".as_slice()),
+                (b"second-socket".as_slice(), b"second-reply".as_slice()),
+            ] {
+                let mut body = [0u8; 128];
+                let (length, peer) = origin.recv_from(&mut body).unwrap();
+                assert_eq!(&body[..length], request);
+                origin.send_to(reply, peer).unwrap();
+            }
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-udp-reuse")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
+        let mut lease = proxy.start(Duration::from_secs(3)).unwrap();
+        let mut child = spawn_client("udp-reuse", original);
+        let context = client_context(child.id());
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context.clone(),
+            "s200-direct-udp-reuse".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        let stats = runtime.stop().unwrap();
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(3));
+        assert_eq!(stats.packets.lost, 0);
+        assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 2);
+        let owners = context.direct_helper_flows_for_test();
+        let endpoint_ids: BTreeSet<_> = owners
+            .iter()
+            .filter(|owner| owner.tuple.transport == Proto::Udp)
+            .map(|owner| owner.endpoint_id)
+            .collect();
+        assert_eq!(endpoint_ids.len(), 2);
     }
 
     fn live_udp_case(ip: IpAddr) {
