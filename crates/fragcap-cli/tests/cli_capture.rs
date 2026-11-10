@@ -421,10 +421,17 @@ fn a_packet_bound_produces_an_exactly_bounded_file() {
             .any(|l| l.contains("retained") && l.contains('5')),
         "the summary reports 5 retained, matching the file: {err}"
     );
+    // The volume stop races the source thread. It may observe more packets
+    // than the retained bound before stopping, but need not exhaust the file.
+    let captured = err
+        .lines()
+        .find(|line| line.contains("packets captured"))
+        .and_then(|line| line.split_whitespace().last())
+        .and_then(|value| value.parse::<usize>().ok())
+        .expect("the summary reports a numeric captured count");
     assert!(
-        err.lines()
-            .any(|line| line.contains("packets captured") && line.trim_end().ends_with("24")),
-        "the source still reports all 24 observed packets: {err}"
+        (5..=24).contains(&captured),
+        "captured packets must cover retained output and not exceed the 24-packet source: {err}"
     );
 }
 

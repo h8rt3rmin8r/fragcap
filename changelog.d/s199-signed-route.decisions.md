@@ -39,3 +39,10 @@ certification and exposed a verifier error: Doctor emits JSON Lines, but the
 new component filter treated each line as a parsed object. Parse each nonempty
 record before selecting the component check; a local exact-component Doctor
 fixture confirms the `ok` readiness record without opening the driver.
+
+2026-11-09: The documentation-closeout head's Ubuntu test run exposed an
+existing timing-sensitive offline-capture assertion. A five-packet volume
+stop can interrupt the source before all 24 fixture packets are observed;
+the file's exact five retained packets and `volume-reached` reason were
+already correct. Assert the reported observation count covers those five and
+cannot exceed the 24-packet source, preserving the test's actual contract.

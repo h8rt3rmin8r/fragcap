@@ -1,7 +1,7 @@
 # Spec-Kit Analysis: S199
 
 **Date**: 2026-11-09
-**State**: Implementation, local gates and exact-head CI passed; final review pending.
+**State**: Implementation and package certification passed; final-head CI rerun pending after test correction.
 
 ## Coverage
 
@@ -68,3 +68,13 @@ advisory audit, isolated short campaigns, published v0.10.14 replay, and
 with MSI/ZIP assembly and final-byte lifecycle validation. The optional second
 Codex review round remains before owner handoff. A real target's direct route
 and anti-cheat compatibility remain outside S199 and unverified.
+
+The documentation-closeout rerun exposed one unrelated brittle assertion in
+`cli_capture`: it required the source to observe all 24 offline packets after
+a five-packet volume stop, but the capture thread may stop earlier. The
+reported count was 10, with the exact five retained and correct stop reason.
+The test now accepts any observed count from five through the fixture's 24,
+while keeping exact output and stop assertions. Final-head CI must verify it.
+The authorized second Codex code review of `29778bd` completed with no
+findings and a thumbs-up. No separate security-review receipt arrived; no
+third review round will be requested.
