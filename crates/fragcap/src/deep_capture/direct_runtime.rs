@@ -1228,6 +1228,44 @@ mod tests {
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_proxy_refusal_reinjects_selected_first_packet() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            assert_eq!(body, b"runtime-client-request");
+            stream.write_all(b"runtime-origin-reply").unwrap();
+        });
+        let dead_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_proxy = dead_listener.local_addr().unwrap();
+        drop(dead_listener);
+        let mut child = spawn_client("tcp", original);
+        let context = client_context(child.id());
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-proxy-refusal".into(),
+            dead_proxy,
+            Zeroizing::new("unusable-capability".to_string()),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        let stats = runtime.stop().unwrap();
+        server.join().unwrap();
+        assert!(stats.proxy_refused > 0);
+        assert_eq!(stats.packets.consumed, 0);
+        assert_eq!(stats.packets.lost, 0);
+        assert!(stats.packets.reinjected > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_direct_runtime_routes_exact_generation() {
         live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
         live_tcp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));

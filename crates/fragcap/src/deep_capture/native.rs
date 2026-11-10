@@ -421,6 +421,12 @@ impl NativeObservationContext {
 
     #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn set_direct_route_active(&self, active: bool) {
+        if active {
+            self.direct_helpers
+                .lock()
+                .expect("direct helper lock")
+                .clear();
+        }
         self.direct_route_active.store(active, Ordering::Release);
     }
 
@@ -622,6 +628,9 @@ mod direct_helper_tests {
             context.register_direct_helper(helper, proxy, flow, 150, 250),
             Err("direct-helper-window-overlap")
         );
+        context.set_direct_route_active(true);
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        context.set_direct_route_active(false);
     }
 }
 
