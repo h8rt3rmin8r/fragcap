@@ -751,6 +751,15 @@ impl RoutingAdapter for NativeDirectRouting {
                 "the direct component names a different prepared target",
             ));
         }
+        let elevated = super::access::direct_route_elevated().map_err(|error| {
+            PreflightRefusal::new("direct-route-elevation-unavailable", error.to_string())
+        })?;
+        if !elevated {
+            return Err(PreflightRefusal::new(
+                "direct-route-administrator-required",
+                "the signed direct route requires an Administrator session",
+            ));
+        }
         super::verify_windivert_component(&self.component_directory).map_err(|detail| {
             PreflightRefusal::new("direct-route-component-unavailable", detail)
         })?;

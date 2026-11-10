@@ -1659,7 +1659,7 @@ async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
     }
 }
 
-async fn read_protocol_prefix<S>(
+pub(crate) async fn read_protocol_prefix<S>(
     stream: &mut S,
     budget: Duration,
     max_bytes: usize,
@@ -1696,14 +1696,14 @@ where
     (false, prefix)
 }
 
-struct PrefixedIo<S> {
+pub(crate) struct PrefixedIo<S> {
     prefix: Vec<u8>,
     offset: usize,
     inner: S,
 }
 
 impl<S> PrefixedIo<S> {
-    fn new(prefix: Vec<u8>, inner: S) -> Self {
+    pub(crate) fn new(prefix: Vec<u8>, inner: S) -> Self {
         Self {
             prefix,
             offset: 0,
@@ -1832,7 +1832,7 @@ fn connect_observation(
     }
 }
 
-fn tls_observation(
+pub(crate) fn tls_observation(
     session_id: &str,
     connection_id: u64,
     peer: std::net::SocketAddr,
@@ -1870,7 +1870,7 @@ fn tls_observation(
     }
 }
 
-fn generic_tls_observation(
+pub(crate) fn generic_tls_observation(
     session_id: &str,
     connection_id: u64,
     peer: std::net::SocketAddr,
@@ -1899,7 +1899,7 @@ fn generic_tls_observation(
     }
 }
 
-fn tls_negotiation(
+pub(crate) fn tls_negotiation(
     boundary: crate::TlsBoundary,
     authority: &crate::DestinationAuthority,
     version: Option<rustls::ProtocolVersion>,

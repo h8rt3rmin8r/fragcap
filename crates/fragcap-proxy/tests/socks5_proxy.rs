@@ -7,8 +7,17 @@ use std::time::Duration;
 
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, ApplicationEventSink, DestinationPolicy,
-    EventDisposition, NativeProxyBackend, NativeProxyConfig, ProtocolLimits, StreamTerminal,
+    EventDisposition, InspectionDecider, InspectionDecision, InspectionRequest, NativeProxyBackend,
+    NativeProxyConfig, ProtocolLimits, StreamTerminal,
 };
+
+struct DirectOwner;
+
+impl InspectionDecider for DirectOwner {
+    fn decide(&self, _request: InspectionRequest, _budget: Duration) -> InspectionDecision {
+        InspectionDecision::verified_direct_route(0)
+    }
+}
 
 #[derive(Default)]
 struct Collector(Mutex<Vec<ApplicationEvent>>);
@@ -105,6 +114,165 @@ fn read_reply(client: &mut TcpStream) -> (u8, SocketAddr) {
         value => panic!("unexpected reply address type {value}"),
     };
     (head[1], address)
+}
+
+#[test]
+fn direct_owner_socks_http_uses_native_http_engine() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        assert!(head.starts_with(b"GET /direct HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+            .unwrap();
+    });
+    let collector = Arc::new(Collector::default());
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_protocol_limits(ProtocolLimits::default());
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(DirectOwner))
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut client,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    connect_ipv4(&mut client, address);
+    write!(
+        client,
+        "GET /direct HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        address.port()
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(b"OK"));
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.requests, 1);
+    assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+    assert_eq!(report.observation.protocol.socks_http, 1);
+    assert!(collector
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| { matches!(&event.kind, ApplicationEventKind::HttpStreamOpen) }));
+}
+
+#[test]
+fn direct_owner_socks_tls_uses_verified_native_https_engine() {
+    use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+
+    let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let origin_certificate = CertificateDer::from(generated.cert);
+    let origin_key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut origin_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![origin_certificate.clone()], origin_key.into())
+        .unwrap();
+    origin_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = origin.accept().unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(origin_config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, tcp);
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            tls.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        assert!(head.starts_with(b"GET /direct-tls HTTP/1.1\r\n"));
+        tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nTLS")
+            .unwrap();
+        tls.flush().unwrap();
+    });
+    let collector = Arc::new(Collector::default());
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut origin_roots = rustls::RootCertStore::empty();
+    origin_roots.add(origin_certificate).unwrap();
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(DirectOwner))
+        .with_tls_client_config(fragcap_proxy::tls_client_config_with_roots(origin_roots).unwrap())
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(3))
+        .unwrap();
+    let mut tcp = TcpStream::connect(lease.endpoint()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    authenticate(
+        &mut tcp,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    connect_ipv4(&mut tcp, address);
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots
+        .add(CertificateDer::from(lease.ca_der().to_vec()))
+        .unwrap();
+    let mut client_config = fragcap_proxy::tls_client_config_with_roots(client_roots).unwrap();
+    Arc::make_mut(&mut client_config).alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_name =
+        ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into());
+    let connection = rustls::ClientConnection::new(client_config, server_name).unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, tcp);
+    write!(
+        tls,
+        "GET /direct-tls HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        address.port()
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    tls.read_to_end(&mut response).unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(b"TLS"));
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(3));
+    assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+    assert_eq!(report.observation.protocol.socks_tls, 1);
+    assert_eq!(report.observation.protocol.client_tls_completed, 1);
+    assert_eq!(report.observation.protocol.upstream_tls_completed, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
+    assert!(collector
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| { matches!(&event.kind, ApplicationEventKind::HttpStreamOpen) }));
 }
 
 #[test]

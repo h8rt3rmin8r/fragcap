@@ -885,6 +885,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use base64::Engine;
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
     use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
 
@@ -895,7 +896,16 @@ mod tests {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     fn spawn_client(protocol: &str, original: std::net::SocketAddr) -> Child {
-        Command::new(std::env::current_exe().unwrap())
+        spawn_client_with_ca(protocol, original, None)
+    }
+
+    fn spawn_client_with_ca(
+        protocol: &str,
+        original: std::net::SocketAddr,
+        ca: Option<&[u8]>,
+    ) -> Child {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "deep_capture::direct_runtime::tests::direct_runtime_child",
@@ -906,9 +916,14 @@ mod tests {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .unwrap()
+            .creation_flags(CREATE_NO_WINDOW);
+        if let Some(ca) = ca {
+            command.env(
+                "FRAGCAP_S200_CHILD_CA",
+                base64::engine::general_purpose::STANDARD.encode(ca),
+            );
+        }
+        command.spawn().unwrap()
     }
 
     fn release_client(child: &mut Child) {
@@ -991,6 +1006,44 @@ mod tests {
             let mut response = [0u8; 128];
             let length = client.recv(&mut response).unwrap();
             assert_eq!(&response[..length], b"runtime-udp-reply");
+        } else if protocol == "http" {
+            let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            write!(
+                client,
+                "GET /direct HTTP/1.1\r\nHost: {original}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+            assert!(response.ends_with(b"DIRECT"));
+        } else if protocol == "tls" {
+            let ca = base64::engine::general_purpose::STANDARD
+                .decode(std::env::var("FRAGCAP_S200_CHILD_CA").unwrap())
+                .unwrap();
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls::pki_types::CertificateDer::from(ca))
+                .unwrap();
+            let mut config = fragcap_proxy::tls_client_config_with_roots(roots).unwrap();
+            Arc::make_mut(&mut config).alpn_protocols = vec![b"http/1.1".to_vec()];
+            let server_name = rustls::pki_types::ServerName::IpAddress(original.ip().into());
+            let connection = rustls::ClientConnection::new(config, server_name).unwrap();
+            let tcp = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut client = rustls::StreamOwned::new(connection, tcp);
+            write!(
+                client,
+                "GET /direct-tls HTTP/1.1\r\nHost: {original}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+            assert!(response.ends_with(b"TLS-DIRECT"));
         } else {
             panic!("unknown client protocol");
         }
@@ -1089,6 +1142,135 @@ mod tests {
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
     }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_direct_runtime_inspects_http_and_tls() {
+        live_inspected_tcp_case(false);
+        live_inspected_tcp_case(true);
+    }
+
+    fn live_inspected_tcp_case(tls: bool) {
+        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let (origin_config, origin_root) = if tls {
+            let generated =
+                rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+            let certificate = CertificateDer::from(generated.cert);
+            let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let mut config = rustls::ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.clone()], key.into())
+                .unwrap();
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            (Some(Arc::new(config)), Some(certificate))
+        } else {
+            (None, None)
+        };
+        let server = thread::spawn(move || {
+            let (stream, _) = origin.accept().unwrap();
+            let mut stream: Box<dyn ReadWrite> = match origin_config {
+                Some(config) => Box::new(rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(config).unwrap(),
+                    stream,
+                )),
+                None => Box::new(stream),
+            };
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            assert!(head.starts_with(if tls {
+                b"GET /direct-tls HTTP/1.1\r\n"
+            } else {
+                b"GET /direct HTTP/1.1\r\n"
+            }));
+            if tls {
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nTLS-DIRECT").unwrap();
+            } else {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nDIRECT",
+                    )
+                    .unwrap();
+            }
+            stream.flush().unwrap();
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-inspected-runtime")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let authority = Arc::new(
+            fragcap_proxy::SessionCertificateAuthority::generate(
+                1,
+                SystemTime::now(),
+                Duration::from_secs(3600),
+            )
+            .unwrap(),
+        );
+        let mut child = spawn_client_with_ca(
+            if tls { "tls" } else { "http" },
+            original,
+            tls.then_some(authority.der().as_ref()),
+        );
+        let context = client_context(child.id());
+        let mut proxy = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_prepared_authority(authority)
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )));
+        if let Some(certificate) = origin_root {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(certificate).unwrap();
+            proxy = proxy.with_tls_client_config(
+                fragcap_proxy::tls_client_config_with_roots(roots).unwrap(),
+            );
+        }
+        let mut lease = proxy.start(Duration::from_secs(3)).unwrap();
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-direct-inspected-runtime".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        let stats = runtime.stop().unwrap();
+        assert!(stats.packets.consumed > 0);
+        assert_eq!(stats.packets.lost, 0);
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(3));
+        assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+        assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
+        if tls {
+            assert_eq!(report.observation.protocol.client_tls_completed, 1);
+            assert_eq!(report.observation.protocol.upstream_tls_completed, 1);
+        }
+    }
+
+    trait ReadWrite: Read + Write {}
+    impl<T: Read + Write> ReadWrite for T {}
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
