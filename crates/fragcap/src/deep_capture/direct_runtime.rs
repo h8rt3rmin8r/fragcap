@@ -619,6 +619,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
 /// Stop must be called before the native proxy lease is released.
 pub struct DirectPacketRuntime {
     handle: Option<Arc<Handle>>,
+    context: NativeObservationContext,
     observer: Arc<Mutex<DirectSocketObserver>>,
     receive_worker: Option<JoinHandle<io::Result<()>>>,
     process_worker: Option<JoinHandle<io::Result<()>>>,
@@ -651,6 +652,7 @@ impl DirectPacketRuntime {
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
+        let route_context = context.clone();
         let connecting = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
@@ -742,8 +744,10 @@ impl DirectPacketRuntime {
                 }
             }
         };
+        route_context.set_direct_route_active(true);
         Ok(Self {
             handle: Some(handle),
+            context: route_context,
             observer,
             receive_worker: Some(receive_worker),
             process_worker: Some(process_worker),
@@ -781,6 +785,7 @@ impl DirectPacketRuntime {
                 first_error.get_or_insert(error);
             }
         }
+        self.context.set_direct_route_active(false);
         self.stats.stop_watchdog.store(true, Ordering::Release);
         if let Some(worker) = self.watchdog_worker.take() {
             if worker.join().is_err() {

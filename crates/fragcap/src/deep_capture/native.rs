@@ -321,6 +321,8 @@ pub struct NativeObservationContext {
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_route_active: Arc<AtomicBool>,
     #[cfg(all(windows, feature = "socket-table"))]
     socket_collector: Arc<SocketInceptionCollector>,
 }
@@ -415,6 +417,11 @@ impl NativeObservationContext {
             opened_latest_ns,
         });
         Ok(())
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn set_direct_route_active(&self, active: bool) {
+        self.direct_route_active.store(active, Ordering::Release);
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
@@ -661,29 +668,38 @@ impl fragcap_proxy::InspectionDecider for ExactGameDecider {
             proxy_local: request.proxy_local,
         };
         #[cfg(all(windows, feature = "direct-route"))]
-        match self
-            .context
-            .direct_helper_flow(descriptor, request.opened_at_ns)
-        {
-            Ok(Some(_)) => {
-                let decision = if self.game_roles.iter().any(|role| role == "client") {
-                    InspectionDecision::verified_direct_route(elapsed_millis(started))
-                } else {
-                    InspectionDecision::uninspected(
-                        InspectionReason::UnprovenRole,
+        loop {
+            match self
+                .context
+                .direct_helper_flow(descriptor, request.opened_at_ns)
+            {
+                Ok(Some(_)) => {
+                    let decision = if self.game_roles.iter().any(|role| role == "client") {
+                        InspectionDecision::verified_direct_route(elapsed_millis(started))
+                    } else {
+                        InspectionDecision::uninspected(
+                            InspectionReason::UnprovenRole,
+                            elapsed_millis(started),
+                        )
+                    };
+                    return decision.with_requested_scope(self.requested_scope.as_str());
+                }
+                Err(_) => {
+                    return InspectionDecision::uninspected(
+                        InspectionReason::AmbiguousOwner,
                         elapsed_millis(started),
                     )
-                };
-                return decision.with_requested_scope(self.requested_scope.as_str());
+                    .with_requested_scope(self.requested_scope.as_str())
+                }
+                Ok(None) => {
+                    if !self.context.direct_route_active.load(Ordering::Acquire)
+                        || started.elapsed() >= budget.min(Duration::from_millis(10))
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
-            Err(_) => {
-                return InspectionDecision::uninspected(
-                    InspectionReason::AmbiguousOwner,
-                    elapsed_millis(started),
-                )
-                .with_requested_scope(self.requested_scope.as_str())
-            }
-            Ok(None) => {}
         }
         let result = self
             .context
