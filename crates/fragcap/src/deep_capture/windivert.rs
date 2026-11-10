@@ -717,6 +717,172 @@ mod tests {
         assert_eq!(worker.join().unwrap().unwrap(), b"stack-in");
     }
 
+    /// Packet receive must keep passing unrelated traffic while the proxy
+    /// helper connects; otherwise its own SYN deadlocks behind the held game SYN.
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_broad_packet_to_native_proxy() {
+        use std::{
+            io::{Read, Write},
+            net::{Ipv4Addr, TcpListener, TcpStream},
+            sync::{mpsc, Mutex},
+            thread,
+            time::Duration,
+        };
+
+        use crate::deep_capture::{
+            direct_bridge::{connect_authenticated_socks5, DirectTcpBridge},
+            direct_route::DirectTuple,
+        };
+        use fragcap_core::Proto;
+        use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let api = Api::load_verified(Path::new(&root)).expect("load verified component");
+        let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"live-packet-to-proxy");
+            stream.write_all(b"live-proxy-to-packet").unwrap();
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_session_id("s200-live-packet-proxy")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
+        let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
+        let password = lease.capability_proof().proxy_password();
+        let proxy_endpoint = lease.endpoint();
+        let handle = Arc::new(api.open("tcp or udp", NETWORK_LAYER, 0).unwrap());
+        let selected = Arc::new(Mutex::new(None::<DirectTuple>));
+        let (sender, receiver) = mpsc::sync_channel::<(Vec<u8>, Address)>(256);
+        let receive_handle = Arc::clone(&handle);
+        let receive_selected = Arc::clone(&selected);
+        let receive_worker = thread::spawn(move || -> io::Result<()> {
+            let mut packet = [0u8; 65_535];
+            loop {
+                let mut address = Address::default();
+                let length = match receive_handle.recv(&mut packet, &mut address) {
+                    Ok(length) => length,
+                    Err(error) if error.raw_os_error() == Some(232) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                let head = raw_transport_head(&packet[..length]).ok();
+                let exact = {
+                    let mut selected = receive_selected.lock().unwrap();
+                    if selected.is_none() {
+                        if let Some(head) = head.as_ref().filter(|head| {
+                            head.transport == Proto::Tcp
+                                && head.initial_tcp_syn
+                                && head.destination == original
+                        }) {
+                            *selected = Some(DirectTuple {
+                                transport: Proto::Tcp,
+                                local: head.source,
+                                remote: head.destination,
+                            });
+                        }
+                    }
+                    selected.is_some_and(|tuple| {
+                        head.as_ref().is_some_and(|head| {
+                            head.source == tuple.local && head.destination == tuple.remote
+                        })
+                    })
+                };
+                if exact {
+                    sender
+                        .try_send((packet[..length].to_vec(), address))
+                        .map_err(|_| io::Error::other("selected packet queue saturated"))?;
+                } else if receive_handle.send(&packet[..length], &address)? != length {
+                    return Err(io::Error::other("short unrelated packet reinjection"));
+                }
+            }
+        });
+        let bridge_handle = Arc::clone(&handle);
+        let bridge_worker = thread::spawn(move || -> io::Result<()> {
+            let mut bridge = None::<DirectTcpBridge>;
+            let mut last_address = None;
+            let start = std::time::Instant::now();
+            loop {
+                match receiver.recv_timeout(Duration::from_millis(1)) {
+                    Ok((packet, address)) => {
+                        last_address = Some(address);
+                        if bridge.is_none() {
+                            let head = raw_transport_head(&packet)
+                                .map_err(|error| io::Error::other(format!("raw head: {error:?}")))?;
+                            let tuple = DirectTuple {
+                                transport: Proto::Tcp,
+                                local: head.source,
+                                remote: head.destination,
+                            };
+                            let helper = connect_authenticated_socks5(
+                                proxy_endpoint,
+                                original,
+                                password.as_bytes(),
+                                Duration::from_secs(2),
+                            )?;
+                            bridge =
+                                Some(DirectTcpBridge::new(tuple, helper).map_err(|error| {
+                                    io::Error::other(format!("bridge initialization: {error:?}"))
+                                })?);
+                        }
+                        let replies = bridge.as_mut().unwrap().ingest_diverted(
+                            &packet,
+                            address.ip_checksum_valid(),
+                            start.elapsed().as_millis() as i64,
+                        );
+                        for reply in replies.map_err(|error| {
+                            io::Error::other(format!("bridge packet: {error:?}"))
+                        })? {
+                            if bridge_handle.send(&reply, &address)? != reply.len() {
+                                return Err(io::Error::other("short selected reply injection"));
+                            }
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if let (Some(bridge), Some(address)) = (bridge.as_mut(), last_address) {
+                            for reply in bridge.poll(start.elapsed().as_millis() as i64).map_err(
+                                |error| io::Error::other(format!("bridge poll: {error:?}")),
+                            )? {
+                                if bridge_handle.send(&reply, &address)? != reply.len() {
+                                    return Err(io::Error::other("short polled reply injection"));
+                                }
+                            }
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.write_all(b"live-packet-to-proxy").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert_eq!(response, b"live-proxy-to-packet");
+        handle.stop_receiving().unwrap();
+        receive_worker.join().unwrap().unwrap();
+        bridge_worker.join().unwrap().unwrap();
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(2));
+        assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+    }
+
     fn ipv4_tcp_endpoints(bytes: &[u8]) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
         let head = raw_transport_head(bytes).ok()?;
         (head.transport == Proto::Tcp && head.source.is_ipv4())
