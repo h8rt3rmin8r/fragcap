@@ -5,6 +5,7 @@
 use std::{
     ffi::{c_void, CStr, CString},
     io, mem,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     os::windows::ffi::OsStrExt,
     path::Path,
     ptr,
@@ -12,13 +13,48 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::INVALID_HANDLE_VALUE,
-    System::LibraryLoader::{
-        FreeLibrary, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    Foundation::{FILETIME, INVALID_HANDLE_VALUE},
+    System::{
+        LibraryLoader::{
+            FreeLibrary, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        },
+        Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+        SystemInformation::GetSystemTimePreciseAsFileTime,
     },
 };
 
-use super::verify_windivert_component;
+use fragcap_core::Proto;
+
+use super::{
+    direct_route::{DirectTuple, QpcAnchor},
+    verify_windivert_component,
+};
+
+const FILETIME_UNIX_OFFSET_NS: i128 = 11_644_473_600_000_000_000;
+
+pub(super) fn sample_qpc_anchor() -> io::Result<QpcAnchor> {
+    let mut frequency = 0;
+    let mut before = 0;
+    let mut after = 0;
+    if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
+        || unsafe { QueryPerformanceCounter(&mut before) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut filetime = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    unsafe { GetSystemTimePreciseAsFileTime(&mut filetime) };
+    if unsafe { QueryPerformanceCounter(&mut after) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let ticks = (u64::from(filetime.dwHighDateTime) << 32) | u64::from(filetime.dwLowDateTime);
+    let unix_ns = i64::try_from(i128::from(ticks) * 100 - FILETIME_UNIX_OFFSET_NS)
+        .map_err(|_| io::Error::other("system time outside supported direct route range"))?;
+    QpcAnchor::from_bracket(before, after, unix_ns, frequency)
+        .ok_or_else(|| io::Error::other("QPC and wall-clock sample exceeded uncertainty bound"))
+}
 
 pub(super) const NETWORK_LAYER: i32 = 0;
 pub(super) const FLOW_LAYER: i32 = 2;
@@ -92,6 +128,34 @@ pub(super) struct SocketData {
     pub local_port: u16,
     pub remote_port: u16,
     pub protocol: u8,
+}
+
+impl SocketData {
+    fn address(words: [u32; 4], port: u16) -> SocketAddr {
+        let mut octets = [0; 16];
+        for (index, word) in words.into_iter().rev().enumerate() {
+            octets[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        let ipv6 = Ipv6Addr::from(octets);
+        let ip = ipv6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ipv6));
+        SocketAddr::new(ip, port)
+    }
+
+    pub fn tuple(self) -> Option<DirectTuple> {
+        let transport = match self.protocol {
+            6 => Proto::Tcp,
+            17 => Proto::Udp,
+            _ => return None,
+        };
+        (self.local_port != 0 && self.remote_port != 0).then_some(DirectTuple {
+            transport,
+            local: Self::address(self.local_addr, self.local_port),
+            remote: Self::address(self.remote_addr, self.remote_port),
+        })
+    }
 }
 
 type OpenFn = unsafe extern "system" fn(*const i8, i32, i16, u64) -> isize;
@@ -452,7 +516,9 @@ mod tests {
                 match packet_reader.recv(&mut bytes, &mut address) {
                     Ok(length) => {
                         if !sent_syn && ipv4_tcp_syn_to(&bytes[..length], destination.port()) {
-                            syn_sender.send(address).unwrap();
+                            syn_sender
+                                .send((address, ipv4_tcp_endpoints(&bytes[..length])))
+                                .unwrap();
                             sent_syn = true;
                         }
                         let sent = packet_reader.send(&bytes[..length], &address)?;
@@ -472,7 +538,7 @@ mod tests {
         let mut body = [0u8; 15];
         server.read_exact(&mut body).unwrap();
         assert_eq!(&body, b"broad-syn-probe");
-        let syn = syn_receiver
+        let (syn, syn_endpoints) = syn_receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("prearmed broad handle receives initial SYN");
         let event = event_receiver
@@ -491,12 +557,25 @@ mod tests {
         );
         assert_eq!(socket_data.pid, std::process::id());
         assert_eq!(socket_data.remote_port, destination.port());
+        assert_eq!(
+            socket_data.tuple().map(|tuple| (tuple.local, tuple.remote)),
+            syn_endpoints
+        );
         assert!(event.timestamp_qpc <= syn.timestamp_qpc);
+        let anchor = sample_qpc_anchor().expect("bounded QPC clock sample");
+        let event_time = anchor
+            .convert(event.timestamp_qpc)
+            .expect("socket event is inside clock anchor window");
+        let syn_time = anchor
+            .convert(syn.timestamp_qpc)
+            .expect("SYN is inside clock anchor window");
+        assert!(event_time.0 <= syn_time.0);
         eprintln!(
-            "broad first SYN: socket_qpc={}, syn_qpc={}, delta_qpc={}",
+            "broad first SYN: socket_qpc={}, syn_qpc={}, delta_qpc={}, clock_error_ns={}",
             event.timestamp_qpc,
             syn.timestamp_qpc,
             syn.timestamp_qpc - event.timestamp_qpc,
+            event_time.1,
         );
         packet.stop_receiving().unwrap();
         packet_worker.join().unwrap().unwrap();
@@ -648,6 +727,24 @@ mod tests {
         assert!(address.outbound());
         assert!(address.ipv6());
         assert!(!address.loopback());
+        let socket = SocketData {
+            endpoint_id: 1,
+            parent_endpoint_id: 0,
+            pid: 2,
+            local_addr: [0x7f00_0001, 0x0000_ffff, 0, 0],
+            remote_addr: [0xc000_0201, 0x0000_ffff, 0, 0],
+            local_port: 40000,
+            remote_port: 443,
+            protocol: 6,
+        };
+        assert_eq!(
+            socket.tuple(),
+            Some(DirectTuple {
+                transport: Proto::Tcp,
+                local: "127.0.0.1:40000".parse().unwrap(),
+                remote: "192.0.2.1:443".parse().unwrap(),
+            })
+        );
     }
 
     /// Disposable hosted-runner probe. Both observers sniff without diverting.

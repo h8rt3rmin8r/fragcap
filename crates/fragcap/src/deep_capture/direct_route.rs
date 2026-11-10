@@ -9,6 +9,52 @@ use fragcap_core::Proto;
 use super::{CaptureProcessEvidence, ConnectionInception};
 
 const MAX_CLOCK_ERROR_NS: u64 = 5_000_000;
+const MAX_ANCHOR_AGE_SECONDS: i128 = 10;
+
+/// Bounded conversion between WinDivert's QPC timestamp and process-event
+/// Unix time. Packet/event ordering itself stays in QPC units.
+#[derive(Clone, Copy, Debug)]
+pub struct QpcAnchor {
+    qpc_midpoint: i64,
+    unix_ns: i64,
+    frequency: i64,
+    error_ns: u64,
+}
+
+impl QpcAnchor {
+    pub fn from_bracket(
+        before_qpc: i64,
+        after_qpc: i64,
+        unix_ns: i64,
+        frequency: i64,
+    ) -> Option<Self> {
+        if before_qpc < 0 || after_qpc < before_qpc || unix_ns < 0 || frequency <= 0 {
+            return None;
+        }
+        let width = i128::from(after_qpc - before_qpc);
+        let width_ns = width.checked_mul(1_000_000_000)? / i128::from(frequency);
+        let error_ns = u64::try_from(width_ns / 2 + 100_000).ok()?;
+        if error_ns > MAX_CLOCK_ERROR_NS {
+            return None;
+        }
+        Some(Self {
+            qpc_midpoint: before_qpc + (after_qpc - before_qpc) / 2,
+            unix_ns,
+            frequency,
+            error_ns,
+        })
+    }
+
+    pub fn convert(self, qpc: i64) -> Option<(i64, u64)> {
+        let delta = i128::from(qpc) - i128::from(self.qpc_midpoint);
+        if delta.abs() > i128::from(self.frequency) * MAX_ANCHOR_AGE_SECONDS {
+            return None;
+        }
+        let delta_ns = delta.checked_mul(1_000_000_000)? / i128::from(self.frequency);
+        let unix_ns = i64::try_from(i128::from(self.unix_ns) + delta_ns).ok()?;
+        (unix_ns >= 0).then_some((unix_ns, self.error_ns))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DirectTuple {
@@ -319,6 +365,16 @@ mod tests {
     use super::*;
     use crate::deep_capture::{StageTransition, StageTransitionKind};
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
+
+    #[test]
+    fn qpc_conversion_bounds_sample_error_and_age() {
+        let anchor =
+            QpcAnchor::from_bracket(1_000_000, 1_000_100, 1_700_000_000, 10_000_000).unwrap();
+        assert_eq!(anchor.convert(1_010_050), Some((1_701_000_000, 105_000)));
+        assert_eq!(anchor.convert(101_000_051), None);
+        assert!(QpcAnchor::from_bracket(0, 100_000, 1_700_000_000, 10_000_000).is_none());
+        assert!(QpcAnchor::from_bracket(100, 99, 1_700_000_000, 10_000_000).is_none());
+    }
 
     fn tuple(port: u16) -> DirectTuple {
         DirectTuple {

@@ -90,6 +90,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
 ] }
 
