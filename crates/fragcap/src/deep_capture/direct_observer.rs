@@ -19,7 +19,7 @@ use super::{
     },
 };
 
-const SOCKET_FILTER: &str = "event == CONNECT and (tcp or udp)";
+const SOCKET_FILTER: &str = "(event == CONNECT or event == CLOSE) and (tcp or udp)";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SocketObserverStats {
@@ -83,6 +83,11 @@ impl DirectSocketObserver {
                                 worker_counters.clock_lost.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             };
+                            let kind = match address.event() {
+                                4 => SocketEventKind::Open,
+                                7 => SocketEventKind::Close,
+                                _ => continue,
+                            };
                             let event = DirectSocketEvent {
                                 tuple,
                                 endpoint_id: socket.endpoint_id,
@@ -90,7 +95,7 @@ impl DirectSocketObserver {
                                 at_qpc: address.timestamp_qpc,
                                 at_unix_ns,
                                 clock_error_ns,
-                                kind: SocketEventKind::Open,
+                                kind,
                             };
                             let mut queue = worker_events.lock().expect("socket event queue lock");
                             if queue.len() < capacity {

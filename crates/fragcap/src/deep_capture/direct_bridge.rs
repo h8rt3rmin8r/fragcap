@@ -3,6 +3,7 @@
 //! Session-authenticated SOCKS5 bridge for an admitted original TCP flow.
 
 use std::{
+    collections::VecDeque,
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
     time::Duration,
@@ -10,6 +11,139 @@ use std::{
 
 use fragcap_proxy::PROXY_USERNAME;
 use zeroize::Zeroizing;
+
+use super::{
+    direct_route::DirectTuple,
+    direct_stack::{StackError, TcpFlowStack},
+};
+
+const MAX_BRIDGE_BYTES: usize = 65_536;
+
+#[derive(Debug)]
+pub enum DirectBridgeError {
+    Stack(StackError),
+    Io(io::Error),
+    BufferFull,
+}
+
+impl From<StackError> for DirectBridgeError {
+    fn from(error: StackError) -> Self {
+        Self::Stack(error)
+    }
+}
+
+impl From<io::Error> for DirectBridgeError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// One admitted TCP flow, with bounded pending bytes in each direction.
+/// The caller owns WinDivert packet disposition and original-flow receipts.
+pub struct DirectTcpBridge {
+    stack: TcpFlowStack,
+    helper: TcpStream,
+    to_proxy: VecDeque<u8>,
+    to_client: VecDeque<u8>,
+    client_send_closed: bool,
+    proxy_send_closed: bool,
+}
+
+impl DirectTcpBridge {
+    pub fn new(tuple: DirectTuple, helper: TcpStream) -> Result<Self, DirectBridgeError> {
+        helper.set_read_timeout(Some(Duration::from_millis(1)))?;
+        helper.set_write_timeout(Some(Duration::from_millis(1)))?;
+        Ok(Self {
+            stack: TcpFlowStack::new(tuple)?,
+            helper,
+            to_proxy: VecDeque::new(),
+            to_client: VecDeque::new(),
+            client_send_closed: false,
+            proxy_send_closed: false,
+        })
+    }
+
+    pub fn ingest_diverted(
+        &mut self,
+        packet: &[u8],
+        kernel_validated_ipv4: bool,
+        now_ms: i64,
+    ) -> Result<Vec<Vec<u8>>, DirectBridgeError> {
+        self.stack
+            .ingest_diverted(packet, now_ms, kernel_validated_ipv4)?;
+        self.poll(now_ms)
+    }
+
+    pub fn poll(&mut self, now_ms: i64) -> Result<Vec<Vec<u8>>, DirectBridgeError> {
+        self.stack.poll(now_ms);
+        let mut bytes = [0u8; 8192];
+        loop {
+            let count = self.stack.receive_bytes(&mut bytes);
+            if count == 0 {
+                break;
+            }
+            if self.to_proxy.len() + count > MAX_BRIDGE_BYTES {
+                return Err(DirectBridgeError::BufferFull);
+            }
+            self.to_proxy.extend(&bytes[..count]);
+        }
+        while !self.to_proxy.is_empty() {
+            let front = self.to_proxy.as_slices().0;
+            match self.helper.write(front) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+                Ok(count) => {
+                    self.to_proxy.drain(..count);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if !self.client_send_closed && self.to_proxy.is_empty() && self.stack.receive_closed() {
+            self.helper.shutdown(std::net::Shutdown::Write)?;
+            self.client_send_closed = true;
+        }
+        if !self.proxy_send_closed {
+            match self.helper.read(&mut bytes) {
+                Ok(0) => self.proxy_send_closed = true,
+                Ok(count) => {
+                    if self.to_client.len() + count > MAX_BRIDGE_BYTES {
+                        return Err(DirectBridgeError::BufferFull);
+                    }
+                    self.to_client.extend(&bytes[..count]);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        while !self.to_client.is_empty() {
+            let front = self.to_client.as_slices().0;
+            let sent = self.stack.send_bytes(front, now_ms);
+            if sent == 0 {
+                break;
+            }
+            self.to_client.drain(..sent);
+        }
+        if self.proxy_send_closed && self.to_client.is_empty() {
+            self.stack.close_send(now_ms);
+        }
+        let mut egress = Vec::new();
+        while let Some(packet) = self.stack.pop_egress() {
+            egress.push(packet);
+        }
+        Ok(egress)
+    }
+}
 
 fn refused(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
@@ -93,7 +227,7 @@ mod tests {
     use std::{net::TcpListener, thread};
 
     use crate::deep_capture::direct_route::DirectTuple;
-    use crate::deep_capture::direct_stack::{ip_address, PacketDevice, TcpFlowStack};
+    use crate::deep_capture::direct_stack::{ip_address, PacketDevice};
     use fragcap_core::Proto;
     use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
     use smoltcp::{
@@ -172,23 +306,20 @@ mod tests {
         let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
         let password = lease.capability_proof().proxy_password();
-        let mut helper = connect_authenticated_socks5(
+        let helper = connect_authenticated_socks5(
             lease.endpoint(),
             original,
             password.as_bytes(),
             Duration::from_secs(2),
         )
         .unwrap();
-        helper
-            .set_read_timeout(Some(Duration::from_millis(1)))
-            .unwrap();
 
         let tuple = DirectTuple {
             transport: Proto::Tcp,
             local: SocketAddr::from(([127, 0, 0, 2], 40120)),
             remote: original,
         };
-        let mut stack = TcpFlowStack::new(tuple).unwrap();
+        let mut bridge = DirectTcpBridge::new(tuple, helper).unwrap();
         let mut device = PacketDevice::new(16).unwrap();
         let mut iface = Interface::new(
             Config::new(HardwareAddress::Ip),
@@ -214,20 +345,15 @@ mod tests {
             )
             .unwrap();
         let mut client_sent = false;
-        let mut helper_write_closed = false;
-        let mut helper_read_closed = false;
-        let mut received_request = Vec::new();
         let mut response = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         for tick in 0..2_000 {
             assert!(std::time::Instant::now() < deadline, "bridge stalled");
             iface.poll(Instant::from_millis(tick), &mut device, &mut sockets);
             while let Some(packet) = device.pop_egress() {
-                stack.ingest(&packet, tick).unwrap();
-            }
-            stack.poll(tick);
-            while let Some(packet) = stack.pop_egress() {
-                device.push(&packet).unwrap();
+                for reply in bridge.ingest_diverted(&packet, false, tick).unwrap() {
+                    device.push(&reply).unwrap();
+                }
             }
             let client = sockets.get_mut::<tcp::Socket>(socket);
             if !client_sent && client.can_send() {
@@ -240,41 +366,15 @@ mod tests {
                 let count = client.recv_slice(&mut buffer).unwrap();
                 response.extend_from_slice(&buffer[..count]);
             }
-            let count = stack.receive_bytes(&mut buffer);
-            if count != 0 {
-                received_request.extend_from_slice(&buffer[..count]);
-                helper.write_all(&buffer[..count]).unwrap();
-            }
-            if !helper_write_closed
-                && received_request == b"packet-to-proxy"
-                && stack.receive_closed()
-            {
-                helper.shutdown(std::net::Shutdown::Write).unwrap();
-                helper_write_closed = true;
-            }
-            if helper_write_closed && !helper_read_closed {
-                match helper.read(&mut buffer) {
-                    Ok(0) => {
-                        stack.close_send(tick);
-                        helper_read_closed = true;
-                    }
-                    Ok(count) => {
-                        assert_eq!(stack.send_bytes(&buffer[..count], tick), count);
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                        ) => {}
-                    Err(error) => panic!("proxy helper read: {error}"),
-                }
+            for reply in bridge.poll(tick).unwrap() {
+                device.push(&reply).unwrap();
             }
             if response == b"proxy-to-packet" {
                 break;
             }
             thread::yield_now();
         }
-        assert!(client_sent && helper_write_closed);
+        assert!(client_sent && bridge.client_send_closed);
         assert_eq!(response, b"proxy-to-packet");
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(2));

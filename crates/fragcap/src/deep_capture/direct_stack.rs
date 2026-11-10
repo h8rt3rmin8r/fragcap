@@ -229,7 +229,7 @@ impl TcpFlowStack {
             &mut self.sockets,
         );
         let socket = self.sockets.get_mut::<tcp::Socket>(self.socket);
-        self.established |= socket.may_recv() || socket.may_send();
+        self.established |= socket.state() == tcp::State::Established;
     }
 
     pub fn pop_egress(&mut self) -> Option<Vec<u8>> {
