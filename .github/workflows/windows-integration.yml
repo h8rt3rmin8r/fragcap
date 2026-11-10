@@ -56,7 +56,25 @@ jobs:
 
       - name: Probe direct socket event timing on disposable runner
         shell: pwsh
-        run: cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -LiteralPath integration/direct-route-matrix-v1.json -Raw | ConvertFrom-Json
+          if ($manifest.schema_version -ne 1) { throw 'Unknown direct route matrix version' }
+          $rows = @($manifest.required_rows | Where-Object tier -eq 'windows-driver')
+          if ($rows.Count -eq 0) { throw 'No required Windows direct route rows' }
+          $listed = & cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --list 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list disposable direct route probes' }
+          $names = @([regex]::Matches(($listed -join "`n"), '(?m)^\S+::(disposable_\w+): test$') | ForEach-Object { $_.Groups[1].Value })
+          if ($names.Count -eq 0) { throw 'No disposable direct route probes found' }
+          foreach ($row in $rows) {
+            if (-not $row.probe -or $row.probe -cnotin $names) { throw "Unmapped direct route row: $($row.id)" }
+          }
+          $result = & cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1 2>&1
+          $result | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable direct route probe failed' }
+          $summary = [regex]::Match(($result -join "`n"), 'test result: ok\. (\d+) passed; 0 failed; 0 ignored;')
+          if (-not $summary.Success -or [int]$summary.Groups[1].Value -ne $names.Count) { throw 'A required disposable probe was skipped' }
+          Write-Host "Direct route matrix: $($rows.Count) Windows rows mapped to $($names.Count) passing probes; zero skipped"
 
       - name: Download temporary Npcap SDK build input
         shell: pwsh

@@ -44,6 +44,8 @@ const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 static STALL_NEXT_CANDIDATE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static FAIL_NEXT_CLEANUP_REPORT: AtomicBool = AtomicBool::new(false);
 
 fn unix_now_ns() -> io::Result<u64> {
     let duration = SystemTime::now()
@@ -956,6 +958,10 @@ impl DirectPacketRuntime {
                 }
             }
         }
+        #[cfg(test)]
+        if FAIL_NEXT_CLEANUP_REPORT.swap(false, Ordering::AcqRel) {
+            first_error.get_or_insert(io::Error::other("injected direct cleanup uncertainty"));
+        }
         let packets = {
             let mut accounting = self.stats.packets.lock().expect("route accounting lock");
             match accounting.lose_unfinished() {
@@ -1306,6 +1312,16 @@ mod tests {
             let mut response = Vec::new();
             client.read_to_end(&mut response).unwrap();
             assert_eq!(response, b"runtime-origin-reply");
+            if let Ok(peer) = std::env::var("FRAGCAP_S200_CHAIN_UDP_ORIGINAL") {
+                let peer: SocketAddr = peer.parse().unwrap();
+                let udp = UdpSocket::bind(SocketAddr::new(peer.ip(), 0)).unwrap();
+                udp.connect(peer).unwrap();
+                udp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                udp.send(b"chain-udp-request").unwrap();
+                let mut reply = [0u8; 64];
+                let length = udp.recv(&mut reply).unwrap();
+                assert_eq!(&reply[..length], b"chain-udp-reply");
+            }
         } else if protocol == "sentinel-tcp" {
             let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
             client
@@ -1554,6 +1570,17 @@ mod tests {
             .expect("WINDIVERT_VERIFIED_ROOT is required");
         let origin = TcpListener::bind("127.0.0.1:0").unwrap();
         let original = origin.local_addr().unwrap();
+        let udp_origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+        udp_origin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let original_udp = udp_origin.local_addr().unwrap();
+        let udp_server = thread::spawn(move || {
+            let mut payload = [0u8; 64];
+            let (length, peer) = udp_origin.recv_from(&mut payload).unwrap();
+            assert_eq!(&payload[..length], b"chain-udp-request");
+            udp_origin.send_to(b"chain-udp-reply", peer).unwrap();
+        });
         let server = thread::spawn(move || {
             let mut selected = 0;
             let mut publisher = 0;
@@ -1595,6 +1622,7 @@ mod tests {
         .unwrap();
         let mut policy = DestinationPolicy::new(config.listen());
         policy.grant_for_test(original);
+        policy.grant_for_test(original_udp);
         let mut proxy = NativeProxyBackend::new(config)
             .with_destination_policy(policy)
             .with_inspection_decider(Arc::new(ExactGameDecider::new(
@@ -1613,6 +1641,7 @@ mod tests {
             .env("FRAGCAP_S200_CHAIN_ROLE", "platform")
             .env("FRAGCAP_S200_CHILD_PROTOCOL", "tcp")
             .env("FRAGCAP_S200_CHILD_ORIGINAL", original.to_string())
+            .env("FRAGCAP_S200_CHAIN_UDP_ORIGINAL", original_udp.to_string())
             .env("FRAGCAP_S200_CHILD_PROXY", proxy.endpoint().to_string())
             .env(
                 "FRAGCAP_S200_CHILD_PROXY_AUTH",
@@ -1652,23 +1681,41 @@ mod tests {
         let bridged = context.direct_helper_flows_for_test();
         assert_eq!(
             bridged.len(),
-            1,
+            3,
             "only the final client may enter the bridge"
         );
-        assert_eq!(bridged[0].pid, client);
-        assert!(bridged[0]
-            .process_instance_id
-            .starts_with(&format!("process-{client}-")));
-        assert_eq!(bridged[0].tuple.transport, Proto::Tcp);
-        assert_eq!(bridged[0].tuple.remote, original);
-        assert_ne!(bridged[0].tuple.local, original);
-        assert_ne!(bridged[0].endpoint_id, 0);
+        for flow in &bridged {
+            assert_eq!(flow.pid, client);
+            assert!(flow
+                .process_instance_id
+                .starts_with(&format!("process-{client}-")));
+            assert_ne!(flow.tuple.local, flow.tuple.remote);
+            assert_ne!(flow.endpoint_id, 0);
+        }
+        assert_eq!(
+            bridged
+                .iter()
+                .filter(|flow| flow.tuple.transport == Proto::Tcp && flow.tuple.remote == original)
+                .count(),
+            1
+        );
+        assert_eq!(
+            bridged
+                .iter()
+                .filter(
+                    |flow| flow.tuple.transport == Proto::Udp && flow.tuple.remote == original_udp
+                )
+                .count(),
+            2
+        );
         let stats = runtime.stop().unwrap();
         assert!(stats.packets.consumed > 0);
         assert_eq!(stats.packets.lost, 0);
         assert_eq!(server.join().unwrap(), (1, 1));
+        udp_server.join().unwrap();
         let report = proxy.cleanup(Duration::from_secs(3));
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+        assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 1);
         assert_eq!(report.observation.protocol.generic_streams_plain, 1);
     }
 
@@ -1702,6 +1749,48 @@ mod tests {
         finish_client(child);
         server.join().unwrap();
         live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST), false);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_cleanup_failure_reports_uncertainty_and_releases_handle() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            NativeObservationContext::default(),
+            "s200-cleanup-fault".into(),
+            "127.0.0.1:9".parse().unwrap(),
+            Zeroizing::new("unused-capability".to_string()),
+            4,
+        )
+        .unwrap();
+        FAIL_NEXT_CLEANUP_REPORT.store(true, Ordering::Release);
+        let error = runtime.stop().unwrap_err().to_string();
+        assert!(
+            error.contains("injected direct cleanup uncertainty"),
+            "{error}"
+        );
+        assert!(error.contains("lost: 0"), "{error}");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4];
+            stream.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"ping");
+            stream.write_all(b"pong").unwrap();
+        });
+        let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client.write_all(b"ping").unwrap();
+        let mut reply = [0; 4];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"pong");
+        server.join().unwrap();
     }
 
     #[test]
