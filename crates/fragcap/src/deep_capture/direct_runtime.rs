@@ -984,7 +984,7 @@ impl Drop for DirectPacketRuntime {
 mod tests {
     use super::*;
     use std::{
-        io::{Read, Write},
+        io::{BufRead, BufReader, Read, Write},
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
         os::windows::process::CommandExt,
         process::{Child, Command, Stdio},
@@ -1101,6 +1101,56 @@ mod tests {
         context
     }
 
+    fn read_chain_pid(reader: &mut impl BufRead, role: &str) -> u32 {
+        let marker = format!("S200_{role}=");
+        let mut line = String::new();
+        for _ in 0..20 {
+            line.clear();
+            assert_ne!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "missing {role} pid"
+            );
+            if let Some((_, pid)) = line.trim().split_once(&marker) {
+                return pid.parse().unwrap();
+            }
+        }
+        panic!("missing {role} pid in child output");
+    }
+
+    fn chain_evidence(platform: u32, publisher: u32, client: u32) -> CaptureProcessEvidence {
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
+        CaptureProcessEvidence {
+            events: vec![
+                ProcessEvent::started(platform, std::process::id(), "platform.exe", "", started),
+                ProcessEvent::started(publisher, platform, "publisher.exe", "", started),
+                ProcessEvent::started(client, publisher, "client.exe", "", started),
+            ],
+            launch_pid: Some(platform),
+            launch_at: Some(started),
+            stage_transitions: [
+                (platform, "platform"),
+                (publisher, "publisher"),
+                (client, "client"),
+            ]
+            .into_iter()
+            .map(|(pid, role)| StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid,
+                role: role.into(),
+                stage: None,
+                at: started,
+            })
+            .collect(),
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn direct_runtime_child() {
         let Ok(protocol) = std::env::var("FRAGCAP_S200_CHILD_PROTOCOL") else {
@@ -1110,6 +1160,45 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
+        if let Ok(role) = std::env::var("FRAGCAP_S200_CHAIN_ROLE") {
+            if role == "platform" || role == "publisher" {
+                println!("S200_{}={}", role.to_uppercase(), std::process::id());
+                std::io::stdout().flush().unwrap();
+                if role == "publisher" {
+                    let mut gate = [0u8; 1];
+                    std::io::stdin().read_exact(&mut gate).unwrap();
+                    assert_eq!(gate, *b"p");
+                    let mut connection = TcpStream::connect(original).unwrap();
+                    connection.write_all(b"sentinel-request").unwrap();
+                    connection.shutdown(std::net::Shutdown::Write).unwrap();
+                    let mut response = Vec::new();
+                    connection.read_to_end(&mut response).unwrap();
+                    assert_eq!(response, b"sentinel-reply");
+                }
+                let next_role = if role == "platform" {
+                    "publisher"
+                } else {
+                    "final"
+                };
+                let mut next = Command::new(std::env::current_exe().unwrap());
+                next.args([
+                    "--exact",
+                    "deep_capture::direct_runtime::tests::direct_runtime_child",
+                    "--nocapture",
+                ])
+                .env("FRAGCAP_S200_CHAIN_ROLE", next_role)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .creation_flags(CREATE_NO_WINDOW);
+                let mut child = next.spawn().unwrap();
+                assert!(child.wait().unwrap().success());
+                return;
+            }
+            assert_eq!(role, "final");
+            println!("S200_CLIENT={}", std::process::id());
+            std::io::stdout().flush().unwrap();
+        }
         let mut gate = [0u8; 1];
         std::io::stdin().read_exact(&mut gate).unwrap();
         assert_eq!(gate, *b"g");
@@ -1293,6 +1382,133 @@ mod tests {
         client.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b"pass");
         server.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_cold_platform_publisher_final_chain() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut selected = 0;
+            let mut publisher = 0;
+            for _ in 0..2 {
+                let (mut stream, _) = origin.accept().unwrap();
+                let mut body = Vec::new();
+                stream.read_to_end(&mut body).unwrap();
+                if body == b"runtime-client-request" {
+                    selected += 1;
+                    stream.write_all(b"runtime-origin-reply").unwrap();
+                } else {
+                    assert_eq!(body, b"sentinel-request");
+                    publisher += 1;
+                    stream.write_all(b"sentinel-reply").unwrap();
+                }
+            }
+            (selected, publisher)
+        });
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "deep_capture::direct_runtime::tests::direct_runtime_child",
+                "--nocapture",
+            ])
+            .env("FRAGCAP_S200_CHAIN_ROLE", "platform")
+            .env("FRAGCAP_S200_CHILD_PROTOCOL", "tcp")
+            .env("FRAGCAP_S200_CHILD_ORIGINAL", original.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW);
+        let mut chain = command.spawn().unwrap();
+        let mut output = BufReader::new(chain.stdout.take().unwrap());
+        let platform = read_chain_pid(&mut output, "PLATFORM");
+        let publisher = read_chain_pid(&mut output, "PUBLISHER");
+        let context = NativeObservationContext::default();
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-managed-chain")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut proxy = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )))
+            .start(Duration::from_secs(3))
+            .unwrap();
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context.clone(),
+            "s200-managed-chain".into(),
+            proxy.endpoint(),
+            proxy.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        chain.stdin.as_mut().unwrap().write_all(b"p").unwrap();
+        let client = read_chain_pid(&mut output, "CLIENT");
+        assert_ne!(platform, publisher);
+        assert_ne!(publisher, client);
+        assert_ne!(platform, client);
+        context.record_process_evidence(&chain_evidence(platform, publisher, client));
+        chain.stdin.as_mut().unwrap().write_all(b"g").unwrap();
+        drop(chain.stdin.take());
+        let outcome = chain.wait_with_output().unwrap();
+        assert!(
+            outcome.status.success(),
+            "{}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        let stats = runtime.stop().unwrap();
+        assert!(stats.packets.consumed > 0);
+        assert_eq!(stats.packets.lost, 0);
+        assert_eq!(server.join().unwrap(), (1, 1));
+        let report = proxy.cleanup(Duration::from_secs(3));
+        assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+        assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_cancel_then_restart_releases_route() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            assert_eq!(body, b"sentinel-request");
+            stream.write_all(b"sentinel-reply").unwrap();
+        });
+        let mut child = spawn_client("sentinel-tcp", original);
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            client_context(child.id()),
+            "s200-cancel-before-client".into(),
+            "127.0.0.1:9".parse().unwrap(),
+            Zeroizing::new("unused-capability".to_string()),
+            4,
+        )
+        .unwrap();
+        let stopped = runtime.stop().unwrap();
+        assert_eq!(stopped.packets.lost, 0);
+        release_client(&mut child);
+        finish_client(child);
+        server.join().unwrap();
+        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
 
     #[test]
