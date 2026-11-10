@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, ApplicationEventSink, DestinationPolicy,
-    EventDisposition, InspectionDecider, InspectionDecision, InspectionRequest, NativeProxyBackend,
-    NativeProxyConfig, ProtocolLimits, StreamTerminal,
+    EventDisposition, InspectionAction, InspectionDecider, InspectionDecision, InspectionReason,
+    InspectionRequest, NativeProxyBackend, NativeProxyConfig, ProtocolLimits, StreamTerminal,
 };
 
 struct DirectOwner;
@@ -16,6 +16,17 @@ struct DirectOwner;
 impl InspectionDecider for DirectOwner {
     fn decide(&self, _request: InspectionRequest, _budget: Duration) -> InspectionDecision {
         InspectionDecision::verified_direct_route(0)
+    }
+}
+
+struct UninspectedDirectOwner;
+
+impl InspectionDecider for UninspectedDirectOwner {
+    fn decide(&self, _request: InspectionRequest, _budget: Duration) -> InspectionDecision {
+        let mut decision = InspectionDecision::verified_direct_route(0);
+        decision.action = InspectionAction::Uninspected;
+        decision.reason = InspectionReason::KnownMiddleware;
+        decision
     }
 }
 
@@ -228,6 +239,73 @@ fn direct_owner_raw_token_stream_is_relayed_after_finite_classification() {
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
     assert_eq!(report.observation.protocol.generic_streams_plain, 1);
     assert_eq!(report.observation.protocol.requests, 0);
+}
+
+#[test]
+fn uninspected_direct_owner_tls_stays_opaque_and_reaches_origin() {
+    use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+
+    let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let certificate = CertificateDer::from(generated.cert);
+    let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let origin_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate.clone()], key.into())
+        .unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = origin.accept().unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(origin_config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, tcp);
+        let mut request = [0u8; 6];
+        tls.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"opaque");
+        tls.write_all(b"reply").unwrap();
+        tls.flush().unwrap();
+    });
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(UninspectedDirectOwner))
+        .start(Duration::from_secs(3))
+        .unwrap();
+    let mut tcp = TcpStream::connect(lease.endpoint()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    authenticate(
+        &mut tcp,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    connect_ipv4(&mut tcp, address);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(certificate).unwrap();
+    let client_config = fragcap_proxy::tls_client_config_with_roots(roots).unwrap();
+    let connection =
+        rustls::ClientConnection::new(client_config, ServerName::IpAddress(address.ip().into()))
+            .unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, tcp);
+    tls.write_all(b"opaque").unwrap();
+    let mut response = [0u8; 5];
+    tls.read_exact(&mut response).unwrap();
+    assert_eq!(&response, b"reply");
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(3));
+    assert_eq!(report.observation.protocol.socks_tls, 1);
+    assert_eq!(report.observation.protocol.generic_streams_tls_opaque, 1);
+    assert_eq!(report.observation.protocol.client_tls_completed, 0);
+    assert_eq!(report.observation.protocol.upstream_tls_completed, 0);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 0);
 }
 
 #[test]

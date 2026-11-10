@@ -994,13 +994,27 @@ mod tests {
 
     use base64::Engine;
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
-    use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
+    use fragcap_proxy::{
+        DestinationPolicy, InspectionAction, InspectionDecider, InspectionDecision,
+        InspectionReason, InspectionRequest, NativeProxyBackend, NativeProxyConfig,
+    };
 
     use crate::deep_capture::{
         CaptureProcessEvidence, ExactGameDecider, StageTransition, StageTransitionKind,
     };
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    struct UninspectedDirectOwner;
+
+    impl InspectionDecider for UninspectedDirectOwner {
+        fn decide(&self, _request: InspectionRequest, _budget: Duration) -> InspectionDecision {
+            let mut decision = InspectionDecision::verified_direct_route(0);
+            decision.action = InspectionAction::Uninspected;
+            decision.reason = InspectionReason::KnownMiddleware;
+            decision
+        }
+    }
 
     fn spawn_client(protocol: &str, original: std::net::SocketAddr) -> Child {
         spawn_client_with_ca(protocol, original, None)
@@ -1732,12 +1746,13 @@ mod tests {
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
-    fn disposable_direct_runtime_inspects_http_and_tls() {
-        live_inspected_tcp_case(false);
-        live_inspected_tcp_case(true);
+    fn disposable_direct_runtime_classifies_http_tls_and_opaque() {
+        live_inspected_tcp_case(false, false);
+        live_inspected_tcp_case(true, false);
+        live_inspected_tcp_case(true, true);
     }
 
-    fn live_inspected_tcp_case(tls: bool) {
+    fn live_inspected_tcp_case(tls: bool, opaque: bool) {
         use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
@@ -1814,16 +1829,25 @@ mod tests {
         let mut child = spawn_client_with_ca(
             if tls { "tls" } else { "http" },
             original,
-            tls.then_some(authority.der().as_ref()),
+            if opaque {
+                origin_root.as_ref().map(|root| root.as_ref())
+            } else {
+                tls.then_some(authority.der().as_ref())
+            },
         );
         let context = client_context(child.id());
+        let decider: Arc<dyn InspectionDecider> = if opaque {
+            Arc::new(UninspectedDirectOwner)
+        } else {
+            Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            ))
+        };
         let mut proxy = NativeProxyBackend::new(config)
             .with_destination_policy(policy)
             .with_prepared_authority(authority)
-            .with_inspection_decider(Arc::new(ExactGameDecider::new(
-                context.clone(),
-                vec!["client".into()],
-            )));
+            .with_inspection_decider(decider);
         if let Some(certificate) = origin_root {
             let mut roots = rustls::RootCertStore::empty();
             roots.add(certificate).unwrap();
@@ -1849,8 +1873,15 @@ mod tests {
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(3));
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
-        assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
-        if tls {
+        assert_eq!(
+            report.observation.protocol.http1_exchanges_completed,
+            u64::from(!opaque)
+        );
+        if opaque {
+            assert_eq!(report.observation.protocol.generic_streams_tls_opaque, 1);
+            assert_eq!(report.observation.protocol.client_tls_completed, 0);
+            assert_eq!(report.observation.protocol.upstream_tls_completed, 0);
+        } else if tls {
             assert_eq!(report.observation.protocol.client_tls_completed, 1);
             assert_eq!(report.observation.protocol.upstream_tls_completed, 1);
         }

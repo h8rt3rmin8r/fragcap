@@ -340,7 +340,10 @@ pub(crate) async fn serve_socks5(
         bound,
         selected_peer,
     );
-    if classification == SocksClassification::Http && direct_owner {
+    if classification == SocksClassification::Http
+        && direct_owner
+        && decision.action == crate::InspectionAction::Inspect
+    {
         on_stage(crate::ConnectionStage::FirstRequest, false);
         let first =
             match read_request_in_context(&mut client, limits, HttpRequestContext::CleartextProxy)
@@ -418,7 +421,10 @@ pub(crate) async fn serve_socks5(
         carry_socks_connect_accounting(&mut run.accounting, &accounting);
         return run;
     }
-    if classification == SocksClassification::Tls && direct_owner {
+    if classification == SocksClassification::Tls
+        && direct_owner
+        && decision.action == crate::InspectionAction::Inspect
+    {
         let authority = request.authority.clone();
         let server_config = {
             let mut cache = leaf_cache.lock().await;
