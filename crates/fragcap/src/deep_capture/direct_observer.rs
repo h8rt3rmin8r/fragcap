@@ -3,7 +3,7 @@
 //! Bounded passive socket-event observer for direct route candidate joins.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -13,7 +13,7 @@ use std::{
 };
 
 use super::{
-    direct_route::{DirectSocketEvent, SocketEventKind},
+    direct_route::{DirectSocketEvent, DirectTuple, SocketEventKind},
     windivert::{
         sample_qpc_anchor, Address, Api, Handle, FLAG_RECV_ONLY, FLAG_SNIFF, SOCKET_LAYER,
     },
@@ -42,6 +42,7 @@ struct Counters {
 pub struct DirectSocketObserver {
     handle: Arc<Handle>,
     events: Arc<Mutex<VecDeque<DirectSocketEvent>>>,
+    current_owners: Arc<Mutex<BTreeMap<DirectTuple, u32>>>,
     counters: Arc<Counters>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
@@ -57,9 +58,11 @@ impl DirectSocketObserver {
         let handle =
             Arc::new(api.open(SOCKET_FILTER, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)?);
         let events = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
+        let current_owners = Arc::new(Mutex::new(BTreeMap::new()));
         let counters = Arc::new(Counters::default());
         let worker_handle = Arc::clone(&handle);
         let worker_events = Arc::clone(&events);
+        let worker_owners = Arc::clone(&current_owners);
         let worker_counters = Arc::clone(&counters);
         let worker = thread::Builder::new()
             .name("fragcap-direct-socket-events".into())
@@ -97,6 +100,26 @@ impl DirectSocketObserver {
                                 clock_error_ns,
                                 kind,
                             };
+                            {
+                                let mut owners =
+                                    worker_owners.lock().expect("socket owner map lock");
+                                match kind {
+                                    SocketEventKind::Open
+                                        if owners.len() < capacity
+                                            || owners.contains_key(&tuple) =>
+                                    {
+                                        owners.insert(tuple, socket.pid);
+                                    }
+                                    SocketEventKind::Open => {
+                                        worker_counters
+                                            .capacity_lost
+                                            .fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    SocketEventKind::Close => {
+                                        owners.remove(&tuple);
+                                    }
+                                }
+                            }
                             let mut queue = worker_events.lock().expect("socket event queue lock");
                             if queue.len() < capacity {
                                 queue.push_back(event);
@@ -115,6 +138,7 @@ impl DirectSocketObserver {
         Ok(Self {
             handle,
             events,
+            current_owners,
             counters,
             worker: Some(worker),
         })
@@ -126,6 +150,14 @@ impl DirectSocketObserver {
             .expect("socket event queue lock")
             .drain(..)
             .collect()
+    }
+
+    pub fn current_owner_pid(&self, tuple: DirectTuple) -> Option<u32> {
+        self.current_owners
+            .lock()
+            .expect("socket owner map lock")
+            .get(&tuple)
+            .copied()
     }
 
     pub fn stats(&self) -> SocketObserverStats {

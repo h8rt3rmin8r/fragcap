@@ -176,8 +176,10 @@ fn inject_replies(
 fn receive_packets(
     handle: Arc<Handle>,
     sender: SyncSender<WorkPacket>,
+    observer: Arc<Mutex<DirectSocketObserver>>,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
 ) -> io::Result<()> {
     let mut packet = [0u8; 65_535];
@@ -229,7 +231,20 @@ fn receive_packets(
                     remote: head.destination,
                 })
         });
-        if !is_candidate || is_excluded {
+        let busy_unowned = connecting.load(Ordering::Acquire)
+            && head.as_ref().is_none_or(|head| {
+                let tuple = DirectTuple {
+                    transport: head.transport,
+                    local: head.source,
+                    remote: head.destination,
+                };
+                observer
+                    .lock()
+                    .expect("socket observer lock")
+                    .current_owner_pid(tuple)
+                    .is_none_or(|pid| pid == std::process::id())
+            });
+        if !is_candidate || busy_unowned || is_excluded {
             if is_candidate {
                 stats
                     .admission_busy_bypassed
@@ -273,6 +288,7 @@ struct ProcessRuntimeInputs {
     context: NativeObservationContext,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
     proxy: std::net::SocketAddr,
@@ -288,6 +304,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         context,
         selected,
         excluded,
+        connecting,
         stats,
         session_id,
         proxy,
@@ -449,6 +466,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             .map_err(|error| {
                                 io::Error::other(format!("issue UDP receipt: {error:?}"))
                             })?;
+                        connecting.store(true, Ordering::Release);
                         let association = DirectUdpAssociation::new_with_hook(
                             proxy,
                             flow.tuple.remote,
@@ -471,6 +489,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     .map_err(io::Error::other)
                             },
                         );
+                        connecting.store(false, Ordering::Release);
                         let association = match association {
                             Ok(association) => association,
                             Err(_) => {
@@ -521,6 +540,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .map_err(|error| {
                             io::Error::other(format!("issue route receipt: {error:?}"))
                         })?;
+                    connecting.store(true, Ordering::Release);
                     let helper = connect_authenticated_socks5_with_hook(
                         proxy,
                         flow.tuple.remote,
@@ -543,6 +563,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 .map_err(io::Error::other)
                         },
                     );
+                    connecting.store(false, Ordering::Release);
                     let helper = match helper {
                         Ok(helper) => helper,
                         Err(_) => {
@@ -645,18 +666,28 @@ impl DirectPacketRuntime {
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
+        let connecting = Arc::new(AtomicBool::new(false));
         let route_context = context.clone();
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let handle = Arc::clone(&handle);
+            let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
+            let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             thread::Builder::new()
                 .name("fragcap-direct-receive".into())
                 .spawn(move || {
-                    let result =
-                        receive_packets(Arc::clone(&handle), sender, selected, excluded, stats);
+                    let result = receive_packets(
+                        Arc::clone(&handle),
+                        sender,
+                        observer,
+                        selected,
+                        excluded,
+                        connecting,
+                        stats,
+                    );
                     if result.is_err() {
                         let _ = handle.stop();
                     }
@@ -668,6 +699,7 @@ impl DirectPacketRuntime {
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
+            let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             let launched = thread::Builder::new()
                 .name("fragcap-direct-process".into())
@@ -679,6 +711,7 @@ impl DirectPacketRuntime {
                         context,
                         selected,
                         excluded,
+                        connecting,
                         stats,
                         session_id,
                         proxy,
