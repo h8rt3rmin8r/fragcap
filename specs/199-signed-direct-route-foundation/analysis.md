@@ -1,7 +1,7 @@
 # Spec-Kit Analysis: S199
 
 **Date**: 2026-11-09
-**State**: Initial implementation and local gate passed; first hosted audit and package runs identified repairs in progress.
+**State**: Implementation, local gates and exact-head CI passed; final review pending.
 
 ## Coverage
 
@@ -56,4 +56,15 @@ acquisition, release build, evidence generation and package assembly. Lifecycle
 certification then found that its new Doctor filter had not parsed JSON Lines.
 The filter now parses each record before checking exact component readiness;
 a local Doctor fixture containing the official component returned one `ok`
-record. The hosted lifecycle rerun remains the completion gate.
+record. The subsequent hosted lifecycle rerun passed.
+
+## Exact-head gate result
+
+Commit `1f05655` passed local `cargo xtask ci`, the Rust 1.89 MSRV build,
+read-only exact-component Doctor fixture, PowerShell syntax, UTF-8/mojibake
+sanity and `git diff --check`. All 25 passing hosted checks include the patched
+advisory audit, isolated short campaigns, published v0.10.14 replay, and
+[Windows package certification](https://github.com/h8rt3rmin8r/fragcap/actions/runs/42754230302)
+with MSI/ZIP assembly and final-byte lifecycle validation. The optional second
+Codex review round remains before owner handoff. A real target's direct route
+and anti-cheat compatibility remain outside S199 and unverified.
