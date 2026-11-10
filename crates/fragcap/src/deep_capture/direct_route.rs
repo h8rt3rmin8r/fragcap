@@ -406,6 +406,18 @@ impl DirectPacketAccounting {
         Ok(())
     }
 
+    /// After both route workers have ended, queued delivered packets that
+    /// never reached a terminal action are explicit fatal-path losses.
+    pub fn lose_unfinished(&mut self) -> Result<u64, AccountingError> {
+        let unfinished = self.in_flight;
+        self.lost = self
+            .lost
+            .checked_add(unfinished)
+            .ok_or(AccountingError::CounterOverflow)?;
+        self.in_flight = 0;
+        Ok(unfinished)
+    }
+
     pub fn release(&self) -> Result<(), AccountingError> {
         let settled = self
             .reinjected
@@ -844,5 +856,10 @@ mod tests {
             counts.received,
             counts.reinjected + counts.consumed + counts.lost
         );
+        counts.receive().unwrap();
+        counts.receive().unwrap();
+        assert_eq!(counts.lose_unfinished(), Ok(2));
+        assert_eq!(counts.lost, 3);
+        assert_eq!(counts.release(), Ok(()));
     }
 }

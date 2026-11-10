@@ -56,7 +56,7 @@ pub struct DirectRuntimeStats {
 struct SharedStats {
     started: Instant,
     packets: Mutex<DirectPacketAccounting>,
-    oldest_pending_ms: AtomicU64,
+    processor_progress_ms: AtomicU64,
     watchdog_released: AtomicBool,
     stop_watchdog: AtomicBool,
     admission_busy_bypassed: AtomicU64,
@@ -71,7 +71,7 @@ impl SharedStats {
         Self {
             started: Instant::now(),
             packets: Mutex::new(DirectPacketAccounting::default()),
-            oldest_pending_ms: AtomicU64::new(0),
+            processor_progress_ms: AtomicU64::new(1),
             watchdog_released: AtomicBool::new(false),
             stop_watchdog: AtomicBool::new(false),
             admission_busy_bypassed: AtomicU64::new(0),
@@ -83,35 +83,38 @@ impl SharedStats {
     }
 
     fn stalled_packet(&self, now_ms: u64) -> bool {
-        let pending = self.oldest_pending_ms.load(Ordering::Acquire);
-        pending != 0 && now_ms.saturating_sub(pending) >= 100
+        self.packets
+            .lock()
+            .expect("route accounting lock")
+            .in_flight
+            != 0
+            && now_ms.saturating_sub(self.processor_progress_ms.load(Ordering::Acquire)) >= 100
+    }
+
+    fn processor_progress(&self) {
+        self.processor_progress_ms.store(
+            self.started.elapsed().as_millis() as u64 + 1,
+            Ordering::Release,
+        );
     }
 }
 
 fn packet_received(stats: &SharedStats) -> io::Result<()> {
-    let mut accounting = stats.packets.lock().expect("route accounting lock");
-    let first = accounting.in_flight == 0;
-    accounting
+    stats
+        .packets
+        .lock()
+        .expect("route accounting lock")
         .receive()
-        .map_err(|error| io::Error::other(format!("packet receive accounting: {error:?}")))?;
-    if first {
-        stats.oldest_pending_ms.store(
-            stats.started.elapsed().as_millis() as u64 + 1,
-            Ordering::Release,
-        );
-    }
-    Ok(())
+        .map_err(|error| io::Error::other(format!("packet receive accounting: {error:?}")))
 }
 
 fn packet_finished(stats: &SharedStats, disposition: PacketDisposition) -> io::Result<()> {
-    let mut accounting = stats.packets.lock().expect("route accounting lock");
-    accounting
+    stats
+        .packets
+        .lock()
+        .expect("route accounting lock")
         .finish(disposition)
-        .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))?;
-    if accounting.in_flight == 0 {
-        stats.oldest_pending_ms.store(0, Ordering::Release);
-    }
-    Ok(())
+        .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))
 }
 
 fn reinject(
@@ -248,6 +251,7 @@ fn process_packets(
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
     let mut helper_id = 0u64;
     loop {
+        stats.processor_progress();
         match receiver.recv_timeout(Duration::from_millis(1)) {
             Ok(WorkPacket::Candidate(head, packet, address)) => {
                 let now_ns = started.elapsed().as_nanos() as u64;
@@ -560,7 +564,23 @@ impl DirectPacketRuntime {
                 first_error.get_or_insert(error);
             }
         }
-        let packets = *self.stats.packets.lock().expect("route accounting lock");
+        let packets = {
+            let mut accounting = self.stats.packets.lock().expect("route accounting lock");
+            match accounting.lose_unfinished() {
+                Ok(0) => {}
+                Ok(unfinished) => {
+                    first_error.get_or_insert(io::Error::other(format!(
+                        "{unfinished} delivered packets lost after worker exit"
+                    )));
+                }
+                Err(error) => {
+                    first_error.get_or_insert(io::Error::other(format!(
+                        "fatal packet accounting overflow: {error:?}"
+                    )));
+                }
+            }
+            *accounting
+        };
         if let Err(error) = packets.release() {
             first_error.get_or_insert(io::Error::other(format!(
                 "unfinished direct packets: {error:?}"
@@ -612,13 +632,15 @@ mod tests {
     use crate::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
 
     #[test]
-    fn watchdog_checks_oldest_unfinished_packet_only() {
+    fn watchdog_requires_unfinished_packet_and_stalled_processor() {
         let stats = SharedStats::new();
         assert!(!stats.stalled_packet(1_000));
         packet_received(&stats).unwrap();
-        stats.oldest_pending_ms.store(10, Ordering::Release);
+        stats.processor_progress_ms.store(10, Ordering::Release);
         assert!(!stats.stalled_packet(109));
         assert!(stats.stalled_packet(110));
+        stats.processor_progress_ms.store(105, Ordering::Release);
+        assert!(!stats.stalled_packet(110));
         packet_finished(&stats, PacketDisposition::Reinjected).unwrap();
         assert!(!stats.stalled_packet(1_000));
         stats.packets.lock().unwrap().release().unwrap();

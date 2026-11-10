@@ -169,13 +169,26 @@ pub fn connect_authenticated_socks5(
     password: &[u8],
     timeout: Duration,
 ) -> io::Result<TcpStream> {
+    if original.ip().is_unspecified() || original.port() == 0 {
+        return Err(refused("invalid direct bridge scope"));
+    }
+    let mut stream = authenticate_socks5(proxy, password, timeout)?;
+    let request = socks5_request(1, original);
+    stream.write_all(&request)?;
+    read_socks5_reply(&mut stream)?;
+    Ok(stream)
+}
+
+pub(super) fn authenticate_socks5(
+    proxy: SocketAddr,
+    password: &[u8],
+    timeout: Duration,
+) -> io::Result<TcpStream> {
     if password.is_empty()
         || password.len() > u8::MAX as usize
         || PROXY_USERNAME.len() > u8::MAX as usize
         || timeout.is_zero()
         || !proxy.ip().is_loopback()
-        || original.ip().is_unspecified()
-        || original.port() == 0
     {
         return Err(refused("invalid direct bridge scope"));
     }
@@ -203,20 +216,26 @@ pub fn connect_authenticated_socks5(
     if authenticated != [1, 0] {
         return Err(refused("native proxy refused direct bridge capability"));
     }
+    Ok(stream)
+}
 
+pub(super) fn socks5_request(command: u8, original: SocketAddr) -> Vec<u8> {
     let mut request = Vec::with_capacity(22);
     match original {
         SocketAddr::V4(address) => {
-            request.extend_from_slice(&[5, 1, 0, 1]);
+            request.extend_from_slice(&[5, command, 0, 1]);
             request.extend_from_slice(&address.ip().octets());
         }
         SocketAddr::V6(address) => {
-            request.extend_from_slice(&[5, 1, 0, 4]);
+            request.extend_from_slice(&[5, command, 0, 4]);
             request.extend_from_slice(&address.ip().octets());
         }
     }
     request.extend_from_slice(&original.port().to_be_bytes());
-    stream.write_all(&request)?;
+    request
+}
+
+pub(super) fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<SocketAddr> {
     let mut reply = [0; 4];
     stream.read_exact(&mut reply)?;
     if reply[0] != 5 || reply[1] != 0 || reply[2] != 0 {
@@ -229,7 +248,18 @@ pub fn connect_authenticated_socks5(
     };
     let mut address = [0; 18];
     stream.read_exact(&mut address[..remaining])?;
-    Ok(stream)
+    let port = u16::from_be_bytes([address[remaining - 2], address[remaining - 1]]);
+    let ip = match reply[3] {
+        1 => std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+            address[0], address[1], address[2], address[3],
+        )),
+        4 => {
+            let octets: [u8; 16] = address[..16].try_into().expect("fixed IPv6 reply length");
+            std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets))
+        }
+        _ => unreachable!("validated SOCKS address family"),
+    };
+    Ok(SocketAddr::new(ip, port))
 }
 
 #[cfg(test)]
