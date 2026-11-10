@@ -39,6 +39,9 @@ const CANDIDATE_WAIT_NS: u64 = 10_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 
+#[cfg(test)]
+static STALL_NEXT_CANDIDATE: AtomicBool = AtomicBool::new(false);
+
 fn unix_now_ns() -> io::Result<u64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -324,6 +327,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         stats.processor_progress();
         match receiver.recv_timeout(Duration::from_millis(1)) {
             Ok(WorkPacket::Candidate(head, packet, address)) => {
+                #[cfg(test)]
+                if STALL_NEXT_CANDIDATE.swap(false, Ordering::AcqRel) {
+                    thread::sleep(Duration::from_millis(150));
+                }
                 let now_ns = started.elapsed().as_nanos() as u64;
                 if let Err(pending) = candidates.enqueue(head, packet, address, now_ns) {
                     stats
@@ -1108,6 +1115,82 @@ mod tests {
         packet_finished(&stats, PacketDisposition::Reinjected).unwrap();
         assert!(!stats.stalled_packet(1_000));
         stats.packets.lock().unwrap().release().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_stalled_worker_releases_broad_handle() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let mut child = spawn_client("tcp", original);
+        let context = client_context(child.id());
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_session_id("s200-stalled-worker")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut lease = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )))
+            .start(Duration::from_secs(2))
+            .unwrap();
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-stalled-worker".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        STALL_NEXT_CANDIDATE.store(true, Ordering::Release);
+        release_client(&mut child);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.stats.watchdog_released.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "watchdog did not release stalled handle"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let error = runtime.stop().unwrap_err();
+        assert!(error.to_string().contains("watchdog_released: true"));
+        runtime.stats.packets.lock().unwrap().release().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(origin);
+        lease.cleanup(Duration::from_secs(2));
+
+        let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sentinel_address = sentinel.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = sentinel.accept().unwrap();
+            let mut bytes = [0; 4];
+            stream.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"post");
+            stream.write_all(b"pass").unwrap();
+        });
+        let mut client =
+            TcpStream::connect_timeout(&sentinel_address, Duration::from_secs(2)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client.write_all(b"post").unwrap();
+        let mut reply = [0; 4];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"pass");
+        server.join().unwrap();
     }
 
     #[test]
