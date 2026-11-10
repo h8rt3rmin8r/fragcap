@@ -360,11 +360,7 @@ mod tests {
         let api = Api::load_verified(Path::new(&root)).expect("load verified component");
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let destination = listener.local_addr().unwrap();
-        let socket_filter = format!(
-            "processId == {} and event == CONNECT and remotePort == {}",
-            std::process::id(),
-            destination.port()
-        );
+        let socket_filter = format!("processId == {} and event == CONNECT", std::process::id());
         let socket = Arc::new(
             api.open(&socket_filter, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)
                 .expect("open nonblocking socket observer"),
@@ -376,6 +372,16 @@ mod tests {
             let mut empty = [];
             let mut event = Address::default();
             socket_for_thread.recv(&mut empty, &mut event)?;
+            let details = event
+                .socket()
+                .ok_or_else(|| io::Error::other("missing socket data"))?;
+            eprintln!(
+                "direct-route narrow event: qpc={}, local_port={}, remote_port={}, desired_remote={}",
+                event.timestamp_qpc,
+                details.local_port,
+                details.remote_port,
+                destination.port()
+            );
             let filter = format!(
                 "loopback and tcp.Syn and tcp.DstPort == {}",
                 destination.port()
@@ -383,6 +389,7 @@ mod tests {
             let handle = Arc::new(api.open(&filter, NETWORK_LAYER, 0)?);
             handle.set_queue(4096, 2000, 4_194_304)?;
             *narrow_for_thread.lock().unwrap() = Some(Arc::clone(&handle));
+            eprintln!("direct-route narrow handle opened after event");
             let mut packet = [0u8; 65_535];
             let mut address = Address::default();
             let received = handle.recv(&mut packet, &mut address)?;
@@ -400,9 +407,14 @@ mod tests {
         assert_eq!(&received, b"narrow-route-probe");
         thread::sleep(Duration::from_millis(500));
         let _ = socket.stop();
+        let opened = narrow.lock().unwrap().is_some();
         if let Some(handle) = narrow.lock().unwrap().as_ref() {
             let _ = handle.stop();
         }
+        assert!(
+            opened,
+            "the PID-bearing socket event did not open a narrow handle"
+        );
         let (socket_qpc, syn_qpc) = worker
             .join()
             .unwrap()

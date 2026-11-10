@@ -22,6 +22,8 @@ Microsoft's ALE connect-redirection model can select a specific connection and p
 
 The narrow-handle event timing may cause a high bypass rate for short-lived sockets. The disposable Windows matrix, not a paper design, decides whether the selected adapter meets #581 and #582. If no positive raw-socket flow can be established without broad unrelated disruption, the S200 gate is red and the route cannot be offered as complete. That outcome would require an explicit architecture decision rather than an invented success claim.
 
+The first [disposable Windows probe](https://github.com/h8rt3rmin8r/fragcap/actions/runs/42765103032) confirmed a nonblocking SOCKET observer, a completing loopback connection, and event timestamp 4212672243 before SYN timestamp 4212672831 (588 QueryPerformanceCounter ticks). It did not prove that a new exact NETWORK handle can open within that interval. The follow-up probe must divert and reinject the initial SYN after opening its handle in response to the event.
+
 ## Decision 5: Report the WinDivert driver queue limit
 
 The owner approved keeping WinDivert with explicit uncertainty. WinDivert can lose packets in its kernel queue before `WinDivertRecv` returns them and provides no exact pre-receive drop counter. Adapter accounting is therefore exact only for delivered packets. The product must surface the pre-receive count as unmeasurable, and the controlled original-flow oracle plus active sentinels must show zero observed missing replies or unexplained loss. This is a documented change to FR-006 and SC-003, not a proof that no kernel-queue drop occurred.
