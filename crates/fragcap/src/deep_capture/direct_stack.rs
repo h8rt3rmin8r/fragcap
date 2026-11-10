@@ -310,6 +310,9 @@ mod tests {
             client_iface.poll(at, &mut client_device, &mut client_sockets);
             while let Some(packet) = client_device.pop_egress() {
                 server.ingest(&packet, now).unwrap();
+                // Deliver an exact duplicate to prove TCP retransmission does
+                // not duplicate bytes at the bridge boundary.
+                server.ingest(&packet, now).unwrap();
             }
             server.poll(now);
             while let Some(packet) = server.pop_egress() {
@@ -318,6 +321,7 @@ mod tests {
             let client = client_sockets.get_mut::<tcp::Socket>(handle);
             if !sent_client && client.can_send() {
                 assert_eq!(client.send_slice(b"client raw bytes").unwrap(), 16);
+                client.close();
                 sent_client = true;
             }
             let mut bytes = [0; 32];
@@ -329,6 +333,7 @@ mod tests {
             received_server.extend_from_slice(&bytes[..count]);
             if !sent_server && received_server == b"client raw bytes" {
                 assert_eq!(server.send_bytes(b"server reply", now), 12);
+                server.close_send(now);
                 sent_server = true;
             }
             if received_client == b"server reply" {

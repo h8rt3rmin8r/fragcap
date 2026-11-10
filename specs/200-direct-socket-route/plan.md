@@ -12,7 +12,7 @@ Build the controlled raw-socket and unrelated-traffic oracle first, then add a s
 
 **Language/Version**: Rust MSRV 1.89, pinned development Rust 1.96; Windows 11 x64.
 
-**Primary Dependencies**: Packaged official signed WinDivert 2.2.2-A x64, existing native proxy and Windows APIs, and exact-reviewed `smoltcp` 0.12.0 plus `managed` 0.8.0 if the packet-to-stream design passes the explicit license and supply-chain approval gate.
+**Primary Dependencies**: Packaged official signed WinDivert 2.2.2-A x64, existing native proxy and Windows APIs, and the owner-approved exact `smoltcp` 0.12.0 plus transitive `managed` 0.8.0 exception.
 
 **Storage**: Existing bounded proxy/application, cleanup and manifest artifacts; additive route-receipt and original-flow evidence contracts only.
 
@@ -48,7 +48,7 @@ Build the controlled raw-socket and unrelated-traffic oracle first, then add a s
 
 1. Freeze the fixture oracle, route dispositions, receipt contract, and security/uncertainty cases in driver-free tests.
 2. Review and pin the packet-stack dependency or prove a smaller equivalent; enforce exact supply-chain and MSRV compatibility.
-3. Add the pre-effect direct component and socket observer. Open signed WinDivert dynamically only after authorization and close every handle on all exits.
+3. Add the pre-effect direct component and socket observer. Bind the existing destination admission policy in the plan, then bind each flow's exact original destination before diversion. Open signed WinDivert dynamically only after authorization and close every handle on all exits.
 4. Add narrow TCP and UDP packet admission, bounded queues, packet accounting, cancellation and exact original-flow proof.
 5. Bridge selected streams and associations through authenticated native proxy admission, preserve trusted original owner and actual protocol outcomes.
 6. Run the full disposable Windows matrix with live direct clients and active unrelated sentinels. Repair every failure before claiming #578/#581/#582.

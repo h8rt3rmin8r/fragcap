@@ -342,4 +342,72 @@ mod tests {
             "socket event followed the first SYN"
         );
     }
+
+    /// The network handle opens only after the PID-bearing SOCKET event.
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_narrow_handle_catches_and_reinjects_initial_syn() {
+        use std::{
+            io::{Read, Write},
+            net::{Ipv4Addr, TcpListener, TcpStream},
+            sync::Mutex,
+            thread,
+            time::Duration,
+        };
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let api = Api::load_verified(Path::new(&root)).expect("load verified component");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let destination = listener.local_addr().unwrap();
+        let socket_filter = format!(
+            "processId == {} and event == CONNECT and remotePort == {}",
+            std::process::id(),
+            destination.port()
+        );
+        let socket = Arc::new(
+            api.open(&socket_filter, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)
+                .expect("open nonblocking socket observer"),
+        );
+        let narrow = Arc::new(Mutex::new(None::<Arc<Handle>>));
+        let narrow_for_thread = Arc::clone(&narrow);
+        let socket_for_thread = Arc::clone(&socket);
+        let worker = thread::spawn(move || -> io::Result<(i64, i64)> {
+            let mut empty = [];
+            let mut event = Address::default();
+            socket_for_thread.recv(&mut empty, &mut event)?;
+            let filter = format!(
+                "loopback and tcp.Syn and tcp.DstPort == {}",
+                destination.port()
+            );
+            let handle = Arc::new(api.open(&filter, NETWORK_LAYER, 0)?);
+            handle.set_queue(4096, 2000, 4_194_304)?;
+            *narrow_for_thread.lock().unwrap() = Some(Arc::clone(&handle));
+            let mut packet = [0u8; 65_535];
+            let mut address = Address::default();
+            let received = handle.recv(&mut packet, &mut address)?;
+            let sent = handle.send(&packet[..received], &address)?;
+            assert_eq!(sent, received);
+            Ok((event.timestamp_qpc, address.timestamp_qpc))
+        });
+
+        let mut client = TcpStream::connect_timeout(&destination, Duration::from_secs(5))
+            .expect("the selected SYN must be reinjected or bypass cleanly");
+        let (mut server, _) = listener.accept().unwrap();
+        client.write_all(b"narrow-route-probe").unwrap();
+        let mut received = [0u8; 18];
+        server.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"narrow-route-probe");
+        thread::sleep(Duration::from_millis(500));
+        let _ = socket.stop();
+        if let Some(handle) = narrow.lock().unwrap().as_ref() {
+            let _ = handle.stop();
+        }
+        let (socket_qpc, syn_qpc) = worker
+            .join()
+            .unwrap()
+            .expect("narrow first SYN was received");
+        eprintln!("direct-route narrow timing: socket_qpc={socket_qpc}, syn_qpc={syn_qpc}");
+        assert!(socket_qpc <= syn_qpc);
+    }
 }

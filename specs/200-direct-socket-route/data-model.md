@@ -6,7 +6,7 @@ An existing managed process instance supplies PID, creation instant, canonical p
 
 ## Original flow key
 
-`(transport, address family, original local IP and port, original remote IP and port, process generation, session)` uniquely names a selected connection or UDP association. Endpoint reuse creates a new generation and receipt. The key is immutable after first positive admission.
+`(transport, address family, original local IP and port, original remote IP and port, process generation, session)` uniquely names a selected connection or UDP association. The pre-effect plan owns the applicable destination admission policy; each flow is checked against it and fixes the exact original destination before packet diversion. Endpoint reuse creates a new generation and receipt. The key is immutable after first positive admission.
 
 ## Socket event and packet observation
 

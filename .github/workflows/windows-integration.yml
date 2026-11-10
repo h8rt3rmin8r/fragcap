@@ -75,7 +75,7 @@ jobs:
 
       - name: Probe direct socket event timing on disposable runner
         shell: pwsh
-        run: cargo test --locked -p fragcap --features direct-route disposable_socket_event_precedes_loopback_syn --lib -- --ignored --nocapture
+        run: cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1
 
       - name: Run complete hosted matrix
         run: cargo xtask windows-integration --run hosted --binary target\windows-integration\stage\fragcap.exe --report target\windows-integration\hosted.jsonl

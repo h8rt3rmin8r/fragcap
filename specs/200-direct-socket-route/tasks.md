@@ -13,7 +13,7 @@
 ## Phase 2: Foundational ownership and admission
 
 - [ ] T004 [US1] Write failing driver-free cases in `crates/fragcap/tests/` for exact final-client generation, chain ancestry, initial TCP SYN, delayed and missing socket events, PID/port reuse, ambiguous owner and unrelated same-destination sockets.
-- [ ] T005 [US1] Implement an immutable direct component in `crates/fragcap/src/deep_capture/routing.rs` with explicit pre-effect authorization, Administrator prerequisite, scoped final-client selection and independent child-environment route effects.
+- [ ] T005 [US1] Implement an immutable direct component in `crates/fragcap/src/deep_capture/routing.rs` with explicit pre-effect authorization, Administrator prerequisite, scoped final-client selection, destination admission policy, and independent child-environment route effects; bind each flow's exact original destination before diversion.
 - [ ] T006 [US1] Implement bounded original-flow, packet-disposition and one-use route-receipt types in `crates/fragcap/src/deep_capture/`, with session and tuple binding, expiry, replay refusal, and exact terminal accounting.
 - [ ] T007 [US2] Write failing security cases for cross-session receipt replay, helper PID substitution, unknown-owner promotion, duplicate flow admission, proxy recursion and unrelated artifact contamination.
 
@@ -49,7 +49,7 @@
 ## Phase 6: Full gate and handoff
 
 - [ ] T022 Run all required driver-free and disposable Windows rows with zero skips and compare the exact oracle and sentinel metrics.
-- [ ] T023 Reconcile the master specification, plan index, security inventory, dependency review, operator truth and dated changelog; run a second Spec-Kit analysis and resolve every finding.
+- [ ] T023 Reconcile the master specification, glossary entries, plan index, security inventory, dependency review, operator truth and dated changelog; run a second Spec-Kit analysis and resolve every finding.
 - [ ] T024 Run `cargo xtask ci`, applicable Windows, supply-chain and documentation gates and exact-head hosted CI; repair failures and verify UTF-8 without BOM or mojibake.
 - [ ] T025 Commit the complete slice, push `codex/s200-direct-socket-route`, open the official PR with issue closures, respond to every CI/review finding, request at most one second `@Codex` review, then hand the green PR to the owner for final review and merge.
 
