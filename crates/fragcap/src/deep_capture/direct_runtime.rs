@@ -373,6 +373,65 @@ struct ProcessRuntimeInputs {
     max_flows: usize,
 }
 
+struct ActiveFlows<'a> {
+    tcp: &'a mut BTreeMap<DirectTuple, ActiveTcp>,
+    udp: &'a mut BTreeMap<DirectTuple, ActiveUdp>,
+}
+
+fn forward_active_packet(
+    tuple: DirectTuple,
+    packet: &[u8],
+    address: Address,
+    flows: ActiveFlows<'_>,
+    handle: &Handle,
+    stats: &SharedStats,
+    started: Instant,
+) -> io::Result<bool> {
+    if tuple.transport == Proto::Udp {
+        let Some(flow) = flows.udp.get_mut(&tuple) else {
+            return Ok(false);
+        };
+        let datagram = match raw_udp_datagram(packet) {
+            Ok(datagram)
+                if datagram.source == tuple.local && datagram.destination == tuple.remote =>
+            {
+                datagram
+            }
+            _ => {
+                packet_finished(stats, PacketDisposition::Lost)?;
+                return Err(io::Error::other(
+                    "selected UDP packet invalid or tuple changed",
+                ));
+            }
+        };
+        if let Err(error) = flow.association.send(datagram.payload) {
+            packet_finished(stats, PacketDisposition::Lost)?;
+            return Err(io::Error::other(format!("selected UDP relay: {error}")));
+        }
+        packet_finished(stats, PacketDisposition::Consumed)?;
+        flow.address = address;
+        return Ok(true);
+    }
+    let Some(flow) = flows.tcp.get_mut(&tuple) else {
+        return Ok(false);
+    };
+    let replies = match flow.bridge.ingest_diverted(
+        packet,
+        address.ip_checksum_valid(),
+        started.elapsed().as_millis() as i64,
+    ) {
+        Ok(replies) => replies,
+        Err(error) => {
+            packet_finished(stats, PacketDisposition::Lost)?;
+            return Err(io::Error::other(format!("selected TCP bridge: {error}")));
+        }
+    };
+    packet_finished(stats, PacketDisposition::Consumed)?;
+    flow.address = address;
+    inject_replies(handle, stats, replies, address)?;
+    Ok(true)
+}
+
 fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let ProcessRuntimeInputs {
         receiver,
@@ -432,52 +491,20 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 }
             }
             Ok(WorkPacket::Selected(tuple, packet, address)) => {
-                if tuple.transport == Proto::Udp {
-                    let Some(flow) = active_udp.get_mut(&tuple) else {
-                        reinject(&handle, &stats, &packet, &address)?;
-                        continue;
-                    };
-                    let datagram = match raw_udp_datagram(&packet) {
-                        Ok(datagram)
-                            if datagram.source == tuple.local
-                                && datagram.destination == tuple.remote =>
-                        {
-                            datagram
-                        }
-                        _ => {
-                            packet_finished(&stats, PacketDisposition::Lost)?;
-                            return Err(io::Error::other(
-                                "selected UDP packet invalid or tuple changed",
-                            ));
-                        }
-                    };
-                    if let Err(error) = flow.association.send(datagram.payload) {
-                        packet_finished(&stats, PacketDisposition::Lost)?;
-                        return Err(io::Error::other(format!("selected UDP relay: {error}")));
-                    }
-                    packet_finished(&stats, PacketDisposition::Consumed)?;
-                    flow.address = address;
-                    continue;
-                }
-                let Some(flow) = active.get_mut(&tuple) else {
+                if !forward_active_packet(
+                    tuple,
+                    &packet,
+                    address,
+                    ActiveFlows {
+                        tcp: &mut active,
+                        udp: &mut active_udp,
+                    },
+                    &handle,
+                    &stats,
+                    started,
+                )? {
                     reinject(&handle, &stats, &packet, &address)?;
-                    continue;
-                };
-                let now_ms = started.elapsed().as_millis() as i64;
-                let replies =
-                    match flow
-                        .bridge
-                        .ingest_diverted(&packet, address.ip_checksum_valid(), now_ms)
-                    {
-                        Ok(replies) => replies,
-                        Err(error) => {
-                            packet_finished(&stats, PacketDisposition::Lost)?;
-                            return Err(io::Error::other(format!("selected TCP bridge: {error}")));
-                        }
-                    };
-                packet_finished(&stats, PacketDisposition::Consumed)?;
-                flow.address = address;
-                inject_replies(&handle, &stats, replies, address)?;
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 for decision in candidates.drain() {
@@ -601,6 +628,32 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     {
                         stats.record_bypass("proxy-refused-flow");
                         reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    }
+                    let active_endpoint = if flow.tuple.transport == Proto::Udp {
+                        active_udp
+                            .get(&flow.tuple)
+                            .map(|existing| existing.endpoint_id)
+                    } else {
+                        active.get(&flow.tuple).map(|existing| existing.endpoint_id)
+                    };
+                    if let Some(endpoint_id) = active_endpoint {
+                        let forwarded = endpoint_id == flow.endpoint_id
+                            && forward_active_packet(
+                                flow.tuple,
+                                &packet,
+                                address,
+                                ActiveFlows {
+                                    tcp: &mut active,
+                                    udp: &mut active_udp,
+                                },
+                                &handle,
+                                &stats,
+                                started,
+                            )?;
+                        if !forwarded {
+                            reinject(&handle, &stats, &packet, &address)?;
+                        }
                         continue;
                     }
                     if active.len().saturating_add(active_udp.len()) >= max_flows {
@@ -1446,6 +1499,25 @@ mod tests {
             let mut response = [0u8; 128];
             let length = client.recv(&mut response).unwrap();
             assert_eq!(&response[..length], b"runtime-udp-reply");
+        } else if protocol == "udp-burst" {
+            let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
+            client.connect(original).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            for ordinal in 0..3 {
+                client.send(format!("burst-{ordinal}").as_bytes()).unwrap();
+            }
+            let mut received = BTreeSet::new();
+            for _ in 0..3 {
+                let mut response = [0u8; 64];
+                let length = client.recv(&mut response).unwrap();
+                received.insert(String::from_utf8(response[..length].to_vec()).unwrap());
+            }
+            assert_eq!(
+                received,
+                BTreeSet::from(["burst-0".into(), "burst-1".into(), "burst-2".into()])
+            );
         } else if protocol == "udp-reuse" {
             let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
             let local = client.local_addr().unwrap();
@@ -1811,7 +1883,10 @@ mod tests {
         assert_eq!(
             bridged.len(),
             3,
-            "only the final client may enter the bridge"
+            "only the final client may enter the bridge: owners={bridged:?}, packets={:?}, bypass={:?}, socket={:?}",
+            runtime.stats.packets.lock().unwrap(),
+            runtime.stats.bypass_reasons.lock().unwrap(),
+            runtime.observer.lock().unwrap().stats(),
         );
         for flow in &bridged {
             assert_eq!(flow.pid, client);
@@ -2554,6 +2629,57 @@ mod tests {
     fn disposable_direct_runtime_routes_udp_datagram() {
         live_udp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
         live_udp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_selected_udp_burst_reuses_one_association() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+        origin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let mut body = [0u8; 64];
+                let (length, peer) = origin.recv_from(&mut body).unwrap();
+                origin.send_to(&body[..length], peer).unwrap();
+            }
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-udp-burst")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
+        let mut lease = proxy.start(Duration::from_secs(3)).unwrap();
+        let mut child = spawn_client("udp-burst", original);
+        let context = client_context(child.id());
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-direct-udp-burst".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        let stats = runtime.stop().unwrap();
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(3));
+        assert_eq!(stats.packets.lost, 0);
+        assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 1);
+        assert_eq!(report.observation.protocol.socks_udp_client_forwarded, 3);
     }
 
     #[test]

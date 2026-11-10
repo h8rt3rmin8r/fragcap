@@ -176,11 +176,24 @@ pub(crate) async fn connect_verified_tls(
     limits: ProtocolLimits,
     config: Arc<ClientConfig>,
 ) -> Result<BoundedTlsUpstreamStream, ProtocolError> {
-    crate::connect_tls_upstream(&authority, &policy, limits.upstream, config)
+    connect_verified_tls_to_destination(authority.clone(), authority, policy, limits, config).await
+}
+
+pub(crate) async fn connect_verified_tls_to_destination(
+    destination: DestinationAuthority,
+    tls_identity: DestinationAuthority,
+    policy: DestinationPolicy,
+    limits: ProtocolLimits,
+    config: Arc<ClientConfig>,
+) -> Result<BoundedTlsUpstreamStream, ProtocolError> {
+    let upstream = crate::upstream::connect_upstream(&destination, &policy, limits.upstream)
         .await
         .map_err(|error| {
             let mut protocol = ProtocolError::new(error.code, error.detail);
             protocol.policy_refused = matches!(error.stage, UpstreamStage::Policy);
             protocol
-        })
+        })?;
+    crate::upstream::connect_tls_over_upstream(&tls_identity, upstream, limits.upstream, config)
+        .await
+        .map_err(|error| ProtocolError::new(error.code, error.detail))
 }

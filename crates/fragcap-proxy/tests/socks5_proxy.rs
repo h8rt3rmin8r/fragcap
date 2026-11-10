@@ -309,10 +309,10 @@ fn uninspected_direct_owner_tls_stays_opaque_and_reaches_origin() {
 }
 
 #[test]
-fn direct_owner_socks_tls_uses_verified_native_https_engine() {
+fn direct_owner_socks_tls_reconnects_to_original_ip_with_dns_identity() {
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
-    let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let generated = rcgen::generate_simple_self_signed(vec!["game.invalid".to_string()]).unwrap();
     let origin_certificate = CertificateDer::from(generated.cert);
     let origin_key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -326,19 +326,29 @@ fn direct_owner_socks_tls_uses_verified_native_https_engine() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = origin.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = origin.accept().unwrap();
-        let connection = rustls::ServerConnection::new(Arc::new(origin_config)).unwrap();
-        let mut tls = rustls::StreamOwned::new(connection, tcp);
-        let mut head = Vec::new();
-        while !head.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            tls.read_exact(&mut byte).unwrap();
-            head.push(byte[0]);
-        }
-        assert!(head.starts_with(b"GET /direct-tls HTTP/1.1\r\n"));
-        tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nTLS")
+        let config = Arc::new(origin_config);
+        for ordinal in 1..=2 {
+            let (tcp, _) = origin.accept().unwrap();
+            let connection = rustls::ServerConnection::new(Arc::clone(&config)).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, tcp);
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                tls.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            assert!(head.starts_with(format!("GET /direct-tls-{ordinal} HTTP/1.1\r\n").as_bytes()));
+            assert!(head
+                .windows(b"Host: game.invalid".len())
+                .any(|part| part == b"Host: game.invalid"));
+            let connection = if ordinal == 2 { "close" } else { "keep-alive" };
+            write!(
+                tls,
+                "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: {connection}\r\n\r\nTLS"
+            )
             .unwrap();
-        tls.flush().unwrap();
+            tls.flush().unwrap();
+        }
     });
     let collector = Arc::new(Collector::default());
     let config = NativeProxyConfig::new(
@@ -372,13 +382,13 @@ fn direct_owner_socks_tls_uses_verified_native_https_engine() {
         .unwrap();
     let mut client_config = fragcap_proxy::tls_client_config_with_roots(client_roots).unwrap();
     Arc::make_mut(&mut client_config).alpn_protocols = vec![b"http/1.1".to_vec()];
-    let server_name =
-        ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into());
+    let server_name = ServerName::try_from("game.invalid").unwrap();
     let connection = rustls::ClientConnection::new(client_config, server_name).unwrap();
     let mut tls = rustls::StreamOwned::new(connection, tcp);
     write!(
         tls,
-        "GET /direct-tls HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        "GET /direct-tls-1 HTTP/1.1\r\nHost: game.invalid:{}\r\nConnection: keep-alive\r\n\r\nGET /direct-tls-2 HTTP/1.1\r\nHost: game.invalid:{}\r\nConnection: close\r\n\r\n",
+        address.port(),
         address.port()
     )
     .unwrap();
@@ -386,13 +396,20 @@ fn direct_owner_socks_tls_uses_verified_native_https_engine() {
     tls.read_to_end(&mut response).unwrap();
     assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with(b"TLS"));
+    assert_eq!(
+        response
+            .windows(b"HTTP/1.1 200 OK".len())
+            .filter(|part| *part == b"HTTP/1.1 200 OK")
+            .count(),
+        2
+    );
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(3));
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
     assert_eq!(report.observation.protocol.socks_tls, 1);
     assert_eq!(report.observation.protocol.client_tls_completed, 1);
     assert_eq!(report.observation.protocol.upstream_tls_completed, 1);
-    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 2);
     assert!(collector
         .0
         .lock()

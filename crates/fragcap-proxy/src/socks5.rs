@@ -648,7 +648,8 @@ pub(crate) async fn serve_socks5(
                 }
             };
         on_stage(crate::ConnectionStage::FirstRequest, true);
-        let original = authority.clone();
+        let original = request.authority.clone();
+        let tls_identity = authority.clone();
         let mut first_upstream = Some(upstream_tls);
         let mut run = serve_http(
             client_tls,
@@ -668,6 +669,7 @@ pub(crate) async fn serve_socks5(
             move |requested| {
                 let existing = first_upstream.take();
                 let original = original.clone();
+                let tls_identity = tls_identity.clone();
                 let policy = policy.clone();
                 let limits = limits.clone();
                 let upstream_config = upstream_config.clone();
@@ -681,8 +683,9 @@ pub(crate) async fn serve_socks5(
                     match existing {
                         Some(stream) => Ok(stream),
                         None => {
-                            crate::tls::connect_verified_tls(
+                            crate::tls::connect_verified_tls_to_destination(
                                 original,
+                                tls_identity,
                                 policy,
                                 limits,
                                 upstream_config,
