@@ -22,6 +22,8 @@ mod collection;
 mod diagnostics;
 #[cfg(all(windows, feature = "direct-route"))]
 mod direct_bridge;
+#[cfg(all(windows, feature = "direct-route"))]
+mod direct_observer;
 mod direct_route;
 #[cfg(all(windows, feature = "direct-route"))]
 mod direct_stack;

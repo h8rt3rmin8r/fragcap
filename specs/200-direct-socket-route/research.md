@@ -38,6 +38,8 @@ The [first live packet-to-stream probe](https://github.com/h8rt3rmin8r/fragcap/a
 
 A separate driver-free test now connects the finite packet stack to the actual native proxy through one session-authenticated SOCKS5 helper, sends a raw request to the exact original TCP destination, half-closes, and receives the exact reply. It checks the proxy's successful CONNECT and directional byte counts. This proves the mechanical stack-to-proxy bridge without WinDivert, but it does not yet bind an original process receipt into proxy correlation or run a full managed chain through the Windows driver.
 
+The [socket-tuple and QPC probe](https://github.com/h8rt3rmin8r/fragcap/actions/runs/42774537735) decoded the PID-bearing SOCKET event's IPv4-mapped address words, matched its full local and remote tuple to the actual first SYN, and sampled a bounded QPC-to-FILETIME anchor with 100,400 ns declared error in that run. The observer and packet events remained ordered in the common QPC domain. This supports exact event matching; the production observer, candidate wait, and process-generation join still require end-to-end verification.
+
 ## Decision 5: Report the WinDivert driver queue limit
 
 The owner approved keeping WinDivert with explicit uncertainty. WinDivert can lose packets in its kernel queue before `WinDivertRecv` returns them and provides no exact pre-receive drop counter. Adapter accounting is therefore exact only for delivered packets. The product must surface the pre-receive count as unmeasurable, and the controlled original-flow oracle plus active sentinels must show zero observed missing replies or unexplained loss. This is a documented change to FR-006 and SC-003, not a proof that no kernel-queue drop occurred.
