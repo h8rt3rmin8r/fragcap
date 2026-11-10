@@ -339,6 +339,9 @@ struct DirectHelperOwner {
 type DirectHelperRegistry =
     BTreeMap<(&'static str, SocketAddr, SocketAddr), Vec<DirectHelperOwner>>;
 
+#[cfg(all(windows, feature = "direct-route"))]
+const DIRECT_HELPER_ACCEPT_SLACK_NS: u64 = 50_000_000;
+
 impl NativeObservationContext {
     /// Publish only newly retained process facts during an active capture.
     /// Cloning the full event history on every ETW event would be quadratic.
@@ -463,8 +466,14 @@ impl NativeObservationContext {
             return Ok(None);
         };
         let mut matching = owners.iter().filter(|owner| {
-            owner.opened_earliest_ns.saturating_sub(5_000_000) <= opened_at_ns
-                && opened_at_ns <= owner.opened_latest_ns.saturating_add(5_000_000)
+            owner
+                .opened_earliest_ns
+                .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                <= opened_at_ns
+                && opened_at_ns
+                    <= owner
+                        .opened_latest_ns
+                        .saturating_add(DIRECT_HELPER_ACCEPT_SLACK_NS)
         });
         let Some(owner) = matching.next() else {
             return Ok(None);
@@ -628,7 +637,7 @@ mod direct_helper_tests {
             "direct-original-socket-and-managed-process-instance"
         );
         assert_eq!(
-            context.direct_helper_flow(descriptor, 6_000_000).unwrap(),
+            context.direct_helper_flow(descriptor, 100_000_000).unwrap(),
             None
         );
         assert_eq!(

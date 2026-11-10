@@ -876,7 +876,12 @@ impl DirectPacketRuntime {
         if self.receive_worker.is_some() {
             let handle = self.handle.as_ref().expect("running route handle");
             if let Err(error) = handle.stop_receiving() {
-                first_error = Some(error);
+                // A worker or watchdog may already have shut the handle down.
+                // Keep the worker's causal error instead of masking it with
+                // the resulting broken-pipe status from shutdown.
+                if error.raw_os_error() != Some(232) {
+                    first_error = Some(error);
+                }
                 let _ = handle.stop();
             }
             if let Err(error) = self
@@ -905,6 +910,11 @@ impl DirectPacketRuntime {
             if worker.join().is_err() {
                 first_error.get_or_insert(io::Error::other("direct watchdog panicked"));
             }
+        }
+        if self.stats.watchdog_released.load(Ordering::Acquire) {
+            first_error.get_or_insert(io::Error::other(
+                "watchdog released broad handle after worker stall",
+            ));
         }
         if let Err(error) = self.observer.lock().expect("socket observer lock").stop() {
             first_error.get_or_insert(error);
@@ -1008,10 +1018,10 @@ mod tests {
     use bytes::Buf;
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
     use fragcap_proxy::{
-        ApplicationEvent, ApplicationEventSink, DestinationAuthority, DestinationPolicy,
-        EventDisposition, InspectionAction, InspectionDecider, InspectionDecision,
-        InspectionReason, InspectionRequest, LeafCache, NativeProxyBackend, NativeProxyConfig,
-        ProtocolLimits,
+        ApplicationEvent, ApplicationEventSink, ApplicationSinkAccounting, DestinationAuthority,
+        DestinationPolicy, EventDisposition, InspectionAction, InspectionDecider,
+        InspectionDecision, InspectionReason, InspectionRequest, LeafCache, NativeProxyBackend,
+        NativeProxyConfig, ProtocolLimits,
     };
     use h3_quinn::Connection;
     use hyper::{Request, Response};
@@ -1025,11 +1035,22 @@ mod tests {
 
     struct UninspectedDirectOwner;
 
-    struct RetiredApplicationSink;
+    #[derive(Default)]
+    struct RetiredApplicationSink(AtomicU64);
 
     impl ApplicationEventSink for RetiredApplicationSink {
         fn try_emit(&self, _event: ApplicationEvent) -> EventDisposition {
+            self.0.fetch_add(1, Ordering::Relaxed);
             EventDisposition::Retired
+        }
+
+        fn accounting(&self) -> ApplicationSinkAccounting {
+            let attempted = self.0.load(Ordering::Relaxed);
+            ApplicationSinkAccounting {
+                attempted_events: attempted,
+                dropped_events: attempted,
+                ..ApplicationSinkAccounting::default()
+            }
         }
     }
 
@@ -1860,7 +1881,7 @@ mod tests {
                 vec!["client".into()],
             )));
         if writer_retired {
-            proxy = proxy.with_application_event_sink(Arc::new(RetiredApplicationSink));
+            proxy = proxy.with_application_event_sink(Arc::new(RetiredApplicationSink::default()));
         }
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
         let mut runtime = DirectPacketRuntime::start(
@@ -1906,6 +1927,8 @@ mod tests {
 
     fn live_inspected_tcp_case(tls: bool, opaque: bool) {
         use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+
+        eprintln!("direct TCP protocol case: tls={tls}, opaque={opaque}");
 
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
