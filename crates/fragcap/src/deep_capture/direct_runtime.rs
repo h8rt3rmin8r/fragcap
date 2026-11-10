@@ -345,7 +345,11 @@ fn process_packets(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        let new_events = observer.lock().expect("socket observer lock").take_events();
+        let mut new_events = observer.lock().expect("socket observer lock").take_events();
+        // The native proxy and its upstream sockets share fragcap's PID.
+        // They cannot be promoted to target ownership even if a test or
+        // stale process snapshot happens to name this process as a client.
+        new_events.retain(|event| event.pid != std::process::id());
         if events.len().saturating_add(new_events.len()) > SOCKET_EVENTS {
             stats.event_history_overflow.store(true, Ordering::Release);
         } else {
@@ -785,6 +789,8 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
+        os::windows::process::CommandExt,
+        process::{Child, Command, Stdio},
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -793,6 +799,100 @@ mod tests {
     use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
 
     use crate::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    fn spawn_client(protocol: &str, original: std::net::SocketAddr) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "deep_capture::direct_runtime::tests::direct_runtime_child",
+                "--nocapture",
+            ])
+            .env("FRAGCAP_S200_CHILD_PROTOCOL", protocol)
+            .env("FRAGCAP_S200_CHILD_ORIGINAL", original.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap()
+    }
+
+    fn release_client(child: &mut Child) {
+        child.stdin.as_mut().unwrap().write_all(b"g").unwrap();
+    }
+
+    fn finish_client(mut child: Child) {
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn client_context(pid: u32) -> NativeObservationContext {
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
+        let context = NativeObservationContext::default();
+        context.record_process_evidence(&CaptureProcessEvidence {
+            events: vec![ProcessEvent::started(pid, 1, "client.exe", "", started)],
+            launch_pid: Some(pid),
+            launch_at: Some(started),
+            stage_transitions: vec![StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid,
+                role: "client".into(),
+                stage: None,
+                at: started,
+            }],
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        });
+        context
+    }
+
+    #[test]
+    fn direct_runtime_child() {
+        let Ok(protocol) = std::env::var("FRAGCAP_S200_CHILD_PROTOCOL") else {
+            return;
+        };
+        let original: std::net::SocketAddr = std::env::var("FRAGCAP_S200_CHILD_ORIGINAL")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut gate = [0u8; 1];
+        std::io::stdin().read_exact(&mut gate).unwrap();
+        assert_eq!(gate, *b"g");
+        if protocol == "tcp" {
+            let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.write_all(b"runtime-client-request").unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            assert_eq!(response, b"runtime-origin-reply");
+        } else if protocol == "udp" {
+            let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            client.connect(original).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.send(b"runtime-udp-request").unwrap();
+            let mut response = [0u8; 128];
+            let length = client.recv(&mut response).unwrap();
+            assert_eq!(&response[..length], b"runtime-udp-reply");
+        } else {
+            panic!("unknown client protocol");
+        }
+    }
 
     #[test]
     fn watchdog_requires_unfinished_packet_and_stalled_processor() {
@@ -836,27 +936,8 @@ mod tests {
         policy.grant_for_test(original);
         let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
-        let now_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
-        let pid = std::process::id();
-        let context = NativeObservationContext::default();
-        context.record_process_evidence(&CaptureProcessEvidence {
-            events: vec![ProcessEvent::started(pid, 1, "client.exe", "", started)],
-            launch_pid: Some(pid),
-            launch_at: Some(started),
-            stage_transitions: vec![StageTransition {
-                kind: StageTransitionKind::Matched,
-                pid,
-                role: "client".into(),
-                stage: None,
-                at: started,
-            }],
-            watcher_report: Some(WatcherReport::default()),
-            ..Default::default()
-        });
+        let mut child = spawn_client("tcp", original);
+        let context = client_context(child.id());
         let mut runtime = DirectPacketRuntime::start(
             Path::new(&root),
             context,
@@ -866,21 +947,10 @@ mod tests {
             4,
         )
         .unwrap();
-        let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        client.write_all(b"runtime-client-request").unwrap();
-        client.shutdown(std::net::Shutdown::Write).unwrap();
-        let mut response = Vec::new();
-        let read_result = client.read_to_end(&mut response);
+        release_client(&mut child);
+        finish_client(child);
         let stop_result = runtime.stop();
-        eprintln!(
-            "direct runtime probe: read={read_result:?}, stop={stop_result:?}, response_bytes={}",
-            response.len()
-        );
-        read_result.unwrap();
-        assert_eq!(response, b"runtime-origin-reply");
+        eprintln!("direct runtime probe: stop={stop_result:?}");
         let stats = stop_result.unwrap();
         assert!(stats.packets.consumed > 0, "selected flow was not routed");
         assert_eq!(stats.packets.lost, 0);
@@ -920,27 +990,8 @@ mod tests {
         policy.grant_for_test(original);
         let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
-        let now_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
-        let pid = std::process::id();
-        let context = NativeObservationContext::default();
-        context.record_process_evidence(&CaptureProcessEvidence {
-            events: vec![ProcessEvent::started(pid, 1, "client.exe", "", started)],
-            launch_pid: Some(pid),
-            launch_at: Some(started),
-            stage_transitions: vec![StageTransition {
-                kind: StageTransitionKind::Matched,
-                pid,
-                role: "client".into(),
-                stage: None,
-                at: started,
-            }],
-            watcher_report: Some(WatcherReport::default()),
-            ..Default::default()
-        });
+        let mut child = spawn_client("udp", original);
+        let context = client_context(child.id());
         let mut runtime = DirectPacketRuntime::start(
             Path::new(&root),
             context,
@@ -950,22 +1001,17 @@ mod tests {
             4,
         )
         .unwrap();
-        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        client.connect(original).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        client.send(b"runtime-udp-request").unwrap();
-        let mut response = [0u8; 128];
-        let read_result = client.recv(&mut response);
+        release_client(&mut child);
+        let output = child.wait_with_output().unwrap();
         let stop_result = runtime.stop();
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         eprintln!(
-            "direct UDP runtime probe: read={read_result:?}, stop={stop_result:?}, proxy={:?}",
+            "direct UDP runtime probe: child={:?}, stderr={}, stop={stop_result:?}, proxy={:?}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
             proxy_report.observation.protocol
         );
-        let length = read_result.unwrap();
-        assert_eq!(&response[..length], b"runtime-udp-reply");
+        assert!(output.status.success());
         let stats = stop_result.unwrap();
         assert!(
             stats.packets.consumed > 0,
