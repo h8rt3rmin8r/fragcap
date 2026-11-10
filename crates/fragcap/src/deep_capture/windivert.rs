@@ -480,6 +480,15 @@ mod tests {
             .expect("socket event arrives")
             .expect("socket observer receives event");
         let socket_data = event.socket().expect("PID-bearing socket data");
+        eprintln!(
+            "socket endpoint words: local={:?}, remote={:?}, local_port={}, remote_port={}, protocol={}, endpoint_id={}",
+            socket_data.local_addr,
+            socket_data.remote_addr,
+            socket_data.local_port,
+            socket_data.remote_port,
+            socket_data.protocol,
+            socket_data.endpoint_id,
+        );
         assert_eq!(socket_data.pid, std::process::id());
         assert_eq!(socket_data.remote_port, destination.port());
         assert!(event.timestamp_qpc <= syn.timestamp_qpc);
