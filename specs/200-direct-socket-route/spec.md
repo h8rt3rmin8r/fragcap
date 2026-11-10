@@ -1,6 +1,6 @@
 # Feature Specification: Direct Socket Route
 
-**Feature Branch**: `codex/s200-direct-socket-route` | **Created**: 2026-11-10 | **Status**: Draft
+**Feature Branch**: `codex/s200-direct-socket-route` | **Created**: 2026-11-10 | **Status**: Blocked at first-packet route gate
 
 **Input**: Owner-authorized S200 combining #578, #581, and #582 under full Spec-Kit autopilot, including push and official PR publication.
 
@@ -98,3 +98,4 @@ A selected final client can exchange datagrams with an original peer through the
 - **2026-11-10, sentinel bound**: The controlled matrix compares each sentinel against a paired same-run baseline, requires zero missing responses and unexplained packet loss, and fails when p99 additional round-trip latency exceeds 50 ms or four times baseline p99, whichever is larger.
 - **2026-11-10, driver queue accounting**: The owner approved keeping WinDivert with explicit uncertainty. WinDivert exposes no exact count for packets dropped in its kernel queue before `WinDivertRecv`; exact disposition accounting begins at receipt by the adapter. The route reports that measurement limit, while active sentinels and an exact flow oracle remain the end-to-end loss gate.
 - **2026-11-10, destination scope**: A managed client can select a destination at runtime. The pre-effect plan binds the native destination admission policy, and each exact original destination is fixed in the flow receipt before its packets are diverted. A destination observed only after diversion cannot retroactively authorize that flow.
+- **2026-11-10, first-packet gate**: Disposable Windows probes observed the correct SOCKET event and opened a narrow NETWORK handle after it, but the initial TCP SYN had already passed. S200 does not satisfy FR-004 or SC-001 under this design; the architecture decision is pending, and no issue closure or production route claim follows from the driver-free bridge tests.
