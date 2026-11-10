@@ -2106,6 +2106,8 @@ mod tests {
                     .await
                     .unwrap();
                 stream.finish().await.unwrap();
+                let _ = h3.accept().await;
+                server.wait_idle().await;
             });
             (original, task)
         });
