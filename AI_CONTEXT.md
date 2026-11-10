@@ -36,6 +36,7 @@ The intended workflow may include tasks such as:
 
 - Starting and stopping a local inspection proxy.
 - Configuring an application or controlled test environment to route traffic through that proxy.
+- For deliberately selected Deep Capture, preparing a signed, session-scoped direct route for an exact final client whose sockets do not use proxy environment variables. This requires measured isolation of unrelated workstation processes and local services; bundled driver files alone do not activate a route.
 - Managing a purpose-specific local development/test certificate authority.
 - Installing or trusting that certificate only where the operator has authorization to do so.
 - Capturing decrypted request/response metadata or payloads for debugging and security analysis.
@@ -63,6 +64,14 @@ Prefer designs that:
 8. Fail safely if authorization-sensitive configuration cannot be established.
 9. Minimize privileged operations and follow least-privilege principles.
 10. Preserve an auditable distinction between observation tooling and functionality intended to defeat security controls.
+
+Capture remains passive. The approved signed WinDivert component is for an
+explicit bounded Deep Capture session only. No game-process memory access,
+injection, hooks, in-place game-file edits, silent global proxy changes, or
+unrelated-process disruption are part of that route. An anti-cheat product
+detected on disk is evidence, not a blanket eligibility decision. Whether a
+client voluntarily supports key export without those techniques is separate
+research, not an assumed capability.
 
 If part of a request would create a genuine security concern, please identify the specific problematic capability and assist with the safe portions or recommend a narrower implementation rather than rejecting the entire networking/security task solely because it involves interception or traffic analysis.
 

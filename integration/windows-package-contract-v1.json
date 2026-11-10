@@ -13,6 +13,17 @@
     "middleware_handling": "blind-relay",
     "inspection_policy_id": "exact-game-v2"
   },
+  "windivert": {
+    "version": "2.2.2-A",
+    "binary_url": "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip",
+    "binary_sha256": "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
+    "source_url": "https://codeload.github.com/basil00/WinDivert/zip/refs/tags/v2.2.2",
+    "source_sha256": "65ec79c9e6afa99f648a3f4d1f6db794640b40d0b65bd438770ea503ee14ecb7",
+    "dll_sha256": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+    "driver_sha256": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
+    "license_sha256": "14a0cb5214d536e4fdae6aa3f5696f981eeda106cd026e9794bba489ee79d628",
+    "driver_signer_thumbprint": "043589F75FCE2795E7F2CC3E526D46784D5DDAB3"
+  },
   "primary_artifacts": [
     {"id": "portable-zip", "filename": "fragcap-{version}-x86_64-pc-windows-msvc.zip", "signature": "not_applicable", "size_ceiling_bytes": 33554432},
     {"id": "windows-msi", "filename": "fragcap-{version}-x86_64.msi", "signature": "not_signed", "size_ceiling_bytes": 33554432},
@@ -24,7 +35,11 @@
     {"path": "LICENSE", "role": "project-license", "size_ceiling_bytes": 131072, "signature": "not_applicable"},
     {"path": "NOTICE", "role": "project-notice", "size_ceiling_bytes": 131072, "signature": "not_applicable"},
     {"path": "fragcap.cdx.json", "role": "software-bill-of-materials", "size_ceiling_bytes": 8388608, "signature": "not_applicable"},
-    {"path": "THIRD-PARTY-NOTICES.txt", "role": "third-party-notices", "size_ceiling_bytes": 16777216, "signature": "not_applicable"}
+    {"path": "THIRD-PARTY-NOTICES.txt", "role": "third-party-notices", "size_ceiling_bytes": 16777216, "signature": "not_applicable"},
+    {"path": "WinDivert.dll", "role": "windivert-library", "size_ceiling_bytes": 47616, "signature": "not_signed"},
+    {"path": "WinDivert64.sys", "role": "windivert-driver", "size_ceiling_bytes": 94144, "signature": "valid"},
+    {"path": "WinDivert-LICENSE.txt", "role": "windivert-license", "size_ceiling_bytes": 61349, "signature": "not_applicable"},
+    {"path": "WinDivert-source.zip", "role": "windivert-corresponding-source", "size_ceiling_bytes": 199555, "signature": "not_applicable"}
   ],
   "checksum_sidecars": ["portable-zip", "windows-msi", "standalone-catalog"],
   "prohibited_tokens": ["mitmdump", "mitmproxy", "npcap", "openssl", "packet.dll", "python", "wpcap.dll"],

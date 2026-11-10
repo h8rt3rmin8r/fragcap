@@ -1,4 +1,13 @@
 <!--
+Sync Impact Report (2.0.0, 2026-11-09)
+- Version change: 1.8.0 -> 2.0.0 (MAJOR: P-1 replaces the absolute packet-interception-driver and target-key-export bans with explicit technique boundaries)
+- Amended sections: P-1. No Covert Target Instrumentation; Licensing And Third-Party Obligations.
+- Owner authority: issues #572 and #577 approve official signed WinDivert for deliberately selected, scoped direct Deep Capture routing, and allow research into application-supported key export without target memory access or game-file modification.
+- Preserved rules: Capture remains passive; no target memory access, injection, hooks, in-place game-file edits, silent system-wide routing, unbounded effects, or disruption of unrelated workstation traffic. Anti-cheat detection is evidence rather than an eligibility gate.
+- License exception: exact official WinDivert binary distribution under LGPLv3 with its license and corresponding source; unrelated Rust dependencies retain the existing allowlist.
+- Templates and guidance: master specification, AGENTS.md, AI_CONTEXT.md, CONTRIBUTING.md, feature issue template, glossary, public pages, and dependency policy require reconciliation in S199.
+- Follow-up: S199 distributes and certifies the component; #578 and #581 through #584 own controlled diversion, proxy integration and operator journey. #580 independently researches key export.
+
 Sync Impact Report (1.8.0, 2026-11-01)
 - Version change: 1.7.0 -> 1.8.0 (MINOR: adds an installed-product field-test governance section)
 - Added section: Installed-Product Field Tests
@@ -187,29 +196,40 @@ are the place to go when a principle needs interpretation.
 
 ### P-1. No Covert Target Instrumentation (NON-NEGOTIABLE)
 
-The technique denylist in specification section 19.3 is absolute. No technique
-on it is used, regardless of convenience, under time pressure, or when a slice
-appears blocked. The denylist:
+The technique boundaries in specification sections 19.2 and 19.3 are exact.
+No excluded technique is used for convenience or to bypass a blocked slice.
+Capture stays passive. Deep Capture may additionally use only a deliberate,
+visible, bounded, target-scoped route through the official signed WinDivert
+component under the session authorization and cleanup rules below. The
+prohibited techniques are:
 
-- Packet interception and filtering drivers. Use the NDIS capture driver.
 - Code injection into a target process. No alternative; out of scope.
 - Function hooking. Use socket table attribution from outside the process.
 - Process handles carrying memory-read rights against a target. Use
   creation-time ancestry from ETW.
 - Layered service providers and Winsock catalog modification. Use socket table
   attribution.
-- Executable image modification. No alternative; out of scope.
-- Target TLS key extraction. Use proxy-owned inspection artifacts from Deep
-  Capture sessions only.
+- In-place changes to game executables or installed game files. No alternative;
+  out of scope.
+- Reading or altering target memory to obtain TLS keys, or inducing key export
+  through injection, hooks, or game-file changes. Proxy-owned key logs remain
+  separately permitted. Application-supported, voluntary key export without
+  those techniques is a research question, not an assumed product capability.
 
-The permitted set is exactly section 19.2: the NDIS capture driver, ETW kernel
+Capture's permitted set is the NDIS capture driver, ETW kernel
 providers, IP Helper socket tables, query-only process enumeration, and
 ordinary platform protocol handler launches. Deep Capture adds the following
 permitted techniques, and only for sessions where the operator selected Deep
 Capture explicitly: a local inspection proxy, launch-time proxy environment or
-equivalent target-scoped proxy configuration, use of an installation-owned
-certificate authority, and proxy-owned TLS key-log export for analyzer
-correlation. An approved Windows installation MAY provision one machine-unique
+equivalent target-scoped proxy configuration, the official signed WinDivert
+component for exact final-client TCP and supported UDP diversion, use of an
+installation-owned certificate authority, and proxy-owned TLS key-log export
+for analyzer correlation. Direct diversion MUST have an immutable pre-effect
+plan, exact process-generation and original-destination scope, bounded resource
+and packet-loss accounting, helper/proxy self-exclusion, unrelated-process and
+local-service continuity, and auditable cleanup/recovery. No route may be
+opened for ordinary Capture or solely because WinDivert files are installed.
+An approved Windows installation MAY provision one machine-unique
 Fragcap authority in LocalMachine/Root. The installer MUST disclose the
 machine-wide trust scope before commitment. Its signer MUST be protected with
 machine-local encryption and exact administrative access control. The authority
@@ -239,20 +259,21 @@ through `doctor` cleanup for session-owned effects, and auditable after the
 fact. Installation CA trust is a separately disclosed persistent installation
 effect, removable through the explicit administrative CA command. Every Deep
 Capture entry path MUST verify exact installation trust and signing ability
-before session effects. System-wide proxy changes are prohibited by default.
-Silent certificate trust changes are prohibited.
+before session effects. Silent system-wide proxy changes are prohibited.
+Direct routing MUST NOT disrupt unrelated workstation processes or
+local-network services. Silent certificate trust changes are prohibited.
 
 Any use of a process handle MUST state its requested access rights explicitly
 at the call site. A request carrying memory rights fails review. A dependency
 providing a prohibited capability fails the dependency audit.
 
-Rationale: every technique on the denylist is a cheat primitive that detection
-systems watch for directly, and not one of them is needed for Capture or Deep
-Capture. Reaching for one would trade the project's entire security posture for
-convenience it does not need. Capture is defensible because it observes from
-outside the target. Deep Capture is defensible because it is explicit local
-proxy inspection with consent, scope, cleanup, and provenance rather than covert
-instrumentation of a game client.
+Rationale: the product does not instrument a target process or alter its
+installed files. Capture observes from outside the target. Deep Capture can
+actively route only the selected session's eligible connections; a signed
+driver alone does not establish process scope or compatibility. Controlled
+isolation and exact effect accounting are required. Anti-cheat implementations
+vary, so neither a technique's presence nor a product name proves a particular
+game will accept the route.
 
 ### P-2. Core Stays Platform-Neutral
 
@@ -454,10 +475,14 @@ paperwork one.** Four rules follow, and all four are binding:
 4. **No vendoring of the SDK.** Continuous integration acquires the npcap
    Software Development Kit at build time. It is never committed.
 
-Dependency licenses are restricted to MIT, Apache-2.0, BSD two-clause and
-three-clause, ISC, Unicode-DFS, and Zlib. Copyleft licenses are excluded. This
-applies with particular force to packet interception libraries, which are
-commonly copyleft licensed and which P-1 prohibits on independent grounds.
+Rust dependency licenses are restricted to MIT, Apache-2.0, BSD two-clause and
+three-clause, ISC, Unicode-DFS, and Zlib unless an exact dependency is
+separately reviewed and explicitly approved. The official signed WinDivert
+binary component is a narrow, separately licensed LGPLv3 distribution
+exception. Its exact version, DLL and driver bytes, upstream provenance,
+license, corresponding source, notices, and replacement rights MUST be
+included and certified in both Windows packages. This does not change
+fragcap's Apache-2.0 source license or permit other copyleft dependencies.
 
 ## Development Workflow And Quality Gates
 
@@ -537,4 +562,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 1.8.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-01
+**Version**: 2.0.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-09

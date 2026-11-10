@@ -1,8 +1,8 @@
 # Dependency license and advisory policy, specification section 20.4.
 #
-# Copyleft licenses are excluded. This applies with particular force to packet
-# interception libraries, which are commonly copyleft licensed and which
-# constitution principle P-1 prohibits on independent grounds.
+# Rust dependency licenses remain restricted. Official WinDivert 2.2.2-A is a
+# separately distributed LGPLv3 binary component with exact source and package
+# obligations, not a Cargo dependency or a general license exception.
 
 [licenses]
 # The permitted set, verbatim from specification section 20.4.
@@ -28,14 +28,6 @@ name  = "fragcap"
 multiple-versions = "warn"
 multiple-versions-include-dev = true
 wildcards         = "deny"
-
-[[bans.deny]]
-# Packet interception rather than capture. Prohibited by P-1, not merely by
-# license policy; listed here so the ban is mechanical as well as principled.
-name = "windivert"
-
-[[bans.deny]]
-name = "windivert-sys"
 
 [advisories]
 yanked       = "deny"

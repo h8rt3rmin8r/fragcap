@@ -8,7 +8,7 @@ edition      = "2021"
 # The minimum version a consumer needs. Distinct from the toolchain this
 # repository builds with, which rust-toolchain.toml pins. Verified by
 # `cargo xtask msrv`; see specs/001-workspace-scaffold/research.md R-1.
-rust-version = "1.88"
+rust-version = "1.89"
 license      = "Apache-2.0"
 repository   = "https://github.com/h8rt3rmin8r/fragcap"
 homepage     = "https://github.com/h8rt3rmin8r/fragcap"
@@ -24,8 +24,8 @@ bytes           = "1.12"
 # External. Slice S102, issue #280: the owned native Deep Capture proxy stack.
 # Every direct package is exact-pinned and default features are disabled so an
 # upgrade, crypto-provider change, or new native build input is always a visible
-# review event. Rust 1.88 is the measured floor because rcgen 0.14.10 and the
-# selected time graph declare it. See the S102 research and decisions fragment.
+# review event. Rust 1.88 was the measured floor for this stack in S102; S199
+# raises the workspace floor to 1.89 for patched bundled SQLite.
 tokio = { version = "=1.53.3", default-features = false, features = [
     "io-util",
     "macros",
@@ -213,11 +213,11 @@ ctrlc           = "3.4"
 # the facade, so a default build compiles neither the database engine nor a C
 # toolchain for it. On `fragcap-targets` alone.
 #
-# `default-features = false` is load-bearing. rusqlite 0.40's default set enables
+# `default-features = false` is load-bearing. rusqlite 0.41's default set enables
 # a WebAssembly FFI backend (`ffi-sqlite-wasm-rs`) that drags roughly fourteen
 # packages (the wasm-bindgen stack, js-sys, thiserror, bumpalo) into Cargo.lock
 # for machinery this project never runs. With defaults off and only `bundled`,
-# the delta is six packages: rusqlite, libsqlite3-sys, fallible-iterator,
+# the original delta was six packages: rusqlite, libsqlite3-sys, fallible-iterator,
 # fallible-streaming-iterator, smallvec, and vcpkg (cc, bitflags, shlex,
 # find-msvc-tools, and pkg-config are already in the graph via `pcap`).
 #
@@ -229,12 +229,13 @@ ctrlc           = "3.4"
 # graph for a synchronous single-file local store.
 #
 # MIT or Apache-2.0 across the delta; the bundled SQLite amalgamation is
-# public-domain C compiled by the MIT `libsqlite3-sys` crate. None of the six
-# declares a `rust-version`; all compiled under the former Rust 1.82 floor,
-# verified by S034. Taken as a compatible-range 0.40 pin
+# public-domain C compiled by the MIT `libsqlite3-sys` crate. S199 updates
+# rusqlite to 0.41.1 and bundled SQLite to 3.54.1 (libsqlite3-sys 0.39.1)
+# for RUSTSEC-2026-0459. This raises the workspace floor to Rust 1.89.
+# Taken as a compatible-range 0.41 pin
 # rather than exact, with `cargo xtask msrv` as the standing gate should a future
 # lock update raise the floor. See the S034 decisions fragment.
-rusqlite        = { version = "0.40", default-features = false, features = [
+rusqlite        = { version = "0.41", default-features = false, features = [
     "bundled",
     "backup",
 ] }

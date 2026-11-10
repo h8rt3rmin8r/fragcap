@@ -16,15 +16,14 @@ the governing rule.
 
 Capture is passive process-attributed packet capture. Deep Capture is explicit, target-scoped, reversible local proxy inspection for authorized sessions. Neither mode permits covert target instrumentation. A pull request using any of the following is declined regardless of how well it works:
 
-- Packet interception or filtering drivers
 - Code injection into any target process
 - Function hooking
 - Process handles carrying memory-read rights against a target
 - Layered service providers or Winsock catalog modification
-- Executable image modification
-- Target TLS key extraction
+- In-place modification of installed game files
+- Reading or altering target memory to obtain TLS keys, including through hooks or injection
 
-If a capability seems to require one of these, open an issue rather than an implementation so the requirement can be checked against the architecture. Deep Capture may use a session-owned local proxy, target-scoped launch configuration, explicitly confirmed local CA trust, and proxy-owned TLS key-log material. It may not use silent system-wide proxying, silent trust, certificate-pinning bypass, or unreported cleanup residue. Copyleft-licensed dependencies are also declined.
+If a capability seems to require one of these, open an issue so the requirement can be checked against the architecture. Deep Capture may use a session-owned local proxy, target-scoped launch configuration, the approved signed WinDivert component for a bounded selected direct route, installation CA trust, and proxy-owned TLS key-log material. Direct routing is planned after S199 packaging; no game-socket reachability is claimed yet. Silent system-wide proxying, silent trust, certificate-pinning bypass, and unreported cleanup residue remain excluded. The exact WinDivert LGPLv3 distribution is a narrow exception to the existing dependency license policy.
 
 ## Building
 

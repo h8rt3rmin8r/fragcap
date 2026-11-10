@@ -6,6 +6,13 @@
 
 This document records the product and architecture decision to add Deep Capture to fragcap. It is not a feature slice and it is not an implementation specification. It is the source record that later constitution amendments, specification revisions, feature slices, documentation updates, and GitHub issues should cite.
 
+**Current policy note (2026-11-09):** The blanket driver exclusion and
+target-key-export exclusion below record the original 2026 design. Owner-approved
+#572 and constitution 2.0.0 supersede them: S199 packages official signed
+WinDivert for a later exact, bounded direct route; #580 researches voluntary
+application-supported key export without target memory or game-file changes.
+No S199 package step establishes routed traffic or private-title compatibility.
+
 Deep Capture is now functional but incomplete. Issue #278 requires a complete
 native Rust product. S102 establishes the bounded runtime, S103 completes the
 authenticated listener, upstream policy, certificate/trust, raw-event, and

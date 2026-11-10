@@ -16,6 +16,7 @@ pub mod fix;
 pub mod probe;
 pub mod progress;
 pub mod residue;
+pub mod windivert;
 
 use fragcap::write_json_string;
 

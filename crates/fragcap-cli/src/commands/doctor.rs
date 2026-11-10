@@ -85,7 +85,7 @@ fn run_with_terminal(
             emitter,
             stdout_terminal,
             probe::gather_with,
-            Some(ca_check),
+            vec![ca_check, crate::doctor::windivert::check()],
         ));
     }
 
@@ -139,7 +139,7 @@ fn run_read_only(
     stdout_terminal: bool,
     gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
 ) -> Exit {
-    run_read_only_with_ca(args, json, out, emitter, stdout_terminal, gather, None)
+    run_read_only_with_ca(args, json, out, emitter, stdout_terminal, gather, vec![])
 }
 
 fn run_read_only_with_ca(
@@ -149,7 +149,7 @@ fn run_read_only_with_ca(
     emitter: &mut Emitter,
     stdout_terminal: bool,
     gather: impl FnOnce(&mut dyn ProbeObserver) -> crate::doctor::Inputs + Send,
-    ca_check: Option<crate::doctor::Check>,
+    extra_checks: Vec<crate::doctor::Check>,
 ) -> Exit {
     let enabled = !json && stdout_terminal && emitter.allows_progress();
     let silent_human = !json && !emitter.allows_human_result();
@@ -157,7 +157,7 @@ fn run_read_only_with_ca(
     let color = !json && use_color(Stream::Stdout);
     let work = move |observer: &mut dyn ProbeObserver| {
         let mut report = checks::run(&gather(observer));
-        if let Some(check) = ca_check {
+        for check in extra_checks {
             report.checks.push(check);
         }
         let text = probe::observe(observer, ProbeName::ReportRendering, || {
@@ -445,7 +445,7 @@ mod tests {
                 &mut emitter,
                 false,
                 fake_gather,
-                Some(ca_check.clone()),
+                vec![ca_check.clone()],
             );
             assert_eq!(exit, expected.exit());
             let actual = String::from_utf8(stdout).unwrap();

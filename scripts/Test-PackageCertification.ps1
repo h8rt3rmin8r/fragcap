@@ -427,6 +427,35 @@ Param(
         if ($signature.Status -ne 'NotSigned' -or $null -ne $signature.SignerCertificate) { throw "signature state for $([System.IO.Path]::GetFileName($Path)) is not determinately unsigned" }
     }
 
+    function Assert-WinDivertComponent {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)][string]$Directory,
+            [Parameter(Mandatory=$true)][pscustomobject]$Identity,
+            [Parameter(Mandatory=$true)][string]$Dumper
+        )
+        foreach ($entry in @(
+            @{ name = 'WinDivert.dll'; hash = $Identity.dll_sha256 },
+            @{ name = 'WinDivert64.sys'; hash = $Identity.driver_sha256 },
+            @{ name = 'WinDivert-LICENSE.txt'; hash = $Identity.license_sha256 },
+            @{ name = 'WinDivert-source.zip'; hash = $Identity.source_sha256 }
+        )) {
+            $path = Join-Path $Directory $entry.name
+            if ((Get-Sha256 -Path $path) -cne $entry.hash) { throw "$($entry.name) differs from pinned WinDivert bytes" }
+        }
+        $dll = Join-Path $Directory 'WinDivert.dll'
+        $driver = Join-Path $Directory 'WinDivert64.sys'
+        foreach ($path in @($dll, $driver)) {
+            $headers = Invoke-HiddenProcess -FilePath $Dumper -ArgumentList @('/headers', $path) -TimeoutSeconds 60
+            if ($headers.ExitCode -ne 0 -or $headers.Stdout -notmatch '(?im)^\s*8664 machine \(x64\)') { throw "$([IO.Path]::GetFileName($path)) is not x64 PE machine 8664" }
+        }
+        Assert-Unsigned -Path $dll
+        $signature = Get-AuthenticodeSignature -LiteralPath $driver
+        if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -cne $Identity.driver_signer_thumbprint) {
+            throw 'WinDivert driver Authenticode status or signer differs from pinned release'
+        }
+    }
+
     function Get-PeInspection {
         [CmdletBinding()]
         Param(
@@ -753,6 +782,8 @@ Param(
         $reportFile = [System.IO.Path]::GetFullPath($ReportPath)
         $contractBytes = [System.IO.File]::ReadAllBytes($contractFile)
         $contract = [System.Text.Encoding]::UTF8.GetString($contractBytes) | ConvertFrom-Json -Depth 32
+        $hasWinDivert = $null -ne $contract.PSObject.Properties['windivert']
+        if (-not $hasWinDivert -and [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) { throw 'current package contract lacks the signed WinDivert component' }
         if ($contract.schema_version -ne 1) { throw 'unsupported package contract schema' }
         $controlledSmokeProperty = $contract.PSObject.Properties['controlled_smoke']
         $requireExactGameInspectionScope = $null -ne $controlledSmokeProperty
@@ -793,6 +824,29 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($scratch)
         $zipRoot = Join-Path $scratch 'zip'
         Get-ZipContent -ZipPath $candidateZip[0].FullName -Destination $zipRoot -ExpectedEntries $contract.shared_entries
+        if ($hasWinDivert) {
+          Assert-WinDivertComponent -Directory $zipRoot -Identity $contract.windivert -Dumper $dumper
+          foreach ($case in 'missing','wrong-architecture','altered-signature') {
+            $negativeRoot = Join-Path $scratch "windivert-negative-$case"
+            [void][System.IO.Directory]::CreateDirectory($negativeRoot)
+            foreach ($name in 'WinDivert.dll','WinDivert64.sys','WinDivert-LICENSE.txt','WinDivert-source.zip') { Copy-Item -LiteralPath (Join-Path $zipRoot $name) -Destination (Join-Path $negativeRoot $name) }
+            $driverPath = Join-Path $negativeRoot 'WinDivert64.sys'
+            if ($case -eq 'missing') { Remove-Item -LiteralPath $driverPath }
+            else {
+                $mutated = [System.IO.File]::ReadAllBytes($driverPath)
+                if ($case -eq 'wrong-architecture') {
+                    $peOffset = [BitConverter]::ToInt32($mutated, 0x3c)
+                    $mutated[$peOffset + 4] = 0x4c
+                    $mutated[$peOffset + 5] = 0x01
+                } else { $mutated[$mutated.Length - 1] = $mutated[$mutated.Length - 1] -bxor 1 }
+                [System.IO.File]::WriteAllBytes($driverPath, $mutated)
+            }
+            $rejected = $false
+            try { Assert-WinDivertComponent -Directory $negativeRoot -Identity $contract.windivert -Dumper $dumper }
+            catch { $rejected = $true }
+            if (-not $rejected) { throw "WinDivert $case mutation was accepted" }
+          }
+        }
         if ((Get-Sha256 -Path (Join-Path $zipRoot 'catalog.db')) -ne (Get-Sha256 -Path $catalog[0].FullName)) { throw 'standalone catalog differs from portable package catalog' }
         $zipExe = Join-Path $zipRoot 'fragcap.exe'
         Assert-Unsigned -Path $candidateMsi[0].FullName
@@ -814,6 +868,10 @@ Param(
         if ($versionInfo.FileVersion -ne "$($buildIdentity.version).0" -or $versionInfo.ProductVersion -ne $buildIdentity.version -or $versionInfo.ProductName -ne 'fragcap' -or $versionInfo.OriginalFilename -ne 'fragcap.exe') { throw 'PE version resource disagrees with build identity' }
         $doctor = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'doctor') -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
         if ($doctor.Stdout -notmatch 'fragcap-native') { throw 'packaged Doctor output does not expose the native backend' }
+        if ($hasWinDivert) {
+            $componentChecks = @($doctor.Stdout -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 16 -ErrorAction Stop } | Where-Object { $null -ne $_.PSObject.Properties['name'] -and $_.name -eq 'WinDivert component' })
+            if ($componentChecks.Count -ne 1 -or $componentChecks[0].status -ne 'ok' -or $componentChecks[0].detail -notmatch 'driver load and policy compatibility unverified') { throw 'packaged Doctor does not report exact static WinDivert readiness' }
+        }
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
         $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope
         $portableSmokeLocalDb = Join-Path $scratch 'smoke-portable\local.db'

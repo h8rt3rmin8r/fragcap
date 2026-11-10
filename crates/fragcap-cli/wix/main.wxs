@@ -8,7 +8,9 @@
   the release job passes no extension flags; passing either again makes light fail
   with duplicate-table or duplicate-symbol collisions.
 
-  Payload files (fragcap.exe, catalog.db, LICENSE, NOTICE, fragcap.cdx.json, and THIRD-PARTY-NOTICES.txt) are read from $(var.CargoTargetBinDir): the release job stages them next to the built fragcap.exe before invoking cargo wix.
+  Payload files include the six original entries plus the exact official
+  WinDivert 2.2.2-A x64 DLL, signed driver, license and corresponding source.
+  The release job verifies and stages all ten beside fragcap.exe before WiX.
 
   UpgradeCode is frozen for the life of the product line; it must never change or
   upgrades will duplicate rather than replace the install.
@@ -93,6 +95,23 @@
                   KeyPath="yes" />
           </Component>
 
+          <Component Id="Comp_windivert_dll" Guid="5651D2CB-2A47-4AC0-B929-4B6A74E237B0">
+            <File Id="windivert_dll" Name="WinDivert.dll"
+                  Source="$(var.CargoTargetBinDir)\WinDivert.dll" KeyPath="yes" />
+          </Component>
+          <Component Id="Comp_windivert_driver" Guid="88129544-9678-4A90-B686-C53605617F14">
+            <File Id="windivert_driver" Name="WinDivert64.sys"
+                  Source="$(var.CargoTargetBinDir)\WinDivert64.sys" KeyPath="yes" />
+          </Component>
+          <Component Id="Comp_windivert_license" Guid="7665C321-94D6-4109-8E1B-5D2283DF6BCA">
+            <File Id="windivert_license" Name="WinDivert-LICENSE.txt"
+                  Source="$(var.CargoTargetBinDir)\WinDivert-LICENSE.txt" KeyPath="yes" />
+          </Component>
+          <Component Id="Comp_windivert_source" Guid="DF1F4380-99DF-4B54-951F-4C241D49F51D">
+            <File Id="windivert_source" Name="WinDivert-source.zip"
+                  Source="$(var.CargoTargetBinDir)\WinDivert-source.zip" KeyPath="yes" />
+          </Component>
+
         </Directory>
       </Directory>
     </Directory>
@@ -104,6 +123,10 @@
       <ComponentRef Id="Comp_notice" />
       <ComponentRef Id="Comp_sbom" />
       <ComponentRef Id="Comp_third_party_notices" />
+      <ComponentRef Id="Comp_windivert_dll" />
+      <ComponentRef Id="Comp_windivert_driver" />
+      <ComponentRef Id="Comp_windivert_license" />
+      <ComponentRef Id="Comp_windivert_source" />
     </Feature>
 
     <!-- S185 installation CA: rollback requires the exact uncommitted creation

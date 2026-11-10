@@ -6,6 +6,12 @@
 
 This document evaluates proxy backend options for Deep Capture. It does not add a dependency, ship a proxy, or define the final feature specification. Its job is to keep the backend decision from being made by convenience alone.
 
+**Current policy note (2026-11-09):** This historical backend comparison's
+blanket interception-driver exclusion is superseded by owner-approved #572 and
+constitution 2.0.0. The native proxy remains the product backend; S199 packages
+official signed WinDivert for the later exact direct route without changing the
+proxy or claiming current game-socket reachability.
+
 ## Recommendation
 
 ### S102 supersession

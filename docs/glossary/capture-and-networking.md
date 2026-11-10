@@ -177,8 +177,9 @@ Deep Capture serves authorized game-development and research workflows
 where application-layer traffic needs to be inspectable. It may route the target
 through a [local inspection proxy](capture-and-networking.md#local-inspection-proxy) and may produce proxy-owned analyzer artifacts,
 but it does not inject code, install hooks, read target memory, modify
-executables, install packet interception drivers, or extract TLS keys from the
-target process.
+installed game files, or read target memory for TLS keys. S199 packages an
+official signed direct-route component for later explicitly scoped use; current
+source does not yet divert final-client connections.
 
 {: .matters }
 > Deep Capture is a product mode, not a permission slip. Its implementation is
@@ -288,10 +289,10 @@ because the proxy endpoint, not the game process, owns the decrypted side of
 traffic that accepts the configured trust relationship.
 
 {: .matters }
-> The local inspection proxy is distinct from a packet interception driver or a
-> Winsock catalog modification. It is an ordinary process that a selected target
-> session is configured to use, and its configuration must be explicit,
-> reversible, and logged.
+> The local inspection proxy is an ordinary process that receives selected
+> traffic. The future signed direct route is a separate, explicitly authorized
+> network effect with exact scope and cleanup obligations. Proxy use and route
+> effects must both be visible and logged.
 
 ## Blind relay
 

@@ -49,7 +49,7 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: This does not require injection, target hooks, target memory reads, executable modification, Winsock catalog changes, packet interception drivers, or target TLS key extraction.
+        - label: This does not require injection, target hooks, target memory reads, in-place game-file changes, Winsock catalog changes, or memory-derived target TLS keys. Any direct Deep Capture route uses the approved signed component under exact target scope and cleanup.
           required: true
         - label: Any proposed Deep Capture proxy or trust change is explicit, target-scoped, reversible, auditable, and never a silent system-wide fallback or certificate-pinning bypass.
           required: true
