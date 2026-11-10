@@ -109,6 +109,15 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $env:WINDIVERT_VERIFIED_ROOT $name) -Destination (Join-Path 'target\windows-integration\stage' $name)
           }
 
+      - name: Qualify public composite direct-route plan and cleanup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:FRAGCAP_WINDOWS_BINARY = (Resolve-Path 'target\windows-integration\stage\fragcap.exe').Path
+          $env:FRAGCAP_WINDOWS_SCRATCH = (Join-Path (Resolve-Path 'target\windows-integration').Path 'direct-cli')
+          cargo test --locked -p fragcap-cli --features direct-route --test cli_direct_route_hosted staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up -- --ignored --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Public composite direct-route journey failed' }
+
       - name: Run complete hosted matrix
         run: cargo xtask windows-integration --run hosted --binary target\windows-integration\stage\fragcap.exe --report target\windows-integration\hosted.jsonl
 
