@@ -210,6 +210,7 @@ enforcement.
 | 0.1.120-draft | 2026-11-06 | Codex | S198 distinguishes observed TLS transport ending from structured invalid TLS messages in launch-chain inspection, retaining exact stage, alert, owner, and completed-work evidence. Updates sections 13.7 and 27.3 without changing published v0.10.14 identity. |
 | 0.1.121-draft | 2026-11-09 | Codex | S199 reconciles the owner-approved signed direct-route policy and pins official WinDivert distribution evidence. Hosted audit also requires patched bundled SQLite 3.54.1 and a Rust 1.89 floor. Updates sections 2, 3, 5, 19, 20, 21, 24, 27, and 28 without claiming live diversion or changing published v0.10.14 identity. |
 | 0.1.122-draft | 2026-11-10 | Codex | S200's failed narrow first-packet probe and owner-approved broad pass-through amend the planned direct-route boundary. Unrelated TCP/UDP packets may be briefly intercepted only for immediate reinjection, while selected proxy routing retains exact client and original-destination proof. Controlled probes measured sub-millisecond local delay and caught the initial SYN; full route and failure gates remain pending. Updates sections 5 and 19 without changing published v0.10.14 identity. |
+| 0.1.123-draft | 2026-11-10 | Codex | S200 implements a feature-gated native library route through the signed WinDivert component and an authenticated TCP/UDP bridge to the existing proxy. Exact process-generation and original-flow receipts govern selected admission; unrelated traffic passes through. The controlled Windows oracle and failure matrix are the completion gate. Public CLI and calibration selection remain #583, and published v0.10.14 identity is unchanged. Updates sections 2, 19, 20, and 27. |
 
 ## 2. Purpose and Problem Statement
 
@@ -226,9 +227,10 @@ The shipped **Deep Capture** mode adds explicit, scoped local proxy inspection
 for targets whose traffic can be routed through a proxy. Deep Capture makes
 supported application-layer traffic inspectable for game developers and
 researchers without process injection, function hooking, target memory reads,
-or in-place changes to installed game files. S199 prepares an official signed
-direct-route component for later target-scoped routing; the currently shipped
-child-environment route remains the only operational route.
+or in-place changes to installed game files. S199 packages an official signed
+direct-route component. S200 adds a feature-gated library adapter for controlled
+direct TCP and selected UDP routes, while the public CLI and calibration
+selection remain under #583. The child-environment route remains available.
 
 The library is the product. The command line tool is one consumer of it, and
 the shell wrappers are consumers of the command line tool. Deep Capture's
@@ -3802,7 +3804,7 @@ The following techniques are permitted and used.
 | Exact session-owned child shutdown | Deep Capture route release | Pre-authorized bounded graceful request and minimal-rights termination only after process-object identity, launch receipt, account, path, session, creation time, and causal ancestry agree; verified exit is required |
 | Local inspection proxy | Deep Capture | Operator-selected local process, scoped to the target session |
 | Target-scoped proxy configuration | Deep Capture routing | Launch-time environment or equivalent explicit configuration, not silent system-wide interception |
-| Official signed WinDivert component | Planned direct Deep Capture routing | A prearmed, finite TCP/UDP pass-through may briefly divert unrelated packets solely for prompt reinjection without application-payload inspection or retention; header-only candidacy is permitted. Selected proxy routing requires exact final-client generation and original destination, a progress watchdog, packet accounting, sentinel latency and loss gates, and cleanup. Packaged in S199; route implementation remains #581. |
+| Official signed WinDivert component | S200 controlled library direct route, with public selection pending #583 | A prearmed, finite TCP/UDP pass-through may briefly divert unrelated packets solely for prompt reinjection without application-payload inspection or retention; header-only candidacy is permitted. Selected proxy routing requires exact final-client generation and original destination, a progress watchdog, packet accounting, sentinel latency and loss gates, and cleanup. Packaged in S199; library adapter and bridge are S200. |
 | Local development certificate authority lifecycle | Deep Capture TLS inspection | User-confirmed trust changes with cleanup and audit trail |
 | Proxy-owned TLS key-log export | Analyzer correlation | Keys are produced by fragcap's proxy side of the inspected session, not extracted from the target process |
 
@@ -4046,10 +4048,16 @@ name the original supplier and applicable replacement rights, and verify
 provenance, hashes, architecture and driver signature. Npcap remains a
 separately installed prerequisite and is never bundled.
 
-The future Rust adapter must load the exact packaged DLL dynamically only
-after the direct-route authorization gate, then open and close a driver handle
-within that session. S199 adds the distribution and read-only Doctor identity
-check, not that adapter. Doctor can name absent, altered, inaccessible and
+The S200 Rust adapter loads the exact packaged DLL dynamically only after the
+direct-route authorization gate, then opens and closes its bounded driver
+handles within that session. It joins selected first packets to the exact
+managed process generation and original tuple, and passes raw TCP or UDP to
+the existing authenticated native proxy. Unrelated TCP/UDP packets are
+promptly reinjected; delivered packets reconcile as reinjected, consumed or
+lost. WinDivert exposes no exact count for kernel queue loss before receive,
+so the adapter reports that limit and the controlled sentinel matrix checks
+observable continuity. S199 separately adds distribution and the read-only
+Doctor identity check. Doctor can name absent, altered, inaccessible and
 observably disabled-service states; a matching package does not establish that
 Windows will allow a later driver load. The vendor documents on-demand driver
 installation at `WinDivertOpen` with Administrator rights and possible
@@ -5574,7 +5582,7 @@ The protocol and launch matrix is normative:
 | Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |
 | Warm client | Explicit bounded operator-owned close-and-retry, otherwise refused | S113, #309 |
 | Target process hooks, memory reads, in-place game-file edits, memory-derived key extraction, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
-| Official signed direct-route component | Packaged by S199; no route handle or final-client reachability claim yet | #577, #579; route and bridge #581, #582 |
+| Official signed direct-route component | Packaged by S199; S200 adds the feature-gated library route and authenticated native bridge for exact selected TCP/UDP flows; public CLI and calibration selection remain pending | #577 through #579, #581, #582; CLI #583 |
 
 Protocol classification and omission reasons are exhaustive under S120 and
 #316. Proxy bypass and local-destination correctness are explicit under S122

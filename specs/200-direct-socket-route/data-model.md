@@ -18,7 +18,7 @@ A route receipt contains an unpredictable session-scoped identifier, immutable o
 
 ## Packet disposition and flow result
 
-Each packet delivered to the adapter advances exactly one of `reinjected`, `consumed`, or `lost`. `consumed` means the local stack accepted it; it does not imply proxy success. Pre-receive driver queue loss is an unmeasurable field, never a zero count. Per-flow results distinguish `inspected`, `opaque`, `unknown`, `refused`, `bypassed`, `ambiguous`, and `unavailable`, with packet, route, proxy, and application evidence links retained separately. Saturation, send failure, timeout, cancellation, and cleanup failure carry stable reason codes.
+Each packet delivered to the adapter advances exactly one of `reinjected`, `consumed`, or `lost`. `consumed` means the local stack accepted it; it does not imply proxy success. Pre-receive driver queue loss is an unmeasurable field, never a zero count. A positively admitted original flow is linked through the one-use helper receipt to the proxy connection ID, whose application artifact records the observed `inspected`, `opaque`, `unknown`, or `refused` result. A candidate rejected before that bridge retains a named `bypassed`, `ambiguous`, or `unavailable` admission result and packet disposition without a fabricated proxy connection. Capture `flow_id` and packet-observation counts are present only when Capture independently retained matching packet evidence; direct-route receipt truth stays separate. Saturation, send failure, timeout, cancellation, and cleanup failure carry stable reason codes.
 
 ## Lifecycle
 

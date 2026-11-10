@@ -794,8 +794,6 @@ impl DirectPacketRuntime {
                         stats,
                     });
                     if result.is_err() {
-                        #[cfg(test)]
-                        eprintln!("direct receive worker failed: {result:?}");
                         let _ = handle.stop();
                     }
                     result
@@ -828,8 +826,6 @@ impl DirectPacketRuntime {
                         max_flows,
                     });
                     if result.is_err() {
-                        #[cfg(test)]
-                        eprintln!("direct process worker failed: {result:?}");
                         let _ = process_handle.stop();
                     }
                     result

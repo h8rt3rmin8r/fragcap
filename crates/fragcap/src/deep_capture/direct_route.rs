@@ -95,9 +95,11 @@ pub struct DirectPacketHead {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct OriginalFlow {
     pub tuple: DirectTuple,
+    pub first_packet_at_ns: i64,
     pub endpoint_id: u64,
     pub pid: u32,
     pub process_instance_id: String,
+    pub process_image: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -173,11 +175,16 @@ pub fn select_direct_flow(
     let Some(process_instance_id) = owner.process_instance_id else {
         return DirectAdmission::Unavailable("process-instance-missing");
     };
+    let Some(process_image) = owner.process_image else {
+        return DirectAdmission::Unavailable("process-image-missing");
+    };
     DirectAdmission::Selected(OriginalFlow {
         tuple: packet.tuple,
+        first_packet_at_ns: packet.at_unix_ns,
         endpoint_id: event.endpoint_id,
         pid: event.pid,
         process_instance_id,
+        process_image,
     })
 }
 
@@ -557,7 +564,9 @@ mod tests {
                 ProcessEvent::started(10, 1, "platform.exe", "", Timestamp::from_nanos(1000)),
                 ProcessEvent::started(11, 10, "publisher.exe", "", Timestamp::from_nanos(1100)),
                 ProcessEvent::started(12, 11, "client.exe", "", Timestamp::from_nanos(1200)),
-                ProcessEvent::started(13, 1, "unrelated.exe", "", Timestamp::from_nanos(1210)),
+                // The unrelated process deliberately shares the final client's
+                // image name. Only causal managed ancestry may select it.
+                ProcessEvent::started(13, 1, "client.exe", "", Timestamp::from_nanos(1210)),
             ],
             launch_pid: Some(10),
             launch_at: Some(Timestamp::from_nanos(1000)),
