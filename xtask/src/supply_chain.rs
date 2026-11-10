@@ -617,12 +617,10 @@ fn validate_packages(
                 if package.license.as_deref().is_some_and(|license| {
                     license.contains("0BSD")
                         && !license_expression_satisfied(license, &ordinary_licenses)
-                })
-                    && !matches!(
-                        (package.name.as_str(), package.version.as_str()),
-                        ("smoltcp", "0.12.0") | ("managed", "0.8.0")
-                    )
-                {
+                }) && !matches!(
+                    (package.name.as_str(), package.version.as_str()),
+                    ("smoltcp", "0.12.0") | ("managed", "0.8.0")
+                ) {
                     findings.push(format!(
                         "license-exception: {} is outside the reviewed 0BSD pair",
                         package.key
