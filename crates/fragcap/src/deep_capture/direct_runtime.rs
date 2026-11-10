@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Finite, prearmed packet route for exact managed TCP sockets.
+//! Finite, prearmed packet route for exact managed sockets.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,7 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fragcap_core::{parse::raw_transport_head, Proto};
+use fragcap_core::{
+    parse::{raw_transport_head, raw_udp_datagram},
+    Proto,
+};
 use zeroize::Zeroizing;
 
 use super::{
@@ -25,6 +28,7 @@ use super::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
         DirectSocketEvent, DirectTuple, PacketDisposition,
     },
+    direct_udp::{build_udp_reply, DirectUdpAssociation},
     windivert::{sample_qpc_anchor, Address, Api, Handle, NETWORK_LAYER},
     NativeObservationContext,
 };
@@ -156,6 +160,7 @@ fn receive_packets(
     handle: Arc<Handle>,
     sender: SyncSender<WorkPacket>,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
 ) -> io::Result<()> {
@@ -198,7 +203,17 @@ fn receive_packets(
                 (head.transport == Proto::Tcp && head.initial_tcp_syn)
                     || head.transport == Proto::Udp
             });
-        if !is_candidate || connecting.load(Ordering::Acquire) {
+        let is_excluded = head.as_ref().is_some_and(|head| {
+            excluded
+                .lock()
+                .expect("helper route lock")
+                .contains(&DirectTuple {
+                    transport: head.transport,
+                    local: head.source,
+                    remote: head.destination,
+                })
+        });
+        if !is_candidate || connecting.load(Ordering::Acquire) || is_excluded {
             if is_candidate {
                 stats
                     .admission_busy_bypassed
@@ -230,12 +245,18 @@ struct ActiveTcp {
     address: Address,
 }
 
+struct ActiveUdp {
+    association: DirectUdpAssociation,
+    address: Address,
+}
+
 fn process_packets(
     receiver: Receiver<WorkPacket>,
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     context: NativeObservationContext,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
@@ -248,6 +269,7 @@ fn process_packets(
         .expect("fixed candidate bounds");
     let mut events = Vec::<DirectSocketEvent>::new();
     let mut active = BTreeMap::<DirectTuple, ActiveTcp>::new();
+    let mut active_udp = BTreeMap::<DirectTuple, ActiveUdp>::new();
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
     let mut helper_id = 0u64;
     loop {
@@ -263,6 +285,33 @@ fn process_packets(
                 }
             }
             Ok(WorkPacket::Selected(tuple, packet, address)) => {
+                if tuple.transport == Proto::Udp {
+                    let Some(flow) = active_udp.get_mut(&tuple) else {
+                        reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    };
+                    let datagram = match raw_udp_datagram(&packet) {
+                        Ok(datagram)
+                            if datagram.source == tuple.local
+                                && datagram.destination == tuple.remote =>
+                        {
+                            datagram
+                        }
+                        _ => {
+                            packet_finished(&stats, PacketDisposition::Lost)?;
+                            return Err(io::Error::other(
+                                "selected UDP packet invalid or tuple changed",
+                            ));
+                        }
+                    };
+                    if let Err(error) = flow.association.send(datagram.payload) {
+                        packet_finished(&stats, PacketDisposition::Lost)?;
+                        return Err(io::Error::other(format!("selected UDP relay: {error}")));
+                    }
+                    packet_finished(&stats, PacketDisposition::Consumed)?;
+                    flow.address = address;
+                    continue;
+                }
                 let Some(flow) = active.get_mut(&tuple) else {
                     reinject(&handle, &stats, &packet, &address)?;
                     continue;
@@ -329,7 +378,76 @@ fn process_packets(
                     packet,
                     address,
                 } => {
-                    if flow.tuple.transport != Proto::Tcp || active.len() >= max_flows {
+                    if active.len().saturating_add(active_udp.len()) >= max_flows {
+                        reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    }
+                    if flow.tuple.transport == Proto::Udp {
+                        let datagram = match raw_udp_datagram(&packet) {
+                            Ok(datagram)
+                                if datagram.source == flow.tuple.local
+                                    && datagram.destination == flow.tuple.remote =>
+                            {
+                                datagram
+                            }
+                            _ => {
+                                reinject(&handle, &stats, &packet, &address)?;
+                                continue;
+                            }
+                        };
+                        connecting.store(true, Ordering::Release);
+                        let association = DirectUdpAssociation::new(
+                            proxy,
+                            flow.tuple.remote,
+                            password.as_bytes(),
+                            Duration::from_millis(50),
+                        );
+                        connecting.store(false, Ordering::Release);
+                        let association = match association {
+                            Ok(association) => association,
+                            Err(_) => {
+                                stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
+                                reinject(&handle, &stats, &packet, &address)?;
+                                continue;
+                            }
+                        };
+                        excluded
+                            .lock()
+                            .expect("helper route lock")
+                            .insert(association.relay_tuple()?);
+                        helper_id = helper_id.saturating_add(1);
+                        let now = started.elapsed().as_nanos() as u64;
+                        let receipt = receipts
+                            .issue(flow.clone(), now.saturating_add(10_000_000_000))
+                            .map_err(|error| {
+                                io::Error::other(format!("issue UDP receipt: {error:?}"))
+                            })?;
+                        receipts
+                            .consume(receipt, &session_id, flow.tuple, helper_id, now)
+                            .map_err(|error| {
+                                io::Error::other(format!("consume UDP receipt: {error:?}"))
+                            })?;
+                        if let Err(error) = association.send(datagram.payload) {
+                            packet_finished(&stats, PacketDisposition::Lost)?;
+                            return Err(io::Error::other(format!(
+                                "first selected UDP packet: {error}"
+                            )));
+                        }
+                        selected
+                            .lock()
+                            .expect("selected route lock")
+                            .insert(flow.tuple);
+                        packet_finished(&stats, PacketDisposition::Consumed)?;
+                        active_udp.insert(
+                            flow.tuple,
+                            ActiveUdp {
+                                association,
+                                address,
+                            },
+                        );
+                        continue;
+                    }
+                    if flow.tuple.transport != Proto::Tcp {
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
                     }
@@ -349,6 +467,14 @@ fn process_packets(
                             continue;
                         }
                     };
+                    excluded
+                        .lock()
+                        .expect("helper route lock")
+                        .insert(DirectTuple {
+                            transport: Proto::Tcp,
+                            local: helper.local_addr()?,
+                            remote: helper.peer_addr()?,
+                        });
                     helper_id = helper_id.saturating_add(1);
                     let now = started.elapsed().as_nanos() as u64;
                     let receipt = receipts
@@ -393,6 +519,12 @@ fn process_packets(
                 .map_err(|error| io::Error::other(format!("selected TCP poll: {error}")))?;
             inject_replies(&handle, &stats, replies, flow.address)?;
         }
+        for (tuple, flow) in &active_udp {
+            while let Some(payload) = flow.association.poll_reply()? {
+                let reply = build_udp_reply(*tuple, &payload)?;
+                inject_replies(&handle, &stats, vec![reply], flow.address)?;
+            }
+        }
     }
 }
 
@@ -430,18 +562,26 @@ impl DirectPacketRuntime {
         handle.set_queue(4096, 100, 16 * 1024 * 1024)?;
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
+        let excluded = Arc::new(Mutex::new(BTreeSet::new()));
         let connecting = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let handle = Arc::clone(&handle);
             let selected = Arc::clone(&selected);
+            let excluded = Arc::clone(&excluded);
             let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             thread::Builder::new()
                 .name("fragcap-direct-receive".into())
                 .spawn(move || {
-                    let result =
-                        receive_packets(Arc::clone(&handle), sender, selected, connecting, stats);
+                    let result = receive_packets(
+                        Arc::clone(&handle),
+                        sender,
+                        selected,
+                        excluded,
+                        connecting,
+                        stats,
+                    );
                     if result.is_err() {
                         let _ = handle.stop();
                     }
@@ -452,6 +592,7 @@ impl DirectPacketRuntime {
             let process_handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
+            let excluded = Arc::clone(&excluded);
             let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             let launched = thread::Builder::new()
@@ -463,6 +604,7 @@ impl DirectPacketRuntime {
                         observer,
                         context,
                         selected,
+                        excluded,
                         connecting,
                         stats,
                         session_id,
@@ -621,7 +763,7 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
-        net::{Ipv4Addr, TcpListener, TcpStream},
+        net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -726,5 +868,94 @@ mod tests {
         server.join().unwrap();
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_direct_runtime_routes_udp_datagram() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        origin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut body = [0u8; 128];
+            let (length, peer) = origin.recv_from(&mut body).unwrap();
+            assert_eq!(&body[..length], b"runtime-udp-request");
+            origin.send_to(b"runtime-udp-reply", peer).unwrap();
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-udp-runtime")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
+        let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
+        let pid = std::process::id();
+        let context = NativeObservationContext::default();
+        context.record_process_evidence(&CaptureProcessEvidence {
+            events: vec![ProcessEvent::started(pid, 1, "client.exe", "", started)],
+            launch_pid: Some(pid),
+            launch_at: Some(started),
+            stage_transitions: vec![StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid,
+                role: "client".into(),
+                stage: None,
+                at: started,
+            }],
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        });
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-direct-udp-runtime".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        client.connect(original).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.send(b"runtime-udp-request").unwrap();
+        let mut response = [0u8; 128];
+        let read_result = client.recv(&mut response);
+        let stop_result = runtime.stop();
+        eprintln!("direct UDP runtime probe: read={read_result:?}, stop={stop_result:?}");
+        let length = read_result.unwrap();
+        assert_eq!(&response[..length], b"runtime-udp-reply");
+        let stats = stop_result.unwrap();
+        assert!(
+            stats.packets.consumed > 0,
+            "selected UDP flow was not routed"
+        );
+        assert_eq!(stats.packets.lost, 0);
+        assert_eq!(stats.synthetic_reply_lost, 0);
+        server.join().unwrap();
+        let proxy_report = lease.cleanup(Duration::from_secs(2));
+        assert_eq!(
+            proxy_report
+                .observation
+                .protocol
+                .socks_udp_associate_succeeded,
+            1
+        );
     }
 }
