@@ -362,6 +362,15 @@ impl NativeObservationContext {
         *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
     }
 
+    /// Read the current retained generation proof for a pending direct SYN.
+    /// The route samples only while a first packet is awaiting admission.
+    pub(crate) fn direct_process_evidence(&self) -> Option<super::CaptureProcessEvidence> {
+        self.process_evidence
+            .lock()
+            .expect("process evidence lock")
+            .clone()
+    }
+
     fn socket_inception(
         &self,
         descriptor: ConnectionDescriptor,

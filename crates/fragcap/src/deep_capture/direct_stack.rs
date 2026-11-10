@@ -2,10 +2,7 @@
 
 //! Finite raw-IP device and one-flow TCP termination for the direct bridge.
 
-use std::{
-    collections::VecDeque,
-    net::{IpAddr, SocketAddr},
-};
+use std::{collections::VecDeque, net::IpAddr};
 
 use fragcap_core::{HeaderParser, InterfaceAddrs, LinkType, ParseOutcome, Proto};
 use smoltcp::{
@@ -269,6 +266,7 @@ impl TcpFlowStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
 
     #[test]
     fn packet_device_queue_is_finite_and_receive_requires_reply_space() {

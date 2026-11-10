@@ -140,6 +140,16 @@ impl Address {
             initial: true,
         })
     }
+
+    /// A synthetic reply to an external outbound packet enters the local
+    /// stack as inbound. Windows loopback packets remain outbound by design.
+    pub fn response_address(self) -> Self {
+        let mut response = self;
+        if !self.loopback() {
+            response.flags &= !(1 << 17);
+        }
+        response
+    }
 }
 
 /// Vendor SOCKET and FLOW union member; only read for those layers.
@@ -819,8 +829,9 @@ mod tests {
                     Ok((packet, address)) => {
                         last_address = Some(address);
                         if bridge.is_none() {
-                            let head = raw_transport_head(&packet)
-                                .map_err(|error| io::Error::other(format!("raw head: {error:?}")))?;
+                            let head = raw_transport_head(&packet).map_err(|error| {
+                                io::Error::other(format!("raw head: {error:?}"))
+                            })?;
                             let tuple = DirectTuple {
                                 transport: Proto::Tcp,
                                 local: head.source,

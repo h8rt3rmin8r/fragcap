@@ -23,8 +23,18 @@ const MAX_BRIDGE_BYTES: usize = 65_536;
 pub enum DirectBridgeError {
     Stack(StackError),
     Io(io::Error),
-    BufferFull,
 }
+
+impl std::fmt::Display for DirectBridgeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stack(error) => write!(formatter, "packet stack: {error:?}"),
+            Self::Io(error) => write!(formatter, "proxy helper: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DirectBridgeError {}
 
 impl From<StackError> for DirectBridgeError {
     fn from(error: StackError) -> Self {
@@ -47,6 +57,7 @@ pub struct DirectTcpBridge {
     to_client: VecDeque<u8>,
     client_send_closed: bool,
     proxy_send_closed: bool,
+    stack_send_closed: bool,
 }
 
 impl DirectTcpBridge {
@@ -60,6 +71,7 @@ impl DirectTcpBridge {
             to_client: VecDeque::new(),
             client_send_closed: false,
             proxy_send_closed: false,
+            stack_send_closed: false,
         })
     }
 
@@ -78,12 +90,13 @@ impl DirectTcpBridge {
         self.stack.poll(now_ms);
         let mut bytes = [0u8; 8192];
         loop {
-            let count = self.stack.receive_bytes(&mut bytes);
-            if count == 0 {
+            let available = (MAX_BRIDGE_BYTES - self.to_proxy.len()).min(bytes.len());
+            if available == 0 {
                 break;
             }
-            if self.to_proxy.len() + count > MAX_BRIDGE_BYTES {
-                return Err(DirectBridgeError::BufferFull);
+            let count = self.stack.receive_bytes(&mut bytes[..available]);
+            if count == 0 {
+                break;
             }
             self.to_proxy.extend(&bytes[..count]);
         }
@@ -110,20 +123,17 @@ impl DirectTcpBridge {
             self.client_send_closed = true;
         }
         if !self.proxy_send_closed {
-            match self.helper.read(&mut bytes) {
-                Ok(0) => self.proxy_send_closed = true,
-                Ok(count) => {
-                    if self.to_client.len() + count > MAX_BRIDGE_BYTES {
-                        return Err(DirectBridgeError::BufferFull);
-                    }
-                    self.to_client.extend(&bytes[..count]);
-                }
-                Err(error)
+            let available = (MAX_BRIDGE_BYTES - self.to_client.len()).min(bytes.len());
+            match (available != 0).then(|| self.helper.read(&mut bytes[..available])) {
+                None => {}
+                Some(Ok(0)) => self.proxy_send_closed = true,
+                Some(Ok(count)) => self.to_client.extend(&bytes[..count]),
+                Some(Err(error))
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) => {}
-                Err(error) => return Err(error.into()),
+                Some(Err(error)) => return Err(error.into()),
             }
         }
         while !self.to_client.is_empty() {
@@ -134,8 +144,9 @@ impl DirectTcpBridge {
             }
             self.to_client.drain(..sent);
         }
-        if self.proxy_send_closed && self.to_client.is_empty() {
+        if self.proxy_send_closed && self.to_client.is_empty() && !self.stack_send_closed {
             self.stack.close_send(now_ms);
+            self.stack_send_closed = true;
         }
         let mut egress = Vec::new();
         while let Some(packet) = self.stack.pop_egress() {

@@ -710,6 +710,139 @@ struct ChildEnvironmentLease {
     applied: AppliedRoute,
 }
 
+/// Internal signed direct route. The CLI selection surface remains a later
+/// slice, but controlled sessions can exercise this exact effect adapter.
+#[cfg(all(windows, feature = "direct-route"))]
+pub struct NativeDirectRouting {
+    component_directory: std::path::PathBuf,
+    observations: super::NativeObservationContext,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+impl NativeDirectRouting {
+    pub fn new(
+        component_directory: std::path::PathBuf,
+        observations: super::NativeObservationContext,
+    ) -> Self {
+        Self {
+            component_directory,
+            observations,
+        }
+    }
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+impl RoutingAdapter for NativeDirectRouting {
+    fn prepare(
+        &mut self,
+        target: &PreparedTarget,
+        plan: &RoutingPlan,
+    ) -> Result<(), PreflightRefusal> {
+        plan.validate()?;
+        let Some(component) = plan.direct_socket.as_ref() else {
+            return Err(PreflightRefusal::new(
+                "direct-route-plan-missing",
+                "the native direct adapter requires an explicit direct component",
+            ));
+        };
+        if component.target_id != target.id {
+            return Err(PreflightRefusal::new(
+                "direct-route-target-mismatch",
+                "the direct component names a different prepared target",
+            ));
+        }
+        super::verify_windivert_component(&self.component_directory).map_err(|detail| {
+            PreflightRefusal::new("direct-route-component-unavailable", detail)
+        })?;
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        session: &SessionPlan,
+        proxy: ProxyRoute,
+        _budget: Budget,
+    ) -> Result<Box<dyn RoutingLease>, StageFailure> {
+        let Some(component) = session.routing.direct_socket.as_ref() else {
+            return Err(StageFailure::new(
+                Stage::Routing,
+                "direct-route-plan-missing",
+                "authorized session has no direct component",
+            ));
+        };
+        let password = proxy.socks5_password().ok_or_else(|| {
+            StageFailure::new(
+                Stage::Routing,
+                "direct-route-capability-missing",
+                "native SOCKS route has no exact session credential",
+            )
+        })?;
+        let password = Zeroizing::new(password.to_string());
+        let endpoint = proxy.endpoint().address();
+        let applied = AppliedRoute::child_environment(&session.routing, proxy)?;
+        let runtime = super::direct_runtime::DirectPacketRuntime::start(
+            &self.component_directory,
+            self.observations.clone(),
+            session.session_id.clone(),
+            endpoint,
+            password,
+            component.max_flows,
+        )
+        .map_err(|error| {
+            StageFailure::new(
+                Stage::Routing,
+                "direct-route-open-failed",
+                error.to_string(),
+            )
+        })?;
+        Ok(Box::new(NativeDirectLease {
+            applied,
+            runtime: Some(runtime),
+        }))
+    }
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+struct NativeDirectLease {
+    applied: AppliedRoute,
+    runtime: Option<super::direct_runtime::DirectPacketRuntime>,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+impl RoutingLease for NativeDirectLease {
+    fn applied(&self) -> &AppliedRoute {
+        &self.applied
+    }
+
+    fn cleanup(&mut self, _budget: Budget) -> CleanupResult {
+        let Some(mut runtime) = self.runtime.take() else {
+            return CleanupResult {
+                resource: "target-route".into(),
+                status: CleanupStatus::NotNeeded,
+                reason: "direct route already stopped".into(),
+            };
+        };
+        match runtime.stop() {
+            Ok(stats) => CleanupResult {
+                resource: "target-route".into(),
+                status: CleanupStatus::Released,
+                reason: format!(
+                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; pre-receive loss unmeasurable",
+                    stats.packets.received,
+                    stats.packets.reinjected,
+                    stats.packets.consumed,
+                    stats.packets.lost,
+                ),
+            },
+            Err(error) => CleanupResult {
+                resource: "target-route".into(),
+                status: CleanupStatus::Failed,
+                reason: format!("direct route cleanup unconfirmed: {error}"),
+            },
+        }
+    }
+}
+
 impl RoutingLease for ChildEnvironmentLease {
     fn applied(&self) -> &AppliedRoute {
         &self.applied

@@ -26,6 +26,8 @@ mod direct_bridge;
 mod direct_observer;
 mod direct_route;
 #[cfg(all(windows, feature = "direct-route"))]
+mod direct_runtime;
+#[cfg(all(windows, feature = "direct-route"))]
 mod direct_stack;
 #[doc(hidden)]
 pub mod fuzz_support;
