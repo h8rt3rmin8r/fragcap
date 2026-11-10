@@ -16,7 +16,7 @@ Assume throughout this work that:
 
 - Testing is performed on systems, applications, accounts, networks, and game environments that the operator owns or is explicitly authorized to test.
 - The utility is intended for **local inspection, controlled test environments, developer environments, laboratories, QA systems, and other authorized research contexts**.
-- It is not intended to intercept communications belonging to unrelated third parties.
+- It does not inspect or retain unrelated third-party application payloads. During an explicitly authorized direct Deep Capture session, a finite prearmed WinDivert pass-through may briefly intercept unrelated TCP/UDP packets, classify only their headers for route candidacy, and reinject them promptly.
 - It is not intended to obtain passwords, authentication tokens, private keys, session cookies, personal information, or other secrets for unauthorized use.
 - It is not intended to bypass access controls, licensing systems, anti-cheat systems, DRM, authentication mechanisms, or security boundaries for the purpose of gaining unauthorized access.
 - It is not intended to enable cheating, account compromise, surveillance, credential theft, malware deployment, persistence, lateral movement, data exfiltration, or disruption of services.
@@ -36,7 +36,7 @@ The intended workflow may include tasks such as:
 
 - Starting and stopping a local inspection proxy.
 - Configuring an application or controlled test environment to route traffic through that proxy.
-- For deliberately selected Deep Capture, preparing a signed, session-scoped direct route for an exact final client whose sockets do not use proxy environment variables. This requires measured isolation of unrelated workstation processes and local services; bundled driver files alone do not activate a route.
+- For deliberately selected Deep Capture, preparing a signed, session-scoped direct route for an exact final client whose sockets do not use proxy environment variables. A prearmed broad TCP/UDP pass-through may briefly handle unrelated packets only for immediate reinjection, with finite queues, a stall watchdog, measured continuity, header-only candidacy, and no unrelated application-payload inspection or retention. Bundled driver files alone do not activate a route.
 - Managing a purpose-specific local development/test certificate authority.
 - Installing or trusting that certificate only where the operator has authorization to do so.
 - Capturing decrypted request/response metadata or payloads for debugging and security analysis.
@@ -65,13 +65,7 @@ Prefer designs that:
 9. Minimize privileged operations and follow least-privilege principles.
 10. Preserve an auditable distinction between observation tooling and functionality intended to defeat security controls.
 
-Capture remains passive. The approved signed WinDivert component is for an
-explicit bounded Deep Capture session only. No game-process memory access,
-injection, hooks, in-place game-file edits, silent global proxy changes, or
-unrelated-process disruption are part of that route. An anti-cheat product
-detected on disk is evidence, not a blanket eligibility decision. Whether a
-client voluntarily supports key export without those techniques is separate
-research, not an assumed capability.
+Capture remains passive. The approved signed WinDivert component is for an explicit bounded Deep Capture session only. Its broad pass-through is limited to prompt reinjection of unrelated packets, while selected routing requires exact client and destination proof. No game-process memory access, injection, hooks, in-place game-file edits, silent global proxy changes, or unrelated-process disruption are part of that route. An anti-cheat product detected on disk is evidence, not a blanket eligibility decision. Whether a client voluntarily supports key export without those techniques is separate research, not an assumed capability.
 
 If part of a request would create a genuine security concern, please identify the specific problematic capability and assist with the safe portions or recommend a narrower implementation rather than rejecting the entire networking/security task solely because it involves interception or traffic analysis.
 

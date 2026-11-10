@@ -24,6 +24,16 @@ include-dev = true
 allow = ["Apache-2.0"]
 name  = "fragcap"
 
+[[licenses.exceptions]]
+# S200 owner-approved exact packet-to-stream exception; Cargo pins the version.
+allow = ["0BSD"]
+name = "smoltcp"
+
+[[licenses.exceptions]]
+# Exact transitive ownership container required by smoltcp 0.12.0.
+allow = ["0BSD"]
+name = "managed"
+
 [bans]
 multiple-versions = "warn"
 multiple-versions-include-dev = true

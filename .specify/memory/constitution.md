@@ -1,4 +1,14 @@
 <!--
+Sync Impact Report (3.0.0, 2026-11-10)
+- Version change: 2.0.0 -> 3.0.0 (MAJOR: P-1 redefines the target-only packet-interception boundary for direct Deep Capture routing).
+- Amended sections: P-1. No Covert Target Instrumentation; Governance amendment procedure.
+- Owner authority: during S200, after the narrow WinDivert rule missed the initial TCP packet, the owner explicitly approved a prearmed broad WinDivert pass-through based on measured delay. Selected game routing still requires exact client-generation and original-destination proof.
+- Added rule: unrelated TCP/UDP packets may enter only a finite, session-owned pass-through queue and MUST be reinjected without application-payload inspection, retention, or game attribution. Header-only candidacy is permitted. A stalled worker MUST stop new diversion promptly; all delivered packets and observed failures remain accounted, and controlled unrelated sentinels MUST meet the stated latency and loss bounds.
+- Preserved rules: Capture remains passive; no target memory access, injection, hooks, game-file edits, silent global proxy changes, or unreported unrelated disruption. WinDivert remains the sole direct-routing driver.
+- Templates: `.specify/templates/plan-template.md`, `.specify/templates/spec-template.md`, and `.specify/templates/tasks-template.md` already read the constitution or impose no conflicting route rule; no template edit needed.
+- Runtime guidance: `AI_CONTEXT.md`, `AGENTS.md`, `CONTRIBUTING.md`, master specification section 19, and S200 spec, plan, research, and matrix require reconciliation in this amendment.
+- Follow-up: S200 must prove the complete controlled route, pass-through continuity, watchdog, cleanup, and packet accounting before closing #578/#581/#582 or publishing a completion claim.
+
 Sync Impact Report (2.0.0, 2026-11-09)
 - Version change: 1.8.0 -> 2.0.0 (MAJOR: P-1 replaces the absolute packet-interception-driver and target-key-export bans with explicit technique boundaries)
 - Amended sections: P-1. No Covert Target Instrumentation; Licensing And Third-Party Obligations.
@@ -196,12 +206,7 @@ are the place to go when a principle needs interpretation.
 
 ### P-1. No Covert Target Instrumentation (NON-NEGOTIABLE)
 
-The technique boundaries in specification sections 19.2 and 19.3 are exact.
-No excluded technique is used for convenience or to bypass a blocked slice.
-Capture stays passive. Deep Capture may additionally use only a deliberate,
-visible, bounded, target-scoped route through the official signed WinDivert
-component under the session authorization and cleanup rules below. The
-prohibited techniques are:
+The technique boundaries in specification sections 19.2 and 19.3 are exact. No excluded technique is used for convenience or to bypass a blocked slice. Capture stays passive. Deep Capture may additionally use only a deliberate, visible, bounded route through the official signed WinDivert component under the session authorization and cleanup rules below. The prohibited techniques are:
 
 - Code injection into a target process. No alternative; out of scope.
 - Function hooking. Use socket table attribution from outside the process.
@@ -216,19 +221,7 @@ prohibited techniques are:
   separately permitted. Application-supported, voluntary key export without
   those techniques is a research question, not an assumed product capability.
 
-Capture's permitted set is the NDIS capture driver, ETW kernel
-providers, IP Helper socket tables, query-only process enumeration, and
-ordinary platform protocol handler launches. Deep Capture adds the following
-permitted techniques, and only for sessions where the operator selected Deep
-Capture explicitly: a local inspection proxy, launch-time proxy environment or
-equivalent target-scoped proxy configuration, the official signed WinDivert
-component for exact final-client TCP and supported UDP diversion, use of an
-installation-owned certificate authority, and proxy-owned TLS key-log export
-for analyzer correlation. Direct diversion MUST have an immutable pre-effect
-plan, exact process-generation and original-destination scope, bounded resource
-and packet-loss accounting, helper/proxy self-exclusion, unrelated-process and
-local-service continuity, and auditable cleanup/recovery. No route may be
-opened for ordinary Capture or solely because WinDivert files are installed.
+Capture's permitted set is the NDIS capture driver, ETW kernel providers, IP Helper socket tables, query-only process enumeration, and ordinary platform protocol handler launches. Deep Capture adds the following permitted techniques, and only for sessions where the operator selected Deep Capture explicitly: a local inspection proxy, launch-time proxy environment or equivalent target-scoped proxy configuration, the official signed WinDivert component for prearmed TCP/UDP packet interception and exact final-client TCP and supported UDP routing, use of an installation-owned certificate authority, and proxy-owned TLS key-log export for analyzer correlation. A prearmed WinDivert packet handle MAY briefly divert unrelated TCP/UDP packets only as a bounded pass-through during an authorized Deep Capture session. Header-only route-candidacy classification is permitted, but every unrelated packet delivered to the adapter MUST be reinjectable without application-payload inspection, retention, or game attribution; it MUST be reinjected promptly or reported as explicitly lost. A selected game route still MUST have an immutable pre-effect plan, exact process-generation and original-destination proof before selected consumption, bounded resource and packet-loss accounting, helper/proxy self-exclusion, unrelated-process and local-service continuity, and auditable cleanup/recovery. The pass-through MUST have finite queue and wait bounds, a worker-progress watchdog that stops new diversion on a stall, paired latency and loss gates with active unrelated sentinels, and truthful reporting of WinDivert's unmeasurable pre-receive loss. No route may be opened for ordinary Capture or solely because WinDivert files are installed.
 An approved Windows installation MAY provision one machine-unique
 Fragcap authority in LocalMachine/Root. The installer MUST disclose the
 machine-wide trust scope before commitment. Its signer MUST be protected with
@@ -542,10 +535,7 @@ Where it conflicts with the master specification, that is a defect in one of
 them, and the conflict is resolved explicitly rather than by picking a side
 silently.
 
-**Amendments** require an explicit change to this file with the Sync Impact
-Report header updated, a version bump under the policy below, and a statement
-of what the amendment changes and why. Principles are not amended mid-slice to
-unblock that slice; that is the situation the principles exist for.
+**Amendments** require an explicit change to this file with the Sync Impact Report header updated, a version bump under the policy below, and a statement of what the amendment changes and why. An agent MUST NOT amend a principle mid-slice merely to bypass a failed gate. An owner-directed amendment after a demonstrated technical conflict MAY change an active slice only when the changed scope is re-specified, re-analyzed, and verified before any completion claim.
 
 **Versioning policy.** MAJOR for a principle removed or materially redefined.
 MINOR for a principle or section added, or an existing one materially expanded.
@@ -562,4 +552,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 2.0.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-09
+**Version**: 3.0.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-10

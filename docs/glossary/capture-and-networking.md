@@ -290,9 +290,10 @@ traffic that accepts the configured trust relationship.
 
 {: .matters }
 > The local inspection proxy is an ordinary process that receives selected
-> traffic. The future signed direct route is a separate, explicitly authorized
-> network effect with exact scope and cleanup obligations. Proxy use and route
-> effects must both be visible and logged.
+> traffic. The S200 feature-gated signed direct route is a separate, explicitly
+> authorized network effect with exact selected-flow scope and cleanup obligations.
+> Unrelated TCP/UDP packets pass through without application inspection or retention.
+> Proxy use and route effects must both be visible and logged.
 
 ## Blind relay
 

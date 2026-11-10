@@ -380,6 +380,7 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<(
 /// deliberately and argues for it, which is the point.
 const SHELL_TOKEN_SOURCE: &str = "crates/fragcap/src/deep_capture/access/windows/shell.rs";
 const MANAGED_SHUTDOWN_SOURCE: &str = "crates/fragcap/src/managed_shutdown.rs";
+const DIRECT_ROUTE_SOURCE: &str = "crates/fragcap/src/deep_capture/direct_runtime.rs";
 
 fn allowed_shell_token_call(shown: &str, code: &str) -> bool {
     shown == SHELL_TOKEN_SOURCE && matches!(code.trim(),
@@ -399,6 +400,16 @@ fn allowed_managed_shutdown_call(shown: &str, code: &str) -> bool {
         )
 }
 
+fn allowed_direct_route_reinjection(shown: &str, code: &str) -> bool {
+    if shown != DIRECT_ROUTE_SOURCE {
+        return false;
+    }
+    let code = code.trim_start();
+    code == "fn reinject("
+        || code.starts_with("reinject(&handle, &stats, ")
+        || code.starts_with("let sent = reinject(&handle, &stats, ")
+}
+
 const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     (
         "sendpacket",
@@ -406,7 +417,7 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     ),
     (
         "inject(",
-        "transmits a frame; fragcap observes and never modifies traffic (P-1)",
+        "packet transmission is reserved for the reviewed Deep Capture route (P-1)",
     ),
     (
         "openprocess",
@@ -617,6 +628,7 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
                         if code.contains(call)
                             && !allowed_shell_token_call(&shown, &code)
                             && !allowed_managed_shutdown_call(&shown, &code)
+                            && !allowed_direct_route_reinjection(&shown, &code)
                         {
                             println!("{}:{}: forbidden-call: {call} {why}", shown, line_no + 1);
                             total += 1;
@@ -632,6 +644,30 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_reviewed_direct_route_reinjection_is_exempt() {
+        assert!(allowed_direct_route_reinjection(
+            DIRECT_ROUTE_SOURCE,
+            "reinject(&handle, &stats, bytes, &address)?;"
+        ));
+        assert!(allowed_direct_route_reinjection(
+            DIRECT_ROUTE_SOURCE,
+            "fn reinject("
+        ));
+        assert!(allowed_direct_route_reinjection(
+            DIRECT_ROUTE_SOURCE,
+            "let sent = reinject(&handle, &stats, bytes, &address);"
+        ));
+        assert!(!allowed_direct_route_reinjection(
+            "crates/fragcap/src/capture.rs",
+            "reinject(&handle, &stats, bytes, &address)?;"
+        ));
+        assert!(!allowed_direct_route_reinjection(
+            DIRECT_ROUTE_SOURCE,
+            "inject(bytes);"
+        ));
+    }
 
     #[test]
     fn shell_token_exception_keeps_exact_source_and_literal_rights() {

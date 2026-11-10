@@ -29,6 +29,11 @@ const CURRENT_EFFECTIVE_TOKEN: isize = -6;
 const CURRENT_THREAD: isize = -2;
 const RIGHTS: u32 = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_ADJUST_DEFAULT;
 
+#[cfg(feature = "direct-route")]
+pub(super) fn current_token_elevated() -> io::Result<bool> {
+    Ok(scalar(CURRENT_TOKEN, TokenElevation)? != 0)
+}
+
 #[derive(Debug)]
 struct Handle(isize);
 // SAFETY: owned token, process and pipe handles may be transferred between threads. Their

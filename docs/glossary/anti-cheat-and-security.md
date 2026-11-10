@@ -12,7 +12,7 @@ version.
 {: .matters }
 > A detected product is neutral evidence, not an eligibility gate or proof of
 > compatibility. Capture is passive. A deliberately selected Deep Capture
-> session may later use a signed direct route, whose process scope and
+> session may use the S200 library direct route, whose selected process scope and
 > unrelated-traffic behavior must be demonstrated separately from its signature.
 
 **See also:** [Technique denylist](anti-cheat-and-security.md#technique-denylist)
@@ -21,8 +21,9 @@ version.
 
 The enumerated set of target-instrumentation and unscoped system techniques
 fragcap will not use. Capture remains passive. A deliberately selected Deep
-Capture session may later use the official signed WinDivert component for an
-exact, bounded final-client route; S199 packages it but opens no route handle.
+Capture session may use the official signed WinDivert component for an
+exact, bounded final-client route. S199 packages it and S200 adds the controlled
+library adapter; public CLI selection remains #583.
 
 - **Code injection.** Writing fragcap's own code into a target process so it
   runs inside that process. This alters the target and is out of scope.
@@ -34,10 +35,9 @@ exact, bounded final-client route; S199 packages it but opens no route handle.
   reads a target's memory; it recovers process relationships from creation-time
   ETW telemetry and attributes flow ownership from the socket table, and any
   process handle declares its minimal requested rights at the call site.
-- **Layered service providers.** Inserting fragcap into the Winsock call chain
-  that a socket's traffic passes through. Off-limits because it interposes on
-  live traffic. The socket table yields the same process-to-flow association
-  after the fact, without being in the path.
+- **Layered service providers.** Inserting fragcap into the target's Winsock
+  call chain. This target-side integration is excluded; the selected S200 route
+  uses an external, session-owned packet handle instead.
 - **In-place game-file modification.** Changing installed target code or data
   is out of scope.
 - **Target-memory key extraction.** Reading or altering process memory,
@@ -47,8 +47,8 @@ exact, bounded final-client route; S199 packages it but opens no route handle.
 
 {: .matters }
 > Constitution P-1 makes these exclusions binding and separately permits the
-> selected signed direct route only for an explicit, target-scoped Deep Capture
-> session with exact identity, accounting, isolation, and cleanup. The driver
+> selected signed direct route only for an explicit Deep Capture session with
+> exact game-flow identity, accounting, unrelated pass-through, and cleanup. The driver
 > signature alone does not prove those properties. Dependency policy and code
 > review enforce their respective parts of the boundary.
 

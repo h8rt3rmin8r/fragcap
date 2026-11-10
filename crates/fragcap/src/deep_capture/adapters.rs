@@ -292,6 +292,20 @@ impl ProxyRoute {
         self.socks5h_url.as_str()
     }
 
+    /// Internal bridge credential from this session's exact native SOCKS URL.
+    /// The returned slice remains owned by the secret-bearing route object.
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn socks5_password(&self) -> Option<&str> {
+        let userinfo = self.socks5h_url.strip_prefix("socks5h://")?;
+        let (username, credential) = userinfo.split_once(':')?;
+        if username != fragcap_proxy::PROXY_USERNAME {
+            return None;
+        }
+        let suffix = format!("@{}", self.endpoint.address());
+        let password = credential.strip_suffix(&suffix)?;
+        (!password.is_empty() && password.len() <= u8::MAX as usize).then_some(password)
+    }
+
     pub fn proxy_authorization(&self) -> &str {
         self.proxy_authorization.as_str()
     }

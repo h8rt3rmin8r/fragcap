@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(all(windows, feature = "direct-route"))]
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -317,9 +319,30 @@ pub struct NativeObservationContext {
     flow_registry: Arc<FlowRegistry>,
     controlled_process_id: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_route_active: Arc<AtomicBool>,
     #[cfg(all(windows, feature = "socket-table"))]
     socket_collector: Arc<SocketInceptionCollector>,
 }
+
+#[cfg(all(windows, feature = "direct-route"))]
+#[derive(Clone, Debug)]
+struct DirectHelperOwner {
+    flow: super::direct_route::OriginalFlow,
+    opened_earliest_ns: u64,
+    opened_latest_ns: u64,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+type DirectHelperRegistry =
+    BTreeMap<(&'static str, SocketAddr, SocketAddr), Vec<DirectHelperOwner>>;
+
+#[cfg(all(windows, feature = "direct-route"))]
+const DIRECT_HELPER_ACCEPT_SLACK_NS: u64 = 50_000_000;
+#[cfg(all(windows, feature = "direct-route"))]
+const DIRECT_PACKET_JOIN_SLACK_NS: u64 = 50_000_000;
 
 impl NativeObservationContext {
     /// Publish only newly retained process facts during an active capture.
@@ -362,6 +385,275 @@ impl NativeObservationContext {
         *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
     }
 
+    /// Read the current retained generation proof for a pending direct SYN.
+    /// The route samples only while a first packet is awaiting admission.
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_process_evidence(&self) -> Option<super::CaptureProcessEvidence> {
+        self.process_evidence
+            .lock()
+            .expect("process evidence lock")
+            .clone()
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn register_direct_helper(
+        &self,
+        transport: &'static str,
+        helper_local: SocketAddr,
+        proxy_local: SocketAddr,
+        flow: super::direct_route::OriginalFlow,
+        opened_earliest_ns: u64,
+        opened_latest_ns: u64,
+    ) -> Result<(), &'static str> {
+        if !matches!(transport, "tcp" | "udp")
+            || opened_earliest_ns > opened_latest_ns
+            || helper_local == proxy_local
+        {
+            return Err("invalid-direct-helper-window");
+        }
+        let mut registry = self.direct_helpers.lock().expect("direct helper lock");
+        if registry.values().map(Vec::len).sum::<usize>() >= 512 {
+            return Err("direct-helper-registry-full");
+        }
+        let owners = registry
+            .entry((transport, helper_local, proxy_local))
+            .or_default();
+        if owners.iter().any(|owner| {
+            owner.opened_earliest_ns <= opened_latest_ns
+                && opened_earliest_ns <= owner.opened_latest_ns
+        }) {
+            return Err("direct-helper-window-overlap");
+        }
+        owners.push(DirectHelperOwner {
+            flow,
+            opened_earliest_ns,
+            opened_latest_ns,
+        });
+        Ok(())
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn set_direct_route_active(&self, active: bool) {
+        if active {
+            self.direct_helpers
+                .lock()
+                .expect("direct helper lock")
+                .clear();
+        }
+        self.direct_route_active.store(active, Ordering::Release);
+    }
+
+    #[cfg(all(test, windows, feature = "direct-route"))]
+    pub(crate) fn direct_helper_flows_for_test(&self) -> Vec<super::direct_route::OriginalFlow> {
+        self.direct_helpers
+            .lock()
+            .expect("direct helper lock")
+            .values()
+            .flatten()
+            .map(|owner| owner.flow.clone())
+            .collect()
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn direct_helper_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        let registry = self.direct_helpers.lock().expect("direct helper lock");
+        let Some(owners) = registry.get(&(
+            descriptor.transport,
+            descriptor.client_peer,
+            descriptor.proxy_local,
+        )) else {
+            return Ok(None);
+        };
+        let mut matching = owners.iter().filter(|owner| {
+            owner
+                .opened_earliest_ns
+                .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                <= opened_at_ns
+                && opened_at_ns
+                    <= owner
+                        .opened_latest_ns
+                        .saturating_add(DIRECT_HELPER_ACCEPT_SLACK_NS)
+        });
+        let Some(owner) = matching.next() else {
+            return Ok(None);
+        };
+        if matching.next().is_some() {
+            return Err("direct-helper-window-ambiguous");
+        }
+        Ok(Some(owner.flow.clone()))
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn direct_helper_correlation(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+        closed_at_ns: u64,
+    ) -> Option<NativeCorrelation> {
+        let flow = match self.direct_helper_flow(descriptor, opened_at_ns) {
+            Ok(Some(flow)) => flow,
+            Ok(None) => return None,
+            Err(reason) => {
+                return Some((
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    0,
+                    0,
+                    CorrelationState::Ambiguous,
+                    reason.into(),
+                ));
+            }
+        };
+        let key = FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote);
+        let Some(summary) = self.flow_registry.summary(&key) else {
+            return Some((
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+                0,
+                CorrelationState::Unavailable,
+                "direct-original-packet-not-retained".into(),
+            ));
+        };
+        let window_start = flow
+            .first_packet_at_ns
+            .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
+        let window_end = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
+        let in_window = |time: i64| time >= window_start && time <= window_end;
+        let observed = summary
+            .observations
+            .iter()
+            .filter(|observation| in_window(observation.timestamp.as_nanos()))
+            .count() as u64;
+        let incomplete = summary.omission_precision_lost
+            || summary.unretained_observations != 0
+            || summary.global_unretained_observations != 0
+            || !summary.omissions.is_empty();
+        let first_packet_retained = summary.observations.iter().any(|observation| {
+            in_window(observation.timestamp.as_nanos())
+                && observation
+                    .timestamp
+                    .as_nanos()
+                    .abs_diff(flow.first_packet_at_ns)
+                    <= DIRECT_PACKET_JOIN_SLACK_NS
+                && observation.attribution.as_ref().is_some_and(|owner| {
+                    owner.pid == flow.pid
+                        && owner.process.as_ref() == flow.process_image
+                        && owner.role.as_deref() == Some("client")
+                })
+        });
+        let competing_owner = summary.observations.iter().any(|observation| {
+            in_window(observation.timestamp.as_nanos())
+                && observation.attribution.as_ref().is_some_and(|owner| {
+                    owner.pid != flow.pid || owner.process.as_ref() != flow.process_image
+                })
+        });
+        if incomplete || !first_packet_retained || competing_owner {
+            return Some((
+                Some(summary.id),
+                None,
+                None,
+                None,
+                None,
+                observed,
+                summary.unretained_observations,
+                if competing_owner {
+                    CorrelationState::Ambiguous
+                } else {
+                    CorrelationState::Unavailable
+                },
+                if competing_owner {
+                    "direct-original-owner-conflict"
+                } else {
+                    "direct-original-packet-history-incomplete"
+                }
+                .into(),
+            ));
+        }
+        Some((
+            Some(summary.id),
+            Some(flow.pid),
+            Some(flow.process_image),
+            Some("client".into()),
+            Some("direct-route-receipt".into()),
+            observed,
+            0,
+            CorrelationState::Matched,
+            "direct-original-flow-and-managed-process-instance".into(),
+        ))
+    }
+
+    fn correlate_proxy_window(&self, window: &ApplicationConnectionWindow) -> NativeCorrelation {
+        #[cfg(all(windows, feature = "direct-route"))]
+        if let Some(result) = self.direct_helper_correlation(
+            window.descriptor,
+            window.opened_at_ns,
+            window.closed_at_ns.unwrap_or(window.opened_at_ns),
+        ) {
+            return result;
+        }
+        correlate_connection_window(&self.flow_registry, window)
+    }
+
+    fn correlate_proxy_observation(
+        &self,
+        client_peer: SocketAddr,
+        proxy_local: SocketAddr,
+        opened_at_ns: u64,
+        closed_at_ns: u64,
+    ) -> NativeCorrelation {
+        #[cfg(all(windows, feature = "direct-route"))]
+        {
+            let mut direct = None;
+            for transport in ["tcp", "udp"] {
+                if let Some(result) = self.direct_helper_correlation(
+                    ConnectionDescriptor {
+                        transport,
+                        client_peer,
+                        proxy_local,
+                    },
+                    opened_at_ns,
+                    closed_at_ns,
+                ) {
+                    if direct.is_some() {
+                        return (
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            0,
+                            0,
+                            CorrelationState::Ambiguous,
+                            "direct-helper-transport-ambiguous".into(),
+                        );
+                    }
+                    direct = Some(result);
+                }
+            }
+            if let Some(result) = direct {
+                return result;
+            }
+        }
+        correlate_native_observation(
+            &self.flow_registry,
+            client_peer,
+            proxy_local,
+            opened_at_ns,
+            closed_at_ns,
+        )
+    }
+
     fn socket_inception(
         &self,
         descriptor: ConnectionDescriptor,
@@ -392,6 +684,28 @@ impl NativeObservationContext {
         &self,
         window: &ApplicationConnectionWindow,
     ) -> super::ConnectionOwnerEvidence {
+        #[cfg(all(windows, feature = "direct-route"))]
+        match self.direct_helper_flow(window.descriptor, window.opened_at_ns) {
+            Ok(Some(flow)) => {
+                return super::ConnectionOwnerEvidence {
+                    state: "exact".into(),
+                    reason: "direct-route-receipt".into(),
+                    pid: Some(flow.pid),
+                    process_instance_id: Some(flow.process_instance_id),
+                    process_image: Some(flow.process_image),
+                    role: Some("client".into()),
+                    original_destination: Some(flow.tuple.remote),
+                }
+            }
+            Err(reason) => {
+                return super::ConnectionOwnerEvidence {
+                    state: "ambiguous".into(),
+                    reason: reason.into(),
+                    ..Default::default()
+                }
+            }
+            Ok(None) => {}
+        }
         let inception = *window.inception.lock().expect("inception result lock");
         if inception.state != "exact" {
             return super::ConnectionOwnerEvidence {
@@ -427,6 +741,169 @@ impl NativeObservationContext {
             0 => None,
             process_id => Some(process_id),
         }
+    }
+}
+
+#[cfg(all(test, windows, feature = "direct-route"))]
+mod direct_helper_tests {
+    use super::*;
+    use crate::deep_capture::direct_route::{DirectTuple, OriginalFlow};
+    use fragcap_proxy::InspectionDecider;
+
+    #[test]
+    fn helper_receipt_restores_original_owner_only_for_exact_accept_window() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:31001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:31002".parse().unwrap();
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "127.0.0.1:31003".parse().unwrap(),
+                remote: "127.0.0.1:31004".parse().unwrap(),
+            },
+            first_packet_at_ns: 120,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "client.exe".into(),
+        };
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(flow.clone())
+        );
+        let window = ApplicationConnectionWindow {
+            descriptor,
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let owner = context.connection_owner(&window);
+        assert_eq!(owner.state, "exact");
+        assert_eq!(owner.reason, "direct-route-receipt");
+        assert_eq!(owner.pid, Some(42));
+        assert_eq!(owner.process_image.as_deref(), Some("client.exe"));
+        assert_eq!(
+            owner.original_destination,
+            Some("127.0.0.1:31004".parse().unwrap())
+        );
+        let decision = ExactGameDecider::new(context.clone(), vec!["client".into()]).decide(
+            fragcap_proxy::InspectionRequest {
+                connection_id: 1,
+                client_peer: helper,
+                proxy_local: proxy,
+                opened_at_ns: 150,
+                transport: "tcp",
+            },
+            Duration::from_millis(5),
+        );
+        assert_eq!(decision.action, fragcap_proxy::InspectionAction::Inspect);
+        assert_eq!(
+            decision.owner_proof,
+            "direct-original-socket-and-managed-process-instance"
+        );
+        let missing_packet = context.correlate_proxy_window(&window);
+        assert_eq!(missing_packet.7, CorrelationState::Unavailable);
+        assert_eq!(missing_packet.8, "direct-original-packet-not-retained");
+        context.flow_registry.observe_at(
+            FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
+            Timestamp::from_nanos(121),
+            Some(
+                &fragcap_core::Attribution::new(42, "client.exe", Fidelity::Live)
+                    .with_role("client"),
+            ),
+        );
+        let original = context.correlate_proxy_window(&window);
+        assert_eq!(original.1, Some(42));
+        assert_eq!(original.2.as_deref(), Some("client.exe"));
+        assert_eq!(original.3.as_deref(), Some("client"));
+        assert_eq!(original.5, 1);
+        assert_eq!(original.7, CorrelationState::Matched);
+        assert_eq!(
+            context.correlate_proxy_observation(helper, proxy, 150, 300),
+            original
+        );
+        context.flow_registry.observe_at(
+            FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
+            Timestamp::from_nanos(122),
+            Some(&fragcap_core::Attribution::new(
+                99,
+                "other.exe",
+                Fidelity::Live,
+            )),
+        );
+        let contested = context.correlate_proxy_window(&window);
+        assert_eq!(contested.7, CorrelationState::Ambiguous);
+        assert_eq!(contested.8, "direct-original-owner-conflict");
+        assert_eq!(contested.1, None);
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 100_000_000).unwrap(),
+            None
+        );
+        assert_eq!(
+            context
+                .direct_helper_flow(
+                    ConnectionDescriptor {
+                        client_peer: "127.0.0.1:31005".parse().unwrap(),
+                        ..descriptor
+                    },
+                    150
+                )
+                .unwrap(),
+            None
+        );
+        let udp_flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Udp,
+                ..flow.tuple
+            },
+            ..flow.clone()
+        };
+        context
+            .register_direct_helper("udp", helper, proxy, udp_flow.clone(), 100, 200)
+            .unwrap();
+        let udp_descriptor = ConnectionDescriptor {
+            transport: "udp",
+            ..descriptor
+        };
+        assert_eq!(
+            context.direct_helper_flow(udp_descriptor, 150).unwrap(),
+            Some(udp_flow)
+        );
+        assert_eq!(
+            context
+                .correlate_proxy_observation(helper, proxy, 150, 300)
+                .7,
+            CorrelationState::Ambiguous
+        );
+        let udp_decision = ExactGameDecider::new(context.clone(), vec!["client".into()]).decide(
+            fragcap_proxy::InspectionRequest {
+                connection_id: 2,
+                client_peer: helper,
+                proxy_local: proxy,
+                opened_at_ns: 150,
+                transport: "udp",
+            },
+            Duration::from_millis(5),
+        );
+        assert_eq!(
+            udp_decision.action,
+            fragcap_proxy::InspectionAction::Inspect
+        );
+        assert_eq!(
+            context.register_direct_helper("tcp", helper, proxy, flow, 150, 250),
+            Err("direct-helper-window-overlap")
+        );
+        context.set_direct_route_active(true);
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        context.set_direct_route_active(false);
     }
 }
 
@@ -472,6 +949,40 @@ impl fragcap_proxy::InspectionDecider for ExactGameDecider {
             client_peer: request.client_peer,
             proxy_local: request.proxy_local,
         };
+        #[cfg(all(windows, feature = "direct-route"))]
+        loop {
+            match self
+                .context
+                .direct_helper_flow(descriptor, request.opened_at_ns)
+            {
+                Ok(Some(_)) => {
+                    let decision = if self.game_roles.iter().any(|role| role == "client") {
+                        InspectionDecision::verified_direct_route(elapsed_millis(started))
+                    } else {
+                        InspectionDecision::uninspected(
+                            InspectionReason::UnprovenRole,
+                            elapsed_millis(started),
+                        )
+                    };
+                    return decision.with_requested_scope(self.requested_scope.as_str());
+                }
+                Err(_) => {
+                    return InspectionDecision::uninspected(
+                        InspectionReason::AmbiguousOwner,
+                        elapsed_millis(started),
+                    )
+                    .with_requested_scope(self.requested_scope.as_str())
+                }
+                Ok(None) => {
+                    if !self.context.direct_route_active.load(Ordering::Acquire)
+                        || started.elapsed() >= budget.min(Duration::from_millis(10))
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
         let result = self
             .context
             .socket_inception(descriptor, request.opened_at_ns);
@@ -802,10 +1313,7 @@ impl ProxyBackend for NativeProxyAdapter {
                                 "controlled-harness-has-no-packet-flow".to_string(),
                             )
                         } else {
-                            correlate_connection_window(
-                                &correlation_context.flow_registry,
-                                descriptor,
-                            )
+                            correlation_context.correlate_proxy_window(descriptor)
                         };
                         super::ApplicationCorrelation {
                             target_id: Some(target_id),
@@ -1201,8 +1709,7 @@ impl NativeProxyLease {
                         "controlled-harness-has-no-packet-flow".to_string(),
                     )
                 } else {
-                    correlate_native_observation(
-                        &self.observation_context.flow_registry,
+                    self.observation_context.correlate_proxy_observation(
                         value.client_peer,
                         value.proxy_local,
                         value.connection_opened_at_ns,
@@ -1624,7 +2131,7 @@ fn active_process_start(
     Some((latest.0, latest.1.to_string(), latest.2))
 }
 
-fn bind_inception_process(
+pub(super) fn bind_inception_process(
     evidence: &super::CaptureProcessEvidence,
     inception: super::ConnectionInception,
     opened_at_ns: u64,
@@ -1709,6 +2216,7 @@ fn bind_inception_process(
         process_instance_id: Some(format!("process-{pid}-{}", started.as_nanos())),
         process_image: Some(image),
         role,
+        original_destination: None,
     }
 }
 

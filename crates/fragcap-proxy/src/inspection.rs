@@ -116,6 +116,20 @@ impl InspectionDecision {
         }
     }
 
+    /// Exact original client socket ownership carried through a session
+    /// receipt to an authenticated in-process helper connection.
+    pub const fn verified_direct_route(decided_after_ms: u64) -> Self {
+        Self {
+            requested_scope: "exact-game",
+            scope: InspectionScope::ExactGame,
+            action: InspectionAction::Inspect,
+            reason: InspectionReason::VerifiedGame,
+            decided_after_ms,
+            policy_id: "exact-game-v2",
+            owner_proof: "direct-original-socket-and-managed-process-instance",
+        }
+    }
+
     pub const fn with_requested_scope(mut self, requested_scope: &'static str) -> Self {
         self.requested_scope = requested_scope;
         self

@@ -510,6 +510,7 @@ pub struct ConnectionOwnerEvidence {
     pub process_instance_id: Option<String>,
     pub process_image: Option<String>,
     pub role: Option<String>,
+    pub original_destination: Option<std::net::SocketAddr>,
 }
 
 /// Socket ownership requested when the proxy accepts a connection. A bounded
@@ -1331,6 +1332,20 @@ fn correlation_record(
     connection_id: u64,
     value: ApplicationCorrelation,
 ) -> Value {
+    let connection_owner = value.connection_owner.map(|owner| {
+        let mut record = json!({
+            "state": owner.state,
+            "reason": owner.reason,
+            "pid": owner.pid,
+            "process_instance_id": owner.process_instance_id,
+            "process_image": owner.process_image,
+            "role": owner.role,
+        });
+        if let Some(destination) = owner.original_destination {
+            record["original_destination"] = json!(destination.to_string());
+        }
+        record
+    });
     json!({
         "type": "application.correlation",
         "schema_version": SCHEMA_VERSION,
@@ -1348,14 +1363,7 @@ fn correlation_record(
         "packet_observations_unretained": value.packet_observations_unretained,
         "correlation_state": value.state.unwrap_or_else(|| "unavailable".to_string()),
         "correlation_reason": value.reason.unwrap_or_else(|| "correlation-context-unavailable".to_string()),
-        "connection_owner": value.connection_owner.map(|owner| json!({
-            "state": owner.state,
-            "reason": owner.reason,
-            "pid": owner.pid,
-            "process_instance_id": owner.process_instance_id,
-            "process_image": owner.process_image,
-            "role": owner.role,
-        })),
+        "connection_owner": connection_owner,
     })
 }
 
@@ -2826,6 +2834,7 @@ mod tests {
                     process_instance_id: Some("process-71-4".into()),
                     process_image: Some("publisher.exe".into()),
                     role: Some("launcher".into()),
+                    original_destination: None,
                 }),
                 ..Default::default()
             },

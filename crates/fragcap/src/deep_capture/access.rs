@@ -11,6 +11,11 @@ use std::time::Duration;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(all(windows, feature = "direct-route"))]
+pub(crate) fn direct_route_elevated() -> io::Result<bool> {
+    windows::current_token_elevated()
+}
+
 #[derive(Clone, Debug)]
 pub struct OutputRecipient {
     sid: String,

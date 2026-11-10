@@ -37,6 +37,9 @@ targets      = ["dep:fragcap-targets"]
 # target store. Live packet capture, socket-table attribution, and ETW remain
 # independent capabilities so controlled consumers need no driver or elevation.
 deep-capture = ["targets", "dep:fragcap-proxy"]
+# S200's signed, session-owned Windows direct route. The native proxy remains
+# behind deep-capture, and ordinary Capture has no driver or local stack edge.
+direct-route = ["deep-capture", "dep:smoltcp"]
 # The live catalog seeder's HTTP source (issue #78, slice S035). Off by default;
 # implies `targets`. A library consumer that wants to seed from the wire opts in.
 net          = ["targets", "fragcap-targets/net"]
@@ -57,6 +60,7 @@ serde_json.workspace = true
 base64.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
+ring.workspace = true
 
 # The Windows volume inventory adapter (slice S052) enumerates fixed volumes for
 # the known-roots walk through GetLogicalDrives/GetDriveTypeW and reads each
@@ -71,6 +75,7 @@ getrandom.workspace = true
 # of a stored Windows argument fragment into an explicit argv. All are additive
 # on the same already-resolved 0.36 pin (no `Cargo.lock` package added).
 [target.'cfg(windows)'.dependencies]
+smoltcp = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -84,6 +89,9 @@ windows-sys = { workspace = true, features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Pipes",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
 ] }
 
@@ -91,6 +99,11 @@ windows-sys = { workspace = true, features = [
 serde_json.workspace = true
 bytes.workspace = true
 tempfile.workspace = true
+quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+hyper.workspace = true
+tokio.workspace = true
 # Enables fragcap-steam's synthetic appinfo.vdf generator for this crate's own
 # tests (tests/steam_source.rs), the same way fragcap-cli's dev-dependencies
 # already do for its launch-accumulation tests.

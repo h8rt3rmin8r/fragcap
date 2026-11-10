@@ -47,6 +47,23 @@ impl DeepCapture {
         config: SessionConfig,
         adapters: &mut AdapterSet<'_>,
     ) -> Result<PreparedSession, PreflightRefusal> {
+        Self::preflight_with_direct_socket(config, adapters, false)
+    }
+
+    /// Prepare an explicit signed final-client route for an internal caller.
+    /// Public CLI and calibration selection are introduced by the later slice.
+    pub fn preflight_direct_socket(
+        config: SessionConfig,
+        adapters: &mut AdapterSet<'_>,
+    ) -> Result<PreparedSession, PreflightRefusal> {
+        Self::preflight_with_direct_socket(config, adapters, true)
+    }
+
+    fn preflight_with_direct_socket(
+        config: SessionConfig,
+        adapters: &mut AdapterSet<'_>,
+        direct_socket: bool,
+    ) -> Result<PreparedSession, PreflightRefusal> {
         validate_config(&config)?;
         let target = adapters.targets.resolve(&config)?;
         if config
@@ -64,6 +81,11 @@ impl DeepCapture {
         let endpoint = adapters.endpoints.select()?;
         let capture = adapters.capture.prepare(&config, &target, endpoint)?;
         let routing = RoutingPlan::child_environment(endpoint, &config.proxy_bypass)?;
+        let routing = if direct_socket {
+            routing.with_direct_socket(&target)?
+        } else {
+            routing
+        };
         adapters.routing.prepare(&target, &routing)?;
         let session_id = adapters.identifiers.next_id("session")?;
         let plan_id = PlanId::new(adapters.identifiers.next_id("plan")?);

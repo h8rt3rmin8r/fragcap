@@ -44,7 +44,7 @@ mod transport;
 
 use std::net::SocketAddr;
 
-use crate::flow::{Direction, FlowKey};
+use crate::flow::{Direction, FlowKey, Proto};
 use crate::link::LinkType;
 use crate::packet::CapturedPacket;
 use crate::stats::ParseStats;
@@ -98,6 +98,98 @@ pub fn metadata_prefix_len(link_type: LinkType, frame: &[u8]) -> usize {
         _ => return transport_start,
     };
     transport_start.checked_add(header_len).unwrap_or(0)
+}
+
+/// Exact source and destination header for a complete raw IP packet. The
+/// caller supplies the packet's platform direction; this parser does not
+/// infer locality and never reads application payload bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawTransportHead {
+    pub transport: Proto,
+    pub source: SocketAddr,
+    pub destination: SocketAddr,
+    pub initial_tcp_syn: bool,
+}
+
+pub fn raw_transport_head(packet: &[u8]) -> Result<RawTransportHead, ParseReject> {
+    let (network, offset) = link::dispatch(LinkType::RAW, packet)?;
+    let bytes = packet.get(offset..).ok_or(ParseReject::ShortHeader)?;
+    let net = ip::parse(network, bytes)?;
+    if matches!(net.fragment, Some((_, Role::Subsequent | Role::Last))) {
+        return Err(ParseReject::UnmatchedFragment);
+    }
+    let transport = bytes
+        .get(net.transport_offset..net.extent)
+        .ok_or(ParseReject::ShortHeader)?;
+    let (proto, source_port, destination_port) = transport::ports(net.proto, transport)?;
+    let initial_tcp_syn = if proto == Proto::Tcp {
+        if transport.len() < 20 {
+            return Err(ParseReject::ShortHeader);
+        }
+        let header_len = usize::from(transport[12] >> 4) * 4;
+        if header_len < 20 {
+            return Err(ParseReject::MalformedTransportHeader);
+        }
+        if header_len > transport.len() {
+            return Err(ParseReject::ShortHeader);
+        }
+        transport[13] & 0x02 != 0 && transport[13] & 0x10 == 0
+    } else {
+        false
+    };
+    Ok(RawTransportHead {
+        transport: proto,
+        source: SocketAddr::new(net.src, source_port),
+        destination: SocketAddr::new(net.dst, destination_port),
+        initial_tcp_syn,
+    })
+}
+
+/// Borrow one complete UDP payload from a raw IP packet. Routing callers
+/// cannot forward a fragment as though it were a complete datagram.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawUdpDatagram<'a> {
+    pub source: SocketAddr,
+    pub destination: SocketAddr,
+    pub payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RawUdpReject {
+    Parse(ParseReject),
+    Fragmented,
+    InvalidLength,
+}
+
+pub fn raw_udp_datagram(packet: &[u8]) -> Result<RawUdpDatagram<'_>, RawUdpReject> {
+    let (network, offset) = link::dispatch(LinkType::RAW, packet).map_err(RawUdpReject::Parse)?;
+    let bytes = packet
+        .get(offset..)
+        .ok_or(RawUdpReject::Parse(ParseReject::ShortHeader))?;
+    let net = ip::parse(network, bytes).map_err(RawUdpReject::Parse)?;
+    if net.fragment.is_some() {
+        return Err(RawUdpReject::Fragmented);
+    }
+    if net.proto != transport::IPPROTO_UDP {
+        return Err(RawUdpReject::Parse(ParseReject::UnsupportedTransport));
+    }
+    let transport = bytes
+        .get(net.transport_offset..net.extent)
+        .ok_or(RawUdpReject::Parse(ParseReject::ShortHeader))?;
+    if transport.len() < 8 {
+        return Err(RawUdpReject::Parse(ParseReject::ShortHeader));
+    }
+    let declared = usize::from(u16::from_be_bytes([transport[4], transport[5]]));
+    if declared < 8 || declared > transport.len() {
+        return Err(RawUdpReject::InvalidLength);
+    }
+    let source_port = u16::from_be_bytes([transport[0], transport[1]]);
+    let destination_port = u16::from_be_bytes([transport[2], transport[3]]);
+    Ok(RawUdpDatagram {
+        source: SocketAddr::new(net.src, source_port),
+        destination: SocketAddr::new(net.dst, destination_port),
+        payload: &transport[8..declared],
+    })
 }
 
 /// Why a frame produced no flow key.
@@ -527,6 +619,97 @@ mod tests {
     const LOCAL_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
     const PEER_V4: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 5);
     const OTHER_V4: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
+
+    #[test]
+    fn raw_route_head_keeps_true_source_order_and_initial_syn() {
+        let mut tcp = f::tcp(51000, 443);
+        tcp[13] = 0x02;
+        let packet = f::ipv4(f::V4::default(), &f::cat(&[&tcp, b"opaque body"]));
+        let head = raw_transport_head(&packet).unwrap();
+        assert_eq!(head.transport, Proto::Tcp);
+        assert_eq!(head.source, SocketAddr::new(IpAddr::V4(LOCAL_V4), 51000));
+        assert_eq!(head.destination, SocketAddr::new(IpAddr::V4(PEER_V4), 443));
+        assert!(head.initial_tcp_syn);
+
+        tcp[13] = 0x12;
+        let reply = f::ipv4(f::V4::default(), &tcp);
+        assert!(!raw_transport_head(&reply).unwrap().initial_tcp_syn);
+        assert_eq!(
+            raw_transport_head(&f::ipv4(f::V4::default(), &tcp[..4])),
+            Err(ParseReject::ShortHeader)
+        );
+    }
+
+    #[test]
+    fn raw_route_head_walks_ipv6_extension_and_refuses_later_fragment() {
+        let mut syn = f::tcp(40000, 443);
+        syn[13] = 0x02;
+        let packet = f::ipv6(
+            f::V6 {
+                next: 0,
+                ..f::V6::default()
+            },
+            &f::cat(&[&f::extension(6), &syn]),
+        );
+        let head = raw_transport_head(&packet).unwrap();
+        assert_eq!(head.source.port(), 40000);
+        assert_eq!(head.destination.port(), 443);
+        assert!(head.initial_tcp_syn);
+        let later = f::ipv6(
+            f::V6 {
+                next: 44,
+                ..f::V6::default()
+            },
+            &f::fragment_ext(6, 1, false, 7),
+        );
+        assert_eq!(
+            raw_transport_head(&later),
+            Err(ParseReject::UnmatchedFragment)
+        );
+    }
+
+    #[test]
+    fn raw_udp_route_borrows_exact_payload_and_refuses_fragments() {
+        let udp = f::cat(&[&f::udp(41000, 53, 12), b"abcd", b"padding"]);
+        let ipv4 = f::ipv4(
+            f::V4 {
+                proto: 17,
+                ..f::V4::default()
+            },
+            &udp,
+        );
+        let datagram = raw_udp_datagram(&ipv4).unwrap();
+        assert_eq!(datagram.source.port(), 41000);
+        assert_eq!(datagram.destination.port(), 53);
+        assert_eq!(datagram.payload, b"abcd");
+        let ipv6 = f::ipv6(
+            f::V6 {
+                next: 17,
+                ..f::V6::default()
+            },
+            &udp,
+        );
+        assert_eq!(raw_udp_datagram(&ipv6).unwrap().payload, b"abcd");
+        let fragmented = f::ipv6(
+            f::V6 {
+                next: 44,
+                ..f::V6::default()
+            },
+            &f::cat(&[&f::fragment_ext(17, 0, true, 7), &udp]),
+        );
+        assert_eq!(raw_udp_datagram(&fragmented), Err(RawUdpReject::Fragmented));
+        let truncated = f::ipv4(
+            f::V4 {
+                proto: 17,
+                ..f::V4::default()
+            },
+            &f::udp(41000, 53, 12),
+        );
+        assert_eq!(
+            raw_udp_datagram(&truncated),
+            Err(RawUdpReject::InvalidLength)
+        );
+    }
 
     #[test]
     fn metadata_prefix_keeps_only_verified_headers() {

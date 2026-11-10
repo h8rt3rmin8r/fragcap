@@ -14,7 +14,10 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::time::{timeout, Instant};
 
-use crate::http1::{HttpRun, ProtocolError};
+use crate::http1::{
+    read_request_in_context, serve_http, HttpRequestContext, HttpRun, ObservationContext,
+    ProtocolError,
+};
 use crate::{
     ApplicationEvent, ApplicationEventKind, DestinationAuthority, DestinationPolicy,
     GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome, ProtocolAccounting, ProtocolLimits,
@@ -308,11 +311,19 @@ pub(crate) async fn serve_socks5(
     }
     on_stage(crate::ConnectionStage::TunnelResponse, true);
     accounting.socks_connect_succeeded = 1;
-    let classification = classify_prefix(
-        &client,
-        limits.header_timeout.min(Duration::from_millis(25)),
-    )
-    .await;
+    let direct_owner =
+        decision.owner_proof == "direct-original-socket-and-managed-process-instance";
+    let classification_budget = if direct_owner {
+        limits.header_timeout
+    } else {
+        limits.header_timeout.min(Duration::from_millis(25))
+    };
+    let partial_budget = if direct_owner {
+        limits.header_timeout.min(Duration::from_millis(100))
+    } else {
+        classification_budget
+    };
+    let classification = classify_prefix(&client, classification_budget, partial_budget).await;
     match classification {
         SocksClassification::Http => accounting.socks_http = 1,
         SocksClassification::Tls => accounting.socks_tls = 1,
@@ -329,6 +340,370 @@ pub(crate) async fn serve_socks5(
         bound,
         selected_peer,
     );
+    if classification == SocksClassification::Http
+        && direct_owner
+        && decision.action == crate::InspectionAction::Inspect
+    {
+        on_stage(crate::ConnectionStage::FirstRequest, false);
+        let first =
+            match read_request_in_context(&mut client, limits, HttpRequestContext::CleartextProxy)
+                .await
+            {
+                Ok(Some(first)) if !first.is_connect() => first,
+                Ok(Some(_)) => {
+                    return failed(
+                        accounting,
+                        SocksFailure::new(
+                            "direct-http-nested-connect",
+                            "direct HTTP bytes contain a CONNECT request",
+                        ),
+                    )
+                }
+                Ok(None) => {
+                    return failed(
+                        accounting,
+                        SocksFailure::new(
+                            "direct-http-no-request",
+                            "direct HTTP stream ended before its request",
+                        ),
+                    )
+                }
+                Err(error) => {
+                    return HttpRun {
+                        observations: Vec::new(),
+                        accounting,
+                        failure: Some(error),
+                    }
+                }
+            };
+        on_stage(crate::ConnectionStage::FirstRequest, true);
+        let original = request.authority.clone();
+        let original_port = original.port();
+        let budgets = limits.upstream;
+        let policy = policy.clone();
+        let mut first_upstream = Some(upstream);
+        let mut run = serve_http(
+            client,
+            first,
+            capability,
+            limits,
+            ObservationContext {
+                session_id,
+                connection_id,
+                client_peer: peer,
+                proxy_local: local,
+                protocol: "http",
+                application_sink: sink.clone(),
+                body_resources: body_resources.clone(),
+            },
+            false,
+            move |requested| {
+                let existing = first_upstream.take();
+                let original = original.clone();
+                let policy = policy.clone();
+                async move {
+                    if requested.port() != original_port {
+                        return Err(ProtocolError::new(
+                            "direct-http-port-mismatch",
+                            "HTTP authority port differs from the selected original socket",
+                        ));
+                    }
+                    match existing {
+                        Some(stream) => Ok(stream),
+                        None => crate::upstream::connect_upstream(&original, &policy, budgets)
+                            .await
+                            .map_err(|error| ProtocolError::new(error.code, error.detail)),
+                    }
+                }
+            },
+        )
+        .await;
+        carry_socks_connect_accounting(&mut run.accounting, &accounting);
+        return run;
+    }
+    if classification == SocksClassification::Tls
+        && direct_owner
+        && decision.action == crate::InspectionAction::Inspect
+    {
+        on_stage(crate::ConnectionStage::ClientTls, false);
+        let (mut client_tls, authority) = match crate::tls::accept_direct_client_tls(
+            client,
+            &request.authority,
+            &certificate_authority,
+            &leaf_cache,
+            key_log.clone(),
+            limits,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return HttpRun {
+                    observations: Vec::new(),
+                    accounting,
+                    failure: Some(error),
+                }
+            }
+        };
+        on_stage(crate::ConnectionStage::ClientTls, true);
+        accounting.client_tls_completed = 1;
+        let client_alpn = client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+        let client_facts = crate::runtime::tls_negotiation(
+            crate::TlsBoundary::Client,
+            &authority,
+            client_tls.get_ref().1.protocol_version(),
+            client_alpn.clone(),
+        );
+        crate::application::emit(
+            sink,
+            ApplicationEvent::now(
+                session_id,
+                connection_id,
+                None,
+                None,
+                ApplicationEventKind::TlsNegotiation(client_facts.clone()),
+            ),
+        );
+        let client_observation = crate::runtime::tls_observation(
+            session_id,
+            connection_id,
+            peer,
+            local,
+            client_facts,
+            None,
+        );
+        let upstream_config = client_alpn.as_ref().map_or_else(
+            || crate::tls::upstream_client_config_without_alpn(&tls_client_config),
+            |alpn| crate::tls::upstream_client_config_for_alpn(&tls_client_config, alpn.clone()),
+        );
+        on_stage(crate::ConnectionStage::UpstreamTls, false);
+        let mut upstream_tls = match crate::upstream::connect_tls_over_upstream(
+            &authority,
+            upstream,
+            limits.upstream,
+            upstream_config.clone(),
+        )
+        .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                return HttpRun {
+                    observations: vec![client_observation],
+                    accounting,
+                    failure: Some(ProtocolError::new(error.code, error.detail)),
+                }
+            }
+        };
+        on_stage(crate::ConnectionStage::UpstreamTls, true);
+        accounting.upstream_tls_completed = 1;
+        let upstream_alpn = upstream_tls.alpn_protocol();
+        let alpn_matches = match client_alpn.as_deref() {
+            Some(b"h2") => upstream_alpn.as_deref() == Some(b"h2"),
+            Some(b"http/1.1") => matches!(upstream_alpn.as_deref(), Some(b"http/1.1") | None),
+            None => upstream_alpn.is_none(),
+            Some(_) => false,
+        };
+        if !alpn_matches {
+            return HttpRun {
+                observations: vec![client_observation],
+                accounting,
+                failure: Some(ProtocolError::new(
+                    "direct-tls-alpn-mismatch",
+                    "client and origin selected different application protocols",
+                )),
+            };
+        }
+        let upstream_facts = crate::runtime::tls_negotiation(
+            crate::TlsBoundary::Upstream,
+            &authority,
+            upstream_tls.protocol_version(),
+            upstream_alpn,
+        );
+        crate::application::emit(
+            sink,
+            ApplicationEvent::now(
+                session_id,
+                connection_id,
+                None,
+                None,
+                ApplicationEventKind::TlsNegotiation(upstream_facts.clone()),
+            ),
+        );
+        let upstream_observation = crate::runtime::tls_observation(
+            session_id,
+            connection_id,
+            peer,
+            local,
+            upstream_facts,
+            None,
+        );
+        if client_alpn.as_deref() == Some(b"h2") {
+            let h2 = crate::http2::serve_http2(
+                client_tls,
+                upstream_tls,
+                authority,
+                crate::http2::Http2ConnectionContext {
+                    limits: limits.clone(),
+                    session_id: session_id.to_string(),
+                    connection_id,
+                    sink: sink.clone(),
+                    body_resources,
+                    blind_relay: false,
+                },
+            )
+            .await;
+            let mut protocol = h2.accounting;
+            carry_socks_connect_accounting(&mut protocol, &accounting);
+            return HttpRun {
+                observations: vec![client_observation, upstream_observation],
+                accounting: protocol,
+                failure: h2.failure,
+            };
+        }
+        let no_alpn = client_alpn.is_none();
+        let (is_http, prefix) = if no_alpn {
+            crate::runtime::read_protocol_prefix(
+                &mut client_tls,
+                limits.header_timeout.min(Duration::from_millis(25)),
+                limits.max_header_bytes,
+            )
+            .await
+        } else {
+            (true, Vec::new())
+        };
+        let mut client_tls = crate::runtime::PrefixedIo::new(prefix, client_tls);
+        if no_alpn && !is_http {
+            let generic = crate::relay_generic(
+                &mut client_tls,
+                &mut upstream_tls,
+                crate::GenericRelayContext {
+                    limits,
+                    upstream_read_timeout: Some(limits.upstream.read),
+                    shutdown: &mut shutdown,
+                    session_id,
+                    connection_id,
+                    sink,
+                    body_resources,
+                    buffer_bytes,
+                    provenance: crate::GenericStreamProvenance::TlsDecrypted,
+                },
+            )
+            .await;
+            accounting.generic_streams_tls_intercepted = 1;
+            accounting.generic_stream_bytes_observed = generic.report.observed_bytes;
+            accounting.generic_stream_bytes_retained = generic.report.retained_bytes;
+            accounting.generic_stream_bytes_omitted = generic.report.omitted_bytes;
+            let failure = generic
+                .error
+                .map(|error| ProtocolError::new("direct-tls-relay-failed", format!("{error:?}")));
+            return HttpRun {
+                observations: vec![
+                    client_observation,
+                    upstream_observation,
+                    crate::runtime::generic_tls_observation(
+                        session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &authority,
+                        failure.as_ref().map(|error| error.code),
+                    ),
+                ],
+                accounting,
+                failure,
+            };
+        }
+        on_stage(crate::ConnectionStage::FirstRequest, false);
+        let first =
+            match read_request_in_context(&mut client_tls, limits, HttpRequestContext::HttpsTunnel)
+                .await
+            {
+                Ok(Some(first)) if !first.is_connect() => first,
+                Ok(Some(_)) => {
+                    return HttpRun {
+                        observations: vec![client_observation, upstream_observation],
+                        accounting,
+                        failure: Some(ProtocolError::new(
+                            "direct-tls-nested-connect",
+                            "nested CONNECT is unsupported",
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    return HttpRun {
+                        observations: vec![client_observation, upstream_observation],
+                        accounting,
+                        failure: Some(ProtocolError::new(
+                            "direct-tls-no-http",
+                            "TLS ended before HTTP request",
+                        )),
+                    }
+                }
+                Err(error) => {
+                    return HttpRun {
+                        observations: vec![client_observation, upstream_observation],
+                        accounting,
+                        failure: Some(error),
+                    }
+                }
+            };
+        on_stage(crate::ConnectionStage::FirstRequest, true);
+        let original = request.authority.clone();
+        let tls_identity = authority.clone();
+        let mut first_upstream = Some(upstream_tls);
+        let mut run = serve_http(
+            client_tls,
+            first,
+            capability,
+            limits,
+            ObservationContext {
+                session_id,
+                connection_id,
+                client_peer: peer,
+                proxy_local: local,
+                protocol: "https",
+                application_sink: sink.clone(),
+                body_resources,
+            },
+            false,
+            move |requested| {
+                let existing = first_upstream.take();
+                let original = original.clone();
+                let tls_identity = tls_identity.clone();
+                let policy = policy.clone();
+                let limits = limits.clone();
+                let upstream_config = upstream_config.clone();
+                async move {
+                    if requested.port() != original.port() {
+                        return Err(ProtocolError::new(
+                            "direct-tls-port-mismatch",
+                            "HTTP authority port differs from original socket",
+                        ));
+                    }
+                    match existing {
+                        Some(stream) => Ok(stream),
+                        None => {
+                            crate::tls::connect_verified_tls_to_destination(
+                                original,
+                                tls_identity,
+                                policy,
+                                limits,
+                                upstream_config,
+                            )
+                            .await
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+        carry_socks_connect_accounting(&mut run.accounting, &accounting);
+        run.accounting.client_tls_completed = accounting.client_tls_completed;
+        run.accounting.upstream_tls_completed = accounting.upstream_tls_completed;
+        run.observations
+            .splice(0..0, [client_observation, upstream_observation]);
+        return run;
+    }
     let provenance = match classification {
         SocksClassification::Tls => crate::GenericStreamProvenance::TlsEncrypted,
         SocksClassification::Http | SocksClassification::OpaqueTcp => {
@@ -436,6 +811,18 @@ pub(crate) async fn serve_socks5(
             )
         }
     }
+}
+
+fn carry_socks_connect_accounting(target: &mut ProtocolAccounting, source: &ProtocolAccounting) {
+    target.socks_negotiations = source.socks_negotiations;
+    target.socks_auth_succeeded = source.socks_auth_succeeded;
+    target.socks_connect_requested = source.socks_connect_requested;
+    target.socks_connect_succeeded = source.socks_connect_succeeded;
+    target.socks_ipv4 = source.socks_ipv4;
+    target.socks_ipv6 = source.socks_ipv6;
+    target.socks_domain = source.socks_domain;
+    target.socks_http = source.socks_http;
+    target.socks_tls = source.socks_tls;
 }
 
 pub(crate) async fn negotiate<S>(
@@ -1944,10 +2331,17 @@ async fn write_reply(
     stream.write_all(&bytes).await
 }
 
-async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassification {
-    let deadline = tokio::time::Instant::now() + budget;
+async fn classify_prefix(
+    stream: &TcpStream,
+    initial_budget: Duration,
+    partial_budget: Duration,
+) -> SocksClassification {
+    let initial_deadline = tokio::time::Instant::now() + initial_budget;
+    let mut partial_deadline = None;
+    let mut longest_prefix = 0;
     let mut bytes = [0_u8; 256];
     loop {
+        let deadline = partial_deadline.unwrap_or(initial_deadline);
         let read = match tokio::time::timeout_at(deadline, stream.peek(&mut bytes)).await {
             Ok(Ok(read)) => read,
             Ok(Err(_)) | Err(_) => return SocksClassification::OpaqueTcp,
@@ -1965,7 +2359,14 @@ async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassific
         {
             return SocksClassification::OpaqueTcp;
         }
-        if read == 0 || read == bytes.len() || tokio::time::Instant::now() >= deadline {
+        if read > longest_prefix {
+            longest_prefix = read;
+            partial_deadline = Some(tokio::time::Instant::now() + partial_budget);
+        }
+        if read == 0
+            || read == bytes.len()
+            || tokio::time::Instant::now() >= partial_deadline.unwrap_or(initial_deadline)
+        {
             return SocksClassification::OpaqueTcp;
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
