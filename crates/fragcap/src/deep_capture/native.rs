@@ -336,7 +336,8 @@ struct DirectHelperOwner {
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
-type DirectHelperRegistry = BTreeMap<(SocketAddr, SocketAddr), Vec<DirectHelperOwner>>;
+type DirectHelperRegistry =
+    BTreeMap<(&'static str, SocketAddr, SocketAddr), Vec<DirectHelperOwner>>;
 
 impl NativeObservationContext {
     /// Publish only newly retained process facts during an active capture.
@@ -391,20 +392,26 @@ impl NativeObservationContext {
     #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn register_direct_helper(
         &self,
+        transport: &'static str,
         helper_local: SocketAddr,
         proxy_local: SocketAddr,
         flow: super::direct_route::OriginalFlow,
         opened_earliest_ns: u64,
         opened_latest_ns: u64,
     ) -> Result<(), &'static str> {
-        if opened_earliest_ns > opened_latest_ns || helper_local == proxy_local {
+        if !matches!(transport, "tcp" | "udp")
+            || opened_earliest_ns > opened_latest_ns
+            || helper_local == proxy_local
+        {
             return Err("invalid-direct-helper-window");
         }
         let mut registry = self.direct_helpers.lock().expect("direct helper lock");
-        if registry.values().map(Vec::len).sum::<usize>() >= 256 {
+        if registry.values().map(Vec::len).sum::<usize>() >= 512 {
             return Err("direct-helper-registry-full");
         }
-        let owners = registry.entry((helper_local, proxy_local)).or_default();
+        let owners = registry
+            .entry((transport, helper_local, proxy_local))
+            .or_default();
         if owners.iter().any(|owner| {
             owner.opened_earliest_ns <= opened_latest_ns
                 && opened_earliest_ns <= owner.opened_latest_ns
@@ -447,11 +454,12 @@ impl NativeObservationContext {
         descriptor: ConnectionDescriptor,
         opened_at_ns: u64,
     ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
-        if descriptor.transport != "tcp" {
-            return Ok(None);
-        }
         let registry = self.direct_helpers.lock().expect("direct helper lock");
-        let Some(owners) = registry.get(&(descriptor.client_peer, descriptor.proxy_local)) else {
+        let Some(owners) = registry.get(&(
+            descriptor.transport,
+            descriptor.client_peer,
+            descriptor.proxy_local,
+        )) else {
             return Ok(None);
         };
         let mut matching = owners.iter().filter(|owner| {
@@ -579,7 +587,7 @@ mod direct_helper_tests {
             process_instance_id: "process-42-100".into(),
         };
         context
-            .register_direct_helper(helper, proxy, flow.clone(), 100, 200)
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
             .unwrap();
         let descriptor = ConnectionDescriptor {
             transport: "tcp",
@@ -635,8 +643,40 @@ mod direct_helper_tests {
                 .unwrap(),
             None
         );
+        let udp_flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Udp,
+                ..flow.tuple
+            },
+            ..flow.clone()
+        };
+        context
+            .register_direct_helper("udp", helper, proxy, udp_flow.clone(), 100, 200)
+            .unwrap();
+        let udp_descriptor = ConnectionDescriptor {
+            transport: "udp",
+            ..descriptor
+        };
         assert_eq!(
-            context.register_direct_helper(helper, proxy, flow, 150, 250),
+            context.direct_helper_flow(udp_descriptor, 150).unwrap(),
+            Some(udp_flow)
+        );
+        let udp_decision = ExactGameDecider::new(context.clone(), vec!["client".into()]).decide(
+            fragcap_proxy::InspectionRequest {
+                connection_id: 2,
+                client_peer: helper,
+                proxy_local: proxy,
+                opened_at_ns: 150,
+                transport: "udp",
+            },
+            Duration::from_millis(5),
+        );
+        assert_eq!(
+            udp_decision.action,
+            fragcap_proxy::InspectionAction::Inspect
+        );
+        assert_eq!(
+            context.register_direct_helper("tcp", helper, proxy, flow, 150, 250),
             Err("direct-helper-window-overlap")
         );
         context.set_direct_route_active(true);

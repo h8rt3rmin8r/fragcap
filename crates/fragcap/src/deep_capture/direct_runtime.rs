@@ -548,6 +548,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     })?;
                                 context
                                     .register_direct_helper(
+                                        "tcp",
                                         stream.local_addr()?,
                                         stream.peer_addr()?,
                                         flow.clone(),
@@ -575,10 +576,19 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 continue;
                             }
                         };
-                        excluded
-                            .lock()
-                            .expect("helper route lock")
-                            .insert(association.relay_tuple()?);
+                        let relay = association.relay_tuple()?;
+                        let registered_at = unix_now_ns()?;
+                        context
+                            .register_direct_helper(
+                                "udp",
+                                relay.local,
+                                relay.remote,
+                                flow.clone(),
+                                registered_at,
+                                registered_at.saturating_add(10_000_000_000),
+                            )
+                            .map_err(io::Error::other)?;
+                        excluded.lock().expect("helper route lock").insert(relay);
                         issued_receipts.push(receipt);
                         if let Err(error) = association.send(datagram.payload) {
                             packet_finished(&stats, PacketDisposition::Lost)?;
@@ -626,6 +636,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 })?;
                             context
                                 .register_direct_helper(
+                                    "tcp",
                                     stream.local_addr()?,
                                     stream.peer_addr()?,
                                     flow.clone(),
@@ -1290,10 +1301,11 @@ mod tests {
                 "GET /direct-tls HTTP/1.1\r\nHost: {original}\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
-            let mut response = Vec::new();
-            client.read_to_end(&mut response).unwrap();
-            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-            assert!(response.ends_with(b"TLS-DIRECT"));
+            const RESPONSE: &[u8] =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nTLS-DIRECT";
+            let mut response = vec![0u8; RESPONSE.len()];
+            client.read_exact(&mut response).unwrap();
+            assert_eq!(response, RESPONSE);
         } else {
             panic!("unknown client protocol");
         }
