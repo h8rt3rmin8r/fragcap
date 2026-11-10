@@ -873,7 +873,7 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
-        net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
         os::windows::process::CommandExt,
         process::{Child, Command, Stdio},
         thread,
@@ -965,7 +965,7 @@ mod tests {
             client.read_to_end(&mut response).unwrap();
             assert_eq!(response, b"runtime-origin-reply");
         } else if protocol == "udp" {
-            let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
             client.connect(original).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
@@ -997,9 +997,14 @@ mod tests {
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_direct_runtime_routes_exact_generation() {
+        live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        live_tcp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    fn live_tcp_case(ip: IpAddr) {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
-        let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let origin = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
         let original = origin.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = origin.accept().unwrap();
@@ -1008,15 +1013,11 @@ mod tests {
             assert_eq!(body, b"runtime-client-request");
             stream.write_all(b"runtime-origin-reply").unwrap();
         });
-        let config = NativeProxyConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            4,
-            1024,
-            Duration::from_secs(2),
-        )
-        .unwrap()
-        .with_session_id("s200-direct-runtime")
-        .unwrap();
+        let config =
+            NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 1024, Duration::from_secs(2))
+                .unwrap()
+                .with_session_id("s200-direct-runtime")
+                .unwrap();
         let mut policy = DestinationPolicy::new(config.listen());
         policy.grant_for_test(original);
         let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
@@ -1035,7 +1036,7 @@ mod tests {
         release_client(&mut child);
         finish_client(child);
         let stop_result = runtime.stop();
-        eprintln!("direct runtime probe: stop={stop_result:?}");
+        eprintln!("direct runtime probe: family={ip}, stop={stop_result:?}");
         let stats = stop_result.unwrap();
         assert!(stats.packets.consumed > 0, "selected flow was not routed");
         assert_eq!(stats.packets.lost, 0);
@@ -1049,9 +1050,14 @@ mod tests {
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_direct_runtime_routes_udp_datagram() {
+        live_udp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        live_udp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    fn live_udp_case(ip: IpAddr) {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
-        let origin = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let origin = UdpSocket::bind(SocketAddr::new(ip, 0)).unwrap();
         origin
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
@@ -1062,15 +1068,11 @@ mod tests {
             assert_eq!(&body[..length], b"runtime-udp-request");
             origin.send_to(b"runtime-udp-reply", peer).unwrap();
         });
-        let config = NativeProxyConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            4,
-            1024,
-            Duration::from_secs(2),
-        )
-        .unwrap()
-        .with_session_id("s200-direct-udp-runtime")
-        .unwrap();
+        let config =
+            NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 1024, Duration::from_secs(2))
+                .unwrap()
+                .with_session_id("s200-direct-udp-runtime")
+                .unwrap();
         let mut policy = DestinationPolicy::new(config.listen());
         policy.grant_for_test(original);
         let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
@@ -1091,7 +1093,7 @@ mod tests {
         let stop_result = runtime.stop();
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         eprintln!(
-            "direct UDP runtime probe: child={:?}, stderr={}, stop={stop_result:?}, proxy={:?}",
+            "direct UDP runtime probe: family={ip}, child={:?}, stderr={}, stop={stop_result:?}, proxy={:?}",
             output.status,
             String::from_utf8_lossy(&output.stderr),
             proxy_report.observation.protocol

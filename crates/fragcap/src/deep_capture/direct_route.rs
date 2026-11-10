@@ -861,4 +861,114 @@ mod tests {
         assert_eq!(counts.lost, 3);
         assert_eq!(counts.release(), Ok(()));
     }
+
+    #[test]
+    fn versioned_driver_free_oracle_has_no_skipped_outcomes() {
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../integration/direct-route-matrix-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(oracle["schema_version"], 1);
+        let rows = oracle["required_rows"].as_array().unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        for row in rows {
+            let id = row["id"].as_str().unwrap();
+            assert!(seen.insert(id), "duplicate direct route row: {id}");
+            if row["tier"] != "driver-free" {
+                continue;
+            }
+            checked += 1;
+            let result = match id {
+                "exact-chain-tcp" => {
+                    select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000))
+                }
+                "unrelated-same-destination" => {
+                    select_direct_flow(&evidence(), &[event(13, 40000)], packet(40000))
+                }
+                "launcher-proxy-coexistence" => {
+                    select_direct_flow(&evidence(), &[event(10, 40000)], packet(40000))
+                }
+                "pid-reuse" => {
+                    let mut reused = evidence();
+                    reused.events.push(ProcessEvent::Exited {
+                        pid: 12,
+                        at: Timestamp::from_nanos(1270),
+                    });
+                    reused.events.push(ProcessEvent::started(
+                        12,
+                        1,
+                        "unrelated.exe",
+                        "",
+                        Timestamp::from_nanos(1280),
+                    ));
+                    select_direct_flow(&reused, &[event(12, 40000)], packet(40000))
+                }
+                "port-reuse" => {
+                    let mut competing = event(13, 40000);
+                    competing.endpoint_id = 100;
+                    select_direct_flow(&evidence(), &[event(12, 40000), competing], packet(40000))
+                }
+                "late-event" => {
+                    let mut late = event(12, 40000);
+                    late.at_qpc = 102;
+                    select_direct_flow(&evidence(), &[late], packet(40000))
+                }
+                "missing-event" => select_direct_flow(&evidence(), &[], packet(40000)),
+                "uncertain-clock" => select_direct_flow(
+                    &evidence(),
+                    &[event(12, 40000)],
+                    DirectPacketHead {
+                        clock_error_ns: MAX_CLOCK_ERROR_NS + 1,
+                        ..packet(40000)
+                    },
+                ),
+                "receipt-replay" => {
+                    let DirectAdmission::Selected(flow) =
+                        select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000))
+                    else {
+                        panic!("oracle setup must select")
+                    };
+                    let mut ledger = DirectReceiptLedger::new("oracle-session".into(), 1);
+                    let receipt = ledger.issue(flow.clone(), 500).unwrap();
+                    ledger
+                        .consume(receipt, "oracle-session", flow.tuple, 7, 100)
+                        .unwrap();
+                    assert_eq!(
+                        ledger.consume(receipt, "oracle-session", flow.tuple, 8, 101),
+                        Err(ReceiptError::Replayed)
+                    );
+                    continue_if_expected(row, "replayed", id);
+                    continue;
+                }
+                "queue-saturation" => {
+                    let mut counts = DirectPacketAccounting::default();
+                    counts.receive().unwrap();
+                    counts.finish(PacketDisposition::Lost).unwrap();
+                    counts.release().unwrap();
+                    assert_eq!(counts.lost, 1);
+                    continue_if_expected(row, "lost-accounted", id);
+                    continue;
+                }
+                _ => panic!("unhandled driver-free direct route row: {id}"),
+            };
+            let actual = match result {
+                DirectAdmission::Selected(_) => "selected",
+                DirectAdmission::Bypassed(_) => "bypassed",
+                DirectAdmission::Ambiguous(_) => "ambiguous",
+                DirectAdmission::Unavailable(_) => "unavailable",
+            };
+            continue_if_expected(row, actual, id);
+        }
+        assert_eq!(checked, 10);
+        assert_eq!(seen.len(), rows.len());
+    }
+
+    fn continue_if_expected(row: &serde_json::Value, actual: &str, id: &str) {
+        assert_eq!(
+            row["expected"].as_str().unwrap(),
+            actual,
+            "direct route row: {id}"
+        );
+    }
 }
