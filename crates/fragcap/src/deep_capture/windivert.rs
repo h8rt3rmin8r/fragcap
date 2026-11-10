@@ -564,10 +564,15 @@ mod tests {
                 if selected_packet {
                     let now = start.elapsed().as_millis() as i64;
                     let stack = stack.as_mut().unwrap();
+                    if let Ok(ip) = smoltcp::wire::Ipv4Packet::new_checked(&packet[..length]) {
+                        let offset = ip.header_len() as usize;
+                        let tcp = smoltcp::wire::TcpPacket::new_checked(&packet[offset..length]);
+                        eprintln!("stack probe checksums ipv4={}, tcp={:?}", ip.verify_checksum(), tcp.map(|tcp| tcp.verify_checksum(&smoltcp::wire::IpAddress::v4(127,0,0,1), &smoltcp::wire::IpAddress::v4(127,0,0,1))));
+                    }
                     stack
                         .ingest(&packet[..length], now)
                         .map_err(|error| io::Error::other(format!("ingest: {error:?}")))?;
-                    eprintln!("stack probe ingress {:?}, bytes={length}", endpoints);
+                    eprintln!("stack probe ingress {:?}, bytes={length}, listening={}", endpoints, stack.is_listening());
                     let mut body = [0u8; 32];
                     let count = stack.receive_bytes(&mut body);
                     client_bytes.extend_from_slice(&body[..count]);

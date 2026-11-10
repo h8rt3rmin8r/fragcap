@@ -232,6 +232,11 @@ impl TcpFlowStack {
         self.sockets.get_mut::<tcp::Socket>(self.socket).close();
         self.poll(now_ms);
     }
+
+    #[cfg(test)]
+    pub fn is_listening(&mut self) -> bool {
+        self.sockets.get_mut::<tcp::Socket>(self.socket).is_listening()
+    }
 }
 
 #[cfg(test)]
