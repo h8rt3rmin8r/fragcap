@@ -177,6 +177,7 @@ pub struct CalibrationWorkflow {
     pub target: CalibrationTargetAuthority,
     pub selected_launch_case: Option<CompatibilityLaunchCase>,
     pub routing_strategy: CompatibilityRoutingStrategy,
+    pub route_identity: crate::compatibility::CompatibilityRouteIdentity,
     pub address_family: CompatibilityAddressFamily,
     pub requested_scope: CompatibilityRequestedInspectionScope,
     pub effective_scope: CompatibilityInspectionScope,

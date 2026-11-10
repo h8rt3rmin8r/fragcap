@@ -16,7 +16,7 @@ use crate::compatibility::{
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
     CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
-    CompatibilityRoutingStrategy,
+    CompatibilityRouteIdentity, CompatibilityRoutingStrategy,
 };
 use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 use crate::model::{
@@ -24,9 +24,10 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_13_TO_14, MIGRATE_1_TO_2,
-    MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8,
-    MIGRATE_8_TO_9, MIGRATE_9_TO_10, SCHEMA_VERSION,
+    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_13_TO_14,
+    MIGRATE_14_TO_15_FACT, MIGRATE_14_TO_15_WORKFLOW, MIGRATE_1_TO_2, MIGRATE_2_TO_3,
+    MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
+    MIGRATE_9_TO_10, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::workflow::{
@@ -232,6 +233,27 @@ impl Store {
             tx.pragma_update(None, "user_version", 14i64)?;
             tx.commit()?;
             version = 14;
+        }
+
+        if version == 14 {
+            let tx = conn.transaction()?;
+            // Historical migration fixtures mix current and older table shapes.
+            // Add each missing column independently; a real v14 store lacks both.
+            let fact_has_route = tx
+                .prepare("SELECT route_identity FROM deep_capture_facts LIMIT 0")
+                .is_ok();
+            let workflow_has_route = tx
+                .prepare("SELECT route_identity FROM calibration_workflows LIMIT 0")
+                .is_ok();
+            if !fact_has_route {
+                tx.execute_batch(MIGRATE_14_TO_15_FACT)?;
+            }
+            if !workflow_has_route {
+                tx.execute_batch(MIGRATE_14_TO_15_WORKFLOW)?;
+            }
+            tx.pragma_update(None, "user_version", 15i64)?;
+            tx.commit()?;
+            version = 15;
         }
 
         if version != SCHEMA_VERSION {
@@ -1355,6 +1377,41 @@ impl Store {
         allow_capture_fallback: bool,
         now: u64,
     ) -> Result<CalibrationWorkflow, TargetsError> {
+        self.create_calibration_workflow_with_route_intent(
+            target,
+            requested_protocols,
+            selected_launch_case,
+            routing_strategy,
+            CompatibilityRouteIdentity::ChildEnvironmentV1,
+            address_family,
+            requested_scope,
+            effective_scope,
+            middleware_handling,
+            inspection_policy_id,
+            allow_game_scope_retry,
+            allow_capture_fallback,
+            now,
+        )
+    }
+
+    /// Create a workflow whose exact route composition cannot drift on resume.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_calibration_workflow_with_route_intent(
+        &mut self,
+        target: &TargetEntry,
+        requested_protocols: &[CompatibilityProtocol],
+        selected_launch_case: Option<CompatibilityLaunchCase>,
+        routing_strategy: CompatibilityRoutingStrategy,
+        route_identity: CompatibilityRouteIdentity,
+        address_family: CompatibilityAddressFamily,
+        requested_scope: CompatibilityRequestedInspectionScope,
+        effective_scope: CompatibilityInspectionScope,
+        middleware_handling: CompatibilityMiddlewareHandling,
+        inspection_policy_id: &str,
+        allow_game_scope_retry: bool,
+        allow_capture_fallback: bool,
+        now: u64,
+    ) -> Result<CalibrationWorkflow, TargetsError> {
         if inspection_policy_id.is_empty() {
             return Err(TargetsError::Model(
                 "calibration inspection policy identity cannot be empty".to_string(),
@@ -1400,11 +1457,12 @@ impl Store {
                  requested_protocols, observed_protocols,
                  completed_protocols, remaining_protocols, attempted_case_keys,
                  attempt_ordinal, attempt_phase, attempt_protocol, attempt_key,
-                 state, pause_reason, revision, created_at, updated_at)
+                 state, pause_reason, revision, created_at, updated_at,
+                 route_identity)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                      ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
                      ?24, ?25, 0, ?26, ?27, ?28, ?29, ?30, 0, NULL, NULL, NULL,
-                     ?31, NULL, 1, ?32, ?32)",
+                     ?31, NULL, 1, ?32, ?32, ?33)",
             params![
                 CALIBRATION_WORKFLOW_RECORD_VERSION,
                 target_id,
@@ -1438,6 +1496,7 @@ impl Store {
                 encode_case_keys(&checkpoint.attempted_case_keys)?,
                 checkpoint.state.as_str(),
                 now,
+                route_identity.as_str(),
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -1557,9 +1616,9 @@ impl Store {
                  address_family, protocol_family, requested_inspection_scope,
                  effective_inspection_scope, middleware_handling,
                  inspection_policy_id, final_owner_executable,
-                 final_owner_handoff, stale, note)
+                 final_owner_handoff, stale, note, route_identity)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 fact.target_id,
                 fact.key.as_str(),
@@ -1583,6 +1642,7 @@ impl Store {
                 if fact.final_owner_handoff { 1i64 } else { 0i64 },
                 if fact.stale { 1i64 } else { 0i64 },
                 fact.note,
+                fact.route_identity.map(CompatibilityRouteIdentity::as_str),
             ],
         );
         match result {
@@ -1613,7 +1673,7 @@ impl Store {
                     address_family, protocol_family, requested_inspection_scope,
                     effective_inspection_scope, middleware_handling,
                     inspection_policy_id, final_owner_executable,
-                    final_owner_handoff, stale, note
+                    final_owner_handoff, stale, note, route_identity
              FROM deep_capture_facts
              WHERE target_id = ?1
              ORDER BY id",
@@ -1919,7 +1979,7 @@ fn calibration_workflow_from_connection(
                     completed_protocols, remaining_protocols,
                     attempted_case_keys, attempt_ordinal, attempt_phase,
                     attempt_protocol, attempt_key, state, pause_reason, revision,
-                    created_at, updated_at
+                    created_at, updated_at, route_identity
              FROM calibration_workflows WHERE id = ?1",
             params![id],
             read_calibration_workflow_row,
@@ -1972,6 +2032,7 @@ fn read_calibration_workflow_row(
     let revision: i64 = row.get(38)?;
     let created_at: i64 = row.get(39)?;
     let updated_at: i64 = row.get(40)?;
+    let route_identity: String = row.get(41)?;
 
     Ok((|| {
         if record_version != CALIBRATION_WORKFLOW_RECORD_VERSION {
@@ -2042,6 +2103,7 @@ fn read_calibration_workflow_row(
                 .map(CompatibilityLaunchCase::parse)
                 .transpose()?,
             routing_strategy: CompatibilityRoutingStrategy::parse(&routing_strategy)?,
+            route_identity: CompatibilityRouteIdentity::parse(&route_identity)?,
             address_family: CompatibilityAddressFamily::parse(&address_family)?,
             requested_scope: CompatibilityRequestedInspectionScope::parse(&requested_scope)?,
             effective_scope: CompatibilityInspectionScope::parse(&effective_scope)?,
@@ -2104,6 +2166,7 @@ fn read_compatibility_fact_row(
     let final_owner_handoff: i64 = row.get(20)?;
     let stale: i64 = row.get(21)?;
     let note: Option<String> = row.get(22)?;
+    let route_identity: Option<String> = row.get(23)?;
 
     Ok((|| {
         let key = CompatibilityFactKey::parse(&key)?;
@@ -2127,6 +2190,10 @@ fn read_compatibility_fact_row(
             routing_strategy: routing_strategy
                 .as_deref()
                 .map(CompatibilityRoutingStrategy::parse)
+                .transpose()?,
+            route_identity: route_identity
+                .as_deref()
+                .map(CompatibilityRouteIdentity::parse)
                 .transpose()?,
             address_family: address_family
                 .as_deref()

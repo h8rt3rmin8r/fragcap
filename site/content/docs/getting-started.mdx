@@ -13,7 +13,7 @@ Capture passively records packets and attributes flows to processes. Deep Captur
 
 ## Before you begin
 
-Live packet recording requires Windows, an elevated terminal, and separately installed Npcap in WinPcap API-compatible mode. The native Deep Capture proxy is included. Neither mode reaches inside the target process. Do not configure a system-wide proxy, disable certificate verification, or attempt to bypass pinning.
+Live packet recording requires Windows, an elevated terminal, and separately installed Npcap in WinPcap API-compatible mode. The native Deep Capture proxy is included. The S201 source candidate adds an explicit signed direct-socket route for final-client TCP and supported UDP; published v0.10.14 does not include that route. Neither mode reaches inside the target process. Do not configure a system-wide proxy, disable certificate verification, or attempt to bypass pinning.
 
 ```mermaid
 flowchart TB
@@ -30,7 +30,7 @@ Npcap supplies live packets, while attribution uses Windows socket and process e
 
 ## 1. Install fragcap and its prerequisites
 
-Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH`; the portable archive runs from its unpacked directory. The MSI and fragcap executable are unsigned. The S199 candidate adds a separately signed upstream WinDivert driver, which is not in published v0.10.14 downloads. A checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
+Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH` and provisions the installation CA; the portable archive runs from its unpacked directory and requires a separate elevated `fragcap ca install` before Deep Capture. The MSI and fragcap executable are unsigned. The S201 source candidate bundles a separately signed upstream WinDivert driver and needs no separate WinDivert installer; published v0.10.14 does not contain it. A checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
 
 If installing Npcap through Wireshark, leave **Install Npcap** selected and enable **WinPcap API-compatible Mode** in the Npcap installer. Loopback support is supplied by current Npcap installations.
 
@@ -40,13 +40,21 @@ If installing Npcap through Wireshark, leave **Install Npcap** selected and enab
 
 ## 2. Verify the environment
 
-Open an elevated terminal and run:
+Open a terminal and run:
 
 ```powershell
 fragcap doctor
 ```
 
 Doctor is read-only: it starts no capture, proxy, target, or trust change. It reports separate Capture and Deep Capture readiness, environment and driver checks, and native resource ownership and recovery guidance. Unavailable and indeterminate are not ready. Healthy completed history or deliberately retained sensitive evidence is not automatically stale residue to delete. Do not expect a universal synthetic all-green report.
+
+| Action | Administrator required? | Reason |
+| --- | --- | --- |
+| `doctor`, `ca status`, help, targets, and extcap queries | No | Read-only or current-user data. |
+| `extcap install --user` and `extcap uninstall --user` | No | Writes the current user's Wireshark directory. System or custom protected directories require permission to write there. |
+| Live `capture`, Wireshark extcap `--capture`, and Deep Capture | Yes | The live Npcap packet path checks elevation. |
+| `ca install`, `ca repair`, `ca remove` | Yes | Changes the LocalMachine installation CA. The MSI performs its own install-time CA setup. |
+| S201 candidate `deep-capture --direct-route` | Yes | Also opens the exact packaged WinDivert driver after authorization. |
 
 Review named remediation first. `fragcap doctor --fix` is the individually confirmed action runner, not permission to repair everything. Re-run plain Doctor afterward. Optional `fragcap extcap install` adds a Wireshark source but is not required for command-line Capture. See [Doctor and troubleshooting](/docs/guides/doctor-and-troubleshooting).
 

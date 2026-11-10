@@ -72,6 +72,7 @@ jobs:
           $result = & cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1 2>&1
           $result | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { throw 'Disposable direct route probe failed' }
+          if (-not [regex]::IsMatch(($result -join "`n"), 'S201 candidate timing: receipt_ns=\d+, socket_event_published_ns=Some\(\d+\), process_proof_observed_ns=Some\(\d+\), decision_ns=\d+, held_ns=\d+, outcome=selected')) { throw 'Managed chain omitted the complete selected-candidate timing timeline' }
           $summary = [regex]::Match(($result -join "`n"), 'test result: ok\. (\d+) passed; 0 failed; 0 ignored;')
           if (-not $summary.Success -or [int]$summary.Groups[1].Value -ne $names.Count) { throw 'A required disposable probe was skipped' }
           Write-Host "Direct route matrix: $($rows.Count) Windows rows mapped to $($names.Count) passing probes; zero skipped"
@@ -82,6 +83,7 @@ jobs:
             if ($LASTEXITCODE -ne 0 -or -not [regex]::IsMatch(($repeat -join "`n"), 'test result: ok\. 1 passed; 0 failed; 0 ignored;')) {
               throw "Managed direct-route chain failed on repeat $attempt of 5"
             }
+            if (-not [regex]::IsMatch(($repeat -join "`n"), 'S201 candidate timing: receipt_ns=\d+, socket_event_published_ns=Some\(\d+\), process_proof_observed_ns=Some\(\d+\), decision_ns=\d+, held_ns=\d+, outcome=selected')) { throw "Managed chain timing incomplete on repeat $attempt of 5" }
           }
           Write-Host 'Managed direct-route chain: 5 additional exact runs passed'
 
@@ -96,13 +98,16 @@ jobs:
       - name: Build official-feature binary
         run: |
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
-          cargo build --locked --release -p fragcap-cli --features live,socket-table,etw
+          cargo build --locked --release -p fragcap-cli --features live,socket-table,etw,direct-route
 
       - name: Create staged install layout
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path target\windows-integration\stage -Force | Out-Null
           Copy-Item -LiteralPath target\release\fragcap.exe -Destination target\windows-integration\stage\fragcap.exe
+          foreach ($name in @('WinDivert.dll', 'WinDivert64.sys', 'WinDivert-LICENSE.txt', 'WinDivert-source.zip')) {
+            Copy-Item -LiteralPath (Join-Path $env:WINDIVERT_VERIFIED_ROOT $name) -Destination (Join-Path 'target\windows-integration\stage' $name)
+          }
 
       - name: Run complete hosted matrix
         run: cargo xtask windows-integration --run hosted --binary target\windows-integration\stage\fragcap.exe --report target\windows-integration\hosted.jsonl

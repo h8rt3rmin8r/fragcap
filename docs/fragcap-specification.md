@@ -230,7 +230,8 @@ researchers without process injection, function hooking, target memory reads,
 or in-place changes to installed game files. S199 packages an official signed
 direct-route component. S200 adds a feature-gated library adapter for controlled
 direct TCP and selected UDP routes, while the public CLI and calibration
-selection remain under #583. The child-environment route remains available.
+selection are introduced by S201 as one explicit composite plan. Published
+v0.10.14 has no direct-route CLI. The child-environment route remains available.
 
 The library is the product. The command line tool is one consumer of it, and
 the shell wrappers are consumers of the command line tool. Deep Capture's
@@ -4074,7 +4075,7 @@ License compliance is verified in continuous integration against a
 declared allowlist, and a new dependency introducing a license outside
 it fails the build.
 
-S130 closes the native dependency policy around three reviewed graph views: complete all-feature Windows and Linux workspaces plus the exact shipped Windows closure rooted at `fragcap-cli` with `live`, `socket-table`, and `etw`. The offline `cargo xtask supply-chain` authority normalizes package identity, source, checksum, license metadata, declared Rust requirement, resolved features, dependency kind, target expression, and exact edge before comparing graph digests and counts. It separately enforces critical pins and review cadence, Cargo-compatible major or pre-1.0 compatibility lines, graph-bound unsafe review, and finite exceptions with owner, rationale, creation, expiry, and removal condition. Any unknown, expired, duplicate, unused, or broad exception fails.
+S130 closes the native dependency policy around three reviewed graph views: complete all-feature Windows and Linux workspaces plus the exact shipped Windows closure rooted at `fragcap-cli` with `live`, `socket-table`, `etw`, and (from S201) `direct-route`. The offline `cargo xtask supply-chain` authority normalizes package identity, source, checksum, license metadata, declared Rust requirement, resolved features, dependency kind, target expression, and exact edge before comparing graph digests and counts. It separately enforces critical pins and review cadence, Cargo-compatible major or pre-1.0 compatibility lines, graph-bound unsafe review, and finite exceptions with owner, rationale, creation, expiry, and removal condition. Any unknown, expired, duplicate, unused, or broad exception fails.
 
 The network-backed `audit` workflow runs cargo-deny on pull requests, `main`, manual dispatch, and weekly. It fails on actionable advisories, yanked, unmaintained, unsound, license, ban, or source findings and on unavailable advisory data. Static policy never converts absent mutable intelligence into a clean result. Routine and emergency maintenance procedures are in `docs/maintainers/supply-chain.md`.
 
@@ -5587,7 +5588,7 @@ The protocol and launch matrix is normative:
 | Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |
 | Warm client | Explicit bounded operator-owned close-and-retry, otherwise refused | S113, #309 |
 | Target process hooks, memory reads, in-place game-file edits, memory-derived key extraction, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
-| Official signed direct-route component | Packaged by S199; S200 adds the feature-gated library route and authenticated native bridge for exact selected TCP/UDP flows; public CLI and calibration selection remain pending | #577 through #579, #581, #582; CLI #583 |
+| Official signed direct-route component | Packaged by S199; S200 adds the feature-gated library route and authenticated native bridge; S201 adds an explicit public composite environment/direct route, exact route-identity facts, and the operator journey | #577 through #579, #581 through #584, #587 |
 
 Protocol classification and omission reasons are exhaustive under S120 and
 #316. Proxy bypass and local-destination correctness are explicit under S122

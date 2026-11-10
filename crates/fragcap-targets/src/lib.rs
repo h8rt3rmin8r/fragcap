@@ -75,7 +75,8 @@ pub use compatibility::{
     CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
     CompatibilityFreshness, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMatrix, CompatibilityMatrixRow, CompatibilityMiddlewareHandling,
-    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy,
+    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRouteIdentity,
+    CompatibilityRoutingStrategy,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,

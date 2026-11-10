@@ -5,7 +5,7 @@
     "target": "x86_64-pc-windows-msvc",
     "architecture": "x86_64",
     "pe_machine": "8664",
-    "features": ["etw", "live", "native-deep-capture", "socket-table"],
+    "features": ["direct-route", "etw", "live", "native-deep-capture", "socket-table"],
     "deep_capture_backend": "fragcap-native"
   },
   "controlled_smoke": {

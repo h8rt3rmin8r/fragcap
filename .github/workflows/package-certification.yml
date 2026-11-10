@@ -117,7 +117,7 @@ jobs:
           $env:FRAGCAP_SOURCE_REVISION = $env:GITHUB_SHA
           $env:FRAGCAP_OFFICIAL_BUILD = '1'
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
-          cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
+          cargo build --release --locked -p fragcap-cli --features live,socket-table,etw,direct-route
           $identity = & target/release/fragcap.exe __build-identity | ConvertFrom-Json
           if (-not $identity.official -or $identity.source_revision -ne $env:GITHUB_SHA) { throw 'Official build identity was not embedded' }
 
@@ -132,10 +132,10 @@ jobs:
           Copy-Item -LiteralPath LICENSE -Destination target/release/LICENSE
           Copy-Item -LiteralPath NOTICE -Destination target/release/NOTICE
           $env:SOURCE_DATE_EPOCH = git show -s --format=%ct $env:GITHUB_SHA
-          cargo cyclonedx --manifest-path crates/fragcap-cli/Cargo.toml --format json --spec-version 1.5 --describe binaries --target x86_64-pc-windows-msvc --no-default-features --features live,socket-table,etw
+          cargo cyclonedx --manifest-path crates/fragcap-cli/Cargo.toml --format json --spec-version 1.5 --describe binaries --target x86_64-pc-windows-msvc --no-default-features --features live,socket-table,etw,direct-route
           if ($LASTEXITCODE -ne 0) { throw 'CycloneDX generation failed' }
           Copy-Item -LiteralPath crates/fragcap-cli/fragcap_bin.cdx.json -Destination target/release/fragcap.cdx.json
-          cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
+          cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw direct-route" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
           if ($LASTEXITCODE -ne 0) { throw 'Third-party notice generation failed' }
           cargo xtask supply-chain stamp-evidence target/release/fragcap.cdx.json target/release/THIRD-PARTY-NOTICES.txt
           if ($LASTEXITCODE -ne 0) { throw 'Supply-chain evidence stamping failed' }

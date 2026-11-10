@@ -115,34 +115,10 @@ pub fn select_direct_flow(
     events: &[DirectSocketEvent],
     packet: DirectPacketHead,
 ) -> DirectAdmission {
-    let matching: Vec<_> = events
-        .iter()
-        .filter(|event| event.tuple == packet.tuple)
-        .collect();
-    if matching.is_empty() {
-        return DirectAdmission::Unavailable("socket-event-missing");
-    }
-    let eligible: Vec<_> = matching
-        .iter()
-        .copied()
-        .filter(|event| {
-            event.at_qpc <= packet.at_qpc
-                && event.kind == SocketEventKind::Open
-                && !matching.iter().any(|other| {
-                    other.kind == SocketEventKind::Close
-                        && other.endpoint_id == event.endpoint_id
-                        && other.at_qpc >= event.at_qpc
-                        && other.at_qpc <= packet.at_qpc
-                })
-        })
-        .collect();
-    if eligible.is_empty() {
-        return DirectAdmission::Bypassed("first-packet-before-owner-event");
-    }
-    if eligible.len() != 1 {
-        return DirectAdmission::Ambiguous("competing-socket-events");
-    }
-    let event = eligible[0];
+    let event = match exact_socket_event(events, packet) {
+        Ok(event) => event,
+        Err(rejection) => return rejection.into(),
+    };
     if event.clock_error_ns > MAX_CLOCK_ERROR_NS
         || packet.clock_error_ns > MAX_CLOCK_ERROR_NS
         || event.at_unix_ns < 0
@@ -188,6 +164,58 @@ pub fn select_direct_flow(
     })
 }
 
+enum SocketEventRejection {
+    Bypassed(&'static str),
+    Ambiguous(&'static str),
+    Unavailable(&'static str),
+}
+
+impl From<SocketEventRejection> for DirectAdmission {
+    fn from(value: SocketEventRejection) -> Self {
+        match value {
+            SocketEventRejection::Bypassed(reason) => Self::Bypassed(reason),
+            SocketEventRejection::Ambiguous(reason) => Self::Ambiguous(reason),
+            SocketEventRejection::Unavailable(reason) => Self::Unavailable(reason),
+        }
+    }
+}
+
+fn exact_socket_event(
+    events: &[DirectSocketEvent],
+    packet: DirectPacketHead,
+) -> Result<DirectSocketEvent, SocketEventRejection> {
+    let matching: Vec<_> = events
+        .iter()
+        .filter(|event| event.tuple == packet.tuple)
+        .collect();
+    if matching.is_empty() {
+        return Err(SocketEventRejection::Unavailable("socket-event-missing"));
+    }
+    let eligible: Vec<_> = matching
+        .iter()
+        .copied()
+        .filter(|event| {
+            event.at_qpc <= packet.at_qpc
+                && event.kind == SocketEventKind::Open
+                && !matching.iter().any(|other| {
+                    other.kind == SocketEventKind::Close
+                        && other.endpoint_id == event.endpoint_id
+                        && other.at_qpc >= event.at_qpc
+                        && other.at_qpc <= packet.at_qpc
+                })
+        })
+        .collect();
+    if eligible.is_empty() {
+        return Err(SocketEventRejection::Bypassed(
+            "first-packet-before-owner-event",
+        ));
+    }
+    if eligible.len() != 1 {
+        return Err(SocketEventRejection::Ambiguous("competing-socket-events"));
+    }
+    Ok(*eligible[0])
+}
+
 /// One held first packet. The payload remains opaque until exact selection;
 /// a bypass returns these original bytes for unmodified reinjection.
 pub struct PendingCandidate<A> {
@@ -195,6 +223,7 @@ pub struct PendingCandidate<A> {
     pub packet: Vec<u8>,
     pub address: A,
     deadline_ns: u64,
+    received_ns: u64,
 }
 
 pub enum CandidateDecision<A> {
@@ -202,11 +231,13 @@ pub enum CandidateDecision<A> {
         flow: OriginalFlow,
         packet: Vec<u8>,
         address: A,
+        received_ns: u64,
     },
     PassThrough {
         reason: &'static str,
         packet: Vec<u8>,
         address: A,
+        received_ns: u64,
     },
 }
 
@@ -225,7 +256,7 @@ impl<A> CandidateBuffer<A> {
             || max_bytes == 0
             || max_bytes > 4 * 1024 * 1024
             || wait_ns == 0
-            || wait_ns > 10_000_000
+            || wait_ns > 1_000_000_000
         {
             return None;
         }
@@ -248,6 +279,7 @@ impl<A> CandidateBuffer<A> {
         let candidate = PendingCandidate {
             head,
             deadline_ns: now_ns.saturating_add(self.wait_ns),
+            received_ns: now_ns,
             packet,
             address,
         };
@@ -271,6 +303,7 @@ impl<A> CandidateBuffer<A> {
         evidence: Option<&CaptureProcessEvidence>,
         events: &[DirectSocketEvent],
         now_ns: u64,
+        helper_pid: u32,
     ) -> Vec<CandidateDecision<A>> {
         enum Status {
             Wait,
@@ -281,10 +314,14 @@ impl<A> CandidateBuffer<A> {
         let count = self.pending.len();
         for _ in 0..count {
             let candidate = self.pending.pop_front().expect("fixed pending length");
-            let decision = if now_ns >= candidate.deadline_ns {
-                Some(DirectAdmission::Bypassed("candidate-wait-expired"))
-            } else {
-                evidence.map(|evidence| select_direct_flow(evidence, events, candidate.head))
+            // The worker may receive the socket event and process proof on the
+            // same iteration that the deadline becomes due. Resolve that
+            // already available proof before deciding that it was absent.
+            let decision = match exact_socket_event(events, candidate.head) {
+                Ok(event) if event.pid == helper_pid => {
+                    Some(DirectAdmission::Bypassed("helper-self-excluded"))
+                }
+                _ => evidence.map(|evidence| select_direct_flow(evidence, events, candidate.head)),
             };
             let status = match decision {
                 Some(DirectAdmission::Selected(flow)) => Status::Selected(flow),
@@ -297,6 +334,11 @@ impl<A> CandidateBuffer<A> {
                 | None => Status::Wait,
                 Some(DirectAdmission::Unavailable(reason)) => Status::Pass(reason),
             };
+            let status = if matches!(status, Status::Wait) && now_ns >= candidate.deadline_ns {
+                Status::Pass("candidate-wait-expired")
+            } else {
+                status
+            };
             match status {
                 Status::Wait => self.pending.push_back(candidate),
                 Status::Selected(flow) => {
@@ -305,6 +347,7 @@ impl<A> CandidateBuffer<A> {
                         flow,
                         packet: candidate.packet,
                         address: candidate.address,
+                        received_ns: candidate.received_ns,
                     });
                 }
                 Status::Pass(reason) => {
@@ -313,6 +356,7 @@ impl<A> CandidateBuffer<A> {
                         reason,
                         packet: candidate.packet,
                         address: candidate.address,
+                        received_ns: candidate.received_ns,
                     });
                 }
             }
@@ -328,6 +372,7 @@ impl<A> CandidateBuffer<A> {
                 reason: "route-stopped",
                 packet: candidate.packet,
                 address: candidate.address,
+                received_ns: candidate.received_ns,
             })
             .collect()
     }
@@ -605,23 +650,26 @@ mod tests {
     }
 
     #[test]
-    fn candidate_wait_selects_only_inside_ten_millisecond_bound() {
-        let mut buffer = CandidateBuffer::new(2, 128, 10_000_000).unwrap();
+    fn candidate_wait_uses_available_proof_before_expiry() {
+        let mut buffer = CandidateBuffer::new(2, 128, 100_000_000).unwrap();
         buffer
             .enqueue(packet(40000), b"first".to_vec(), 7u32, 0)
             .ok()
             .expect("first candidate admitted");
-        assert!(buffer.resolve(Some(&evidence()), &[], 5_000_000).is_empty());
+        assert!(buffer
+            .resolve(Some(&evidence()), &[], 50_000_000, 99)
+            .is_empty());
         assert_eq!(buffer.len(), 1);
-        let decisions = buffer.resolve(Some(&evidence()), &[event(12, 40000)], 9_999_999);
+        let decisions = buffer.resolve(Some(&evidence()), &[event(12, 40000)], 100_000_000, 99);
         assert_eq!(decisions.len(), 1);
         let CandidateDecision::Selected {
             flow,
             packet: selected_packet,
             address,
+            ..
         } = &decisions[0]
         else {
-            panic!("exact client must select before deadline")
+            panic!("available exact client proof must win at the deadline")
         };
         assert_eq!(flow.pid, 12);
         assert_eq!(selected_packet, b"first");
@@ -632,20 +680,21 @@ mod tests {
             .enqueue(packet(40000), b"late".to_vec(), 8, 0)
             .ok()
             .expect("second candidate admitted");
-        let decisions = buffer.resolve(Some(&evidence()), &[event(12, 40000)], 10_000_000);
+        let decisions = buffer.resolve(Some(&evidence()), &[], 100_000_000, 99);
         assert!(matches!(
             &decisions[0],
             CandidateDecision::PassThrough {
                 reason: "candidate-wait-expired",
                 packet,
-                address: 8
+                address: 8,
+                ..
             } if packet == b"late"
         ));
     }
 
     #[test]
     fn unrelated_candidate_returns_original_packet_and_capacity_is_finite() {
-        let mut buffer = CandidateBuffer::new(1, 8, 10_000_000).unwrap();
+        let mut buffer = CandidateBuffer::new(1, 8, 100_000_000).unwrap();
         buffer
             .enqueue(packet(40000), b"opaque".to_vec(), 1u32, 0)
             .ok()
@@ -655,13 +704,14 @@ mod tests {
             .expect_err("bounded candidate queue");
         assert_eq!(overflow.packet, b"other");
         assert_eq!(overflow.address, 2);
-        let decisions = buffer.resolve(Some(&evidence()), &[event(13, 40000)], 100);
+        let decisions = buffer.resolve(Some(&evidence()), &[event(13, 40000)], 100, 99);
         assert!(matches!(
             &decisions[0],
             CandidateDecision::PassThrough {
                 reason: "owner-not-final-client",
                 packet,
-                address: 1
+                address: 1,
+                ..
             } if packet == b"opaque"
         ));
         buffer
@@ -674,10 +724,41 @@ mod tests {
             CandidateDecision::PassThrough {
                 reason: "route-stopped",
                 packet,
-                address: 3
+                address: 3,
+                ..
             } if packet == b"stop"
         ));
         assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn proven_helper_packet_passes_without_process_evidence_or_wait() {
+        let mut buffer = CandidateBuffer::new(1, 128, 100_000_000).unwrap();
+        buffer
+            .enqueue(packet(40000), b"opaque".to_vec(), 7u32, 0)
+            .ok()
+            .expect("helper candidate admitted");
+        let decisions = buffer.resolve(None, &[event(99, 40000)], 1_000_000, 99);
+        assert!(matches!(
+            &decisions[0],
+            CandidateDecision::PassThrough {
+                reason: "helper-self-excluded",
+                packet,
+                address: 7,
+                ..
+            } if packet == b"opaque"
+        ));
+        assert_eq!(buffer.len(), 0);
+
+        let mut buffer = CandidateBuffer::new(1, 128, 100_000_000).unwrap();
+        buffer
+            .enqueue(packet(40000), b"unknown".to_vec(), 8u32, 0)
+            .ok()
+            .expect("unknown candidate admitted");
+        let mut future = event(99, 40000);
+        future.at_qpc = 102;
+        assert!(buffer.resolve(None, &[future], 1_000_000, 99).is_empty());
+        assert_eq!(buffer.len(), 1);
     }
 
     #[test]

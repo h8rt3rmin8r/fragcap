@@ -1,0 +1,9 @@
+<!-- spec-impact: 2, 19, 20, 27 -->
+
+2026-11-10: Combine #587, #583, and #584 in S201. The 10 ms S200 candidate hold missed proof publication in the controlled cold chain. Start the S201 qualification sweep at a receipt-origin 100 ms bound, retain socket events for 300 ms, and evaluate available proof before expiry. Keep the separate 90 ms worker-progress watchdog and finite queue. This bound is provisional until exact selected TCP/UDP and parallel unrelated sentinel checks pass; 250, 500, and 1000 ms are comparison values only if needed.
+
+2026-11-10: Add a distinct `child-environment+direct-socket-v1` compatibility route identity rather than expanding the historical routing-strategy enum. Schema 15 preserves and labels earlier child-environment facts, so they remain readable and cannot qualify the composite route. A positive composite route fact requires a matched final-client direct-route receipt, native proxy observation, and independent packet evidence. Guided resume retains the selected route identity.
+
+2026-11-10: Add the existing `fragcap/direct-route` feature to the official CLI build, package identity, Windows integration build, and supply-chain release graph. No third-party package or dependency version is added; the release graph gains a first-party feature edge. The packaged WinDivert hashes and signature contract remain exact. Read-only Doctor and target commands remain ordinary-user operations; live Capture, extcap live capture, CA mutation, and direct-route sessions require the rights exercised by their implementation.
+
+2026-11-10: Preserve the composite route in guided completion commands and refuse user-confirmed positive composite route facts as current evidence. Only observed runs can qualify a positive direct-route fact, and the CLI records one only after the exact final-client receipt, proxy outcome, and passive packet join.

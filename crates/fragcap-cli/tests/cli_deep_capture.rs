@@ -16,8 +16,8 @@ use fragcap::targets::{
     resolved_client_launch, ClassificationSource, CompatibilityAddressFamily,
     CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
     CompatibilityInspectionScope, CompatibilityLaunchCase, CompatibilityMiddlewareHandling,
-    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRoutingStrategy,
-    Selection, Store, TargetClassification, TargetEntry,
+    CompatibilityProtocol, CompatibilityRequestedInspectionScope, CompatibilityRouteIdentity,
+    CompatibilityRoutingStrategy, Selection, Store, TargetClassification, TargetEntry,
 };
 
 fn controlled_environment() -> &'static Mutex<()> {
@@ -133,6 +133,7 @@ fn seed_target_with_executable(local: &Path, with_compatibility: bool, executabl
             fact.proxy_backend = Some("fragcap-native".to_string());
             fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
             fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+            fact.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentV1);
             fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
             fact.protocol = Some(CompatibilityProtocol::NotApplicable);
             fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);

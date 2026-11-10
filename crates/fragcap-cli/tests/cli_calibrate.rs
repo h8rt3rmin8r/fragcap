@@ -16,7 +16,8 @@ use fragcap::targets::{
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
     CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
-    CompatibilityRoutingStrategy, Store, TargetClassification, TargetEntry,
+    CompatibilityRouteIdentity, CompatibilityRoutingStrategy, Store, TargetClassification,
+    TargetEntry,
 };
 
 const STABLE_ID: i64 = 75_000;
@@ -1043,6 +1044,7 @@ fn insert_routing_fact(
 }
 
 fn complete_scope_dimensions(fact: &mut CompatibilityFact, _launch_case: CompatibilityLaunchCase) {
+    fact.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentV1);
     fact.requested_scope = Some(CompatibilityRequestedInspectionScope::Auto);
     fact.effective_scope = Some(CompatibilityInspectionScope::LaunchChain);
     fact.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
