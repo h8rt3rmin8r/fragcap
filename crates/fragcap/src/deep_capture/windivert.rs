@@ -70,6 +70,10 @@ impl Address {
         self.flags & (1 << 20) != 0
     }
 
+    pub fn ip_checksum_valid(self) -> bool {
+        self.flags & (1 << 21) != 0
+    }
+
     pub fn socket(self) -> Option<SocketData> {
         (self.layer() == SOCKET_LAYER as u8 || self.layer() == FLOW_LAYER as u8)
             .then(|| unsafe { ptr::read_unaligned(self.data.as_ptr().cast()) })
@@ -555,7 +559,6 @@ mod tests {
                             .map_err(|error| io::Error::other(format!("stack: {error:?}")))?,
                     );
                     selected = Some(tuple);
-                    eprintln!("stack probe selected {tuple:?}, address={address:?}");
                 }
                 let selected_packet = selected.is_some_and(|tuple| {
                     endpoints == Some((tuple.local, tuple.remote))
@@ -564,15 +567,9 @@ mod tests {
                 if selected_packet {
                     let now = start.elapsed().as_millis() as i64;
                     let stack = stack.as_mut().unwrap();
-                    if let Ok(ip) = smoltcp::wire::Ipv4Packet::new_checked(&packet[..length]) {
-                        let offset = ip.header_len() as usize;
-                        let tcp = smoltcp::wire::TcpPacket::new_checked(&packet[offset..length]);
-                        eprintln!("stack probe checksums ipv4={}, tcp={:?}", ip.verify_checksum(), tcp.map(|tcp| tcp.verify_checksum(&smoltcp::wire::IpAddress::v4(127,0,0,1), &smoltcp::wire::IpAddress::v4(127,0,0,1))));
-                    }
                     stack
-                        .ingest(&packet[..length], now)
+                        .ingest_diverted(&packet[..length], now, address.ip_checksum_valid())
                         .map_err(|error| io::Error::other(format!("ingest: {error:?}")))?;
-                    eprintln!("stack probe ingress {:?}, bytes={length}, listening={}", endpoints, stack.is_listening());
                     let mut body = [0u8; 32];
                     let count = stack.receive_bytes(&mut body);
                     client_bytes.extend_from_slice(&body[..count]);
@@ -582,7 +579,6 @@ mod tests {
                         replied = true;
                     }
                     while let Some(response) = stack.pop_egress() {
-                        eprintln!("stack probe egress {:?}, bytes={}, flags={}", ipv4_tcp_endpoints(&response), response.len(), address.flags);
                         let sent = worker_handle.send(&response, &address)?;
                         if sent != response.len() {
                             return Err(io::Error::other("short stack reinjection"));

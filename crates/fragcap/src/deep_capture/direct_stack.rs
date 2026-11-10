@@ -10,10 +10,10 @@ use std::{
 use fragcap_core::{HeaderParser, InterfaceAddrs, LinkType, ParseOutcome, Proto};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
-    phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken},
+    phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     socket::tcp,
     time::Instant,
-    wire::{HardwareAddress, IpAddress, IpCidr},
+    wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Packet},
 };
 
 use super::direct_route::DirectTuple;
@@ -27,6 +27,7 @@ pub enum StackError {
     PacketTooLarge,
     QueueFull,
     FlowMismatch,
+    UntrustedChecksum,
     ListenFailed,
 }
 
@@ -110,11 +111,6 @@ impl Device for PacketDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ip;
         capabilities.max_transmission_unit = MAX_RAW_PACKET;
-        // Windows loopback diversion can yield an uncomputed IPv4 header
-        // checksum even when TCP checksum validation succeeds. The packet
-        // comes from WinDivert's kernel boundary; emitted headers remain
-        // software checksummed by the stack.
-        capabilities.checksum.ipv4 = Checksum::Tx;
         capabilities
     }
 }
@@ -201,6 +197,29 @@ impl TcpFlowStack {
         Ok(())
     }
 
+    /// WinDivert marks some loopback IPv4 headers as kernel-validated even
+    /// though their wire checksum is unfinished. Normalize only that header
+    /// for the private stack; never modify the packet used for reinjection.
+    pub fn ingest_diverted(
+        &mut self,
+        packet: &[u8],
+        now_ms: i64,
+        kernel_validated_ipv4: bool,
+    ) -> Result<(), StackError> {
+        if packet.first().is_some_and(|version| version >> 4 == 4) {
+            let header = Ipv4Packet::new_checked(packet).map_err(|_| StackError::FlowMismatch)?;
+            if !header.verify_checksum() {
+                if !kernel_validated_ipv4 {
+                    return Err(StackError::UntrustedChecksum);
+                }
+                let mut normalized = packet.to_vec();
+                Ipv4Packet::new_unchecked(&mut normalized).fill_checksum();
+                return self.ingest(&normalized, now_ms);
+            }
+        }
+        self.ingest(packet, now_ms)
+    }
+
     pub fn poll(&mut self, now_ms: i64) {
         self.iface.poll(
             Instant::from_millis(now_ms),
@@ -236,11 +255,6 @@ impl TcpFlowStack {
     pub fn close_send(&mut self, now_ms: i64) {
         self.sockets.get_mut::<tcp::Socket>(self.socket).close();
         self.poll(now_ms);
-    }
-
-    #[cfg(test)]
-    pub fn is_listening(&mut self) -> bool {
-        self.sockets.get_mut::<tcp::Socket>(self.socket).is_listening()
     }
 }
 
@@ -316,14 +330,26 @@ mod tests {
         let mut sent_server = false;
         let mut received_client = Vec::new();
         let mut received_server = Vec::new();
+        let mut checked_kernel_checksum = false;
         for now in 0..2_000 {
             let at = Instant::from_millis(now);
             client_iface.poll(at, &mut client_device, &mut client_sockets);
             while let Some(packet) = client_device.pop_egress() {
-                server.ingest(&packet, now).unwrap();
-                // Deliver an exact duplicate to prove TCP retransmission does
-                // not duplicate bytes at the bridge boundary.
-                server.ingest(&packet, now).unwrap();
+                if !checked_kernel_checksum {
+                    let mut unfinished = packet.clone();
+                    unfinished[10..12].copy_from_slice(&[0, 0]);
+                    assert_eq!(
+                        server.ingest_diverted(&unfinished, now, false),
+                        Err(StackError::UntrustedChecksum)
+                    );
+                    server.ingest_diverted(&unfinished, now, true).unwrap();
+                    server.ingest_diverted(&unfinished, now, true).unwrap();
+                    checked_kernel_checksum = true;
+                } else {
+                    server.ingest(&packet, now).unwrap();
+                    // An exact duplicate must not duplicate bridge bytes.
+                    server.ingest(&packet, now).unwrap();
+                }
             }
             server.poll(now);
             while let Some(packet) = server.pop_egress() {
@@ -351,7 +377,7 @@ mod tests {
                 break;
             }
         }
-        assert!(sent_client && sent_server);
+        assert!(checked_kernel_checksum && sent_client && sent_server);
         assert_eq!(received_server, b"client raw bytes");
         assert_eq!(received_client, b"server reply");
     }
