@@ -276,7 +276,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let socket_filter = format!("processId == {} and event == CONNECT", std::process::id());
         let socket = Arc::new(
-            api.open(&socket_filter, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)
+            api.open(&socket_filter, SOCKET_LAYER, FLAG_RECV_ONLY)
                 .expect("open nonblocking socket observer"),
         );
         let packet_filter = format!("loopback and tcp.Syn and tcp.DstPort == {port}");
