@@ -649,6 +649,26 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     packet,
                     address,
                 } => {
+                    #[cfg(test)]
+                    if session_id == "s200-managed-chain" && reason == "candidate-wait-expired" {
+                        match raw_transport_head(&packet) {
+                            Ok(head) if head.transport == Proto::Udp => {
+                                let tuple = DirectTuple {
+                                    transport: head.transport,
+                                    local: head.source,
+                                    remote: head.destination,
+                                };
+                                let matching: Vec<_> =
+                                    events.iter().filter(|event| event.tuple == tuple).collect();
+                                eprintln!(
+                                    "managed-chain UDP candidate expired: tuple={tuple:?}, current_owner={:?}, matching_events={matching:?}, process_evidence_present={}",
+                                    observer.lock().expect("socket observer lock").current_owner_endpoint_id(tuple),
+                                    context.direct_process_evidence().is_some()
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     stats.record_bypass(reason);
                     reinject(&handle, &stats, &packet, &address)?;
                 }
@@ -1955,13 +1975,16 @@ mod tests {
             String::from_utf8_lossy(&outcome.stderr)
         );
         let bridged = context.direct_helper_flows_for_test();
+        let packet_counts = *runtime.stats.packets.lock().unwrap();
+        let bypass = runtime.stats.bypass_reasons.lock().unwrap().clone();
+        let socket_counts = runtime.observer.lock().unwrap().stats();
         assert_eq!(
             bridged.len(),
             3,
             "only the final client may enter the bridge: owners={bridged:?}, packets={:?}, bypass={:?}, socket={:?}",
-            runtime.stats.packets.lock().unwrap(),
-            runtime.stats.bypass_reasons.lock().unwrap(),
-            runtime.observer.lock().unwrap().stats(),
+            packet_counts,
+            bypass,
+            socket_counts,
         );
         for flow in &bridged {
             assert_eq!(flow.pid, client);
