@@ -7,7 +7,7 @@
 ## Phase 1: Setup and governing dependency gate
 
 - [x] T001 Review the exact `smoltcp` 0.12.0 and `managed` 0.8.0 source, features, transitive graph, 0BSD license, unsafe code, and MSRV against `supply-chain/policy-v1.json` and constitution P-8; obtain the required explicit owner approval before adding either dependency.
-- [ ] T002 Record the owner-approved broad pass-through, measured first-packet and unrelated-traffic probes, packet-to-stream choice, WFP comparison, and constitution 3.0.0 amendment in `specs/200-direct-socket-route/research.md` and the dated decisions changelog fragment.
+- [x] T002 Record the owner-approved broad pass-through, measured first-packet and unrelated-traffic probes, packet-to-stream choice, WFP comparison, and constitution 3.0.0 amendment in `specs/200-direct-socket-route/research.md` and the dated decisions changelog fragment.
 - [ ] T003 Build a closed, versioned scenario oracle for #578 under `integration/` with exact original flows, process generations, expected results, active sentinel metrics and zero skipped rows.
 
 ## Phase 2: Foundational ownership and admission

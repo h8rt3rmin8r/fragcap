@@ -115,7 +115,7 @@ impl Device for PacketDevice {
     }
 }
 
-fn ip_address(ip: IpAddr) -> IpAddress {
+pub(super) fn ip_address(ip: IpAddr) -> IpAddress {
     match ip {
         IpAddr::V4(value) => {
             let [a, b, c, d] = value.octets();
@@ -136,6 +136,7 @@ pub struct TcpFlowStack {
     iface: Interface,
     sockets: SocketSet<'static>,
     socket: SocketHandle,
+    established: bool,
 }
 
 impl TcpFlowStack {
@@ -178,6 +179,7 @@ impl TcpFlowStack {
             iface,
             sockets,
             socket,
+            established: false,
         })
     }
 
@@ -226,6 +228,8 @@ impl TcpFlowStack {
             &mut self.device,
             &mut self.sockets,
         );
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.socket);
+        self.established |= socket.may_recv() || socket.may_send();
     }
 
     pub fn pop_egress(&mut self) -> Option<Vec<u8>> {
@@ -239,6 +243,10 @@ impl TcpFlowStack {
         } else {
             0
         }
+    }
+
+    pub fn receive_closed(&mut self) -> bool {
+        self.established && !self.sockets.get_mut::<tcp::Socket>(self.socket).may_recv()
     }
 
     pub fn send_bytes(&mut self, input: &[u8], now_ms: i64) -> usize {
@@ -287,11 +295,12 @@ mod tests {
             TcpFlowStack::new(tuple),
             Err(StackError::InvalidScope)
         ));
-        assert!(TcpFlowStack::new(DirectTuple {
+        let mut stack = TcpFlowStack::new(DirectTuple {
             transport: Proto::Tcp,
             ..tuple
         })
-        .is_ok());
+        .unwrap();
+        assert!(!stack.receive_closed());
     }
 
     #[test]

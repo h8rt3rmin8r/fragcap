@@ -20,6 +20,8 @@ mod artifacts;
 mod classification;
 mod collection;
 mod diagnostics;
+#[cfg(all(windows, feature = "direct-route"))]
+mod direct_bridge;
 mod direct_route;
 #[cfg(all(windows, feature = "direct-route"))]
 mod direct_stack;
