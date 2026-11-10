@@ -357,6 +357,105 @@ mod tests {
         assert!(forwarded.load(Ordering::Relaxed) >= (EXCHANGES * 2) as u64);
     }
 
+    /// The packet rule is installed before connection creation, so its first
+    /// SYN can be paired with a PID-bearing socket event after both arrive.
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_broad_handle_catches_first_syn() {
+        use std::{
+            io::{Read, Write},
+            net::{Ipv4Addr, TcpListener, TcpStream},
+            sync::mpsc,
+            thread,
+            time::Duration,
+        };
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let api = Api::load_verified(Path::new(&root)).expect("load verified component");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let destination = listener.local_addr().unwrap();
+        let socket_filter = format!("processId == {} and event == CONNECT", std::process::id());
+        let socket = Arc::new(
+            api.open(&socket_filter, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)
+                .expect("open socket observer"),
+        );
+        let packet = Arc::new(
+            api.open("tcp or udp", NETWORK_LAYER, 0)
+                .expect("prearm broad rule"),
+        );
+        let (event_sender, event_receiver) = mpsc::channel();
+        let socket_reader = Arc::clone(&socket);
+        let event_worker = thread::spawn(move || {
+            let mut data = [];
+            let mut address = Address::default();
+            let result = socket_reader.recv(&mut data, &mut address).map(|_| address);
+            event_sender.send(result).unwrap();
+        });
+        let (syn_sender, syn_receiver) = mpsc::channel();
+        let packet_reader = Arc::clone(&packet);
+        let packet_worker = thread::spawn(move || -> io::Result<()> {
+            let mut bytes = [0u8; 65_535];
+            let mut sent_syn = false;
+            loop {
+                let mut address = Address::default();
+                match packet_reader.recv(&mut bytes, &mut address) {
+                    Ok(length) => {
+                        if !sent_syn && ipv4_tcp_syn_to(&bytes[..length], destination.port()) {
+                            syn_sender.send(address).unwrap();
+                            sent_syn = true;
+                        }
+                        let sent = packet_reader.send(&bytes[..length], &address)?;
+                        if sent != length {
+                            return Err(io::Error::other("short reinjection"));
+                        }
+                    }
+                    Err(error) if error.raw_os_error() == Some(232) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect_timeout(&destination, Duration::from_secs(2)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client.write_all(b"broad-syn-probe").unwrap();
+        let mut body = [0u8; 15];
+        server.read_exact(&mut body).unwrap();
+        assert_eq!(&body, b"broad-syn-probe");
+        let syn = syn_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("prearmed broad handle receives initial SYN");
+        let event = event_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("socket event arrives")
+            .expect("socket observer receives event");
+        let socket_data = event.socket().expect("PID-bearing socket data");
+        assert_eq!(socket_data.pid, std::process::id());
+        assert_eq!(socket_data.remote_port, destination.port());
+        assert!(event.timestamp_qpc <= syn.timestamp_qpc);
+        eprintln!(
+            "broad first SYN: socket_qpc={}, syn_qpc={}, delta_qpc={}",
+            event.timestamp_qpc,
+            syn.timestamp_qpc,
+            syn.timestamp_qpc - event.timestamp_qpc,
+        );
+        packet.stop_receiving().unwrap();
+        packet_worker.join().unwrap().unwrap();
+        socket.stop().unwrap();
+        event_worker.join().unwrap();
+    }
+
+    fn ipv4_tcp_syn_to(bytes: &[u8], port: u16) -> bool {
+        if bytes.len() < 40 || bytes[0] >> 4 != 4 || bytes[9] != 6 {
+            return false;
+        }
+        let transport = usize::from(bytes[0] & 0x0f) * 4;
+        transport >= 20
+            && bytes.len() >= transport + 14
+            && u16::from_be_bytes([bytes[transport + 2], bytes[transport + 3]]) == port
+            && bytes[transport + 13] & 0x02 != 0
+    }
+
     #[test]
     fn pinned_abi_layout_and_flag_decode() {
         assert_eq!(mem::size_of::<Address>(), 80);
@@ -464,7 +563,7 @@ mod tests {
     /// The network handle opens only after the PID-bearing SOCKET event.
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
-    fn disposable_narrow_handle_catches_and_reinjects_initial_syn() {
+    fn diagnostic_narrow_handle_misses_initial_syn() {
         use std::{
             io::{Read, Write},
             net::{Ipv4Addr, TcpListener, TcpStream},
