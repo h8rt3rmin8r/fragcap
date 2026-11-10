@@ -30,7 +30,7 @@ Npcap supplies live packets, while attribution uses Windows socket and process e
 
 ## 1. Install fragcap and its prerequisites
 
-Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH`; the portable archive runs from its unpacked directory. Packages are unsigned, so a checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
+Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH`; the portable archive runs from its unpacked directory. The MSI and fragcap executable are unsigned. The S199 candidate adds a separately signed upstream WinDivert driver, which is not in published v0.10.14 downloads. A checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
 
 If installing Npcap through Wireshark, leave **Install Npcap** selected and enable **WinPcap API-compatible Mode** in the Npcap installer. Loopback support is supplied by current Npcap installations.
 

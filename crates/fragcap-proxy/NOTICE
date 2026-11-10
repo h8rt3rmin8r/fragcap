@@ -17,6 +17,23 @@ License for the specific language governing permissions and limitations under
 the License.
 
 --------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE DISTRIBUTED WITH WINDOWS PACKAGES
+--------------------------------------------------------------------------------
+
+WinDivert 2.2.2-A
+
+    Official Windows packages include the unmodified x64 WinDivert DLL and
+    signed driver from the upstream 2.2.2-A release. This component is offered
+    under its GNU Lesser General Public License version 3 option. Its full
+    upstream license text is WinDivert-LICENSE.txt and the corresponding source
+    archive is WinDivert-source.zip beside fragcap.exe. The DLL is dynamically
+    linked by a future direct-route adapter and may be replaced with a
+    compatible modified build in the application directory. Fragcap does not
+    open the driver or route traffic in this release.
+
+    Source: https://github.com/basil00/WinDivert/tree/v2.2.2
+
+--------------------------------------------------------------------------------
 THIRD-PARTY SOFTWARE NOT DISTRIBUTED WITH THIS PRODUCT
 --------------------------------------------------------------------------------
 
@@ -54,7 +71,8 @@ DEPENDENCY LICENSES
 
 fragcap depends on third-party Rust crates distributed under permissive
 licenses (MIT, Apache-2.0, BSD two-clause and three-clause, ISC, Unicode-DFS,
-and Zlib). Copyleft-licensed dependencies are not accepted.
+and Zlib). The separately identified WinDivert distribution above is the
+reviewed LGPLv3 exception; it does not change the Rust dependency allowlist.
 
 The complete dependency license inventory is generated during the release
 build and accompanies each distribution artifact.

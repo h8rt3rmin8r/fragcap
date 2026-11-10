@@ -105,6 +105,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
             "schema_version",
             "release_identity",
             "controlled_smoke",
+            "windivert",
             "primary_artifacts",
             "shared_entries",
             "checksum_sidecars",
@@ -126,6 +127,7 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
     }
     validate_release_identity(&value["release_identity"], &mut problems);
     validate_controlled_smoke(&value["controlled_smoke"], &mut problems);
+    validate_windivert(&value["windivert"], &mut problems);
     validate_artifacts(value, &mut problems);
     validate_imports(&value["pe_imports"], &mut problems);
     validate_lifecycle(value, &mut problems);
@@ -150,6 +152,64 @@ fn validate_contract(value: &Value, byte_len: u64) -> Vec<String> {
         &mut problems,
     );
     problems
+}
+
+fn validate_windivert(value: &Value, problems: &mut Vec<String>) {
+    exact_keys(
+        value,
+        &[
+            "version",
+            "binary_url",
+            "binary_sha256",
+            "source_url",
+            "source_sha256",
+            "dll_sha256",
+            "driver_sha256",
+            "license_sha256",
+            "driver_signer_thumbprint",
+        ],
+        "WinDivert component",
+        problems,
+    );
+    for (key, expected) in [
+        ("version", "2.2.2-A"),
+        (
+            "binary_url",
+            "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip",
+        ),
+        (
+            "binary_sha256",
+            "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
+        ),
+        (
+            "source_url",
+            "https://codeload.github.com/basil00/WinDivert/zip/refs/tags/v2.2.2",
+        ),
+        (
+            "source_sha256",
+            "65ec79c9e6afa99f648a3f4d1f6db794640b40d0b65bd438770ea503ee14ecb7",
+        ),
+        (
+            "dll_sha256",
+            "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+        ),
+        (
+            "driver_sha256",
+            "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
+        ),
+        (
+            "license_sha256",
+            "14a0cb5214d536e4fdae6aa3f5696f981eeda106cd026e9794bba489ee79d628",
+        ),
+        (
+            "driver_signer_thumbprint",
+            "043589F75FCE2795E7F2CC3E526D46784D5DDAB3",
+        ),
+    ] {
+        if value[key] != expected {
+            problems.push(format!("WinDivert {key} differs from the reviewed release"));
+        }
+    }
 }
 
 fn validate_controlled_smoke(value: &Value, problems: &mut Vec<String>) {
@@ -354,6 +414,10 @@ fn validate_artifacts(value: &Value, problems: &mut Vec<String>) {
         "catalog.db".to_string(),
         "fragcap.cdx.json".to_string(),
         "fragcap.exe".to_string(),
+        "WinDivert.dll".to_string(),
+        "WinDivert64.sys".to_string(),
+        "WinDivert-LICENSE.txt".to_string(),
+        "WinDivert-source.zip".to_string(),
     ]);
     let mut entries = BTreeSet::new();
     let mut folded = BTreeSet::new();
@@ -378,8 +442,10 @@ fn validate_artifacts(value: &Value, problems: &mut Vec<String>) {
         if !matches!(entry["size_ceiling_bytes"].as_u64(), Some(1..=67_108_864)) {
             problems.push(format!("{path} has an invalid size ceiling"));
         }
-        let expected_signature = if path == "fragcap.exe" {
+        let expected_signature = if path == "fragcap.exe" || path == "WinDivert.dll" {
             "not_signed"
+        } else if path == "WinDivert64.sys" {
+            "valid"
         } else {
             "not_applicable"
         };
@@ -389,6 +455,24 @@ fn validate_artifacts(value: &Value, problems: &mut Vec<String>) {
     }
     if entries != expected_entries {
         problems.push(format!("shared package entry set mismatch: {entries:?}"));
+    }
+    for (path, role, size) in [
+        ("WinDivert.dll", "windivert-library", 47_616),
+        ("WinDivert64.sys", "windivert-driver", 94_144),
+        ("WinDivert-LICENSE.txt", "windivert-license", 61_349),
+        (
+            "WinDivert-source.zip",
+            "windivert-corresponding-source",
+            199_555,
+        ),
+    ] {
+        if !shared.iter().any(|entry| {
+            entry["path"] == path && entry["role"] == role && entry["size_ceiling_bytes"] == size
+        }) {
+            problems.push(format!(
+                "{path} has an invalid WinDivert role or exact size"
+            ));
+        }
     }
 }
 
@@ -613,6 +697,10 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "Name=\"NOTICE\"",
             "Name=\"fragcap.cdx.json\"",
             "Name=\"THIRD-PARTY-NOTICES.txt\"",
+            "Name=\"WinDivert.dll\"",
+            "Name=\"WinDivert64.sys\"",
+            "Name=\"WinDivert-LICENSE.txt\"",
+            "Name=\"WinDivert-source.zip\"",
         ],
         &mut problems,
     );
@@ -632,6 +720,9 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "npcap-sdk-1.16.zip",
             "eaf2554b1da3721400c1b00f5ea0a298455f59454b0084e617ed2efcdcf83901",
             "upload-artifact@v4",
+            "Acquire and verify official WinDivert component",
+            "Get-AuthenticodeSignature",
+            "WinDivert-source.zip",
         ],
         &mut problems,
     );
@@ -658,6 +749,8 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "CreateNoWindow = $true",
             "ProcessWindowStyle]::Hidden",
             "Get-AuthenticodeSignature",
+            "Assert-WinDivertComponent",
+            "WinDivert driver Authenticode status or signer",
             "Get-FileHash",
             "dumpbin.exe",
             "-Recurse -File",
@@ -1151,6 +1244,16 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
                 })
             {
                 problems.push("package entry report row has invalid identity, size, digest, signature, or completion".into());
+            }
+            let pinned = match path {
+                "WinDivert.dll" => contract["windivert"]["dll_sha256"].as_str(),
+                "WinDivert64.sys" => contract["windivert"]["driver_sha256"].as_str(),
+                "WinDivert-LICENSE.txt" => contract["windivert"]["license_sha256"].as_str(),
+                "WinDivert-source.zip" => contract["windivert"]["source_sha256"].as_str(),
+                _ => None,
+            };
+            if pinned.is_some_and(|hash| row["sha256"] != hash) {
+                problems.push(format!("{path} differs from pinned WinDivert bytes"));
             }
             row["path"].as_str().map(str::to_string)
         })
@@ -2023,6 +2126,17 @@ mod tests {
     }
 
     #[test]
+    fn signed_windivert_component_is_required_and_exact() {
+        let mut value = contract();
+        assert_eq!(value["windivert"]["version"], "2.2.2-A");
+        assert_eq!(value["shared_entries"].as_array().unwrap().len(), 10);
+        value["windivert"]["driver_sha256"] = Value::String("0".repeat(64));
+        assert!(validate_contract(&value, 1)
+            .iter()
+            .any(|problem| problem.contains("WinDivert")));
+    }
+
+    #[test]
     fn malformed_digest_is_not_sha256() {
         assert!(!is_sha256("ABC"));
         assert!(!is_sha256(&"G".repeat(64)));
@@ -2075,7 +2189,17 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|entry| serde_json::json!({"path": entry["path"], "role": entry["role"], "size_bytes": 1, "sha256": "c".repeat(64), "signature": entry["signature"], "complete": true}))
+            .map(|entry| {
+                let path = entry["path"].as_str().unwrap();
+                let pinned = match path {
+                    "WinDivert.dll" => Some(&contract["windivert"]["dll_sha256"]),
+                    "WinDivert64.sys" => Some(&contract["windivert"]["driver_sha256"]),
+                    "WinDivert-LICENSE.txt" => Some(&contract["windivert"]["license_sha256"]),
+                    "WinDivert-source.zip" => Some(&contract["windivert"]["source_sha256"]),
+                    _ => None,
+                };
+                serde_json::json!({"path": entry["path"], "role": entry["role"], "size_bytes": 1, "sha256": pinned.cloned().unwrap_or_else(|| Value::String("c".repeat(64))), "signature": entry["signature"], "complete": true})
+            })
             .collect::<Vec<_>>();
         let lifecycle = contract["lifecycle_cases"]
             .as_array()
@@ -2230,6 +2354,36 @@ mod tests {
         });
         rejects!("altered", |candidate: &mut Value| {
             candidate["entries"][0]["sha256"] = Value::String("altered".into());
+        });
+        for path_name in [
+            "WinDivert.dll",
+            "WinDivert64.sys",
+            "WinDivert-LICENSE.txt",
+            "WinDivert-source.zip",
+        ] {
+            let mut candidate = valid.clone();
+            let row = candidate["entries"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|row| row["path"] == path_name)
+                .unwrap();
+            row["sha256"] = Value::String("0".repeat(64));
+            fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+            assert!(validate_report(&contract, contract_bytes, &path)
+                .unwrap()
+                .iter()
+                .any(|problem| problem
+                    .contains(&format!("{path_name} differs from pinned WinDivert bytes"))));
+        }
+        rejects!("unsigned-driver-report", |candidate: &mut Value| {
+            let row = candidate["entries"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|row| row["path"] == "WinDivert64.sys")
+                .unwrap();
+            row["signature"] = Value::String("not_signed".into());
         });
         rejects!("stale", |candidate: &mut Value| {
             candidate["contract_sha256"] = Value::String("d".repeat(64));

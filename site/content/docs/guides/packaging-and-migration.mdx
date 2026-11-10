@@ -1,13 +1,13 @@
 ---
 title: Packaging and migration
-description: Official unsigned downloads, package certification, preserved user data, and deliberate fresh-start removal.
+description: Official package downloads, component certification, preserved user data, and deliberate fresh-start removal.
 ---
 
 ## Official bytes
 
-Use the [official release downloads](https://github.com/h8rt3rmin8r/fragcap/releases). The portable ZIP and MSI contain the same six payload files; the standalone catalog is also published. Each primary artifact has a SHA-256 sidecar. The MSI and executables are deliberately unsigned. Checksums bind a download to published bytes but do not supply Authenticode publisher identity.
+Use the [official release downloads](https://github.com/h8rt3rmin8r/fragcap/releases). Published v0.10.14 ZIP and MSI contain the same six payload files. The S199 candidate expands both to ten, adding the WinDivert DLL, signed driver, upstream license and corresponding source archive. The standalone catalog is also published. Each primary artifact has a SHA-256 sidecar. The MSI and fragcap executable are deliberately unsigned. Checksums bind a download to published bytes but do not supply Authenticode publisher identity. The S199 package gate checks the WinDivert driver's separate upstream signature.
 
-The MSI owns its Program Files payload, product registration, exact system PATH entry, and only a Defender exclusion whose exact normalized path it successfully created and recorded. Pre-existing administrator-owned exclusions remain untouched. Portable use does not require installation. Npcap and Wireshark are separately acquired, not bundled fragcap dependencies.
+The MSI owns its Program Files payload, product registration, exact system PATH entry, and only a Defender exclusion whose exact normalized path it successfully created and recorded. Pre-existing administrator-owned exclusions remain untouched. Portable use does not require MSI installation. Npcap remains a separately installed live Capture prerequisite; Wireshark is an optional analyzer. The S199 WinDivert component is bundled in its Windows candidate and needs no separate installation.
 
 Final-package certification builds the official feature closure once, checks build identity, imports, sizes, shared digests and checksums, then validates isolated Windows lifecycle and constrained loopback smoke. Release publication uses those exact certified bytes, not a rebuilt executable. This is package evidence, not a claim that all games were tested or that the whole-product independent review passed. See [maintainer certification policy](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/maintainers/package-certification.md).
 

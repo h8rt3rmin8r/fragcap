@@ -64,6 +64,44 @@ jobs:
           curl.exe --fail --silent --show-error --location $env:PREDECESSOR_URL --output "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi"
           if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:PREDECESSOR_SHA256) { throw 'Predecessor MSI checksum mismatch' }
 
+      - name: Acquire and verify official WinDivert component
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $component = (Get-Content -LiteralPath integration/windows-package-contract-v1.json -Raw | ConvertFrom-Json).windivert
+          $binary = Join-Path $env:RUNNER_TEMP 'WinDivert-2.2.2-A.zip'
+          $source = Join-Path $env:RUNNER_TEMP 'WinDivert-source.zip'
+          Invoke-WebRequest -Uri $component.binary_url -OutFile $binary -MaximumRedirection 5
+          Invoke-WebRequest -Uri $component.source_url -OutFile $source -MaximumRedirection 5
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.binary_sha256) { throw 'WinDivert release archive hash mismatch' }
+          if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.source_sha256) { throw 'WinDivert corresponding source hash mismatch' }
+          $root = Join-Path $env:RUNNER_TEMP 'windivert-verified'
+          Expand-Archive -LiteralPath $binary -DestinationPath $root
+          $files = @{
+            'WinDivert.dll' = @{ path = (Join-Path $root 'WinDivert-2.2.2-A/x64/WinDivert.dll'); hash = $component.dll_sha256 }
+            'WinDivert64.sys' = @{ path = (Join-Path $root 'WinDivert-2.2.2-A/x64/WinDivert64.sys'); hash = $component.driver_sha256 }
+            'WinDivert-LICENSE.txt' = @{ path = (Join-Path $root 'WinDivert-2.2.2-A/LICENSE'); hash = $component.license_sha256 }
+          }
+          foreach ($name in $files.Keys) {
+            $file = $files[$name]
+            if ((Get-FileHash -LiteralPath $file.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $file.hash) { throw "$name differs from pinned WinDivert bytes" }
+          }
+          Add-Type -AssemblyName System.Reflection.Metadata
+          foreach ($name in 'WinDivert.dll','WinDivert64.sys') {
+            $stream = [System.IO.File]::OpenRead($files[$name].path)
+            try {
+              $pe = [System.Reflection.PortableExecutable.PEReader]::new($stream)
+              try { if ($pe.PEHeaders.CoffHeader.Machine -ne [System.Reflection.PortableExecutable.Machine]::Amd64) { throw "$name is not AMD64" } }
+              finally { $pe.Dispose() }
+            } finally { $stream.Dispose() }
+          }
+          $dllSignature = Get-AuthenticodeSignature -LiteralPath $files['WinDivert.dll'].path
+          if ($dllSignature.Status -ne 'NotSigned') { throw 'WinDivert DLL has unexpected signature state' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $files['WinDivert64.sys'].path
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -cne $component.driver_signer_thumbprint) { throw 'WinDivert driver signature differs from pinned signer' }
+          "WINDIVERT_VERIFIED_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDIVERT_SOURCE_ARCHIVE=$source" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build exact official feature closure
         shell: pwsh
         run: |
@@ -90,6 +128,10 @@ jobs:
           Copy-Item -LiteralPath crates/fragcap-cli/fragcap_bin.cdx.json -Destination target/release/fragcap.cdx.json
           cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
           cargo xtask supply-chain stamp-evidence target/release/fragcap.cdx.json target/release/THIRD-PARTY-NOTICES.txt
+          Copy-Item -LiteralPath "$env:WINDIVERT_VERIFIED_ROOT/WinDivert-2.2.2-A/x64/WinDivert.dll" -Destination target/release/WinDivert.dll
+          Copy-Item -LiteralPath "$env:WINDIVERT_VERIFIED_ROOT/WinDivert-2.2.2-A/x64/WinDivert64.sys" -Destination target/release/WinDivert64.sys
+          Copy-Item -LiteralPath "$env:WINDIVERT_VERIFIED_ROOT/WinDivert-2.2.2-A/LICENSE" -Destination target/release/WinDivert-LICENSE.txt
+          Copy-Item -LiteralPath $env:WINDIVERT_SOURCE_ARCHIVE -Destination target/release/WinDivert-source.zip
 
       - name: Assemble candidate bytes once
         shell: pwsh
@@ -100,7 +142,7 @@ jobs:
           cargo wix --package fragcap-cli --no-build --nocapture --target-bin-dir (Resolve-Path -LiteralPath target/release).Path --install-version $version --output "dist/fragcap-$version-x86_64.msi"
           $stage = "target/package-certification/fragcap-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          foreach ($name in 'fragcap.exe','catalog.db','LICENSE','NOTICE','fragcap.cdx.json','THIRD-PARTY-NOTICES.txt') { Copy-Item -LiteralPath "target/release/$name" -Destination "$stage/$name" }
+          foreach ($name in 'fragcap.exe','catalog.db','LICENSE','NOTICE','fragcap.cdx.json','THIRD-PARTY-NOTICES.txt','WinDivert.dll','WinDivert64.sys','WinDivert-LICENSE.txt','WinDivert-source.zip') { Copy-Item -LiteralPath "target/release/$name" -Destination "$stage/$name" }
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/fragcap-$version-x86_64-pc-windows-msvc.zip"
           Copy-Item -LiteralPath target/release/catalog.db -Destination dist/catalog.db
           Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -in '.zip','.msi','.db' } | ForEach-Object { $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [System.IO.File]::WriteAllText("$($_.FullName).sha256", "$hash  $($_.Name)`n", [System.Text.UTF8Encoding]::new($false)) }

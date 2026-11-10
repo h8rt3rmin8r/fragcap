@@ -4053,6 +4053,17 @@ name the original supplier and applicable replacement rights, and verify
 provenance, hashes, architecture and driver signature. Npcap remains a
 separately installed prerequisite and is never bundled.
 
+The future Rust adapter must load the exact packaged DLL dynamically only
+after the direct-route authorization gate, then open and close a driver handle
+within that session. S199 adds the distribution and read-only Doctor identity
+check, not that adapter. Doctor can name absent, altered, inaccessible and
+observably disabled-service states; a matching package does not establish that
+Windows will allow a later driver load. The vendor documents on-demand driver
+installation at `WinDivertOpen` with Administrator rights and possible
+already-running service persistence until reboot after package-file removal.
+The S199 installer owns and removes its files without claiming active-service
+teardown.
+
 License compliance is verified in continuous integration against a
 declared allowlist, and a new dependency introducing a license outside
 it fails the build.

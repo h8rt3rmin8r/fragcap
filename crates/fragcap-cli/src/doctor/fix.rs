@@ -201,6 +201,7 @@ pub fn run_fix(
     if let Some(check) = ca_check.clone() {
         report.checks.push(check);
     }
+    report.checks.push(super::windivert::check());
     let _ = write!(
         out,
         "{}",
@@ -260,6 +261,7 @@ pub fn run_fix(
     if let Some(check) = ca_check {
         rechecked.checks.push(check);
     }
+    rechecked.checks.push(super::windivert::check());
     let _ = writeln!(out, "\nRe-checked:");
     let _ = writeln!(
         out,

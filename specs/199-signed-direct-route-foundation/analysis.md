@@ -1,7 +1,7 @@
 # Spec-Kit Analysis: S199
 
 **Date**: 2026-11-09
-**State**: Pre-implementation gate passed after planned governance reconciliation.
+**State**: Implementation and local gate passed; hosted package certification and external review pending.
 
 ## Coverage
 
@@ -20,3 +20,19 @@ check`, and `git diff --check` passed on the governance change. Implementation
 may proceed after this gate is committed. The post-implementation pass must
 check that static package readiness is not described as operational direct
 routing and that the future driver-open boundary stays outside S199.
+
+## Post-implementation pass
+
+The S199 package contract pins one official binary asset, tag source archive,
+four exact package entries, x64 machine and signed-driver identity. The Windows
+workflow verifies inputs before staging, the MSI and ZIP share those four
+entries, and certification compares the package and installed files across the
+installer lifecycle. Deliberate missing, altered-architecture and altered-driver
+mutations must be refused. The external component appears in the generated
+SBOM, third-party notices and project notice, with source and replacement
+instructions. Doctor hashes the exact files without opening the driver and
+reports load compatibility as unverified. Missing files warn, so ordinary
+Capture and offline tests remain independent of the component. No runtime
+`WinDivertOpen` call, target traffic diversion, or private-title claim was
+introduced. `cargo xtask ci` passed locally. Hosted certification and review
+remain required before owner merge handoff.

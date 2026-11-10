@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/s199-signed-direct-route-foundation`
 **Created**: 2026-11-09
-**Status**: Draft
+**Status**: Implementation candidate; hosted certification and review pending
 **Input**: Owner-authorized S199 autopilot for issues #577 and #579, including automatic push, official PR, CI, and up to two Codex review rounds before owner merge.
 
 ## Scope

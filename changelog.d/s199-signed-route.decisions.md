@@ -15,3 +15,12 @@ identity. Stage the component only in Windows distribution assembly, certify
 the exact driver signature on a fresh runner, and defer `WinDivertOpen` to the
 later authorized route adapter. Static Doctor readiness cannot prove a future
 driver open or game compatibility.
+
+2026-11-09: Select a future session-scoped dynamic load of the exact packaged
+DLL after direct-route authorization. S199 introduces no binding or driver
+handle. Upstream installs the driver on demand at `WinDivertOpen` with
+Administrator rights and says an already-running driver may remain until the
+next reboot after files are removed. The S199 installer matrix proves owned
+file removal and does not claim active-service teardown. Read-only Doctor may
+report a disabled existing service; otherwise runtime blocking remains
+unverified until the later route adapter attempts its authorized open.

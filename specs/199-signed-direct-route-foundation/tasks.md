@@ -18,17 +18,17 @@
 
 ## Phase 3: Component contract and distribution
 
-- [ ] T007 Write failing static and Windows negative checks for missing, modified, wrong-architecture, unsigned and mismatched component entries.
-- [ ] T008 Pin official 2.2.2-A binary and source archive hashes and implement verified staging in the package workflow.
-- [ ] T009 Add four exact shared entries to ZIP and MSI, component notice/SBOM evidence, and bounded contract validation.
-- [ ] T010 Extend the Windows package certification report and installer lifecycle checks for signed-driver identity and exact installed/portable equality.
+- [x] T007 Write failing static and Windows negative checks for missing, modified, wrong-architecture, unsigned and mismatched component entries.
+- [x] T008 Pin official 2.2.2-A binary and source archive hashes and implement verified staging in the package workflow.
+- [x] T009 Add four exact shared entries to ZIP and MSI, component notice/SBOM evidence, and bounded contract validation.
+- [x] T010 Extend the Windows package certification report and installer lifecycle checks for signed-driver identity and exact installed/portable equality.
 
 ## Phase 4: Readiness and documentation
 
-- [ ] T011 Add failing Doctor readiness cases and implement read-only component inspection with honest static-versus-load distinctions.
-- [ ] T012 Verify ordinary Capture and offline operations do not load or require WinDivert; preserve Npcap and installation-CA paths.
-- [ ] T013 Reconcile operator and maintainer package guidance, specification, chronological plan and changelog.
-- [ ] T014 Re-run requirements checklist and Spec-Kit analysis; resolve every finding.
+- [x] T011 Add failing Doctor readiness cases and implement read-only component inspection with honest static-versus-load distinctions.
+- [x] T012 Verify ordinary Capture and offline operations do not load or require WinDivert; preserve Npcap and installation-CA paths.
+- [x] T013 Reconcile operator and maintainer package guidance, specification, chronological plan and changelog.
+- [x] T014 Re-run requirements checklist and Spec-Kit analysis; resolve every finding.
 
 ## Phase 5: Verification and review
 

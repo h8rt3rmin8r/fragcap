@@ -14,6 +14,11 @@ const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
 const RELEASE_FEATURES: &str = "fragcap-cli/etw,fragcap-cli/live,fragcap-cli/socket-table";
 const MAX_FINDINGS: usize = 256;
+const WINDIVERT_REF: &str = "pkg:generic/WinDivert@2.2.2-A";
+const WINDIVERT_ID: &str = "WinDivert 2.2.2-A";
+const WINDIVERT_SOURCE: &str = "https://github.com/basil00/WinDivert/tree/v2.2.2";
+const WINDIVERT_ARCHIVE_SHA256: &str =
+    "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15";
 
 #[derive(Clone, Debug)]
 struct Package {
@@ -1202,6 +1207,14 @@ fn stamp_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Result<
     canonicalize_sbom_refs(&mut sbom)?;
     filter_sbom_edges(&mut sbom, &release)?;
     stamp_sbom_package_metadata(&mut sbom, &release)?;
+    sbom.get_mut("components")
+        .and_then(Value::as_array_mut)
+        .ok_or("SBOM lacks components")?
+        .push(windivert_component());
+    sbom.get_mut("dependencies")
+        .and_then(Value::as_array_mut)
+        .ok_or("SBOM lacks dependencies")?
+        .push(json!({"ref": WINDIVERT_REF, "dependsOn": []}));
     let metadata = sbom
         .as_object_mut()
         .ok_or("SBOM root is not an object")?
@@ -1240,10 +1253,29 @@ fn stamp_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Result<
             package.name, package.version
         ));
     }
+    header.push_str(&format!("COMPONENT: {WINDIVERT_ID}\n"));
     header.push('\n');
     header.push_str(body.trim_start());
+    header.push_str(&windivert_notice());
     fs::write(notices_path, header).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn windivert_component() -> Value {
+    json!({
+        "type": "library",
+        "bom-ref": WINDIVERT_REF,
+        "name": "WinDivert",
+        "version": "2.2.2-A",
+        "licenses": [{"license": {"id": "LGPL-3.0-only"}}],
+        "hashes": [{"alg": "SHA-256", "content": WINDIVERT_ARCHIVE_SHA256}],
+        "externalReferences": [{"type": "website", "url": WINDIVERT_SOURCE}],
+        "properties": [{"name": "fragcap:component-role", "value": "signed-direct-route-foundation"}]
+    })
+}
+
+fn windivert_notice() -> String {
+    format!("\n\n====================\nLICENSE: GNU Lesser General Public License v3 (LGPL-3.0-only)\nUSED BY: {WINDIVERT_ID}\nSOURCE: {WINDIVERT_SOURCE}\n\nWinDivert is distributed as a separate dynamically linked DLL and signed driver. The complete upstream license text is in WinDivert-LICENSE.txt, and corresponding source for the exact v2.2.2 release is in WinDivert-source.zip. Replace the DLL in the application directory with a compatible modified build to exercise the LGPL replacement right.\n")
 }
 
 fn filter_sbom(sbom: &mut Value, allowed: &BTreeSet<(String, String)>) -> Result<(), String> {
@@ -1551,12 +1583,13 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
     let policy: Value = serde_json::from_slice(&policy_bytes).map_err(|e| e.to_string())?;
     let lock = fs::read(root.join("Cargo.lock")).map_err(|e| e.to_string())?;
     let release = metadata_graph(root, "windows-release", WINDOWS_TARGET, false, true)?;
-    let expected: BTreeSet<String> = release
+    let mut expected: BTreeSet<String> = release
         .packages
         .values()
         .filter(|p| p.source.is_some())
         .map(|p| format!("{} {}", p.name, p.version))
         .collect();
+    expected.insert(WINDIVERT_ID.to_string());
     let mut findings = Vec::new();
     let sbom_bytes = fs::read(sbom_path).map_err(|e| e.to_string())?;
     let sbom: Value = serde_json::from_slice(&sbom_bytes).map_err(|e| e.to_string())?;
@@ -1570,6 +1603,15 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
     }
     if let Some(components) = sbom.get("components").and_then(Value::as_array) {
         validate_sbom_component_metadata_tree(components, &release, &mut findings);
+        let windivert: Vec<&Value> = components
+            .iter()
+            .filter(|component| component.get("name").and_then(Value::as_str) == Some("WinDivert"))
+            .collect();
+        if windivert.as_slice() != [&windivert_component()] {
+            findings.push(
+                "sbom-component: WinDivert metadata is missing, duplicated, or stale".to_string(),
+            );
+        }
     }
     if let Some(component) = sbom.get("metadata").and_then(|v| v.get("component")) {
         validate_sbom_component_metadata(component, &release, &mut findings);
@@ -1655,6 +1697,9 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
     }
     let notices = fs::read_to_string(notices_path).map_err(|e| e.to_string())?;
     validate_notice_sections(&notices, &release, &mut findings);
+    if !notices.contains(&windivert_notice()) {
+        findings.push("notices-license: WinDivert notice is missing or stale".to_string());
+    }
     for package in &expected {
         let marker = format!("COMPONENT: {package}");
         match notices.match_indices(&marker).count() {
@@ -1994,6 +2039,17 @@ fn collect_sbom_identity(
         findings.push("sbom-dependency: component lacks bom-ref".to_string());
         return;
     };
+    if reference == WINDIVERT_REF {
+        if identities
+            .insert(reference.to_string(), WINDIVERT_ID.to_string())
+            .is_some()
+        {
+            findings.push(format!(
+                "sbom-dependency: duplicate component ref {reference}"
+            ));
+        }
+        return;
+    }
     let Some(package) = reference.strip_prefix("pkg:cargo/") else {
         findings.push(format!("sbom-dependency: noncanonical ref {reference}"));
         return;
@@ -2050,6 +2106,9 @@ fn validate_sbom_component_metadata(
         findings.push("sbom-component: component lacks name".to_string());
         return;
     };
+    if name == "WinDivert" {
+        return;
+    }
     let Some(version) = component.get("version").and_then(Value::as_str) else {
         findings.push(format!("sbom-component: {name} lacks version"));
         return;
