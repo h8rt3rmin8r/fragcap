@@ -340,6 +340,52 @@ mod tests {
             }
         });
         let during = run_phase("during", EXCHANGES);
+        let parallel = (0..4)
+            .map(|_| {
+                thread::spawn(|| {
+                    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                    let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                    client.connect(server.local_addr().unwrap()).unwrap();
+                    server.connect(client.local_addr().unwrap()).unwrap();
+                    client
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    server
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let echo = thread::spawn(move || {
+                        let mut payload = [0u8; 8];
+                        for _ in 0..500 {
+                            server.recv(&mut payload).expect("parallel server receive");
+                            server.send(&payload).expect("parallel server reply");
+                        }
+                    });
+                    let mut samples = Vec::with_capacity(500);
+                    let mut reply = [0u8; 8];
+                    for sequence in 0..500u64 {
+                        let payload = sequence.to_be_bytes();
+                        let start = Instant::now();
+                        client.send(&payload).expect("parallel client send");
+                        client.recv(&mut reply).expect("parallel client receive");
+                        assert_eq!(reply, payload);
+                        samples.push(start.elapsed());
+                    }
+                    echo.join().unwrap();
+                    samples
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut loaded_samples = Vec::with_capacity(2000);
+        for thread in parallel {
+            loaded_samples.extend(thread.join().unwrap());
+        }
+        loaded_samples.sort_unstable();
+        eprintln!(
+            "broad pass-through parallel: exchanges={}, p99_us={}, max_us={}",
+            loaded_samples.len(),
+            loaded_samples[loaded_samples.len() * 99 / 100].as_micros(),
+            loaded_samples.last().unwrap().as_micros(),
+        );
         handle.stop_receiving().expect("stop new packet diversion");
         worker
             .join()
@@ -354,7 +400,7 @@ mod tests {
             during[EXCHANGES * 99 / 100].as_micros(),
             after[EXCHANGES * 99 / 100].as_micros(),
         );
-        assert!(forwarded.load(Ordering::Relaxed) >= (EXCHANGES * 2) as u64);
+        assert!(forwarded.load(Ordering::Relaxed) >= (EXCHANGES * 2 + 4000) as u64);
     }
 
     /// The packet rule is installed before connection creation, so its first
