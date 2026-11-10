@@ -1224,7 +1224,6 @@ struct LibraryRuntime {
     interrupted: bool,
     backend: Option<ProxyBackend>,
     trust: Option<TrustOutcome>,
-    observations: Vec<Observation>,
     listen_endpoint: Option<SocketAddr>,
     started_at: Option<SystemTime>,
 }
@@ -1711,6 +1710,8 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
         &mut self,
         target: &deep_capture_api::PreparedTarget,
         fact: &deep_capture_api::CompatibilityFact,
+        observations: &[Observation],
+        evidence_windows: &[deep_capture_api::EvidenceWindow],
     ) -> deep_capture_api::FactWriteStatus {
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
@@ -1740,20 +1741,37 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
                 }
             }
         };
-        let final_owner = fact
+        let candidate_owner = fact
             .final_owner_index
-            .and_then(|index| runtime.observations.get(index));
-        if self.route_identity == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+            .and_then(|index| observations.get(index));
+        let direct_positive = self.route_identity
+            == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
             && key == CompatibilityFactKey::ProxyRouting
-            && fact.value == "reached-client"
-            && !runtime.observations.iter().any(exact_direct_client_receipt)
-        {
+            && fact.value == "reached-client";
+        let direct_owner = direct_positive
+            .then(|| {
+                observations
+                    .iter()
+                    .zip(evidence_windows)
+                    .rfind(|(observation, window)| {
+                        **window == deep_capture_api::EvidenceWindow::Observation
+                            && exact_direct_client_receipt(observation)
+                    })
+                    .map(|(observation, _)| observation)
+            })
+            .flatten();
+        if direct_positive && direct_owner.is_none() {
             return deep_capture_api::FactWriteStatus::Skipped {
                 reason:
                     "no exact final-client direct-route receipt joined to proxy and packet evidence"
                         .into(),
             };
         }
+        let final_owner = if direct_positive {
+            direct_owner
+        } else {
+            candidate_owner
+        };
         let result = insert_fact(
             &mut self.store.borrow_mut(),
             key,
@@ -6507,6 +6525,119 @@ mod tests {
         record.packet_observations = 1;
         record.role = Some("launcher".into());
         assert!(!exact_direct_client_receipt(&record));
+    }
+
+    #[test]
+    fn direct_positive_fact_uses_coordinator_observations_at_append() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("facts.db")).unwrap();
+        let target_id = store
+            .insert_target(&TargetEntry {
+                id: None,
+                stable_id: 75_000,
+                handle: "sample-target".into(),
+                name: "Sample Target".into(),
+                classification: fragcap::targets::TargetClassification::Game,
+                classification_source: fragcap::targets::ClassificationSource::User,
+                fidelity: fragcap::profile::FidelityTier::Authored,
+                provenance: None,
+                anchor: None,
+                launch_entries: Some(fragcap::targets::resolved_client_launch("client.exe")),
+                install_root: None,
+                evidence: None,
+                detection_scan: None,
+                folder_name: None,
+                executable_hint: Some("client.exe".into()),
+            })
+            .unwrap();
+        let store = Rc::new(RefCell::new(store));
+        let runtime = Rc::new(RefCell::new(LibraryRuntime {
+            backend: Some(ProxyBackend {
+                name: "fragcap-native".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            }),
+            ..LibraryRuntime::default()
+        }));
+        let mut adapter = LibraryFactAdapter {
+            store: Rc::clone(&store),
+            selected_launch_case: Rc::new(RefCell::new(Some(
+                CompatibilityLaunchCase::DirectExeCold,
+            ))),
+            runtime,
+            controlled: false,
+            family: DeepCaptureProxyFamilyArg::Ipv4,
+            inspection_scope: resolve_cli_inspection_scope(InspectionScopeArg::Auto),
+            route_identity: CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1,
+        };
+        let target = deep_capture_api::PreparedTarget {
+            id: target_id,
+            handle: "sample-target".into(),
+            launch_case: deep_capture_api::LaunchCase::DirectExeCold,
+        };
+        let fact = deep_capture_api::CompatibilityFact {
+            kind: CompatibilityFactKey::ProxyRouting.as_str().into(),
+            value: "reached-client".into(),
+            evidence: "exact direct route".into(),
+            phase: CalibrationPhase::Reachability,
+            protocol: CompatibilityProtocol::Routing,
+            final_owner_index: Some(0),
+        };
+        let mut record = observation();
+        record.process_id = Some(42);
+        record.process_image = Some("client.exe".into());
+        record.role = Some("client".into());
+        record.correlation_state = deep_capture_api::CorrelationState::Matched;
+        record.attribution = Some("child-environment".into());
+        assert!(matches!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record.clone()],
+                &[deep_capture_api::EvidenceWindow::Observation],
+            ),
+            deep_capture_api::FactWriteStatus::Skipped { .. }
+        ));
+        assert!(store
+            .borrow()
+            .compatibility_facts_for_target(target_id)
+            .unwrap()
+            .is_empty());
+
+        record.attribution = Some("direct-route-receipt".into());
+        assert!(matches!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record.clone()],
+                &[deep_capture_api::EvidenceWindow::PreClient],
+            ),
+            deep_capture_api::FactWriteStatus::Skipped { .. }
+        ));
+        assert_eq!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record],
+                &[deep_capture_api::EvidenceWindow::Observation],
+            ),
+            deep_capture_api::FactWriteStatus::Appended
+        );
+        let facts = store
+            .borrow()
+            .compatibility_facts_for_target(target_id)
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].route_identity,
+            Some(CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1)
+        );
+        assert_eq!(
+            facts[0].evidence_source,
+            CompatibilityEvidenceSource::ObservedRun
+        );
     }
 
     #[test]

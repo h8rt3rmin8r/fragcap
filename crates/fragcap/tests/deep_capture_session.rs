@@ -624,7 +624,13 @@ impl CaptureRunner for CancellingCapture {
 
 struct Facts(Ledger);
 impl CompatibilityRepository for Facts {
-    fn append(&mut self, _: &PreparedTarget, fact: &CompatibilityFact) -> FactWriteStatus {
+    fn append(
+        &mut self,
+        _: &PreparedTarget,
+        fact: &CompatibilityFact,
+        _: &[CompatibilityObservation],
+        _: &[EvidenceWindow],
+    ) -> FactWriteStatus {
         assert!(!fact.kind.is_empty());
         self.0.borrow_mut().push("fact.append".into());
         FactWriteStatus::Appended
@@ -996,7 +1002,13 @@ impl CaptureRunner for TimedOutStopCapture {
 
 struct FailingFacts(Ledger);
 impl CompatibilityRepository for FailingFacts {
-    fn append(&mut self, _: &PreparedTarget, _: &CompatibilityFact) -> FactWriteStatus {
+    fn append(
+        &mut self,
+        _: &PreparedTarget,
+        _: &CompatibilityFact,
+        _: &[CompatibilityObservation],
+        _: &[EvidenceWindow],
+    ) -> FactWriteStatus {
         self.0.borrow_mut().push("fact.append.failed".into());
         FactWriteStatus::Failed {
             code: "fact-failed".into(),

@@ -1335,7 +1335,12 @@ impl DeepCaptureSession<'_> {
         for fact in
             facts_from_observations(&self.plan, &self.observations, &self.observation_windows)
         {
-            let status = self.adapters.facts.append(&self.plan.target, &fact);
+            let status = self.adapters.facts.append(
+                &self.plan.target,
+                &fact,
+                &self.observations,
+                &self.observation_windows,
+            );
             if let FactWriteStatus::Failed { code, detail } = &status {
                 self.fail(Stage::Facts, code.clone(), detail.clone());
             }
