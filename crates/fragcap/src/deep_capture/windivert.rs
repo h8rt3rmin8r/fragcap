@@ -2,6 +2,8 @@
 
 //! Exact WinDivert 2.2.2-A x64 ABI, loaded only by an authorized route lease.
 
+#[cfg(test)]
+use std::sync::Mutex;
 use std::{
     ffi::{c_void, CStr, CString},
     io, mem,
@@ -63,6 +65,16 @@ pub(super) const FLAG_SNIFF: u64 = 0x0001;
 pub(super) const FLAG_RECV_ONLY: u64 = 0x0004;
 const SHUTDOWN_BOTH: i32 = 3;
 const SHUTDOWN_RECV: i32 = 1;
+
+#[cfg(test)]
+static INJECT_SEND_FAILURE_FOR: Mutex<Option<DirectTuple>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(super) fn fail_next_send_for(tuple: DirectTuple) {
+    *INJECT_SEND_FAILURE_FOR
+        .lock()
+        .expect("send failure hook lock") = Some(tuple);
+}
 
 /// Matches the exact `WINDIVERT_ADDRESS` from the pinned vendor header.
 #[repr(C)]
@@ -297,6 +309,23 @@ impl Handle {
     }
 
     pub fn send(&self, packet: &[u8], address: &Address) -> io::Result<usize> {
+        #[cfg(test)]
+        if address.outbound() {
+            if let Ok(head) = raw_transport_head(packet) {
+                let tuple = DirectTuple {
+                    transport: head.transport,
+                    local: head.source,
+                    remote: head.destination,
+                };
+                let mut failure = INJECT_SEND_FAILURE_FOR
+                    .lock()
+                    .expect("send failure hook lock");
+                if failure.as_ref() == Some(&tuple) {
+                    *failure = None;
+                    return Err(io::Error::other("injected WinDivert send failure"));
+                }
+            }
+        }
         let length = u32::try_from(packet.len()).map_err(io::Error::other)?;
         let mut sent = 0;
         let ok = unsafe {

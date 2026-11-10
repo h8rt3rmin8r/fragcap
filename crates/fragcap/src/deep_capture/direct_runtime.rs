@@ -1297,6 +1297,49 @@ mod tests {
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_send_failure_releases_broad_handle_and_counts_packet() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+        origin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(origin.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let tuple = DirectTuple {
+            transport: Proto::Udp,
+            local: client.local_addr().unwrap(),
+            remote: origin.local_addr().unwrap(),
+        };
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            NativeObservationContext::default(),
+            "s200-send-failure".into(),
+            "127.0.0.1:9".parse().unwrap(),
+            Zeroizing::new("unused-capability".to_string()),
+            4,
+        )
+        .unwrap();
+        super::super::windivert::fail_next_send_for(tuple);
+        client.send(b"drop-this-datagram").unwrap();
+        let mut reply = [0u8; 64];
+        assert!(client.recv(&mut reply).is_err());
+        let error = runtime.stop().unwrap_err().to_string();
+        assert!(error.contains("lost: 1"), "{error}");
+        client.send(b"after-handle-release").unwrap();
+        let mut received = [0u8; 64];
+        let (length, from) = origin.recv_from(&mut received).unwrap();
+        assert_eq!(&received[..length], b"after-handle-release");
+        origin.send_to(b"reply", from).unwrap();
+        assert_eq!(client.recv(&mut reply).unwrap(), 5);
+        assert_eq!(&reply[..5], b"reply");
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_proxy_refusal_reinjects_selected_first_packet() {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
