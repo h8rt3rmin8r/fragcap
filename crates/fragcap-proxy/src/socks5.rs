@@ -311,11 +311,14 @@ pub(crate) async fn serve_socks5(
     }
     on_stage(crate::ConnectionStage::TunnelResponse, true);
     accounting.socks_connect_succeeded = 1;
-    let classification = classify_prefix(
-        &client,
-        limits.header_timeout.min(Duration::from_millis(25)),
-    )
-    .await;
+    let direct_owner =
+        decision.owner_proof == "direct-original-socket-and-managed-process-instance";
+    let classification_budget = if direct_owner {
+        limits.header_timeout
+    } else {
+        limits.header_timeout.min(Duration::from_millis(25))
+    };
+    let classification = classify_prefix(&client, classification_budget).await;
     match classification {
         SocksClassification::Http => accounting.socks_http = 1,
         SocksClassification::Tls => accounting.socks_tls = 1,
@@ -332,9 +335,7 @@ pub(crate) async fn serve_socks5(
         bound,
         selected_peer,
     );
-    if classification == SocksClassification::Http
-        && decision.owner_proof == "direct-original-socket-and-managed-process-instance"
-    {
+    if classification == SocksClassification::Http && direct_owner {
         on_stage(crate::ConnectionStage::FirstRequest, false);
         let first =
             match read_request_in_context(&mut client, limits, HttpRequestContext::CleartextProxy)
@@ -412,9 +413,7 @@ pub(crate) async fn serve_socks5(
         carry_socks_connect_accounting(&mut run.accounting, &accounting);
         return run;
     }
-    if classification == SocksClassification::Tls
-        && decision.owner_proof == "direct-original-socket-and-managed-process-instance"
-    {
+    if classification == SocksClassification::Tls && direct_owner {
         let authority = request.authority.clone();
         let server_config = {
             let mut cache = leaf_cache.lock().await;

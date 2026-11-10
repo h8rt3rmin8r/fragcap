@@ -159,6 +159,7 @@ fn direct_owner_socks_http_uses_native_http_engine() {
         lease.capability_proof().proxy_password().as_bytes(),
     );
     connect_ipv4(&mut client, address);
+    std::thread::sleep(Duration::from_millis(80));
     write!(
         client,
         "GET /direct HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
@@ -172,6 +173,7 @@ fn direct_owner_socks_http_uses_native_http_engine() {
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.requests, 1);
+    assert_eq!(report.observation.protocol.http1_exchanges_completed, 1);
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
     assert_eq!(report.observation.protocol.socks_http, 1);
     assert!(collector
