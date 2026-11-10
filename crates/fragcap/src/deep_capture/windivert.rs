@@ -3,7 +3,7 @@
 //! Exact WinDivert 2.2.2-A x64 ABI, loaded only by an authorized route lease.
 
 use std::{
-    ffi::{c_void, CString},
+    ffi::{c_void, CStr, CString},
     io, mem,
     os::windows::ffi::OsStrExt,
     path::Path,
@@ -144,6 +144,10 @@ impl Api {
 
     pub fn open(self: &Arc<Self>, filter: &str, layer: i32, flags: u64) -> io::Result<Handle> {
         let filter = CString::new(filter).map_err(io::Error::other)?;
+        self.open_cstr(&filter, layer, flags)
+    }
+
+    fn open_cstr(self: &Arc<Self>, filter: &CStr, layer: i32, flags: u64) -> io::Result<Handle> {
         let raw = unsafe { (self.open)(filter.as_ptr(), layer, 0, flags) };
         if raw == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
@@ -365,6 +369,11 @@ mod tests {
             api.open(&socket_filter, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)
                 .expect("open nonblocking socket observer"),
         );
+        let filter = CString::new(format!(
+            "loopback and tcp.Syn and tcp.DstPort == {}",
+            destination.port()
+        ))
+        .unwrap();
         let narrow = Arc::new(Mutex::new(None::<Arc<Handle>>));
         let narrow_for_thread = Arc::clone(&narrow);
         let socket_for_thread = Arc::clone(&socket);
@@ -372,24 +381,18 @@ mod tests {
             let mut empty = [];
             let mut event = Address::default();
             socket_for_thread.recv(&mut empty, &mut event)?;
+            let handle = Arc::new(api.open_cstr(&filter, NETWORK_LAYER, 0)?);
+            *narrow_for_thread.lock().unwrap() = Some(Arc::clone(&handle));
             let details = event
                 .socket()
                 .ok_or_else(|| io::Error::other("missing socket data"))?;
             eprintln!(
-                "direct-route narrow event: qpc={}, local_port={}, remote_port={}, desired_remote={}",
+                "direct-route narrow event: qpc={}, local_port={}, remote_port={}, desired_remote={}, handle_opened=true",
                 event.timestamp_qpc,
                 details.local_port,
                 details.remote_port,
                 destination.port()
             );
-            let filter = format!(
-                "loopback and tcp.Syn and tcp.DstPort == {}",
-                destination.port()
-            );
-            let handle = Arc::new(api.open(&filter, NETWORK_LAYER, 0)?);
-            handle.set_queue(4096, 2000, 4_194_304)?;
-            *narrow_for_thread.lock().unwrap() = Some(Arc::clone(&handle));
-            eprintln!("direct-route narrow handle opened after event");
             let mut packet = [0u8; 65_535];
             let mut address = Address::default();
             let received = handle.recv(&mut packet, &mut address)?;
