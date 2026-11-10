@@ -555,6 +555,7 @@ mod tests {
                             .map_err(|error| io::Error::other(format!("stack: {error:?}")))?,
                     );
                     selected = Some(tuple);
+                    eprintln!("stack probe selected {tuple:?}, address={address:?}");
                 }
                 let selected_packet = selected.is_some_and(|tuple| {
                     endpoints == Some((tuple.local, tuple.remote))
@@ -566,6 +567,7 @@ mod tests {
                     stack
                         .ingest(&packet[..length], now)
                         .map_err(|error| io::Error::other(format!("ingest: {error:?}")))?;
+                    eprintln!("stack probe ingress {:?}, bytes={length}", endpoints);
                     let mut body = [0u8; 32];
                     let count = stack.receive_bytes(&mut body);
                     client_bytes.extend_from_slice(&body[..count]);
@@ -575,6 +577,7 @@ mod tests {
                         replied = true;
                     }
                     while let Some(response) = stack.pop_egress() {
+                        eprintln!("stack probe egress {:?}, bytes={}, flags={}", ipv4_tcp_endpoints(&response), response.len(), address.flags);
                         let sent = worker_handle.send(&response, &address)?;
                         if sent != response.len() {
                             return Err(io::Error::other("short stack reinjection"));
