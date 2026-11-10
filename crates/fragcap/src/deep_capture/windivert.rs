@@ -23,10 +23,10 @@ use windows_sys::Win32::{
     },
 };
 
-use fragcap_core::Proto;
+use fragcap_core::{parse::raw_transport_head, Proto};
 
 use super::{
-    direct_route::{DirectTuple, QpcAnchor},
+    direct_route::{DirectPacketHead, DirectTuple, QpcAnchor},
     verify_windivert_component,
 };
 
@@ -113,6 +113,32 @@ impl Address {
     pub fn socket(self) -> Option<SocketData> {
         (self.layer() == SOCKET_LAYER as u8 || self.layer() == FLOW_LAYER as u8)
             .then(|| unsafe { ptr::read_unaligned(self.data.as_ptr().cast()) })
+    }
+
+    pub fn initial_packet_head(self, bytes: &[u8], clock: QpcAnchor) -> Option<DirectPacketHead> {
+        if self.layer() != NETWORK_LAYER as u8 || !self.outbound() {
+            return None;
+        }
+        let head = raw_transport_head(bytes).ok()?;
+        let initial = match head.transport {
+            Proto::Tcp => head.initial_tcp_syn,
+            Proto::Udp => true,
+        };
+        if !initial || head.source.port() == 0 || head.destination.port() == 0 {
+            return None;
+        }
+        let (at_unix_ns, clock_error_ns) = clock.convert(self.timestamp_qpc)?;
+        Some(DirectPacketHead {
+            tuple: DirectTuple {
+                transport: head.transport,
+                local: head.source,
+                remote: head.destination,
+            },
+            at_qpc: self.timestamp_qpc,
+            at_unix_ns,
+            clock_error_ns,
+            initial: true,
+        })
     }
 }
 
@@ -517,7 +543,7 @@ mod tests {
                     Ok(length) => {
                         if !sent_syn && ipv4_tcp_syn_to(&bytes[..length], destination.port()) {
                             syn_sender
-                                .send((address, ipv4_tcp_endpoints(&bytes[..length])))
+                                .send((address, bytes[..length].to_vec()))
                                 .unwrap();
                             sent_syn = true;
                         }
@@ -538,7 +564,7 @@ mod tests {
         let mut body = [0u8; 15];
         server.read_exact(&mut body).unwrap();
         assert_eq!(&body, b"broad-syn-probe");
-        let (syn, syn_endpoints) = syn_receiver
+        let (syn, syn_bytes) = syn_receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("prearmed broad handle receives initial SYN");
         let event = event_receiver
@@ -557,12 +583,12 @@ mod tests {
         );
         assert_eq!(socket_data.pid, std::process::id());
         assert_eq!(socket_data.remote_port, destination.port());
-        assert_eq!(
-            socket_data.tuple().map(|tuple| (tuple.local, tuple.remote)),
-            syn_endpoints
-        );
         assert!(event.timestamp_qpc <= syn.timestamp_qpc);
         let anchor = sample_qpc_anchor().expect("bounded QPC clock sample");
+        let packet_head = syn
+            .initial_packet_head(&syn_bytes, anchor)
+            .expect("outbound initial SYN head");
+        assert_eq!(socket_data.tuple(), Some(packet_head.tuple));
         let event_time = anchor
             .convert(event.timestamp_qpc)
             .expect("socket event is inside clock anchor window");
@@ -584,14 +610,12 @@ mod tests {
     }
 
     fn ipv4_tcp_syn_to(bytes: &[u8], port: u16) -> bool {
-        if bytes.len() < 40 || bytes[0] >> 4 != 4 || bytes[9] != 6 {
-            return false;
-        }
-        let transport = usize::from(bytes[0] & 0x0f) * 4;
-        transport >= 20
-            && bytes.len() >= transport + 14
-            && u16::from_be_bytes([bytes[transport + 2], bytes[transport + 3]]) == port
-            && bytes[transport + 13] & 0x02 != 0
+        raw_transport_head(bytes).is_ok_and(|head| {
+            head.transport == Proto::Tcp
+                && head.source.is_ipv4()
+                && head.initial_tcp_syn
+                && head.destination.port() == port
+        })
     }
 
     /// Prove that the local stack can terminate the first diverted SYN and
@@ -694,23 +718,9 @@ mod tests {
     }
 
     fn ipv4_tcp_endpoints(bytes: &[u8]) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
-        use std::net::{Ipv4Addr, SocketAddr};
-        if bytes.len() < 40 || bytes[0] >> 4 != 4 || bytes[9] != 6 {
-            return None;
-        }
-        let offset = usize::from(bytes[0] & 0x0f) * 4;
-        if offset < 20 || bytes.len() < offset + 20 {
-            return None;
-        }
-        let source = SocketAddr::from((
-            Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]),
-            u16::from_be_bytes([bytes[offset], bytes[offset + 1]]),
-        ));
-        let destination = SocketAddr::from((
-            Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]),
-            u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]),
-        ));
-        Some((source, destination))
+        let head = raw_transport_head(bytes).ok()?;
+        (head.transport == Proto::Tcp && head.source.is_ipv4())
+            .then_some((head.source, head.destination))
     }
 
     #[test]
