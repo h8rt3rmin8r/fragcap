@@ -348,7 +348,9 @@ target process carrying memory-read rights.
 
 **NG-2. Passive Capture does not modify packets.** Capture never alters,
 drops, delays, replays, or synthesizes live traffic. The future explicit
-Deep Capture direct route may divert and reinject only selected eligible flows,
+Deep Capture may briefly divert unrelated TCP/UDP packets through the authorized
+bounded pass-through and promptly reinject them without payload inspection or
+retention. Only selected eligible flows may be consumed for direct routing,
 with exact ownership, loss accounting, isolation and cleanup evidence.
 Capture handles are opened for reading.
 

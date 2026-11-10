@@ -318,7 +318,12 @@ pub(crate) async fn serve_socks5(
     } else {
         limits.header_timeout.min(Duration::from_millis(25))
     };
-    let classification = classify_prefix(&client, classification_budget).await;
+    let partial_budget = if direct_owner {
+        limits.header_timeout.min(Duration::from_millis(100))
+    } else {
+        classification_budget
+    };
+    let classification = classify_prefix(&client, classification_budget, partial_budget).await;
     match classification {
         SocksClassification::Http => accounting.socks_http = 1,
         SocksClassification::Tls => accounting.socks_tls = 1,
@@ -2328,10 +2333,17 @@ async fn write_reply(
     stream.write_all(&bytes).await
 }
 
-async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassification {
-    let deadline = tokio::time::Instant::now() + budget;
+async fn classify_prefix(
+    stream: &TcpStream,
+    initial_budget: Duration,
+    partial_budget: Duration,
+) -> SocksClassification {
+    let initial_deadline = tokio::time::Instant::now() + initial_budget;
+    let mut partial_deadline = None;
+    let mut longest_prefix = 0;
     let mut bytes = [0_u8; 256];
     loop {
+        let deadline = partial_deadline.unwrap_or(initial_deadline);
         let read = match tokio::time::timeout_at(deadline, stream.peek(&mut bytes)).await {
             Ok(Ok(read)) => read,
             Ok(Err(_)) | Err(_) => return SocksClassification::OpaqueTcp,
@@ -2349,7 +2361,14 @@ async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassific
         {
             return SocksClassification::OpaqueTcp;
         }
-        if read == 0 || read == bytes.len() || tokio::time::Instant::now() >= deadline {
+        if read > longest_prefix {
+            longest_prefix = read;
+            partial_deadline = Some(tokio::time::Instant::now() + partial_budget);
+        }
+        if read == 0
+            || read == bytes.len()
+            || tokio::time::Instant::now() >= partial_deadline.unwrap_or(initial_deadline)
+        {
             return SocksClassification::OpaqueTcp;
         }
         tokio::time::sleep(Duration::from_millis(1)).await;

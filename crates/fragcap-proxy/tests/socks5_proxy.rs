@@ -185,6 +185,52 @@ fn direct_owner_socks_http_uses_native_http_engine() {
 }
 
 #[test]
+fn direct_owner_raw_token_stream_is_relayed_after_finite_classification() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).unwrap();
+        assert_eq!(request, b"runtime-client-request");
+        stream.write_all(b"runtime-origin-reply").unwrap();
+    });
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        1024,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_inspection_decider(Arc::new(DirectOwner))
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut client,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    connect_ipv4(&mut client, address);
+    client.write_all(b"runtime-client-request").unwrap();
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert_eq!(response, b"runtime-origin-reply");
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+    assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+    assert_eq!(report.observation.protocol.requests, 0);
+}
+
+#[test]
 fn direct_owner_socks_tls_uses_verified_native_https_engine() {
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
