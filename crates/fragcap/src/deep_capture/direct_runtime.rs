@@ -1484,6 +1484,20 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&outcome.stderr)
         );
+        let bridged = context.direct_helper_flows_for_test();
+        assert_eq!(
+            bridged.len(),
+            1,
+            "only the final client may enter the bridge"
+        );
+        assert_eq!(bridged[0].pid, client);
+        assert!(bridged[0]
+            .process_instance_id
+            .starts_with(&format!("process-{client}-")));
+        assert_eq!(bridged[0].tuple.transport, Proto::Tcp);
+        assert_eq!(bridged[0].tuple.remote, original);
+        assert_ne!(bridged[0].tuple.local, original);
+        assert_ne!(bridged[0].endpoint_id, 0);
         let stats = runtime.stop().unwrap();
         assert!(stats.packets.consumed > 0);
         assert_eq!(stats.packets.lost, 0);

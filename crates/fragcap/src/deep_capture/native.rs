@@ -430,6 +430,17 @@ impl NativeObservationContext {
         self.direct_route_active.store(active, Ordering::Release);
     }
 
+    #[cfg(all(test, windows, feature = "direct-route"))]
+    pub(crate) fn direct_helper_flows_for_test(&self) -> Vec<super::direct_route::OriginalFlow> {
+        self.direct_helpers
+            .lock()
+            .expect("direct helper lock")
+            .values()
+            .flatten()
+            .map(|owner| owner.flow.clone())
+            .collect()
+    }
+
     #[cfg(all(windows, feature = "direct-route"))]
     fn direct_helper_flow(
         &self,
