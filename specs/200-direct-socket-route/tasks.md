@@ -48,9 +48,9 @@
 
 ## Phase 6: Full gate and handoff
 
-- [ ] T022 Run all required driver-free and disposable Windows rows with zero skips and compare the exact oracle and sentinel metrics.
+- [x] T022 Run all required driver-free and disposable Windows rows with zero skips and compare the exact oracle and sentinel metrics.
 - [x] T023 Reconcile the master specification, glossary entries, plan index, security inventory, dependency review, operator truth and dated changelog; run a second Spec-Kit analysis and resolve every finding.
-- [ ] T024 Run `cargo xtask ci`, applicable Windows, supply-chain and documentation gates and exact-head hosted CI; repair failures and verify UTF-8 without BOM or mojibake.
+- [x] T024 Run `cargo xtask ci`, applicable Windows, supply-chain and documentation gates and exact-head hosted CI; repair failures and verify UTF-8 without BOM or mojibake.
 - [ ] T025 Commit the complete slice, push `codex/s200-direct-socket-route`, open the official PR with issue closures, respond to every CI/review finding, request at most one second `@Codex` review, then hand the green PR to the owner for final review and merge.
 
 ## Dependencies
