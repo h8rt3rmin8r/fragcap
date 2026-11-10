@@ -1199,12 +1199,27 @@ mod tests {
                     let mut gate = [0u8; 1];
                     std::io::stdin().read_exact(&mut gate).unwrap();
                     assert_eq!(gate, *b"p");
-                    let mut connection = TcpStream::connect(original).unwrap();
-                    connection.write_all(b"sentinel-request").unwrap();
-                    connection.shutdown(std::net::Shutdown::Write).unwrap();
+                    let proxy: SocketAddr = std::env::var("FRAGCAP_S200_CHILD_PROXY")
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    let authorization = std::env::var("FRAGCAP_S200_CHILD_PROXY_AUTH").unwrap();
+                    let mut connection = TcpStream::connect(proxy).unwrap();
+                    connection
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    connection
+                        .set_write_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    write!(
+                        connection,
+                        "GET http://{original}/publisher HTTP/1.1\r\nHost: {original}\r\nProxy-Authorization: {authorization}\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
                     let mut response = Vec::new();
                     connection.read_to_end(&mut response).unwrap();
-                    assert_eq!(response, b"sentinel-reply");
+                    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                    assert!(response.ends_with(b"PUBLISHER"));
                 }
                 let next_role = if role == "platform" {
                     "publisher"
@@ -1496,37 +1511,30 @@ mod tests {
             let mut publisher = 0;
             for _ in 0..2 {
                 let (mut stream, _) = origin.accept().unwrap();
-                let mut body = Vec::new();
-                stream.read_to_end(&mut body).unwrap();
-                if body == b"runtime-client-request" {
+                let mut first = [0u8; 1];
+                stream.read_exact(&mut first).unwrap();
+                if first == *b"r" {
+                    let mut body = vec![first[0]];
+                    stream.read_to_end(&mut body).unwrap();
+                    assert_eq!(body, b"runtime-client-request");
                     selected += 1;
                     stream.write_all(b"runtime-origin-reply").unwrap();
                 } else {
-                    assert_eq!(body, b"sentinel-request");
+                    let mut head = vec![first[0]];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0u8; 1];
+                        stream.read_exact(&mut byte).unwrap();
+                        head.push(byte[0]);
+                    }
+                    assert!(String::from_utf8_lossy(&head).contains("/publisher"));
                     publisher += 1;
-                    stream.write_all(b"sentinel-reply").unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nPUBLISHER")
+                        .unwrap();
                 }
             }
             (selected, publisher)
         });
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--exact",
-                "deep_capture::direct_runtime::tests::direct_runtime_child",
-                "--nocapture",
-            ])
-            .env("FRAGCAP_S200_CHAIN_ROLE", "platform")
-            .env("FRAGCAP_S200_CHILD_PROTOCOL", "tcp")
-            .env("FRAGCAP_S200_CHILD_ORIGINAL", original.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW);
-        let mut chain = command.spawn().unwrap();
-        let mut output = BufReader::new(chain.stdout.take().unwrap());
-        let platform = read_chain_pid(&mut output, "PLATFORM");
-        let publisher = read_chain_pid(&mut output, "PUBLISHER");
         let context = NativeObservationContext::default();
         let config = NativeProxyConfig::new(
             "127.0.0.1:0".parse().unwrap(),
@@ -1547,6 +1555,29 @@ mod tests {
             )))
             .start(Duration::from_secs(3))
             .unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "deep_capture::direct_runtime::tests::direct_runtime_child",
+                "--nocapture",
+            ])
+            .env("FRAGCAP_S200_CHAIN_ROLE", "platform")
+            .env("FRAGCAP_S200_CHILD_PROTOCOL", "tcp")
+            .env("FRAGCAP_S200_CHILD_ORIGINAL", original.to_string())
+            .env("FRAGCAP_S200_CHILD_PROXY", proxy.endpoint().to_string())
+            .env(
+                "FRAGCAP_S200_CHILD_PROXY_AUTH",
+                proxy.capability_proof().proxy_authorization().as_str(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW);
+        let mut chain = command.spawn().unwrap();
+        let mut output = BufReader::new(chain.stdout.take().unwrap());
+        let platform = read_chain_pid(&mut output, "PLATFORM");
+        let publisher = read_chain_pid(&mut output, "PUBLISHER");
         let mut runtime = DirectPacketRuntime::start(
             Path::new(&root),
             context.clone(),
@@ -2031,12 +2062,18 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
+                eprintln!("direct HTTP3 origin accepted QUIC");
                 let connection = incoming.await.unwrap();
                 let mut h3 = h3::server::Connection::new(Connection::new(connection))
                     .await
                     .unwrap();
                 let resolver = h3.accept().await.unwrap().unwrap();
                 let (request, mut stream) = resolver.resolve_request().await.unwrap();
+                eprintln!(
+                    "direct HTTP3 origin received {} {}",
+                    request.method(),
+                    request.uri()
+                );
                 assert_eq!(request.method(), "GET");
                 assert_eq!(request.uri().path(), "/direct-quic");
                 stream
@@ -2097,7 +2134,17 @@ mod tests {
         )
         .unwrap();
         release_client(&mut child);
-        finish_client(child);
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        if !output.status.success() {
+            let stopped = route.stop();
+            let report = proxy.cleanup(Duration::from_secs(3));
+            eprintln!(
+                "direct HTTP3 failure: route={stopped:?}, protocol={:?}, diagnostics={:?}, origin_finished={}",
+                report.observation.protocol, report.observation.connection_diagnostics, server_task.is_finished()
+            );
+            panic!("child failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
         async_runtime.block_on(server_task).unwrap();
         let stats = route.stop().unwrap();
         assert!(stats.packets.consumed > 0);
