@@ -770,6 +770,14 @@ impl fragcap_proxy::InspectionDecider for ExactGameDecider {
                 }
             }
         }
+        #[cfg(all(test, windows, feature = "direct-route"))]
+        if self.context.direct_route_active.load(Ordering::Acquire) {
+            eprintln!(
+                "direct helper decision miss: descriptor={descriptor:?}, opened_at_ns={}, registry={:?}",
+                request.opened_at_ns,
+                self.context.direct_helpers.lock().expect("direct helper lock")
+            );
+        }
         let result = self
             .context
             .socket_inception(descriptor, request.opened_at_ns);
