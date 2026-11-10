@@ -1070,16 +1070,7 @@ Every application-authored human multi-column report MUST use actual emitted dis
 These restate the constitution's sharpest edges. The constitution is
 authoritative; this list is the one to keep in working memory.
 
-- **The technique boundaries are exact.** Capture stays passive. Deliberately
-  selected Deep Capture may use the official signed WinDivert component for a
-  bounded target-scoped direct route after exact authorization, isolation and
-  cleanup are implemented. No target code injection, function hooking, process
-  handles carrying memory-read rights, layered service providers, in-place
-  game-file modification, or memory-derived TLS key extraction is permitted.
-  Proxy-owned key logging remains separate; voluntary application-supported
-  key export is research, not a shipped capability. A driver signature alone
-  proves neither target scope nor anti-cheat compatibility. See constitution
-  P-1 and specification section 19 before changing route behavior.
+- **The technique boundaries are exact.** Capture stays passive. Deliberately selected Deep Capture may use the official signed WinDivert component for a bounded direct route after exact authorization, isolation, and cleanup are implemented. A finite prearmed TCP/UDP handle may briefly intercept unrelated packets solely to reinject them promptly after header-only candidacy classification and without application-payload inspection or retention; selected routing still requires exact client and destination proof, a progress watchdog, and measured continuity. No target code injection, function hooking, process handles carrying memory-read rights, layered service providers, in-place game-file modification, or memory-derived TLS key extraction is permitted. Proxy-owned key logging remains separate; voluntary application-supported key export is research, not a shipped capability. A driver signature alone proves neither target scope nor anti-cheat compatibility. See constitution P-1 and specification section 19 before changing route behavior.
 - **Any process handle states its access rights explicitly at the call site.**
   A request carrying memory rights fails review.
 - **`fragcap-core` takes no platform-specific dependency.** Dependencies flow
