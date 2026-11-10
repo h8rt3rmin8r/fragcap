@@ -836,7 +836,7 @@ impl RoutingLease for NativeDirectLease {
                 resource: "target-route".into(),
                 status: CleanupStatus::Released,
                 reason: format!(
-                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, bypass-reasons={:?}, proxy-refused={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}; pre-receive loss unmeasurable={}",
+                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, bypass-reasons={:?}, proxy-refused={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}, watchdog-release-after-progress-ms={}; pre-receive loss unmeasurable={}",
                     stats.packets.received,
                     stats.packets.reinjected,
                     stats.packets.consumed,
@@ -851,6 +851,7 @@ impl RoutingLease for NativeDirectLease {
                     stats.synthetic_reply_lost,
                     stats.event_history_overflow,
                     stats.watchdog_released,
+                    stats.watchdog_release_after_progress_ms,
                     stats.pre_receive_loss_unmeasurable,
                 ),
             },

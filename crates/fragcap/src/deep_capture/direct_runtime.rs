@@ -38,6 +38,7 @@ const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
 const CANDIDATE_WAIT_NS: u64 = 10_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
+const WORKER_STALL_THRESHOLD_MS: u64 = 90;
 
 #[cfg(test)]
 static STALL_NEXT_CANDIDATE: AtomicBool = AtomicBool::new(false);
@@ -67,6 +68,7 @@ pub struct DirectRuntimeStats {
     pub event_history_overflow: bool,
     pub pre_receive_loss_unmeasurable: bool,
     pub watchdog_released: bool,
+    pub watchdog_release_after_progress_ms: u64,
 }
 
 struct SharedStats {
@@ -74,6 +76,7 @@ struct SharedStats {
     packets: Mutex<DirectPacketAccounting>,
     processor_progress_ms: AtomicU64,
     watchdog_released: AtomicBool,
+    watchdog_release_after_progress_ms: AtomicU64,
     stop_watchdog: AtomicBool,
     admission_busy_bypassed: AtomicU64,
     candidate_capacity_bypassed: AtomicU64,
@@ -90,6 +93,7 @@ impl SharedStats {
             packets: Mutex::new(DirectPacketAccounting::default()),
             processor_progress_ms: AtomicU64::new(1),
             watchdog_released: AtomicBool::new(false),
+            watchdog_release_after_progress_ms: AtomicU64::new(0),
             stop_watchdog: AtomicBool::new(false),
             admission_busy_bypassed: AtomicU64::new(0),
             candidate_capacity_bypassed: AtomicU64::new(0),
@@ -106,7 +110,8 @@ impl SharedStats {
             .expect("route accounting lock")
             .in_flight
             != 0
-            && now_ms.saturating_sub(self.processor_progress_ms.load(Ordering::Acquire)) >= 100
+            && now_ms.saturating_sub(self.processor_progress_ms.load(Ordering::Acquire))
+                >= WORKER_STALL_THRESHOLD_MS
     }
 
     fn processor_progress(&self) {
@@ -748,6 +753,12 @@ impl DirectPacketRuntime {
                     while !watchdog_stats.stop_watchdog.load(Ordering::Acquire) {
                         let now = watchdog_stats.started.elapsed().as_millis() as u64 + 1;
                         if watchdog_stats.stalled_packet(now) {
+                            watchdog_stats.watchdog_release_after_progress_ms.store(
+                                now.saturating_sub(
+                                    watchdog_stats.processor_progress_ms.load(Ordering::Acquire),
+                                ),
+                                Ordering::Release,
+                            );
                             watchdog_stats
                                 .watchdog_released
                                 .store(true, Ordering::Release);
@@ -879,6 +890,10 @@ impl DirectPacketRuntime {
             event_history_overflow: self.stats.event_history_overflow.load(Ordering::Relaxed),
             pre_receive_loss_unmeasurable: true,
             watchdog_released: self.stats.watchdog_released.load(Ordering::Relaxed),
+            watchdog_release_after_progress_ms: self
+                .stats
+                .watchdog_release_after_progress_ms
+                .load(Ordering::Relaxed),
         };
         if let Some(error) = first_error {
             Err(io::Error::other(format!(
@@ -1118,8 +1133,8 @@ mod tests {
         assert!(!stats.stalled_packet(1_000));
         packet_received(&stats).unwrap();
         stats.processor_progress_ms.store(10, Ordering::Release);
-        assert!(!stats.stalled_packet(109));
-        assert!(stats.stalled_packet(110));
+        assert!(!stats.stalled_packet(99));
+        assert!(stats.stalled_packet(100));
         stats.processor_progress_ms.store(105, Ordering::Release);
         assert!(!stats.stalled_packet(110));
         packet_finished(&stats, PacketDisposition::Reinjected).unwrap();
@@ -1174,6 +1189,14 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(5));
         }
+        assert!(
+            runtime
+                .stats
+                .watchdog_release_after_progress_ms
+                .load(Ordering::Acquire)
+                <= 100,
+            "watchdog exceeded its controlled release bound"
+        );
         let error = runtime.stop().unwrap_err();
         assert!(error.to_string().contains("watchdog_released: true"));
         runtime.stats.packets.lock().unwrap().release().unwrap();
