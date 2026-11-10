@@ -145,6 +145,53 @@ pub fn raw_transport_head(packet: &[u8]) -> Result<RawTransportHead, ParseReject
     })
 }
 
+/// Borrow one complete UDP payload from a raw IP packet. Routing callers
+/// cannot forward a fragment as though it were a complete datagram.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawUdpDatagram<'a> {
+    pub source: SocketAddr,
+    pub destination: SocketAddr,
+    pub payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RawUdpReject {
+    Parse(ParseReject),
+    Fragmented,
+    InvalidLength,
+}
+
+pub fn raw_udp_datagram(packet: &[u8]) -> Result<RawUdpDatagram<'_>, RawUdpReject> {
+    let (network, offset) = link::dispatch(LinkType::RAW, packet).map_err(RawUdpReject::Parse)?;
+    let bytes = packet
+        .get(offset..)
+        .ok_or(RawUdpReject::Parse(ParseReject::ShortHeader))?;
+    let net = ip::parse(network, bytes).map_err(RawUdpReject::Parse)?;
+    if net.fragment.is_some() {
+        return Err(RawUdpReject::Fragmented);
+    }
+    if net.proto != transport::IPPROTO_UDP {
+        return Err(RawUdpReject::Parse(ParseReject::UnsupportedTransport));
+    }
+    let transport = bytes
+        .get(net.transport_offset..net.extent)
+        .ok_or(RawUdpReject::Parse(ParseReject::ShortHeader))?;
+    if transport.len() < 8 {
+        return Err(RawUdpReject::Parse(ParseReject::ShortHeader));
+    }
+    let declared = usize::from(u16::from_be_bytes([transport[4], transport[5]]));
+    if declared < 8 || declared > transport.len() {
+        return Err(RawUdpReject::InvalidLength);
+    }
+    let source_port = u16::from_be_bytes([transport[0], transport[1]]);
+    let destination_port = u16::from_be_bytes([transport[2], transport[3]]);
+    Ok(RawUdpDatagram {
+        source: SocketAddr::new(net.src, source_port),
+        destination: SocketAddr::new(net.dst, destination_port),
+        payload: &transport[8..declared],
+    })
+}
+
 /// Why a frame produced no flow key.
 ///
 /// Closed rather than `#[non_exhaustive]`, unlike the error enums in
@@ -618,6 +665,49 @@ mod tests {
         assert_eq!(
             raw_transport_head(&later),
             Err(ParseReject::UnmatchedFragment)
+        );
+    }
+
+    #[test]
+    fn raw_udp_route_borrows_exact_payload_and_refuses_fragments() {
+        let udp = f::cat(&[&f::udp(41000, 53, 12), b"abcd", b"padding"]);
+        let ipv4 = f::ipv4(
+            f::V4 {
+                proto: 17,
+                ..f::V4::default()
+            },
+            &udp,
+        );
+        let datagram = raw_udp_datagram(&ipv4).unwrap();
+        assert_eq!(datagram.source.port(), 41000);
+        assert_eq!(datagram.destination.port(), 53);
+        assert_eq!(datagram.payload, b"abcd");
+        let ipv6 = f::ipv6(
+            f::V6 {
+                next: 17,
+                ..f::V6::default()
+            },
+            &udp,
+        );
+        assert_eq!(raw_udp_datagram(&ipv6).unwrap().payload, b"abcd");
+        let fragmented = f::ipv6(
+            f::V6 {
+                next: 44,
+                ..f::V6::default()
+            },
+            &f::cat(&[&f::fragment_ext(17, 0, true, 7), &udp]),
+        );
+        assert_eq!(raw_udp_datagram(&fragmented), Err(RawUdpReject::Fragmented));
+        let truncated = f::ipv4(
+            f::V4 {
+                proto: 17,
+                ..f::V4::default()
+            },
+            &f::udp(41000, 53, 12),
+        );
+        assert_eq!(
+            raw_udp_datagram(&truncated),
+            Err(RawUdpReject::InvalidLength)
         );
     }
 

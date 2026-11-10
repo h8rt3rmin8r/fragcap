@@ -688,9 +688,15 @@ mod tests {
         client.write_all(b"runtime-client-request").unwrap();
         client.shutdown(std::net::Shutdown::Write).unwrap();
         let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
+        let read_result = client.read_to_end(&mut response);
+        let stop_result = runtime.stop();
+        eprintln!(
+            "direct runtime probe: read={read_result:?}, stop={stop_result:?}, response_bytes={}",
+            response.len()
+        );
+        read_result.unwrap();
         assert_eq!(response, b"runtime-origin-reply");
-        let stats = runtime.stop().unwrap();
+        let stats = stop_result.unwrap();
         assert!(stats.packets.consumed > 0, "selected flow was not routed");
         assert_eq!(stats.packets.lost, 0);
         assert_eq!(stats.synthetic_reply_lost, 0);
