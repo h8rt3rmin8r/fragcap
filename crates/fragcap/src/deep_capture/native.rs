@@ -1624,7 +1624,7 @@ fn active_process_start(
     Some((latest.0, latest.1.to_string(), latest.2))
 }
 
-fn bind_inception_process(
+pub(super) fn bind_inception_process(
     evidence: &super::CaptureProcessEvidence,
     inception: super::ConnectionInception,
     opened_at_ns: u64,

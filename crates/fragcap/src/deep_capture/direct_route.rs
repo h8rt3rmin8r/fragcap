@@ -1,0 +1,447 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Exact original-flow ownership and one-use bridge receipts.
+
+use std::{collections::BTreeMap, net::SocketAddr};
+
+use fragcap_core::Proto;
+
+use super::{CaptureProcessEvidence, ConnectionInception};
+
+const MAX_CLOCK_ERROR_NS: u64 = 5_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct DirectTuple {
+    pub transport: Proto,
+    pub local: SocketAddr,
+    pub remote: SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketEventKind {
+    Open,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DirectSocketEvent {
+    pub tuple: DirectTuple,
+    pub endpoint_id: u64,
+    pub pid: u32,
+    pub at_qpc: i64,
+    pub at_unix_ns: i64,
+    pub clock_error_ns: u64,
+    pub kind: SocketEventKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DirectPacketHead {
+    pub tuple: DirectTuple,
+    pub at_qpc: i64,
+    pub at_unix_ns: i64,
+    pub initial: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct OriginalFlow {
+    pub tuple: DirectTuple,
+    pub endpoint_id: u64,
+    pub pid: u32,
+    pub process_instance_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DirectAdmission {
+    Selected(OriginalFlow),
+    Bypassed(&'static str),
+    Ambiguous(&'static str),
+    Unavailable(&'static str),
+}
+
+pub fn select_direct_flow(
+    evidence: &CaptureProcessEvidence,
+    events: &[DirectSocketEvent],
+    packet: DirectPacketHead,
+) -> DirectAdmission {
+    let matching: Vec<_> = events
+        .iter()
+        .filter(|event| event.tuple == packet.tuple)
+        .collect();
+    if matching.is_empty() {
+        return DirectAdmission::Unavailable("socket-event-missing");
+    }
+    let eligible: Vec<_> = matching
+        .iter()
+        .copied()
+        .filter(|event| event.at_qpc <= packet.at_qpc && event.kind == SocketEventKind::Open)
+        .collect();
+    if eligible.is_empty() {
+        return DirectAdmission::Bypassed("first-packet-before-owner-event");
+    }
+    if eligible.len() != 1 {
+        return DirectAdmission::Ambiguous("competing-socket-events");
+    }
+    let event = eligible[0];
+    if matching.iter().any(|other| {
+        other.kind == SocketEventKind::Close
+            && other.endpoint_id == event.endpoint_id
+            && other.at_qpc >= event.at_qpc
+            && other.at_qpc <= packet.at_qpc
+    }) {
+        return DirectAdmission::Bypassed("socket-closed-before-packet");
+    }
+    if event.clock_error_ns > MAX_CLOCK_ERROR_NS
+        || event.at_unix_ns < 0
+        || packet.at_unix_ns < event.at_unix_ns
+    {
+        return DirectAdmission::Unavailable("socket-clock-uncertain");
+    }
+    if !packet.initial {
+        return DirectAdmission::Bypassed("initial-packet-missed");
+    }
+    let inception = ConnectionInception {
+        state: "exact",
+        reason: "windivert-socket-event",
+        pid: Some(event.pid),
+        socket_created_at_ns: Some(event.at_unix_ns),
+    };
+    let owner =
+        super::native::bind_inception_process(evidence, inception, packet.at_unix_ns as u64);
+    if owner.reason == "socket-owner-managed-ancestry-unproven" {
+        return DirectAdmission::Bypassed("owner-not-final-client");
+    }
+    if owner.state != "exact" {
+        return DirectAdmission::Unavailable("process-generation-unproven");
+    }
+    if owner.role.as_deref() != Some("client") {
+        return DirectAdmission::Bypassed("owner-not-final-client");
+    }
+    let Some(process_instance_id) = owner.process_instance_id else {
+        return DirectAdmission::Unavailable("process-instance-missing");
+    };
+    DirectAdmission::Selected(OriginalFlow {
+        tuple: packet.tuple,
+        endpoint_id: event.endpoint_id,
+        pid: event.pid,
+        process_instance_id,
+    })
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct RouteReceiptId([u8; 32]);
+
+impl std::fmt::Debug for RouteReceiptId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RouteReceiptId([redacted])")
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReceiptError {
+    Full,
+    Duplicate,
+    Entropy,
+    Unknown,
+    Expired,
+    Mismatch,
+    Replayed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketDisposition {
+    Reinjected,
+    Consumed,
+    Lost,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectPacketAccounting {
+    pub received: u64,
+    pub reinjected: u64,
+    pub consumed: u64,
+    pub lost: u64,
+    pub in_flight: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountingError {
+    CounterOverflow,
+    NoPacketInFlight,
+    UnfinishedPackets,
+}
+
+impl DirectPacketAccounting {
+    pub fn receive(&mut self) -> Result<(), AccountingError> {
+        let received = self
+            .received
+            .checked_add(1)
+            .ok_or(AccountingError::CounterOverflow)?;
+        let in_flight = self
+            .in_flight
+            .checked_add(1)
+            .ok_or(AccountingError::CounterOverflow)?;
+        self.received = received;
+        self.in_flight = in_flight;
+        Ok(())
+    }
+
+    pub fn finish(&mut self, disposition: PacketDisposition) -> Result<(), AccountingError> {
+        if self.in_flight == 0 {
+            return Err(AccountingError::NoPacketInFlight);
+        }
+        let count = match disposition {
+            PacketDisposition::Reinjected => &mut self.reinjected,
+            PacketDisposition::Consumed => &mut self.consumed,
+            PacketDisposition::Lost => &mut self.lost,
+        };
+        *count = count
+            .checked_add(1)
+            .ok_or(AccountingError::CounterOverflow)?;
+        self.in_flight -= 1;
+        Ok(())
+    }
+
+    pub fn release(&self) -> Result<(), AccountingError> {
+        let settled = self
+            .reinjected
+            .checked_add(self.consumed)
+            .and_then(|sum| sum.checked_add(self.lost))
+            .ok_or(AccountingError::CounterOverflow)?;
+        if self.in_flight == 0 && self.received == settled {
+            Ok(())
+        } else {
+            Err(AccountingError::UnfinishedPackets)
+        }
+    }
+}
+
+struct ReceiptRecord {
+    flow: OriginalFlow,
+    expires_at: u64,
+    helper_connection_id: Option<u64>,
+}
+
+pub struct DirectReceiptLedger {
+    session_id: String,
+    capacity: usize,
+    receipts: BTreeMap<[u8; 32], ReceiptRecord>,
+}
+
+impl DirectReceiptLedger {
+    pub fn new(session_id: String, capacity: usize) -> Self {
+        Self {
+            session_id,
+            capacity,
+            receipts: BTreeMap::new(),
+        }
+    }
+
+    pub fn issue(
+        &mut self,
+        flow: OriginalFlow,
+        expires_at: u64,
+    ) -> Result<RouteReceiptId, ReceiptError> {
+        if self.receipts.values().any(|record| record.flow == flow) {
+            return Err(ReceiptError::Duplicate);
+        }
+        if self.receipts.len() >= self.capacity {
+            return Err(ReceiptError::Full);
+        }
+        let mut bytes = [0; 32];
+        for _ in 0..3 {
+            getrandom::fill(&mut bytes).map_err(|_| ReceiptError::Entropy)?;
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.receipts.entry(bytes) {
+                entry.insert(ReceiptRecord {
+                    flow,
+                    expires_at,
+                    helper_connection_id: None,
+                });
+                return Ok(RouteReceiptId(bytes));
+            }
+        }
+        Err(ReceiptError::Entropy)
+    }
+
+    pub fn consume(
+        &mut self,
+        id: RouteReceiptId,
+        session_id: &str,
+        tuple: DirectTuple,
+        helper_connection_id: u64,
+        now: u64,
+    ) -> Result<&OriginalFlow, ReceiptError> {
+        if session_id != self.session_id {
+            return Err(ReceiptError::Mismatch);
+        }
+        let record = self.receipts.get_mut(&id.0).ok_or(ReceiptError::Unknown)?;
+        if record.flow.tuple != tuple {
+            return Err(ReceiptError::Mismatch);
+        }
+        if record.expires_at < now {
+            return Err(ReceiptError::Expired);
+        }
+        if record.helper_connection_id.is_some() {
+            return Err(ReceiptError::Replayed);
+        }
+        record.helper_connection_id = Some(helper_connection_id);
+        Ok(&record.flow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deep_capture::{StageTransition, StageTransitionKind};
+    use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
+
+    fn tuple(port: u16) -> DirectTuple {
+        DirectTuple {
+            transport: Proto::Tcp,
+            local: SocketAddr::from(([127, 0, 0, 1], port)),
+            remote: SocketAddr::from(([127, 0, 0, 1], 23000)),
+        }
+    }
+
+    fn evidence() -> CaptureProcessEvidence {
+        CaptureProcessEvidence {
+            events: vec![
+                ProcessEvent::started(10, 1, "platform.exe", "", Timestamp::from_nanos(1000)),
+                ProcessEvent::started(11, 10, "publisher.exe", "", Timestamp::from_nanos(1100)),
+                ProcessEvent::started(12, 11, "client.exe", "", Timestamp::from_nanos(1200)),
+                ProcessEvent::started(13, 1, "unrelated.exe", "", Timestamp::from_nanos(1210)),
+            ],
+            launch_pid: Some(10),
+            launch_at: Some(Timestamp::from_nanos(1000)),
+            stage_transitions: vec![StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid: 12,
+                role: "client".into(),
+                stage: None,
+                at: Timestamp::from_nanos(1220),
+            }],
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        }
+    }
+
+    fn event(pid: u32, port: u16) -> DirectSocketEvent {
+        DirectSocketEvent {
+            tuple: tuple(port),
+            endpoint_id: 99,
+            pid,
+            at_qpc: 100,
+            at_unix_ns: 1250,
+            clock_error_ns: 1000,
+            kind: SocketEventKind::Open,
+        }
+    }
+
+    fn packet(port: u16) -> DirectPacketHead {
+        DirectPacketHead {
+            tuple: tuple(port),
+            at_qpc: 101,
+            at_unix_ns: 1300,
+            initial: true,
+        }
+    }
+
+    #[test]
+    fn final_client_requires_exact_generation_and_initial_packet() {
+        let exact = select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000));
+        let DirectAdmission::Selected(flow) = exact else {
+            panic!("expected selected flow")
+        };
+        assert_eq!(flow.pid, 12);
+        assert_eq!(flow.endpoint_id, 99);
+        assert_eq!(flow.tuple, tuple(40000));
+        assert!(matches!(
+            select_direct_flow(&evidence(), &[event(13, 40000)], packet(40000)),
+            DirectAdmission::Bypassed("owner-not-final-client")
+        ));
+        assert!(matches!(
+            select_direct_flow(
+                &evidence(),
+                &[event(12, 40000)],
+                DirectPacketHead {
+                    initial: false,
+                    ..packet(40000)
+                }
+            ),
+            DirectAdmission::Bypassed("initial-packet-missed")
+        ));
+    }
+
+    #[test]
+    fn same_destination_unrelated_and_raced_events_never_select() {
+        assert!(matches!(
+            select_direct_flow(&evidence(), &[event(12, 40000)], packet(40001)),
+            DirectAdmission::Unavailable("socket-event-missing")
+        ));
+        let mut late = event(12, 40000);
+        late.at_qpc = 102;
+        assert!(matches!(
+            select_direct_flow(&evidence(), &[late], packet(40000)),
+            DirectAdmission::Bypassed("first-packet-before-owner-event")
+        ));
+        assert!(matches!(
+            select_direct_flow(
+                &evidence(),
+                &[event(12, 40000), event(13, 40000)],
+                packet(40000)
+            ),
+            DirectAdmission::Ambiguous("competing-socket-events")
+        ));
+    }
+
+    #[test]
+    fn receipt_is_session_and_tuple_bound_and_one_use() {
+        let DirectAdmission::Selected(flow) =
+            select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000))
+        else {
+            panic!("expected selected flow")
+        };
+        let mut ledger = DirectReceiptLedger::new("session-a".into(), 2);
+        let id = ledger.issue(flow.clone(), 500).unwrap();
+        assert_eq!(
+            ledger.issue(flow.clone(), 500),
+            Err(ReceiptError::Duplicate)
+        );
+        assert!(matches!(
+            ledger.consume(id, "session-b", flow.tuple, 3, 100),
+            Err(ReceiptError::Mismatch)
+        ));
+        assert!(matches!(
+            ledger.consume(id, "session-a", tuple(40001), 3, 100),
+            Err(ReceiptError::Mismatch)
+        ));
+        assert_eq!(
+            ledger.consume(id, "session-a", flow.tuple, 3, 100),
+            Ok(&flow)
+        );
+        assert!(matches!(
+            ledger.consume(id, "session-a", flow.tuple, 4, 101),
+            Err(ReceiptError::Replayed)
+        ));
+    }
+
+    #[test]
+    fn every_diverted_packet_has_one_exclusive_terminal_disposition() {
+        let mut counts = DirectPacketAccounting::default();
+        for _ in 0..3 {
+            counts.receive().unwrap();
+        }
+        assert_eq!(counts.release(), Err(AccountingError::UnfinishedPackets));
+        counts.finish(PacketDisposition::Reinjected).unwrap();
+        counts.finish(PacketDisposition::Consumed).unwrap();
+        counts.finish(PacketDisposition::Lost).unwrap();
+        assert_eq!(
+            counts.finish(PacketDisposition::Lost),
+            Err(AccountingError::NoPacketInFlight)
+        );
+        assert_eq!(counts.release(), Ok(()));
+        assert_eq!(
+            counts.received,
+            counts.reinjected + counts.consumed + counts.lost
+        );
+    }
+}

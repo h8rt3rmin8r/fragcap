@@ -47,6 +47,36 @@ jobs:
           New-Item -ItemType Directory -Path target\windows-integration\stage -Force | Out-Null
           Copy-Item -LiteralPath target\release\fragcap.exe -Destination target\windows-integration\stage\fragcap.exe
 
+      - name: Acquire exact signed WinDivert probe component
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $component = (Get-Content -LiteralPath integration/windows-package-contract-v1.json -Raw | ConvertFrom-Json).windivert
+          $binary = Join-Path $env:RUNNER_TEMP 'WinDivert-2.2.2-A.zip'
+          $source = Join-Path $env:RUNNER_TEMP 'WinDivert-source.zip'
+          Invoke-WebRequest -Uri $component.binary_url -OutFile $binary -MaximumRedirection 5
+          Invoke-WebRequest -Uri $component.source_url -OutFile $source -MaximumRedirection 5
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.binary_sha256) { throw 'WinDivert archive hash mismatch' }
+          if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.source_sha256) { throw 'WinDivert source hash mismatch' }
+          $expanded = Join-Path $env:RUNNER_TEMP 'windivert-expanded'
+          $verified = Join-Path $env:RUNNER_TEMP 'windivert-probe'
+          Expand-Archive -LiteralPath $binary -DestinationPath $expanded
+          New-Item -ItemType Directory -Path $verified -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $expanded 'WinDivert-2.2.2-A/x64/WinDivert.dll') -Destination (Join-Path $verified 'WinDivert.dll')
+          Copy-Item -LiteralPath (Join-Path $expanded 'WinDivert-2.2.2-A/x64/WinDivert64.sys') -Destination (Join-Path $verified 'WinDivert64.sys')
+          Copy-Item -LiteralPath (Join-Path $expanded 'WinDivert-2.2.2-A/LICENSE') -Destination (Join-Path $verified 'WinDivert-LICENSE.txt')
+          Copy-Item -LiteralPath $source -Destination (Join-Path $verified 'WinDivert-source.zip')
+          if ((Get-FileHash -LiteralPath (Join-Path $verified 'WinDivert.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.dll_sha256) { throw 'WinDivert DLL hash mismatch' }
+          if ((Get-FileHash -LiteralPath (Join-Path $verified 'WinDivert64.sys') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.driver_sha256) { throw 'WinDivert driver hash mismatch' }
+          if ((Get-FileHash -LiteralPath (Join-Path $verified 'WinDivert-LICENSE.txt') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.license_sha256) { throw 'WinDivert license hash mismatch' }
+          $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $verified 'WinDivert64.sys')
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -cne $component.driver_signer_thumbprint) { throw 'WinDivert driver signature mismatch' }
+          "WINDIVERT_VERIFIED_ROOT=$verified" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Probe direct socket event timing on disposable runner
+        shell: pwsh
+        run: cargo test --locked -p fragcap --features direct-route disposable_socket_event_precedes_loopback_syn --lib -- --ignored --nocapture
+
       - name: Run complete hosted matrix
         run: cargo xtask windows-integration --run hosted --binary target\windows-integration\stage\fragcap.exe --report target\windows-integration\hosted.jsonl
 

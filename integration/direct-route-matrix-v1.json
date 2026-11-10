@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "required_rows": [
+    {"id":"exact-chain-tcp","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"selected"},
+    {"id":"unrelated-same-destination","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"unrelated","event":"before-initial","expected":"bypassed"},
+    {"id":"launcher-proxy-coexistence","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"launcher","event":"before-initial","expected":"bypassed"},
+    {"id":"pid-reuse","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"reused-pid","event":"before-initial","expected":"unavailable"},
+    {"id":"port-reuse","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"competing-endpoints","event":"before-initial","expected":"ambiguous"},
+    {"id":"late-event","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"final-client","event":"after-initial","expected":"bypassed"},
+    {"id":"missing-event","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"final-client","event":"missing","expected":"unavailable"},
+    {"id":"uncertain-clock","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"final-client","event":"clock-uncertain","expected":"unavailable"},
+    {"id":"receipt-replay","tier":"driver-free","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"replayed"},
+    {"id":"queue-saturation","tier":"driver-free","transport":"udp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"lost-accounted"},
+    {"id":"raw-tcp-ipv4","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-unknown"},
+    {"id":"raw-tcp-ipv6","tier":"windows-driver","transport":"tcp","family":"ipv6","owner":"final-client","event":"before-initial","expected":"routed-unknown"},
+    {"id":"http-tcp-ipv4","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-inspected"},
+    {"id":"tls-tcp-ipv4","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-inspected"},
+    {"id":"opaque-tls-ipv4","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-opaque"},
+    {"id":"udp-ipv4","tier":"windows-driver","transport":"udp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-unknown"},
+    {"id":"udp-ipv6","tier":"windows-driver","transport":"udp","family":"ipv6","owner":"final-client","event":"before-initial","expected":"routed-unknown"},
+    {"id":"quic-h3-ipv4","tier":"windows-driver","transport":"udp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-inspected"},
+    {"id":"mixed-launcher-and-client","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"mixed","event":"before-initial","expected":"one-route-per-flow"},
+    {"id":"same-destination-sentinels","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"mixed","event":"before-initial","expected":"unrelated-unaffected"},
+    {"id":"different-destination-sentinels","tier":"windows-driver","transport":"udp","family":"ipv4","owner":"mixed","event":"before-initial","expected":"unrelated-unaffected"},
+    {"id":"helper-loopback-exclusion","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"helper","event":"before-initial","expected":"bypassed"},
+    {"id":"cancel-and-restart","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"released"},
+    {"id":"driver-send-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"lost-accounted"},
+    {"id":"proxy-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused"},
+    {"id":"writer-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"loss-accounted"},
+    {"id":"cleanup-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"recovery-required"}
+  ],
+  "sentinel": {
+    "paired_baseline": true,
+    "missing_replies_max": 0,
+    "unexplained_packet_loss_max": 0,
+    "p99_extra_latency_ms_minimum_allowance": 50,
+    "p99_extra_latency_baseline_multiplier": 4
+  }
+}

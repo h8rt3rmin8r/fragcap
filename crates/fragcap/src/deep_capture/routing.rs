@@ -387,6 +387,42 @@ pub struct RoutingPlan {
     pub verification: String,
     pub cleanup: Vec<String>,
     pub bypass: Option<BypassPolicy>,
+    /// Optional signed packet route, separately owned from child environment.
+    pub direct_socket: Option<DirectSocketComponent>,
+}
+
+/// Immutable pre-effect scope for a selected final-client direct route.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectSocketComponent {
+    pub target_id: i64,
+    pub final_role: &'static str,
+    pub tcp: bool,
+    pub udp: bool,
+    pub max_flows: usize,
+    pub max_packets: usize,
+    pub administrator_required: bool,
+    pub component_version: &'static str,
+}
+
+impl DirectSocketComponent {
+    fn for_target(target: &PreparedTarget) -> Result<Self, PreflightRefusal> {
+        if target.id <= 0 {
+            return Err(PreflightRefusal::new(
+                "direct-route-target-invalid",
+                "direct routing requires an exact stored target",
+            ));
+        }
+        Ok(Self {
+            target_id: target.id,
+            final_role: "client",
+            tcp: true,
+            udp: true,
+            max_flows: 256,
+            max_packets: 4096,
+            administrator_required: true,
+            component_version: "WinDivert-2.2.2-A-x64",
+        })
+    }
 }
 
 impl RoutingPlan {
@@ -435,7 +471,14 @@ impl RoutingPlan {
             verification: "packet-flow-and-socket-owner-evidence".to_string(),
             cleanup: vec!["child-environment-ends-with-process".to_string()],
             bypass: Some(bypass),
+            direct_socket: None,
         })
+    }
+
+    pub fn with_direct_socket(mut self, target: &PreparedTarget) -> Result<Self, PreflightRefusal> {
+        self.direct_socket = Some(DirectSocketComponent::for_target(target)?);
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn planned(strategy: RoutingStrategyKind) -> Self {
@@ -446,6 +489,7 @@ impl RoutingPlan {
             verification: "not-implemented".to_string(),
             cleanup: Vec::new(),
             bypass: None,
+            direct_socket: None,
         }
     }
 
@@ -468,6 +512,21 @@ impl RoutingPlan {
             return Err(PreflightRefusal::new(
                 "routing-plan-invalid",
                 "the routing plan lacks bypass policy or contains an invalid effect",
+            ));
+        }
+        if self.direct_socket.as_ref().is_some_and(|direct| {
+            direct.target_id <= 0
+                || direct.final_role != "client"
+                || !direct.tcp
+                || !direct.udp
+                || direct.max_flows == 0
+                || direct.max_packets == 0
+                || !direct.administrator_required
+                || direct.component_version != "WinDivert-2.2.2-A-x64"
+        }) {
+            return Err(PreflightRefusal::new(
+                "direct-route-plan-invalid",
+                "the direct-socket component has invalid target, bounds or component identity",
             ));
         }
         Ok(())
@@ -617,6 +676,12 @@ impl RoutingAdapter for ChildEnvironmentRouting {
         _target: &PreparedTarget,
         plan: &RoutingPlan,
     ) -> Result<(), PreflightRefusal> {
+        if plan.direct_socket.is_some() {
+            return Err(PreflightRefusal::new(
+                "direct-route-adapter-unavailable",
+                "the child-environment adapter cannot own a direct-socket component",
+            ));
+        }
         plan.validate()
     }
 
@@ -626,7 +691,9 @@ impl RoutingAdapter for ChildEnvironmentRouting {
         proxy: ProxyRoute,
         _budget: Budget,
     ) -> Result<Box<dyn RoutingLease>, StageFailure> {
-        if session.routing.strategy != RoutingStrategyKind::ChildEnvironment {
+        if session.routing.strategy != RoutingStrategyKind::ChildEnvironment
+            || session.routing.direct_socket.is_some()
+        {
             return Err(StageFailure::new(
                 Stage::Routing,
                 "routing-strategy-unavailable",
@@ -807,6 +874,27 @@ mod tests {
         assert_eq!(environment["ALL_PROXY"], environment["all_proxy"]);
         assert_eq!(environment["NO_PROXY"], environment["no_proxy"]);
         assert_eq!(environment["NO_PROXY"], ".example.com,127.0.0.1:8080");
+    }
+
+    #[test]
+    fn direct_component_is_explicit_and_child_only_adapter_refuses_it() {
+        let target = PreparedTarget {
+            id: 7,
+            handle: "controlled-client".into(),
+            launch_case: LaunchCase::DirectExeCold,
+        };
+        let ordinary = RoutingPlan::child_environment(endpoint("127.0.0.1:8080"), &[]).unwrap();
+        assert!(ordinary.direct_socket.is_none());
+        let direct = ordinary.with_direct_socket(&target).unwrap();
+        assert_eq!(direct.direct_socket.as_ref().unwrap().target_id, 7);
+        assert_eq!(direct.direct_socket.as_ref().unwrap().final_role, "client");
+        assert_eq!(
+            ChildEnvironmentRouting
+                .prepare(&target, &direct)
+                .unwrap_err()
+                .code,
+            "direct-route-adapter-unavailable"
+        );
     }
 
     fn session(routing: RoutingPlan) -> SessionPlan {

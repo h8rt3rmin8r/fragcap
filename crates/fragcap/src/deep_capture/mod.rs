@@ -20,6 +20,7 @@ mod artifacts;
 mod classification;
 mod collection;
 mod diagnostics;
+mod direct_route;
 #[doc(hidden)]
 pub mod fuzz_support;
 mod har;
@@ -35,6 +36,9 @@ mod proposal;
 mod restart;
 mod routing;
 mod session;
+#[cfg(all(windows, feature = "direct-route"))]
+mod windivert;
+mod windivert_component;
 
 pub use access::*;
 pub use adapters::*;
@@ -68,3 +72,4 @@ pub use proposal::*;
 pub use restart::*;
 pub use routing::*;
 pub use session::{DeepCapture, DeepCaptureSession, PreparedSession};
+pub use windivert_component::verify_windivert_component;
