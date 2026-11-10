@@ -37,6 +37,7 @@ const PACKET_QUEUE: usize = 256;
 const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
 const CANDIDATE_WAIT_NS: u64 = 10_000_000;
 const SOCKET_EVENTS: usize = 4096;
+const REFUSED_FLOWS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
 
@@ -146,6 +147,15 @@ fn packet_finished(stats: &SharedStats, disposition: PacketDisposition) -> io::R
         .map_err(|error| io::Error::other(format!("packet terminal accounting: {error:?}")))
 }
 
+fn mark_refused_flow(refused: &Mutex<BTreeSet<DirectTuple>>, tuple: DirectTuple) -> bool {
+    let mut flows = refused.lock().expect("refused route lock");
+    if flows.len() >= REFUSED_FLOWS && !flows.contains(&tuple) {
+        return false;
+    }
+    flows.insert(tuple);
+    true
+}
+
 fn reinject(
     handle: &Handle,
     stats: &SharedStats,
@@ -181,15 +191,28 @@ fn inject_replies(
     Ok(())
 }
 
-fn receive_packets(
+struct ReceiveRuntimeInputs {
     handle: Arc<Handle>,
     sender: SyncSender<WorkPacket>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    refused: Arc<Mutex<BTreeSet<DirectTuple>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
-) -> io::Result<()> {
+}
+
+fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
+    let ReceiveRuntimeInputs {
+        handle,
+        sender,
+        observer,
+        selected,
+        excluded,
+        refused,
+        connecting,
+        stats,
+    } = inputs;
     let mut packet = [0u8; 65_535];
     loop {
         let mut address = Address::default();
@@ -239,6 +262,16 @@ fn receive_packets(
                     remote: head.destination,
                 })
         });
+        let is_refused = head.as_ref().is_some_and(|head| {
+            refused
+                .lock()
+                .expect("refused route lock")
+                .contains(&DirectTuple {
+                    transport: head.transport,
+                    local: head.source,
+                    remote: head.destination,
+                })
+        });
         let busy_unowned = connecting.load(Ordering::Acquire)
             && head.as_ref().is_none_or(|head| {
                 let tuple = DirectTuple {
@@ -252,8 +285,10 @@ fn receive_packets(
                     .current_owner_pid(tuple)
                     .is_none_or(|pid| pid == std::process::id())
             });
-        if !is_candidate || busy_unowned || is_excluded {
-            if is_candidate {
+        if !is_candidate || busy_unowned || is_excluded || is_refused {
+            if is_refused {
+                stats.record_bypass("proxy-refused-flow");
+            } else if is_candidate {
                 stats
                     .admission_busy_bypassed
                     .fetch_add(1, Ordering::Relaxed);
@@ -296,6 +331,7 @@ struct ProcessRuntimeInputs {
     context: NativeObservationContext,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
+    refused: Arc<Mutex<BTreeSet<DirectTuple>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
@@ -312,6 +348,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         context,
         selected,
         excluded,
+        refused,
         connecting,
         stats,
         session_id,
@@ -335,6 +372,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 #[cfg(test)]
                 if STALL_NEXT_CANDIDATE.swap(false, Ordering::AcqRel) {
                     thread::sleep(Duration::from_millis(150));
+                }
+                if refused
+                    .lock()
+                    .expect("refused route lock")
+                    .contains(&head.tuple)
+                {
+                    stats.record_bypass("proxy-refused-flow");
+                    reinject(&handle, &stats, &packet, &address)?;
+                    continue;
                 }
                 let now_ns = started.elapsed().as_nanos() as u64;
                 if let Err(pending) = candidates.enqueue(head, packet, address, now_ns) {
@@ -453,6 +499,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     packet,
                     address,
                 } => {
+                    if refused
+                        .lock()
+                        .expect("refused route lock")
+                        .contains(&flow.tuple)
+                    {
+                        stats.record_bypass("proxy-refused-flow");
+                        reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    }
                     if active.len().saturating_add(active_udp.len()) >= max_flows {
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
@@ -511,6 +566,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     ))
                                 })?;
                                 stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
+                                if !mark_refused_flow(&refused, flow.tuple) {
+                                    reinject(&handle, &stats, &packet, &address)?;
+                                    return Err(io::Error::other("refused route ledger full"));
+                                }
                                 reinject(&handle, &stats, &packet, &address)?;
                                 continue;
                             }
@@ -583,6 +642,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 io::Error::other(format!("retire refused route receipt: {error:?}"))
                             })?;
                             stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
+                            if !mark_refused_flow(&refused, flow.tuple) {
+                                reinject(&handle, &stats, &packet, &address)?;
+                                return Err(io::Error::other("refused route ledger full"));
+                            }
                             reinject(&handle, &stats, &packet, &address)?;
                             continue;
                         }
@@ -678,6 +741,7 @@ impl DirectPacketRuntime {
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
+        let refused = Arc::new(Mutex::new(BTreeSet::new()));
         let connecting = Arc::new(AtomicBool::new(false));
         let route_context = context.clone();
         let stats = Arc::new(SharedStats::new());
@@ -686,20 +750,22 @@ impl DirectPacketRuntime {
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
+            let refused = Arc::clone(&refused);
             let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             thread::Builder::new()
                 .name("fragcap-direct-receive".into())
                 .spawn(move || {
-                    let result = receive_packets(
-                        Arc::clone(&handle),
+                    let result = receive_packets(ReceiveRuntimeInputs {
+                        handle: Arc::clone(&handle),
                         sender,
                         observer,
                         selected,
                         excluded,
+                        refused,
                         connecting,
                         stats,
-                    );
+                    });
                     if result.is_err() {
                         let _ = handle.stop();
                     }
@@ -711,6 +777,7 @@ impl DirectPacketRuntime {
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
+            let refused = Arc::clone(&refused);
             let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             let launched = thread::Builder::new()
@@ -723,6 +790,7 @@ impl DirectPacketRuntime {
                         context,
                         selected,
                         excluded,
+                        refused,
                         connecting,
                         stats,
                         session_id,
