@@ -44,6 +44,9 @@ fixed and the review thread resolved. Hosted published v0.10.14 replay then
 passed. The hosted audit reported RUSTSEC-2026-0459 for the old bundled SQLite
 version. The existing rusqlite and libsqlite3-sys packages are being updated
 without a waiver, requiring Rust 1.89 and new reviewed graph identities.
+The next exact-head run showed that the isolated `fuzz` and
+`performance/native-proxy` lockfiles also required the same two version
+updates; both now resolve with `--locked`.
 Windows package certification completed the official release build, then
 stopped because a transient `cargo-cyclonedx` download failure was not checked
 at installation. The setup step now checks native exit codes and retries that

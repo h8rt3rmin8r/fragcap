@@ -31,3 +31,5 @@ version selected by rusqlite 0.40.2. Update the existing rusqlite edge to
 3.54.1. The newer rusqlite requires Rust 1.89, so raise the workspace MSRV,
 minimum-toolchain gate, audit toolchain and reviewed graph digests together.
 No new package or graph edge is introduced by this repair.
+The two isolated `fuzz` and `performance/native-proxy` lockfiles also carry
+the patched versions so their locked audit and short campaign can run.

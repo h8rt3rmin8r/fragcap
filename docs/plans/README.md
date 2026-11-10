@@ -499,3 +499,5 @@ operator journey remain #583-#584. #580 is independent deferred research.
 Hosted audit discovered RUSTSEC-2026-0459 against the bundled SQLite graph;
 S199 updates rusqlite and the bundled SQLite library and raises the workspace
 MSRV to 1.89 as the exact-head gate repair.
+The isolated fuzz and native-proxy performance lockfiles move to the same
+patched pair for their locked hosted gates.
