@@ -964,6 +964,16 @@ mod tests {
             let mut response = Vec::new();
             client.read_to_end(&mut response).unwrap();
             assert_eq!(response, b"runtime-origin-reply");
+        } else if protocol == "sentinel-tcp" {
+            let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.write_all(b"sentinel-request").unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            assert_eq!(response, b"sentinel-reply");
         } else if protocol == "udp" {
             let client = UdpSocket::bind(SocketAddr::new(original.ip(), 0)).unwrap();
             client.connect(original).unwrap();
@@ -1007,12 +1017,26 @@ mod tests {
         let origin = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
         let original = origin.local_addr().unwrap();
         let server = thread::spawn(move || {
-            let (mut stream, _) = origin.accept().unwrap();
-            let mut body = Vec::new();
-            stream.read_to_end(&mut body).unwrap();
-            assert_eq!(body, b"runtime-client-request");
-            stream.write_all(b"runtime-origin-reply").unwrap();
+            let mut selected = 0;
+            let mut unrelated = 0;
+            for _ in 0..4 {
+                let (mut stream, _) = origin.accept().unwrap();
+                let mut body = Vec::new();
+                stream.read_to_end(&mut body).unwrap();
+                if body == b"runtime-client-request" {
+                    selected += 1;
+                    stream.write_all(b"runtime-origin-reply").unwrap();
+                } else {
+                    assert_eq!(body, b"sentinel-request");
+                    unrelated += 1;
+                    stream.write_all(b"sentinel-reply").unwrap();
+                }
+            }
+            (selected, unrelated)
         });
+        let mut before = spawn_client("sentinel-tcp", original);
+        release_client(&mut before);
+        finish_client(before);
         let config =
             NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 1024, Duration::from_secs(2))
                 .unwrap()
@@ -1033,7 +1057,10 @@ mod tests {
             4,
         )
         .unwrap();
+        let mut during = spawn_client("sentinel-tcp", original);
+        release_client(&mut during);
         release_client(&mut child);
+        finish_client(during);
         finish_client(child);
         let stop_result = runtime.stop();
         eprintln!("direct runtime probe: family={ip}, stop={stop_result:?}");
@@ -1042,7 +1069,10 @@ mod tests {
         assert_eq!(stats.packets.lost, 0);
         assert_eq!(stats.synthetic_reply_lost, 0);
         assert!(stats.pre_receive_loss_unmeasurable);
-        server.join().unwrap();
+        let mut after = spawn_client("sentinel-tcp", original);
+        release_client(&mut after);
+        finish_client(after);
+        assert_eq!(server.join().unwrap(), (1, 3));
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
     }
