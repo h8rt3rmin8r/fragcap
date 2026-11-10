@@ -13,6 +13,7 @@
     {"id":"queue-saturation","tier":"driver-free","transport":"udp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"lost-accounted"},
     {"id":"raw-tcp-ipv4","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"routed-unknown","probe":"disposable_direct_runtime_routes_exact_generation"},
     {"id":"prearmed-first-syn","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"held-then-selected","probe":"disposable_broad_handle_catches_first_syn"},
+    {"id":"locked-driver-component","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"component","event":"load","expected":"verified-file-and-directory-names-pinned","probe":"disposable_verified_component_pins_file_and_directory_names"},
     {"id":"broad-pass-through-parallel","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"unrelated","event":"concurrent","expected":"reinjected-within-bound","probe":"disposable_broad_pass_through_latency"},
     {"id":"broad-worker-stall","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"unrelated","event":"worker-stall","expected":"diversion-stopped-and-loss-reported","probe":"disposable_stalled_worker_releases_broad_handle"},
     {"id":"raw-tcp-ipv6","tier":"windows-driver","transport":"tcp","family":"ipv6","owner":"final-client","event":"before-initial","expected":"routed-unknown","probe":"disposable_direct_runtime_routes_exact_generation"},

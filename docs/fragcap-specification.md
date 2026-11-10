@@ -4049,14 +4049,19 @@ provenance, hashes, architecture and driver signature. Npcap remains a
 separately installed prerequisite and is never bundled.
 
 The S200 Rust adapter loads the exact packaged DLL dynamically only after the
-direct-route authorization gate, then opens and closes its bounded driver
+direct-route authorization gate. It pins the verified component file objects
+against writes and deletes and their ancestor directories against renames from
+hash verification through module release, then opens and closes bounded driver
 handles within that session. It joins selected first packets to the exact
 managed process generation and original tuple, and passes raw TCP or UDP to
 the existing authenticated native proxy. Unrelated TCP/UDP packets are
 promptly reinjected; delivered packets reconcile as reinjected, consumed or
 lost. WinDivert exposes no exact count for kernel queue loss before receive,
 so the adapter reports that limit and the controlled sentinel matrix checks
-observable continuity. S199 separately adds distribution and the read-only
+observable continuity. Socket history retains live owner events and only a
+bounded recent close window; evidence loss or a true capacity overflow stops
+the route with a named failure rather than silently bypassing an established
+selected flow. S199 separately adds distribution and the read-only
 Doctor identity check. Doctor can name absent, altered, inaccessible and
 observably disabled-service states; a matching package does not establish that
 Windows will allow a later driver load. The vendor documents on-demand driver

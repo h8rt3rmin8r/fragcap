@@ -37,6 +37,7 @@ const PACKET_QUEUE: usize = 256;
 const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
 const CANDIDATE_WAIT_NS: u64 = 10_000_000;
 const SOCKET_EVENTS: usize = 4096;
+const EVENT_HISTORY_NS: i64 = 30_000_000;
 const REFUSED_FLOWS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
@@ -233,6 +234,18 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
         };
         packet_received(&stats)?;
         let bytes = &packet[..length];
+        let event_health = observer.lock().expect("socket observer lock").stats();
+        if event_health.capacity_lost != 0
+            || event_health.clock_lost != 0
+            || stats.event_history_overflow.load(Ordering::Acquire)
+        {
+            let sent = reinject(&handle, &stats, bytes, &address);
+            let _ = handle.stop();
+            sent?;
+            return Err(io::Error::other(
+                "direct socket evidence was lost; broad route released",
+            ));
+        }
         let head = raw_transport_head(bytes).ok();
         let selected_tuple = head.as_ref().and_then(|head| {
             let tuple = DirectTuple {
@@ -376,6 +389,24 @@ struct ProcessRuntimeInputs {
 struct ActiveFlows<'a> {
     tcp: &'a mut BTreeMap<DirectTuple, ActiveTcp>,
     udp: &'a mut BTreeMap<DirectTuple, ActiveUdp>,
+}
+
+fn prune_socket_events(events: &mut Vec<DirectSocketEvent>, cutoff_unix_ns: i64) {
+    let old_closes: BTreeMap<_, _> = events
+        .iter()
+        .filter(|event| {
+            event.kind == super::direct_route::SocketEventKind::Close
+                && event.at_unix_ns < cutoff_unix_ns
+        })
+        .map(|event| ((event.tuple, event.endpoint_id), event.at_qpc))
+        .collect();
+    events.retain(|event| {
+        event.at_unix_ns >= cutoff_unix_ns
+            || (event.kind == super::direct_route::SocketEventKind::Open
+                && old_closes
+                    .get(&(event.tuple, event.endpoint_id))
+                    .is_none_or(|closed_at| *closed_at < event.at_qpc))
+    });
 }
 
 fn forward_active_packet(
@@ -584,10 +615,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 issued_receipts.retain(|issued| *issued != receipt);
             }
         }
-        if events.len().saturating_add(new_events.len()) > SOCKET_EVENTS {
+        events.extend(new_events);
+        let cutoff_unix_ns = i64::try_from(unix_now_ns()?)
+            .map_err(|_| io::Error::other("system time outside route event history"))?
+            .saturating_sub(EVENT_HISTORY_NS);
+        prune_socket_events(&mut events, cutoff_unix_ns);
+        if events.len() > SOCKET_EVENTS {
             stats.event_history_overflow.store(true, Ordering::Release);
-        } else {
-            events.extend(new_events);
+            let _ = handle.stop();
+            return Err(io::Error::other(
+                "direct socket event history exceeded finite bound",
+            ));
         }
         let event_loss = observer.lock().expect("socket observer lock").stats();
         let evidence = if event_loss.capacity_lost == 0
@@ -1213,6 +1251,43 @@ mod tests {
     };
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    #[test]
+    fn socket_history_retains_live_owner_and_expires_closed_churn() {
+        use crate::deep_capture::direct_route::SocketEventKind;
+
+        let tuple = DirectTuple {
+            transport: Proto::Udp,
+            local: "127.0.0.1:40123".parse().unwrap(),
+            remote: "127.0.0.1:40124".parse().unwrap(),
+        };
+        let event = |endpoint_id, at_qpc, at_unix_ns, kind| DirectSocketEvent {
+            tuple,
+            endpoint_id,
+            pid: 42,
+            at_qpc,
+            at_unix_ns,
+            clock_error_ns: 0,
+            kind,
+        };
+        let mut events = Vec::new();
+        for endpoint_id in 1..=5_000 {
+            events.push(event(endpoint_id, 1, 1, SocketEventKind::Open));
+            events.push(event(endpoint_id, 2, 2, SocketEventKind::Close));
+        }
+        // The same endpoint identifier may be reused after its old CLOSE.
+        events.push(event(1, 3, 3, SocketEventKind::Open));
+        // A recent CLOSE must remain long enough to disambiguate a held packet.
+        events.push(event(5_001, 4, 1, SocketEventKind::Open));
+        events.push(event(5_001, 5, 25, SocketEventKind::Close));
+        prune_socket_events(&mut events, 20);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].endpoint_id, 1);
+        assert_eq!(events[0].at_qpc, 3);
+        prune_socket_events(&mut events, 30);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].endpoint_id, 1);
+    }
 
     struct UninspectedDirectOwner;
 

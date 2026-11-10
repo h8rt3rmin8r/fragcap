@@ -31,7 +31,7 @@ use fragcap_core::{parse::raw_transport_head, Proto};
 
 use super::{
     direct_route::{DirectPacketHead, DirectTuple, QpcAnchor},
-    verify_windivert_component,
+    windivert_component::{verify_locked_windivert_component, LockedWinDivertComponent},
 };
 
 const FILETIME_UNIX_OFFSET_NS: i128 = 11_644_473_600_000_000_000;
@@ -232,6 +232,7 @@ type SetParamFn = unsafe extern "system" fn(isize, i32, u64) -> i32;
 
 pub(super) struct Api {
     module: isize,
+    _verified: LockedWinDivertComponent,
     open: OpenFn,
     recv: RecvFn,
     send: SendFn,
@@ -243,20 +244,25 @@ pub(super) struct Api {
 impl Api {
     /// The caller must already hold the exact approved direct-route session plan.
     pub fn load_verified(directory: &Path) -> io::Result<Arc<Self>> {
-        let path = verify_windivert_component(directory).map_err(io::Error::other)?;
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let verified = verify_locked_windivert_component(directory)?;
+        let wide: Vec<u16> = verified
+            .dll_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let module = unsafe { LoadLibraryExW(wide.as_ptr(), 0, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) };
         if module == 0 {
             return Err(io::Error::last_os_error());
         }
-        let loaded = unsafe { Self::from_module(module) };
+        let loaded = unsafe { Self::from_module(module, verified) };
         if loaded.is_err() {
             unsafe { FreeLibrary(module) };
         }
         loaded.map(Arc::new)
     }
 
-    unsafe fn from_module(module: isize) -> io::Result<Self> {
+    unsafe fn from_module(module: isize, verified: LockedWinDivertComponent) -> io::Result<Self> {
         unsafe fn symbol<T: Copy>(module: isize, name: &str) -> io::Result<T> {
             let name = CString::new(name).map_err(io::Error::other)?;
             let proc = unsafe { GetProcAddress(module, name.as_ptr().cast()) };
@@ -267,6 +273,7 @@ impl Api {
         }
         Ok(Self {
             module,
+            _verified: verified,
             open: unsafe { symbol(module, "WinDivertOpen")? },
             recv: unsafe { symbol(module, "WinDivertRecv")? },
             send: unsafe { symbol(module, "WinDivertSend")? },
@@ -416,6 +423,43 @@ impl Drop for Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_verified_component_pins_file_and_directory_names() {
+        use std::fs::OpenOptions;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let root = Path::new(&root);
+        let _api = Api::load_verified(root).expect("load locked verified component");
+        for name in ["WinDivert.dll", "WinDivert64.sys"] {
+            assert!(
+                OpenOptions::new()
+                    .write(true)
+                    .open(root.join(name))
+                    .is_err(),
+                "verified {name} must reject a second write handle"
+            );
+        }
+        let wide: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
+        let rename_handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0x0001_0000, // DELETE access is required to rename the directory.
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                0,
+            )
+        };
+        assert_eq!(rename_handle, INVALID_HANDLE_VALUE);
+    }
 
     /// An all-TCP/UDP handle is prearmed before the sentinels run. Compare
     /// sequential loopback UDP exchanges against a paired same-run baseline.
