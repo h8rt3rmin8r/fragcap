@@ -40,6 +40,7 @@ const SOCKET_EVENTS: usize = 4096;
 const REFUSED_FLOWS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
+const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 static STALL_NEXT_CANDIDATE: AtomicBool = AtomicBool::new(false);
@@ -538,7 +539,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             proxy,
                             flow.tuple.remote,
                             password.as_bytes(),
-                            Duration::from_millis(50),
+                            PROXY_CONNECT_TIMEOUT,
                             |stream| {
                                 receipts
                                     .consume(receipt, &session_id, flow.tuple, helper_id, now)
@@ -616,7 +617,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         proxy,
                         flow.tuple.remote,
                         password.as_bytes(),
-                        Duration::from_secs(2),
+                        PROXY_CONNECT_TIMEOUT,
                         |stream| {
                             receipts
                                 .consume(receipt, &session_id, flow.tuple, helper_id, now)
