@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/s199-signed-direct-route-foundation`
 **Created**: 2026-11-09
-**Status**: Implementation candidate; hosted certification and review pending
+**Status**: PR candidate; hosted audit and package certification repairs in progress
 **Input**: Owner-authorized S199 autopilot for issues #577 and #579, including automatic push, official PR, CI, and up to two Codex review rounds before owner merge.
 
 ## Scope
@@ -73,6 +73,7 @@ An operator can inspect whether the packaged component is present and matches th
 - **FR-008**: Ordinary Capture, offline replay and read-only inspection MUST not require or load WinDivert; selected future direct-route Deep Capture remains Administrator-gated before effects.
 - **FR-009**: No package or policy change MUST add a global proxy setting, game instrumentation, unbounded route, or private-title success claim.
 - **FR-010**: The complete Spec-Kit analysis and applicable repository, supply-chain, documentation, Windows packaging and exact-head CI gates MUST pass before S199 is offered for owner merge.
+- **FR-011**: The hosted audit finding RUSTSEC-2026-0459 MUST be repaired in the existing bundled SQLite graph without an advisory waiver; the resulting Rust minimum, graph identity and documentation MUST agree.
 
 ### Key Entities
 
@@ -89,6 +90,7 @@ An operator can inspect whether the packaged component is present and matches th
 - **SC-003**: All required package lifecycle rows complete on the disposable Windows runner, with exact file ownership and no unreported residue.
 - **SC-004**: Read-only Doctor cases report exact valid, absent and altered states, and ordinary Capture/offline checks pass without WinDivert present.
 - **SC-005**: Spec-Kit analysis, local CI parity, hosted package certification and all exact-head checks pass; every arriving review comment is addressed before owner merge handoff.
+- **SC-006**: The exact-head audit accepts bundled SQLite 3.54.1 through rusqlite 0.41.1, and the minimum-toolchain gate runs on Rust 1.89.
 
 ## Assumptions
 

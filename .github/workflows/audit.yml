@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: 1.88.0
+          toolchain: 1.89.0
       # Install the exact governed tool from its locked source graph, without
       # a Docker Hub bootstrap that can prevent the audit from running.
       - name: Install pinned cargo-deny

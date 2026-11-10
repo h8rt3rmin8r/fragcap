@@ -498,8 +498,8 @@ fn validate_policy(policy: &Value, graphs: &[Graph], today: String) -> Vec<Strin
         .get("workspace_msrv")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if msrv != "1.88" {
-        findings.push("declared-msrv: workspace policy must equal 1.88".to_string());
+    if msrv != "1.89" {
+        findings.push("declared-msrv: workspace policy must equal 1.89".to_string());
     }
     validate_graph_views(object, graphs, &mut findings);
     validate_packages(object, graphs, msrv, &mut findings);
@@ -1029,7 +1029,7 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
     }
     for required in [
         "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
-        "toolchain: 1.88.0",
+        "toolchain: 1.89.0",
         "cargo install cargo-deny --version 0.20.2 --locked",
         "cargo deny --locked --all-features check advisories licenses bans sources",
     ] {
@@ -2890,7 +2890,7 @@ mod tests {
             "release_root": "fragcap-cli",
             "release_target": WINDOWS_TARGET,
             "release_features": ["etw", "live", "socket-table"],
-            "workspace_msrv": "1.88",
+            "workspace_msrv": "1.89",
             "graph_views": [],
             "allowed_sources": [],
             "tools": [],

@@ -206,7 +206,7 @@ enforcement.
 | 0.1.116-draft | 2026-11-05 | Codex | S194 carries requested and effective inspection scope through calibration, compatibility, authorization, operator output, artifacts, and package certification, with one separately authorized exact-game retry or packet-only fallback. Updates sections 15.7, 17.4, 19.3, and 27.3; public v0.10.13 identity remains unchanged. |
 | 0.1.117-draft | 2026-11-06 | Codex | S195 prepares the v0.10.14 source candidate from S189 through S194, corrects the controlled Windows calibration timing regression without changing production deadlines, and preserves verified v0.10.13 public authorities until later publication. Updates sections 1, 25.2, and 27.3. |
 | 0.1.118-draft | 2026-11-06 | Codex | S196 reconciles exact v0.10.14 tag, protected publication, six public files, ten registry archives, hosted package certification, portable default-path observation, and current public records. Updates sections 1, 22.7, 25.2, and 27.3. |
-| 0.1.121-draft | 2026-11-09 | Codex | S199 reconciles the owner-approved signed direct-route policy and pins official WinDivert distribution evidence. Updates sections 2, 3, 5, 19, 20, 27, and 28 without claiming live diversion or changing published v0.10.14 identity. |
+| 0.1.121-draft | 2026-11-09 | Codex | S199 reconciles the owner-approved signed direct-route policy and pins official WinDivert distribution evidence. Hosted audit also requires patched bundled SQLite 3.54.1 and a Rust 1.89 floor. Updates sections 2, 3, 5, 19, 20, 21, 24, 27, and 28 without claiming live diversion or changing published v0.10.14 identity. |
 | 0.1.120-draft | 2026-11-06 | Codex | S198 distinguishes observed TLS transport ending from structured invalid TLS messages in launch-chain inspection, retaining exact stage, alert, owner, and completed-work evidence. Updates sections 13.7 and 27.3 without changing published v0.10.14 identity. |
 | 0.1.119-draft | 2026-11-06 | Codex | S197 gives managed Deep Capture one exact launch-chain packet scope from launch inception through route-owner release, makes full-chain application inspection the ordinary default, and includes receipt-backed causal helpers in bounded shutdown. Updates sections 10, 15.7, 17.4, and 27.3 without changing published v0.10.14 identity. |
 
@@ -4205,7 +4205,7 @@ resolver = "2"
 [workspace.package]
 version      = "0.1.0"
 edition      = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license      = "Apache-2.0"
 repository   = "https://github.com/h8rt3rmin8r/fragcap"
 authors      = ["William Thompson"]
@@ -4445,9 +4445,12 @@ relationship is resolved in the brand session.
 The development Rust toolchain is pinned by `rust-toolchain.toml` to 1.96.0
 with the `x86_64-pc-windows-msvc` target and the `rustfmt` and `clippy`
 components. The separately declared and mechanically built minimum supported
-version is 1.88. Pinning ensures local and continuous integration builds are
+version is 1.89. Pinning ensures local and continuous integration builds are
 identical while the MSRV gate proves published metadata and the complete
 workspace graph remain usable at the claimed floor.
+S199 raises that floor from 1.88 to 1.89 because the patched rusqlite 0.41.1
+graph bundles SQLite 3.54.1 through libsqlite3-sys 0.39.1, addressing
+RUSTSEC-2026-0459 without disabling the embedded database or waiving audit.
 
 Windows builds require the npcap Software Development Kit, acquired at
 build time per section 20.2 rather than vendored.

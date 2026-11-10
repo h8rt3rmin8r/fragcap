@@ -10,9 +10,9 @@ Amend the approved Deep Capture policy before code changes, then pin, stage and 
 
 ## Technical Context
 
-**Language/Version**: Rust MSRV 1.88, pinned development toolchain 1.96.0; PowerShell 7 Windows certification; Markdown, WiX and JSON contracts.
+**Language/Version**: Rust MSRV 1.89 after hosted audit repair, pinned development toolchain 1.96.0; PowerShell 7 Windows certification; Markdown, WiX and JSON contracts.
 
-**Primary Dependencies**: Official WinDivert 2.2.2-A external component, existing Windows APIs and package tooling. No new Rust crate in S199.
+**Primary Dependencies**: Official WinDivert 2.2.2-A external component, existing Windows APIs and package tooling. Hosted audit prompted updates of two existing locked packages, rusqlite and libsqlite3-sys; no new Rust crate or graph edge in S199.
 
 **Storage**: Existing package contract and certification report; no target or session schema change.
 
@@ -52,6 +52,7 @@ Amend the approved Deep Capture policy before code changes, then pin, stage and 
 4. Extend read-only Doctor and package certification for exact component state, file equality and lifecycle, retaining the existing CA and Npcap paths.
 5. Reconcile operator and maintainer docs with package reality, including current limits. Re-run Spec-Kit analysis and quality checks.
 6. Run local CI parity and exact Windows hosted certification; commit, push, publish official PR with `Closes #577` and `Closes #579`, resolve CI and every arriving review. Request no more than one second `@Codex` round, then hand the green PR to the owner.
+7. After the first hosted run, repair RUSTSEC-2026-0459 by updating the bundled SQLite graph and Rust floor together; make pinned package-tool installation fail clearly and retry transient download failure. Re-run local and exact-head hosted gates before the review handoff.
 
 ## Complexity Tracking
 

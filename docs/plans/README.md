@@ -496,3 +496,6 @@ Npcap separate, installation CA behavior unchanged, and no WinDivert route
 handle opens in this slice. Controlled direct-socket, unrelated-process and
 proxy-bridge acceptance remain #578 and #581-#582; CLI integration and final
 operator journey remain #583-#584. #580 is independent deferred research.
+Hosted audit discovered RUSTSEC-2026-0459 against the bundled SQLite graph;
+S199 updates rusqlite and the bundled SQLite library and raises the workspace
+MSRV to 1.89 as the exact-head gate repair.

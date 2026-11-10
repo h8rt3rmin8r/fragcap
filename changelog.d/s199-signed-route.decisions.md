@@ -1,4 +1,4 @@
-<!-- spec-impact: 2, 3, 5, 19, 20, 27, 28 -->
+<!-- spec-impact: 2, 3, 5, 19, 20, 21, 24, 27, 28 -->
 2026-11-09: Owner-approved #572 and #577 replace the absolute interception-driver
 ban with a precise separation between passive Npcap Capture and explicitly
 selected, bounded Deep Capture direct diversion. Constitution 2.0.0 retains no
@@ -24,3 +24,10 @@ next reboot after files are removed. The S199 installer matrix proves owned
 file removal and does not claim active-service teardown. Read-only Doctor may
 report a disabled existing service; otherwise runtime blocking remains
 unverified until the later route adapter attempts its authorized open.
+
+2026-11-09: Hosted audit reported RUSTSEC-2026-0459 in the bundled SQLite
+version selected by rusqlite 0.40.2. Update the existing rusqlite edge to
+0.41.1 and libsqlite3-sys to 0.39.1, whose bundled source declares SQLite
+3.54.1. The newer rusqlite requires Rust 1.89, so raise the workspace MSRV,
+minimum-toolchain gate, audit toolchain and reviewed graph digests together.
+No new package or graph edge is introduced by this repair.
