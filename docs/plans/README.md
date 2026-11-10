@@ -485,3 +485,14 @@ S196 (`specs/196-v0-10-14-publication`) follows merged S195 and completes #567 i
 S197 (`specs/197-causal-chain-coverage`) follows merged S196 and combines #570, #571, and #573. One managed Deep Capture packet scope admits only exact session-created launch generations from launch inception through route-owner release, including proven intermediates and undeclared helpers. The existing bounded queue holds at most one pending writer head for delayed proof, and source, scope, window, volume, and sink omissions remain explicit. `auto` now selects full-chain application inspection for every topology, while explicit game-only retains blind middleware handling and the same packet scope. New policy identity prevents historical positive facts from qualifying this default; resume refuses drift before effects. The pre-effect plan authorizes bounded close and force for receipt-backed causal descendants after client observation, with incomplete proof left unresolved. Direct-socket routing and generic TLS refusal remain #572 and #574. Controlled tests, exact-head CI, and hosted reviews precede owner final review and merge; private-title behavior remains unverified.
 
 S198 (`specs/198-launcher-tls-refusals`) follows merged S197 and closes #574 at the TLS refusal evidence boundary. Stable diagnostics separate a transport-ended handshake from a structured invalid TLS message while retaining stage, alert, transport, and completed-work truth. A controlled launch-chain pair proves two independent authenticated CONNECT, client TLS, verified upstream TLS, and inspected HTTP exchanges; EOF and malformed cases fail without blind relay. Exact process-owner correlation remains an independent authority, and launcher-only success does not qualify final-client compatibility. Header timeout before a request and after completed work remains distinct. No new dependency or schema is required. Focused checks, exact-head CI, and at most two hosted Codex review rounds precede owner final review and merge. Private-title behavior remains unverified; #572 owns direct-socket reachability.
+
+S199 (`specs/199-signed-direct-route-foundation`) follows merged S198 and
+combines #577 with #579. Constitution 2.0.0 and the master specification
+reconcile the owner-approved signed direct-route boundary before component
+implementation. The exact official WinDivert 2.2.2-A x64 DLL, signed driver,
+LGPLv3 license and corresponding source are pinned, staged and certified in
+both Windows packages with read-only Doctor evidence. Capture remains passive,
+Npcap separate, installation CA behavior unchanged, and no WinDivert route
+handle opens in this slice. Controlled direct-socket, unrelated-process and
+proxy-bridge acceptance remain #578 and #581-#582; CLI integration and final
+operator journey remain #583-#584. #580 is independent deferred research.

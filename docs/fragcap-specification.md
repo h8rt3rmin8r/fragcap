@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.118-draft \
+**Version:** 0.1.121-draft \
 **Applies-To:** 0.10.14 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-11-06 \
+**Date:** 2026-11-09 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -206,6 +206,7 @@ enforcement.
 | 0.1.116-draft | 2026-11-05 | Codex | S194 carries requested and effective inspection scope through calibration, compatibility, authorization, operator output, artifacts, and package certification, with one separately authorized exact-game retry or packet-only fallback. Updates sections 15.7, 17.4, 19.3, and 27.3; public v0.10.13 identity remains unchanged. |
 | 0.1.117-draft | 2026-11-06 | Codex | S195 prepares the v0.10.14 source candidate from S189 through S194, corrects the controlled Windows calibration timing regression without changing production deadlines, and preserves verified v0.10.13 public authorities until later publication. Updates sections 1, 25.2, and 27.3. |
 | 0.1.118-draft | 2026-11-06 | Codex | S196 reconciles exact v0.10.14 tag, protected publication, six public files, ten registry archives, hosted package certification, portable default-path observation, and current public records. Updates sections 1, 22.7, 25.2, and 27.3. |
+| 0.1.121-draft | 2026-11-09 | Codex | S199 reconciles the owner-approved signed direct-route policy and pins official WinDivert distribution evidence. Updates sections 2, 3, 5, 19, 20, 27, and 28 without claiming live diversion or changing published v0.10.14 identity. |
 | 0.1.120-draft | 2026-11-06 | Codex | S198 distinguishes observed TLS transport ending from structured invalid TLS messages in launch-chain inspection, retaining exact stage, alert, owner, and completed-work evidence. Updates sections 13.7 and 27.3 without changing published v0.10.14 identity. |
 | 0.1.119-draft | 2026-11-06 | Codex | S197 gives managed Deep Capture one exact launch-chain packet scope from launch inception through route-owner release, makes full-chain application inspection the ordinary default, and includes receipt-backed causal helpers in bounded shutdown. Updates sections 10, 15.7, 17.4, and 27.3 without changing published v0.10.14 identity. |
 
@@ -224,7 +225,9 @@ The shipped **Deep Capture** mode adds explicit, scoped local proxy inspection
 for targets whose traffic can be routed through a proxy. Deep Capture makes
 supported application-layer traffic inspectable for game developers and
 researchers without process injection, function hooking, target memory reads,
-packet interception drivers, or target TLS key extraction.
+or in-place changes to installed game files. S199 prepares an official signed
+direct-route component for later target-scoped routing; the currently shipped
+child-environment route remains the only operational route.
 
 The library is the product. The command line tool is one consumer of it, and
 the shell wrappers are consumers of the command line tool. Deep Capture's
@@ -342,13 +345,16 @@ implementation, and each becomes a constitution principle in section
 code into a target, never installs hooks, and never opens a handle to a
 target process carrying memory-read rights.
 
-**NG-2. No packet modification or injection.** fragcap never alters,
-drops, delays, replays, or synthesizes traffic on a live connection.
+**NG-2. Passive Capture does not modify packets.** Capture never alters,
+drops, delays, replays, or synthesizes live traffic. The future explicit
+Deep Capture direct route may divert and reinject only selected eligible flows,
+with exact ownership, loss accounting, isolation and cleanup evidence.
 Capture handles are opened for reading.
 
-**NG-3. No traffic interception drivers.** fragcap uses capture
-drivers, not filtering or interception drivers. Section 19 defines the
-allowlist.
+**NG-3. No ambient traffic interception.** Ordinary Capture uses Npcap
+packet copying. Deep Capture may later use the official signed WinDivert
+component only under an explicit, bounded target-scoped session plan.
+Section 19 defines the technique boundaries.
 
 **NG-4. No game-specific protocol logic in core.** Protocol dissection
 is a declared plugin seam, deferred to the roadmap (section 28). No
@@ -360,12 +366,14 @@ Deep Capture may place a selected target session on the path through a local
 inspection proxy, but that proxy is target-scoped, explicit, reversible, and
 auditable.
 
-**NG-6. No covert decryption or target key extraction.** Capture mode stores
+**NG-6. No covert decryption or target-memory key extraction.** Capture mode stores
 encrypted payloads as ciphertext. Deep Capture inspects only traffic routed
 through its local proxy under explicit operator control and for currently
 supported traffic types. fragcap does not break encryption, downgrade
-negotiation, bypass certificate pinning, or extract TLS keys from a target
-process.
+negotiation, bypass certificate pinning, or read or alter target memory to
+obtain keys. Application-supported, voluntary key export without target
+memory access or game-file edits is separate research #580, not a shipped
+capability.
 
 ### 3.3 Success Criteria
 
@@ -632,21 +640,17 @@ requires its use where a name is ambiguous.
 
 ### 5.5 What Game Anti-Cheat Observes
 
-Anti-cheat systems in current use monitor a defined set of behaviors
-associated with cheating: code injected into the protected process,
-inline hooks placed in its functions, handles opened to it carrying
-memory access rights, drivers that intercept or modify its traffic,
-and modifications to its executable image on disk or in memory.
+Anti-cheat implementations vary by product and version. A product may observe
+process modification, injected code, loaded drivers, or network changes, but
+the presence of a technique alone does not prove a particular title will
+accept or reject it. Fragcap records detected products as evidence rather
+than applying brand-based eligibility gates.
 
-These systems do not treat network observation as a cheating behavior,
-because observation confers no gameplay advantage. Capture drivers are
-ubiquitous in legitimate software and are not themselves signals.
-
-The distinction that matters for design is between capture drivers,
-which copy frames for observation, and filtering or interception
-drivers, which sit inline and can alter traffic. The first class is
-unremarkable. The second overlaps directly with cheat tooling. Section
-19 formalizes this distinction into an enforced technique allowlist.
+For product design, Npcap copies frames for passive Capture while the selected
+WinDivert component can divert eligible connections in a deliberately active
+Deep Capture session. A driver signature establishes a Windows trust property,
+not target scope, isolation, or compatibility. Those require controlled tests
+and exact flow evidence under section 19.
 
 ## 6. Constraints and Assumptions
 
@@ -3783,17 +3787,12 @@ skipped.
 ### 19.1 Framing
 
 This section defines an engineering constraint, not a policy position.
-fragcap's shipped Capture mode observes network traffic passively and confers
-no gameplay advantage. Its shipped Deep Capture mode is explicit local proxy
-inspection for authorized analysis of selected targets. The constraint exists
-because several techniques that would be convenient for an observation tool are
-also the primitives that memory-reading and traffic-manipulating cheats
-require, and using them generates detection signals for no capability gain.
-
-The rule is straightforward. Where two techniques achieve the same
-result and one of them overlaps with cheat tooling, fragcap uses the
-other. Deep Capture changes the supported inspection depth, not the rule against
-covert target instrumentation.
+fragcap's shipped Capture mode observes network traffic passively. Its shipped
+Deep Capture mode is explicit local proxy inspection for authorized analysis
+of selected targets. The approved direct route adds a bounded active network
+effect only after later route implementation. It does not authorize target
+instrumentation or unrelated workstation disruption. Anti-cheat behavior is
+product-specific and cannot be inferred from a brand name or driver signature.
 
 ### 19.2 Technique Allowlist
 
@@ -3810,6 +3809,7 @@ The following techniques are permitted and used.
 | Exact session-owned child shutdown | Deep Capture route release | Pre-authorized bounded graceful request and minimal-rights termination only after process-object identity, launch receipt, account, path, session, creation time, and causal ancestry agree; verified exit is required |
 | Local inspection proxy | Deep Capture | Operator-selected local process, scoped to the target session |
 | Target-scoped proxy configuration | Deep Capture routing | Launch-time environment or equivalent explicit configuration, not silent system-wide interception |
+| Official signed WinDivert component | Planned direct Deep Capture routing | Exact final-client process generation, original destination, bounded lifetime, packet accounting, unrelated-process isolation and cleanup; packaged in S199, route implementation remains #581 |
 | Local development certificate authority lifecycle | Deep Capture TLS inspection | User-confirmed trust changes with cleanup and audit trail |
 | Proxy-owned TLS key-log export | Analyzer correlation | Keys are produced by fragcap's proxy side of the inspected session, not extracted from the target process |
 
@@ -3819,25 +3819,18 @@ The following techniques are prohibited. Each entry states the
 capability it would provide and the permitted alternative that provides
 it instead.
 
-**Packet interception and filtering drivers.** Would provide inline access to
-traffic. Prohibited because inline drivers can modify traffic and are a
-recognized cheat component. A capture driver supplies every observation
-capability Capture mode requires, and Deep Capture uses an ordinary local
-application proxy rather than a filtering driver.
-
 **Code injection into a target.** Would provide direct access to
 application-layer data before encryption. Prohibited outright by NG-1,
 with no alternative, because this capability is out of scope.
 
-**Function hooking.** Would provide interception of socket calls with
-process attribution for free. Prohibited because inline hooks are the
-canonical cheat primitive. Socket table attribution supplies the same
-association from outside the process.
+**Function hooking.** Would redirect target socket calls through fragcap code.
+Prohibited because it changes target execution. Socket table attribution
+supplies process-to-flow evidence from outside the process.
 
 **Handles carrying memory-read rights against a target.** Would provide
 access to the process environment block and other in-process state.
-Prohibited because these handle rights are the signal anti-cheat
-watches most directly. Creation-time ancestry from ETW supplies the
+Prohibited because these rights can expose private target state.
+Creation-time ancestry from ETW supplies the
 process relationships fragcap needs.
 
 **Layered service providers and Winsock catalog modification.** Would
@@ -3845,14 +3838,14 @@ provide socket-level attribution with no correlation. Prohibited
 because the technique modifies system-wide network behavior for every
 process and is historically associated with malware.
 
-**Executable image modification.** Would provide arbitrary
-instrumentation. Prohibited outright by NG-1.
+**In-place game-file modification.** Would change installed target code or
+data. Prohibited outright by NG-1 and the owner-approved boundary.
 
-**Target TLS key extraction.** Would provide decrypted traffic without routing
-through a proxy. Prohibited because it reaches into target process state or
-depends on target-owned secret material. Deep Capture may export proxy-owned
-key-log material for analyzer correlation, but never extracts keys from the
-game client.
+**Target-memory TLS key extraction.** Reading or altering target memory,
+injecting code, hooking functions, or modifying game files to obtain keys is
+prohibited. The existing proxy may export its own client-facing key log.
+Whether an application voluntarily supports non-memory key export is research
+#580 and cannot be assumed for an arbitrary title.
 
 ### 19.4 Enforcement
 
@@ -3919,7 +3912,7 @@ support is exact:
 | Traffic | Capture | Deep Capture |
 | --- | --- | --- |
 | HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | Native HTTP/1.1 and explicitly routed authenticated HTTP/2 retain boundary-faithful request, response, informational, and trailer metadata plus bounded raw and decoded body evidence in the live application stream |
-| HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; an explicitly supplied operator-owned client identity may satisfy upstream mutual TLS, with no certificate-pinning bypass or target key extraction |
+| HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; an explicitly supplied operator-owned client identity may satisfy upstream mutual TLS, with no certificate-pinning bypass or target-memory key extraction |
 | WebSocket | Packets and attribution | Verified HTTP/1.1 upgrades and RFC 8441 streams retain bounded raw frames, masking and fragmentation facts, derived messages, and negotiated per-message compression outcomes |
 | Server-Sent Events | Packets and attribution | Identity `text/event-stream` responses retain bounded incremental fields, comments, events, and reconnect metadata while raw body bytes remain authoritative |
 | gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
@@ -3968,7 +3961,7 @@ missing or ignored, or the exhaustive native protocol-family or direct
 runs in the ordinary CI gate and performs no product or trust effect. The P-1
 denylist applies independently to every routed family: none opens a target
 process handle or adds memory access, injection, hooks, system proxy mutation,
-executable modification, or target key extraction.
+in-place game-file modification, or target-memory key extraction.
 
 ## 20. Licensing and Third-Party Obligations
 
@@ -4051,11 +4044,14 @@ All dependencies must carry licenses compatible with Apache-2.0
 distribution. Permitted licenses are MIT, Apache-2.0, BSD two-clause
 and three-clause, ISC, Unicode-DFS, and Zlib.
 
-Copyleft licenses are excluded. A dependency under GPL, LGPL, MPL, or
-any license imposing reciprocal obligations on fragcap's own source is
-not accepted. This exclusion applies with particular force to packet
-interception libraries, which are commonly copyleft licensed, and which
-section 19.3 prohibits on independent grounds.
+The Rust dependency graph retains the declared allowlist; an exception for a
+new crate requires exact separate review. The official signed WinDivert
+2.2.2-A x64 binary is a narrow LGPLv3 component distribution exception,
+separate from fragcap's Apache-2.0 source. Both Windows packages must carry
+the exact DLL, driver, component license and corresponding source archive,
+name the original supplier and applicable replacement rights, and verify
+provenance, hashes, architecture and driver signature. Npcap remains a
+separately installed prerequisite and is never bundled.
 
 License compliance is verified in continuous integration against a
 declared allowlist, and a new dependency introducing a license outside
@@ -5066,11 +5062,12 @@ feature slices.
 The following are constitution content, because each must survive every
 agent session without restatement.
 
-**P-1. No covert target instrumentation.** The section 19.3 denylist is
-absolute. No technique on it is used regardless of convenience, including under
-time pressure or when a slice appears blocked. Capture mode remains passive.
-Deep Capture is permitted only as explicit, scoped, reversible, auditable local
-proxy inspection.
+**P-1. No covert target instrumentation.** The section 19.3 exclusions remain
+absolute. Capture mode remains passive. Deep Capture is explicit, scoped,
+reversible and auditable local proxy inspection; after the route implementation
+it may additionally use the official signed component only for exact eligible
+final-client connections under a bounded authorized plan. No driver signature
+alone establishes scope or compatibility.
 
 **P-2. Core stays platform-neutral.** `fragcap-core` acquires no
 platform-specific dependency. The dependency direction in section 8.3
@@ -5569,7 +5566,8 @@ The protocol and launch matrix is normative:
 | Exact cold Steam platform client | Shipped when local facts prove reachability and the created platform root is observed before title dispatch | S112, #308 and calibration #317 |
 | Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |
 | Warm client | Explicit bounded operator-owned close-and-retry, otherwise refused | S113, #309 |
-| Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
+| Target process hooks, memory reads, in-place game-file edits, memory-derived key extraction, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
+| Official signed direct-route component | Packaged by S199; no route handle or final-client reachability claim yet | #577, #579; route and bridge #581, #582 |
 
 Protocol classification and omission reasons are exhaustive under S120 and
 #316. Proxy bypass and local-destination correctness are explicit under S122

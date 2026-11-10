@@ -13,22 +13,22 @@ license.
 
 fragcap has two shipped modes under constitution principle P-1. Capture is passive process-attributed packet capture. Deep Capture is explicit, target-scoped, reversible local proxy inspection for authorized sessions. Neither mode permits covert target instrumentation.
 
-P-1 prohibits, absolutely:
+P-1 prohibits:
 
-- Packet interception or filtering drivers
 - Code injection into any target process
 - Function hooking
 - Process handles carrying memory-read rights against a target
 - Layered service providers or Winsock catalog modification
-- Executable image modification
-- Target TLS key extraction
+- In-place modification of installed game files
+- Reading or altering target memory to obtain TLS keys, including through hooks or injection
 
-A pull request using any of these will be declined regardless of how well it works or what it enables. This is not negotiable and is not a judgment about the contributor. If a capability seems to require one, open an issue rather than an implementation so the requirement can be checked against the architecture.
+A pull request using any of these is outside the current product boundary. If a capability seems to require one, open an issue so the requirement can be checked against the architecture.
 
-Deep Capture may start a session-owned local proxy, apply target-scoped launch configuration, manage a purpose-specific local certificate authority after explicit confirmation, and export proxy-owned TLS key-log material. It may not fall back silently to system-wide proxy settings, trust a certificate silently, bypass certificate pinning, or leave cleanup residue unreported.
+Deep Capture may start a session-owned local proxy, apply target-scoped launch configuration, use the official signed WinDivert component for an explicitly authorized bounded final-client direct route, retain the installation CA, and export proxy-owned TLS key-log material. Routing must account for unrelated-process continuity and exact cleanup. It may not fall back silently to system-wide proxy settings, trust a certificate silently, bypass certificate pinning, or leave cleanup residue unreported. The driver is packaged in S199; direct routing remains follow-up work. Application-supported non-memory key export is research #580, not a current feature.
 
-Copyleft-licensed dependencies are also declined. See constitution, licensing
-section.
+The reviewed WinDivert LGPLv3 distribution is an exact external component
+exception; unrelated Rust dependencies retain the existing license policy.
+See the constitution's licensing section.
 
 ## Current state
 
