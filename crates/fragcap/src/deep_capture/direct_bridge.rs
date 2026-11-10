@@ -163,27 +163,45 @@ fn refused(reason: &'static str) -> io::Error {
 /// Connect one already-admitted original destination through the native proxy.
 /// The caller retains the one-use route receipt and owns the returned helper
 /// socket; this function never infers game ownership from that helper's PID.
+#[cfg(test)]
 pub fn connect_authenticated_socks5(
     proxy: SocketAddr,
     original: SocketAddr,
     password: &[u8],
     timeout: Duration,
 ) -> io::Result<TcpStream> {
+    connect_authenticated_socks5_with_hook(proxy, original, password, timeout, |_| Ok(()))
+}
+
+pub fn connect_authenticated_socks5_with_hook<F>(
+    proxy: SocketAddr,
+    original: SocketAddr,
+    password: &[u8],
+    timeout: Duration,
+    on_connected: F,
+) -> io::Result<TcpStream>
+where
+    F: FnOnce(&TcpStream) -> io::Result<()>,
+{
     if original.ip().is_unspecified() || original.port() == 0 {
         return Err(refused("invalid direct bridge scope"));
     }
-    let mut stream = authenticate_socks5(proxy, password, timeout)?;
+    let mut stream = authenticate_socks5_with_hook(proxy, password, timeout, on_connected)?;
     let request = socks5_request(1, original);
     stream.write_all(&request)?;
     read_socks5_reply(&mut stream)?;
     Ok(stream)
 }
 
-pub(super) fn authenticate_socks5(
+pub(super) fn authenticate_socks5_with_hook<F>(
     proxy: SocketAddr,
     password: &[u8],
     timeout: Duration,
-) -> io::Result<TcpStream> {
+    on_connected: F,
+) -> io::Result<TcpStream>
+where
+    F: FnOnce(&TcpStream) -> io::Result<()>,
+{
     if password.is_empty()
         || password.len() > u8::MAX as usize
         || PROXY_USERNAME.len() > u8::MAX as usize
@@ -195,6 +213,7 @@ pub(super) fn authenticate_socks5(
     let mut stream = TcpStream::connect_timeout(&proxy, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
+    on_connected(&stream)?;
 
     stream.write_all(&[5, 1, 2])?;
     let mut method = [0; 2];

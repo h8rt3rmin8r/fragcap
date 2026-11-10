@@ -22,7 +22,7 @@ use fragcap_core::{
 use zeroize::Zeroizing;
 
 use super::{
-    direct_bridge::{connect_authenticated_socks5, DirectTcpBridge},
+    direct_bridge::{connect_authenticated_socks5_with_hook, DirectTcpBridge},
     direct_observer::{DirectSocketObserver, SocketObserverStats},
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
@@ -445,27 +445,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             }
                         };
                         let helper_open_earliest = unix_now_ns()?;
-                        connecting.store(true, Ordering::Release);
-                        let association = DirectUdpAssociation::new(
-                            proxy,
-                            flow.tuple.remote,
-                            password.as_bytes(),
-                            Duration::from_millis(50),
-                        );
-                        connecting.store(false, Ordering::Release);
-                        let association = match association {
-                            Ok(association) => association,
-                            Err(_) => {
-                                stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
-                                reinject(&handle, &stats, &packet, &address)?;
-                                continue;
-                            }
-                        };
-                        let helper_open_latest = unix_now_ns()?;
-                        excluded
-                            .lock()
-                            .expect("helper route lock")
-                            .insert(association.relay_tuple()?);
                         helper_id = helper_id.saturating_add(1);
                         let now = started.elapsed().as_nanos() as u64;
                         let receipt = receipts
@@ -473,25 +452,47 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             .map_err(|error| {
                                 io::Error::other(format!("issue UDP receipt: {error:?}"))
                             })?;
-                        receipts
-                            .consume(receipt, &session_id, flow.tuple, helper_id, now)
-                            .map_err(|error| {
-                                io::Error::other(format!("consume UDP receipt: {error:?}"))
-                            })?;
-                        if let Err(reason) = context.register_direct_helper(
-                            association.control_local()?,
-                            association.control_peer()?,
-                            flow.clone(),
-                            helper_open_earliest,
-                            helper_open_latest,
-                        ) {
-                            receipts.retire(receipt).map_err(|error| {
-                                io::Error::other(format!("retire refused UDP receipt: {error:?}"))
-                            })?;
-                            stats.record_bypass(reason);
-                            reinject(&handle, &stats, &packet, &address)?;
-                            continue;
-                        }
+                        connecting.store(true, Ordering::Release);
+                        let association = DirectUdpAssociation::new_with_hook(
+                            proxy,
+                            flow.tuple.remote,
+                            password.as_bytes(),
+                            Duration::from_millis(50),
+                            |stream| {
+                                receipts
+                                    .consume(receipt, &session_id, flow.tuple, helper_id, now)
+                                    .map_err(|error| {
+                                        io::Error::other(format!("consume UDP receipt: {error:?}"))
+                                    })?;
+                                context
+                                    .register_direct_helper(
+                                        stream.local_addr()?,
+                                        stream.peer_addr()?,
+                                        flow.clone(),
+                                        helper_open_earliest,
+                                        unix_now_ns()?,
+                                    )
+                                    .map_err(io::Error::other)
+                            },
+                        );
+                        connecting.store(false, Ordering::Release);
+                        let association = match association {
+                            Ok(association) => association,
+                            Err(_) => {
+                                receipts.retire(receipt).map_err(|error| {
+                                    io::Error::other(format!(
+                                        "retire refused UDP receipt: {error:?}"
+                                    ))
+                                })?;
+                                stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
+                                reinject(&handle, &stats, &packet, &address)?;
+                                continue;
+                            }
+                        };
+                        excluded
+                            .lock()
+                            .expect("helper route lock")
+                            .insert(association.relay_tuple()?);
                         issued_receipts.push(receipt);
                         if let Err(error) = association.send(datagram.payload) {
                             packet_finished(&stats, PacketDisposition::Lost)?;
@@ -518,23 +519,48 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         continue;
                     }
                     let helper_open_earliest = unix_now_ns()?;
+                    helper_id = helper_id.saturating_add(1);
+                    let now = started.elapsed().as_nanos() as u64;
+                    let receipt = receipts
+                        .issue(flow.clone(), now.saturating_add(10_000_000_000))
+                        .map_err(|error| {
+                            io::Error::other(format!("issue route receipt: {error:?}"))
+                        })?;
                     connecting.store(true, Ordering::Release);
-                    let helper = connect_authenticated_socks5(
+                    let helper = connect_authenticated_socks5_with_hook(
                         proxy,
                         flow.tuple.remote,
                         password.as_bytes(),
                         Duration::from_secs(2),
+                        |stream| {
+                            receipts
+                                .consume(receipt, &session_id, flow.tuple, helper_id, now)
+                                .map_err(|error| {
+                                    io::Error::other(format!("consume route receipt: {error:?}"))
+                                })?;
+                            context
+                                .register_direct_helper(
+                                    stream.local_addr()?,
+                                    stream.peer_addr()?,
+                                    flow.clone(),
+                                    helper_open_earliest,
+                                    unix_now_ns()?,
+                                )
+                                .map_err(io::Error::other)
+                        },
                     );
                     connecting.store(false, Ordering::Release);
                     let helper = match helper {
                         Ok(helper) => helper,
                         Err(_) => {
+                            receipts.retire(receipt).map_err(|error| {
+                                io::Error::other(format!("retire refused route receipt: {error:?}"))
+                            })?;
                             stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
                             reinject(&handle, &stats, &packet, &address)?;
                             continue;
                         }
                     };
-                    let helper_open_latest = unix_now_ns()?;
                     excluded
                         .lock()
                         .expect("helper route lock")
@@ -543,32 +569,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             local: helper.local_addr()?,
                             remote: helper.peer_addr()?,
                         });
-                    helper_id = helper_id.saturating_add(1);
-                    let now = started.elapsed().as_nanos() as u64;
-                    let receipt = receipts
-                        .issue(flow.clone(), now.saturating_add(10_000_000_000))
-                        .map_err(|error| {
-                            io::Error::other(format!("issue route receipt: {error:?}"))
-                        })?;
-                    receipts
-                        .consume(receipt, &session_id, flow.tuple, helper_id, now)
-                        .map_err(|error| {
-                            io::Error::other(format!("consume route receipt: {error:?}"))
-                        })?;
-                    if let Err(reason) = context.register_direct_helper(
-                        helper.local_addr()?,
-                        helper.peer_addr()?,
-                        flow.clone(),
-                        helper_open_earliest,
-                        helper_open_latest,
-                    ) {
-                        receipts.retire(receipt).map_err(|error| {
-                            io::Error::other(format!("retire refused route receipt: {error:?}"))
-                        })?;
-                        stats.record_bypass(reason);
-                        reinject(&handle, &stats, &packet, &address)?;
-                        continue;
-                    }
                     issued_receipts.push(receipt);
                     let mut bridge =
                         DirectTcpBridge::new(flow.tuple, helper).map_err(io::Error::other)?;
@@ -883,7 +883,9 @@ mod tests {
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
     use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
 
-    use crate::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
+    use crate::deep_capture::{
+        CaptureProcessEvidence, ExactGameDecider, StageTransition, StageTransitionKind,
+    };
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -1037,6 +1039,8 @@ mod tests {
         let mut before = spawn_client("sentinel-tcp", original);
         release_client(&mut before);
         finish_client(before);
+        let mut child = spawn_client("tcp", original);
+        let context = client_context(child.id());
         let config =
             NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 1024, Duration::from_secs(2))
                 .unwrap()
@@ -1044,10 +1048,13 @@ mod tests {
                 .unwrap();
         let mut policy = DestinationPolicy::new(config.listen());
         policy.grant_for_test(original);
-        let mut proxy = NativeProxyBackend::new(config).with_destination_policy(policy);
+        let mut proxy = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )));
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
-        let mut child = spawn_client("tcp", original);
-        let context = client_context(child.id());
         let mut runtime = DirectPacketRuntime::start(
             Path::new(&root),
             context,
@@ -1075,6 +1082,7 @@ mod tests {
         assert_eq!(server.join().unwrap(), (1, 3));
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
+        assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
     }
 
     #[test]

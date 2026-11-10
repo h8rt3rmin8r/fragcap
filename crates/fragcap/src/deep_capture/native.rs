@@ -537,6 +537,7 @@ impl NativeObservationContext {
 mod direct_helper_tests {
     use super::*;
     use crate::deep_capture::direct_route::{DirectTuple, OriginalFlow};
+    use fragcap_proxy::InspectionDecider;
 
     #[test]
     fn helper_receipt_restores_original_owner_only_for_exact_accept_window() {
@@ -578,6 +579,21 @@ mod direct_helper_tests {
         assert_eq!(
             owner.original_destination,
             Some("127.0.0.1:31004".parse().unwrap())
+        );
+        let decision = ExactGameDecider::new(context.clone(), vec!["client".into()]).decide(
+            fragcap_proxy::InspectionRequest {
+                connection_id: 1,
+                client_peer: helper,
+                proxy_local: proxy,
+                opened_at_ns: 150,
+                transport: "tcp",
+            },
+            Duration::from_millis(5),
+        );
+        assert_eq!(decision.action, fragcap_proxy::InspectionAction::Inspect);
+        assert_eq!(
+            decision.owner_proof,
+            "direct-original-socket-and-managed-process-instance"
         );
         assert_eq!(
             context.direct_helper_flow(descriptor, 6_000_000).unwrap(),
@@ -644,6 +660,31 @@ impl fragcap_proxy::InspectionDecider for ExactGameDecider {
             client_peer: request.client_peer,
             proxy_local: request.proxy_local,
         };
+        #[cfg(all(windows, feature = "direct-route"))]
+        match self
+            .context
+            .direct_helper_flow(descriptor, request.opened_at_ns)
+        {
+            Ok(Some(_)) => {
+                let decision = if self.game_roles.iter().any(|role| role == "client") {
+                    InspectionDecision::verified_direct_route(elapsed_millis(started))
+                } else {
+                    InspectionDecision::uninspected(
+                        InspectionReason::UnprovenRole,
+                        elapsed_millis(started),
+                    )
+                };
+                return decision.with_requested_scope(self.requested_scope.as_str());
+            }
+            Err(_) => {
+                return InspectionDecision::uninspected(
+                    InspectionReason::AmbiguousOwner,
+                    elapsed_millis(started),
+                )
+                .with_requested_scope(self.requested_scope.as_str())
+            }
+            Ok(None) => {}
+        }
         let result = self
             .context
             .socket_inception(descriptor, request.opened_at_ns);

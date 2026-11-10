@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use super::direct_bridge::{authenticate_socks5, read_socks5_reply, socks5_request};
+use super::direct_bridge::{authenticate_socks5_with_hook, read_socks5_reply, socks5_request};
 use super::direct_route::DirectTuple;
 use fragcap_core::Proto;
 
@@ -17,18 +17,32 @@ const MAX_SOCKS_UDP_FRAME: usize = 65_507;
 /// The control connection owns the relay's lifetime; replies are accepted
 /// only when the native proxy names the exact contacted original peer.
 pub struct DirectUdpAssociation {
-    control: TcpStream,
+    _control: TcpStream,
     relay: UdpSocket,
     original: SocketAddr,
 }
 
 impl DirectUdpAssociation {
+    #[cfg(test)]
     pub fn new(
         proxy: SocketAddr,
         original: SocketAddr,
         password: &[u8],
         timeout: Duration,
     ) -> io::Result<Self> {
+        Self::new_with_hook(proxy, original, password, timeout, |_| Ok(()))
+    }
+
+    pub fn new_with_hook<F>(
+        proxy: SocketAddr,
+        original: SocketAddr,
+        password: &[u8],
+        timeout: Duration,
+        on_connected: F,
+    ) -> io::Result<Self>
+    where
+        F: FnOnce(&TcpStream) -> io::Result<()>,
+    {
         if original.ip().is_unspecified() || original.port() == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -38,7 +52,7 @@ impl DirectUdpAssociation {
         let bind = SocketAddr::new(proxy.ip(), 0);
         let relay = UdpSocket::bind(bind)?;
         relay.set_nonblocking(true)?;
-        let mut control = authenticate_socks5(proxy, password, timeout)?;
+        let mut control = authenticate_socks5_with_hook(proxy, password, timeout, on_connected)?;
         control.write_all(&socks5_request(3, relay.local_addr()?))?;
         let relay_address = read_socks5_reply(&mut control)?;
         if !relay_address.ip().is_loopback()
@@ -52,7 +66,7 @@ impl DirectUdpAssociation {
         }
         relay.connect(relay_address)?;
         Ok(Self {
-            control,
+            _control: control,
             relay,
             original,
         })
@@ -109,12 +123,9 @@ impl DirectUdpAssociation {
         Ok(Some(payload.to_vec()))
     }
 
-    pub fn control_local(&self) -> io::Result<SocketAddr> {
-        self.control.local_addr()
-    }
-
+    #[cfg(test)]
     pub fn control_peer(&self) -> io::Result<SocketAddr> {
-        self.control.peer_addr()
+        self._control.peer_addr()
     }
 
     pub fn relay_tuple(&self) -> io::Result<DirectTuple> {
