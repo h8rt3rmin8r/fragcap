@@ -26,6 +26,7 @@ pub(super) const SOCKET_LAYER: i32 = 3;
 pub(super) const FLAG_SNIFF: u64 = 0x0001;
 pub(super) const FLAG_RECV_ONLY: u64 = 0x0004;
 const SHUTDOWN_BOTH: i32 = 3;
+const SHUTDOWN_RECV: i32 = 1;
 
 /// Matches the exact `WINDIVERT_ADDRESS` from the pinned vendor header.
 #[repr(C)]
@@ -220,6 +221,14 @@ impl Handle {
         }
     }
 
+    pub fn stop_receiving(&self) -> io::Result<()> {
+        if unsafe { (self.api.shutdown)(self.raw, SHUTDOWN_RECV) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn close(mut self) -> io::Result<()> {
         let raw = mem::replace(&mut self.raw, INVALID_HANDLE_VALUE);
         if unsafe { (self.api.close)(raw) } == 0 {
@@ -242,6 +251,111 @@ impl Drop for Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An all-TCP/UDP handle is prearmed before the sentinels run. Compare
+    /// sequential loopback UDP exchanges against a paired same-run baseline.
+    /// This disposable probe measures the cost of immediate pass-through; it
+    /// does not establish a production loss or latency guarantee.
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_broad_pass_through_latency() {
+        use std::{
+            net::{Ipv4Addr, UdpSocket},
+            sync::atomic::{AtomicU64, Ordering},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        const EXCHANGES: usize = 200;
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let api = Api::load_verified(Path::new(&root)).expect("load verified component");
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        client.connect(server.local_addr().unwrap()).unwrap();
+        server.connect(client.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let mut payload = [0u8; 8];
+            for _ in 0..EXCHANGES * 3 {
+                let received = server.recv(&mut payload).expect("server receives sentinel");
+                assert_eq!(received, payload.len());
+                server.send(&payload).expect("server replies to sentinel");
+            }
+        });
+        let run_phase = |phase: &str, offset: usize| -> Vec<Duration> {
+            let mut samples = Vec::with_capacity(EXCHANGES);
+            let mut reply = [0u8; 8];
+            for index in offset..offset + EXCHANGES {
+                let payload = (index as u64).to_be_bytes();
+                let start = Instant::now();
+                client.send(&payload).expect("client sends sentinel");
+                client
+                    .recv(&mut reply)
+                    .expect("client receives sentinel reply");
+                assert_eq!(reply, payload);
+                samples.push(start.elapsed());
+            }
+            samples.sort_unstable();
+            let percentile =
+                |percent: usize| samples[(samples.len() * percent / 100).min(samples.len() - 1)];
+            eprintln!(
+                "broad pass-through {phase}: median_us={}, p99_us={}, max_us={}",
+                percentile(50).as_micros(),
+                percentile(99).as_micros(),
+                samples.last().unwrap().as_micros()
+            );
+            samples
+        };
+        let before = run_phase("before", 0);
+
+        let handle = Arc::new(
+            api.open("tcp or udp", NETWORK_LAYER, 0)
+                .expect("open broad handle"),
+        );
+        let forwarded = Arc::new(AtomicU64::new(0));
+        let worker_handle = Arc::clone(&handle);
+        let worker_count = Arc::clone(&forwarded);
+        let worker = thread::spawn(move || -> io::Result<()> {
+            let mut packet = [0u8; 65_535];
+            loop {
+                let mut address = Address::default();
+                match worker_handle.recv(&mut packet, &mut address) {
+                    Ok(received) => {
+                        let sent = worker_handle.send(&packet[..received], &address)?;
+                        if sent != received {
+                            return Err(io::Error::other("short packet reinjection"));
+                        }
+                        worker_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(error) if error.raw_os_error() == Some(232) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+        });
+        let during = run_phase("during", EXCHANGES);
+        handle.stop_receiving().expect("stop new packet diversion");
+        worker
+            .join()
+            .unwrap()
+            .expect("drain and reinject queued packets");
+        let after = run_phase("after", EXCHANGES * 2);
+        server_thread.join().unwrap();
+        eprintln!(
+            "broad pass-through: forwarded={}, before_p99_us={}, during_p99_us={}, after_p99_us={}",
+            forwarded.load(Ordering::Relaxed),
+            before[EXCHANGES * 99 / 100].as_micros(),
+            during[EXCHANGES * 99 / 100].as_micros(),
+            after[EXCHANGES * 99 / 100].as_micros(),
+        );
+        assert!(forwarded.load(Ordering::Relaxed) >= (EXCHANGES * 2) as u64);
+    }
 
     #[test]
     fn pinned_abi_layout_and_flag_decode() {

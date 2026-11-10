@@ -142,11 +142,13 @@ impl std::fmt::Debug for RouteReceiptId {
 pub enum ReceiptError {
     Full,
     Duplicate,
+    TupleInUse,
     Entropy,
     Unknown,
     Expired,
     Mismatch,
     Replayed,
+    HelperAlreadyBound,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,6 +248,13 @@ impl DirectReceiptLedger {
         if self.receipts.values().any(|record| record.flow == flow) {
             return Err(ReceiptError::Duplicate);
         }
+        if self
+            .receipts
+            .values()
+            .any(|record| record.flow.tuple == flow.tuple)
+        {
+            return Err(ReceiptError::TupleInUse);
+        }
         if self.receipts.len() >= self.capacity {
             return Err(ReceiptError::Full);
         }
@@ -275,7 +284,7 @@ impl DirectReceiptLedger {
         if session_id != self.session_id {
             return Err(ReceiptError::Mismatch);
         }
-        let record = self.receipts.get_mut(&id.0).ok_or(ReceiptError::Unknown)?;
+        let record = self.receipts.get(&id.0).ok_or(ReceiptError::Unknown)?;
         if record.flow.tuple != tuple {
             return Err(ReceiptError::Mismatch);
         }
@@ -285,8 +294,23 @@ impl DirectReceiptLedger {
         if record.helper_connection_id.is_some() {
             return Err(ReceiptError::Replayed);
         }
+        if self
+            .receipts
+            .values()
+            .any(|record| record.helper_connection_id == Some(helper_connection_id))
+        {
+            return Err(ReceiptError::HelperAlreadyBound);
+        }
+        let record = self.receipts.get_mut(&id.0).ok_or(ReceiptError::Unknown)?;
         record.helper_connection_id = Some(helper_connection_id);
         Ok(&record.flow)
+    }
+
+    pub fn retire(&mut self, id: RouteReceiptId) -> Result<OriginalFlow, ReceiptError> {
+        self.receipts
+            .remove(&id.0)
+            .map(|record| record.flow)
+            .ok_or(ReceiptError::Unknown)
     }
 }
 
@@ -453,6 +477,39 @@ mod tests {
             ledger.consume(id, "session-a", flow.tuple, 4, 101),
             Err(ReceiptError::Replayed)
         ));
+    }
+
+    #[test]
+    fn receipts_cannot_bind_competing_generations_or_one_helper_twice() {
+        let DirectAdmission::Selected(flow) =
+            select_direct_flow(&evidence(), &[event(12, 40000)], packet(40000))
+        else {
+            panic!("expected selected flow")
+        };
+        let mut ledger = DirectReceiptLedger::new("session-a".into(), 3);
+        let first = ledger.issue(flow.clone(), 500).unwrap();
+        let mut reused = flow.clone();
+        reused.endpoint_id += 1;
+        reused.process_instance_id.push_str("-reused");
+        assert_eq!(
+            ledger.issue(reused.clone(), 500),
+            Err(ReceiptError::TupleInUse)
+        );
+        let second_flow = OriginalFlow {
+            tuple: tuple(40001),
+            ..flow.clone()
+        };
+        let second = ledger.issue(second_flow.clone(), 500).unwrap();
+        assert_eq!(
+            ledger.consume(first, "session-a", flow.tuple, 7, 100),
+            Ok(&flow)
+        );
+        assert!(matches!(
+            ledger.consume(second, "session-a", second_flow.tuple, 7, 100),
+            Err(ReceiptError::HelperAlreadyBound)
+        ));
+        ledger.retire(first).unwrap();
+        assert!(ledger.issue(reused, 500).is_ok());
     }
 
     #[test]
