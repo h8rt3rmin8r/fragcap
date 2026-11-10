@@ -245,12 +245,13 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 .expect("selected route lock")
                 .get(&tuple)
                 .copied();
+            let observer = observer.lock().expect("socket observer lock");
+            let event_health = observer.stats();
             (selected_endpoint.is_some()
-                && selected_endpoint
-                    == observer
-                        .lock()
-                        .expect("socket observer lock")
-                        .current_owner_endpoint_id(tuple))
+                && event_health.capacity_lost == 0
+                && event_health.clock_lost == 0
+                && !stats.event_history_overflow.load(Ordering::Acquire)
+                && selected_endpoint == observer.current_owner_endpoint_id(tuple))
             .then_some(tuple)
         });
         if let Some(tuple) = selected_tuple {
@@ -2605,9 +2606,12 @@ mod tests {
         let stats = runtime.stop().unwrap();
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(3));
-        assert_eq!(stats.packets.lost, 0);
-        assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 2);
         let owners = context.direct_helper_flows_for_test();
+        assert_eq!(stats.packets.lost, 0);
+        assert_eq!(
+            report.observation.protocol.socks_udp_associate_succeeded, 2,
+            "route={stats:?}; owners={owners:?}"
+        );
         let endpoint_ids: BTreeSet<_> = owners
             .iter()
             .filter(|owner| owner.tuple.transport == Proto::Udp)
