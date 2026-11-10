@@ -99,6 +99,11 @@ windows-sys = { workspace = true, features = [
 serde_json.workspace = true
 bytes.workspace = true
 tempfile.workspace = true
+quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+hyper.workspace = true
+tokio.workspace = true
 # Enables fragcap-steam's synthetic appinfo.vdf generator for this crate's own
 # tests (tests/steam_source.rs), the same way fragcap-cli's dev-dependencies
 # already do for its launch-accumulation tests.

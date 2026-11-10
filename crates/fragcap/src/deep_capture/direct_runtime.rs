@@ -997,6 +997,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
+        num::NonZeroUsize,
         os::windows::process::CommandExt,
         process::{Child, Command, Stdio},
         thread,
@@ -1004,11 +1005,16 @@ mod tests {
     };
 
     use base64::Engine;
+    use bytes::Buf;
     use fragcap_core::{ProcessEvent, Timestamp, WatcherReport};
     use fragcap_proxy::{
-        DestinationPolicy, InspectionAction, InspectionDecider, InspectionDecision,
-        InspectionReason, InspectionRequest, NativeProxyBackend, NativeProxyConfig,
+        DestinationAuthority, DestinationPolicy, InspectionAction, InspectionDecider,
+        InspectionDecision, InspectionReason, InspectionRequest, LeafCache, NativeProxyBackend,
+        NativeProxyConfig, ProtocolLimits,
     };
+    use h3_quinn::Connection;
+    use hyper::{Request, Response};
+    use quinn::Endpoint;
 
     use crate::deep_capture::{
         CaptureProcessEvidence, ExactGameDecider, StageTransition, StageTransitionKind,
@@ -1306,6 +1312,74 @@ mod tests {
             let mut response = vec![0u8; RESPONSE.len()];
             client.read_exact(&mut response).unwrap();
             assert_eq!(response, RESPONSE);
+        } else if protocol == "h3" {
+            let ca = base64::engine::general_purpose::STANDARD
+                .decode(std::env::var("FRAGCAP_S200_CHILD_CA").unwrap())
+                .unwrap();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                tokio::time::timeout(Duration::from_secs(8), async move {
+                    let mut roots = rustls::RootCertStore::empty();
+                    roots.add(ca.into()).unwrap();
+                    let provider = Arc::new(rustls::crypto::ring::default_provider());
+                    let tls = Arc::new(
+                        rustls::ClientConfig::builder_with_provider(provider)
+                            .with_protocol_versions(&[&rustls::version::TLS13])
+                            .unwrap()
+                            .with_root_certificates(roots)
+                            .with_no_client_auth(),
+                    );
+                    let limits = ProtocolLimits {
+                        max_concurrent_streams: 4,
+                        max_socks_udp_datagram_bytes: 4096,
+                        idle_timeout: Duration::from_secs(5),
+                        ..ProtocolLimits::default()
+                    };
+                    let config = fragcap_proxy::build_quic_client_config(&tls, &limits).unwrap();
+                    let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+                    endpoint.set_default_client_config(config);
+                    let connection = endpoint
+                        .connect(original, "127.0.0.1")
+                        .unwrap()
+                        .await
+                        .unwrap();
+                    let (mut driver, mut sender) =
+                        h3::client::new(Connection::new(connection.clone()))
+                            .await
+                            .unwrap();
+                    let driver_task = tokio::spawn(async move {
+                        std::future::poll_fn(|cx| driver.poll_close(cx)).await
+                    });
+                    let mut stream = sender
+                        .send_request(
+                            Request::get("https://127.0.0.1/direct-quic")
+                                .body(())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    stream.finish().await.unwrap();
+                    let response = stream.recv_response().await.unwrap();
+                    assert_eq!(response.status(), 200);
+                    let mut body = Vec::new();
+                    while let Some(mut chunk) = stream.recv_data().await.unwrap() {
+                        while chunk.has_remaining() {
+                            body.extend_from_slice(chunk.chunk());
+                            let length = chunk.chunk().len();
+                            chunk.advance(length);
+                        }
+                    }
+                    assert_eq!(body, b"H3-DIRECT");
+                    connection.close(0_u32.into(), b"complete");
+                    endpoint.wait_idle().await;
+                    driver_task.abort();
+                })
+                .await
+                .unwrap();
+            });
         } else {
             panic!("unknown client protocol");
         }
@@ -1915,6 +1989,124 @@ mod tests {
 
     trait ReadWrite: Read + Write {}
     impl<T: Read + Write> ReadWrite for T {}
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_direct_runtime_inspects_http3_from_udp_socket() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let limits = ProtocolLimits {
+            max_concurrent_streams: 4,
+            max_socks_udp_datagram_bytes: 4096,
+            idle_timeout: Duration::from_secs(5),
+            ..ProtocolLimits::default()
+        };
+        let origin_ca = fragcap_proxy::SessionCertificateAuthority::generate(
+            91,
+            SystemTime::now(),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let mut cache = LeafCache::new(
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(128 * 1024).unwrap(),
+            Duration::from_secs(1800),
+            91,
+        )
+        .unwrap();
+        let authority = DestinationAuthority::parse("127.0.0.1:443").unwrap();
+        let origin_config = fragcap_proxy::build_quic_server_config(
+            &authority, &origin_ca, &mut cache, None, &limits,
+        )
+        .unwrap();
+        let async_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (original, server_task) = async_runtime.block_on(async move {
+            let server = Endpoint::server(origin_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+            let original = server.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let incoming = tokio::time::timeout(Duration::from_secs(8), server.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let connection = incoming.await.unwrap();
+                let mut h3 = h3::server::Connection::new(Connection::new(connection))
+                    .await
+                    .unwrap();
+                let resolver = h3.accept().await.unwrap().unwrap();
+                let (request, mut stream) = resolver.resolve_request().await.unwrap();
+                assert_eq!(request.method(), "GET");
+                assert_eq!(request.uri().path(), "/direct-quic");
+                stream
+                    .send_response(Response::builder().status(200).body(()).unwrap())
+                    .await
+                    .unwrap();
+                stream
+                    .send_data(bytes::Bytes::from_static(b"H3-DIRECT"))
+                    .await
+                    .unwrap();
+                stream.finish().await.unwrap();
+            });
+            (original, task)
+        });
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-http3")
+        .unwrap()
+        .with_protocol_limits(limits);
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut upstream_roots = rustls::RootCertStore::empty();
+        upstream_roots.add(origin_ca.der().clone()).unwrap();
+        let session_ca = Arc::new(
+            fragcap_proxy::SessionCertificateAuthority::generate(
+                92,
+                SystemTime::now(),
+                Duration::from_secs(3600),
+            )
+            .unwrap(),
+        );
+        let mut child = spawn_client_with_ca("h3", original, Some(session_ca.der().as_ref()));
+        let context = client_context(child.id());
+        let mut proxy = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_prepared_authority(session_ca)
+            .with_tls_client_config(
+                fragcap_proxy::tls_client_config_with_roots(upstream_roots).unwrap(),
+            )
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )))
+            .start(Duration::from_secs(3))
+            .unwrap();
+        let mut route = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-direct-http3".into(),
+            proxy.endpoint(),
+            proxy.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        release_client(&mut child);
+        finish_client(child);
+        async_runtime.block_on(server_task).unwrap();
+        let stats = route.stop().unwrap();
+        assert!(stats.packets.consumed > 0);
+        assert_eq!(stats.packets.lost, 0);
+        let report = proxy.cleanup(Duration::from_secs(3));
+        assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 1);
+        assert_eq!(report.observation.protocol.quic_pairs_started, 1);
+        assert_eq!(report.observation.protocol.http3_streams_completed, 1);
+    }
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
