@@ -178,7 +178,6 @@ fn receive_packets(
     sender: SyncSender<WorkPacket>,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
 ) -> io::Result<()> {
     let mut packet = [0u8; 65_535];
@@ -230,7 +229,7 @@ fn receive_packets(
                     remote: head.destination,
                 })
         });
-        if !is_candidate || connecting.load(Ordering::Acquire) || is_excluded {
+        if !is_candidate || is_excluded {
             if is_candidate {
                 stats
                     .admission_busy_bypassed
@@ -274,7 +273,6 @@ struct ProcessRuntimeInputs {
     context: NativeObservationContext,
     selected: Arc<Mutex<BTreeSet<DirectTuple>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
     proxy: std::net::SocketAddr,
@@ -290,7 +288,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         context,
         selected,
         excluded,
-        connecting,
         stats,
         session_id,
         proxy,
@@ -452,7 +449,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             .map_err(|error| {
                                 io::Error::other(format!("issue UDP receipt: {error:?}"))
                             })?;
-                        connecting.store(true, Ordering::Release);
                         let association = DirectUdpAssociation::new_with_hook(
                             proxy,
                             flow.tuple.remote,
@@ -475,7 +471,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     .map_err(io::Error::other)
                             },
                         );
-                        connecting.store(false, Ordering::Release);
                         let association = match association {
                             Ok(association) => association,
                             Err(_) => {
@@ -526,7 +521,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .map_err(|error| {
                             io::Error::other(format!("issue route receipt: {error:?}"))
                         })?;
-                    connecting.store(true, Ordering::Release);
                     let helper = connect_authenticated_socks5_with_hook(
                         proxy,
                         flow.tuple.remote,
@@ -549,7 +543,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 .map_err(io::Error::other)
                         },
                     );
-                    connecting.store(false, Ordering::Release);
                     let helper = match helper {
                         Ok(helper) => helper,
                         Err(_) => {
@@ -653,25 +646,17 @@ impl DirectPacketRuntime {
         let selected = Arc::new(Mutex::new(BTreeSet::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
         let route_context = context.clone();
-        let connecting = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let handle = Arc::clone(&handle);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
-            let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             thread::Builder::new()
                 .name("fragcap-direct-receive".into())
                 .spawn(move || {
-                    let result = receive_packets(
-                        Arc::clone(&handle),
-                        sender,
-                        selected,
-                        excluded,
-                        connecting,
-                        stats,
-                    );
+                    let result =
+                        receive_packets(Arc::clone(&handle), sender, selected, excluded, stats);
                     if result.is_err() {
                         let _ = handle.stop();
                     }
@@ -683,7 +668,6 @@ impl DirectPacketRuntime {
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let excluded = Arc::clone(&excluded);
-            let connecting = Arc::clone(&connecting);
             let stats = Arc::clone(&stats);
             let launched = thread::Builder::new()
                 .name("fragcap-direct-process".into())
@@ -695,7 +679,6 @@ impl DirectPacketRuntime {
                         context,
                         selected,
                         excluded,
-                        connecting,
                         stats,
                         session_id,
                         proxy,
@@ -964,6 +947,36 @@ mod tests {
         context
     }
 
+    fn paired_client_context(first: u32, second: u32) -> NativeObservationContext {
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let started = Timestamp::from_nanos(i64::try_from(now_ns - 1_000_000_000).unwrap());
+        let context = NativeObservationContext::default();
+        context.record_process_evidence(&CaptureProcessEvidence {
+            events: vec![
+                ProcessEvent::started(first, 1, "client.exe", "", started),
+                ProcessEvent::started(second, first, "client.exe", "", started),
+            ],
+            launch_pid: Some(first),
+            launch_at: Some(started),
+            stage_transitions: [first, second]
+                .into_iter()
+                .map(|pid| StageTransition {
+                    kind: StageTransitionKind::Matched,
+                    pid,
+                    role: "client".into(),
+                    stage: None,
+                    at: started,
+                })
+                .collect(),
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        });
+        context
+    }
+
     #[test]
     fn direct_runtime_child() {
         let Ok(protocol) = std::env::var("FRAGCAP_S200_CHILD_PROTOCOL") else {
@@ -1069,6 +1082,65 @@ mod tests {
     fn disposable_direct_runtime_routes_exact_generation() {
         live_tcp_case(IpAddr::V4(Ipv4Addr::LOCALHOST));
         live_tcp_case(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_direct_runtime_routes_two_parallel_clients() {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = origin.accept().unwrap();
+                let mut body = Vec::new();
+                stream.read_to_end(&mut body).unwrap();
+                assert_eq!(body, b"runtime-client-request");
+                stream.write_all(b"runtime-origin-reply").unwrap();
+            }
+        });
+        let mut first = spawn_client("tcp", original);
+        let mut second = spawn_client("tcp", original);
+        let context = paired_client_context(first.id(), second.id());
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            4,
+            1024,
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .with_session_id("s200-direct-parallel")
+        .unwrap();
+        let mut policy = DestinationPolicy::new(config.listen());
+        policy.grant_for_test(original);
+        let mut lease = NativeProxyBackend::new(config)
+            .with_destination_policy(policy)
+            .with_inspection_decider(Arc::new(ExactGameDecider::new(
+                context.clone(),
+                vec!["client".into()],
+            )))
+            .start(Duration::from_secs(3))
+            .unwrap();
+        let mut runtime = DirectPacketRuntime::start(
+            Path::new(&root),
+            context,
+            "s200-direct-parallel".into(),
+            lease.endpoint(),
+            lease.capability_proof().proxy_password(),
+            4,
+        )
+        .unwrap();
+        release_client(&mut first);
+        release_client(&mut second);
+        finish_client(first);
+        finish_client(second);
+        let stats = runtime.stop().unwrap();
+        assert!(stats.packets.consumed > 0);
+        assert_eq!(stats.packets.lost, 0);
+        server.join().unwrap();
+        let report = lease.cleanup(Duration::from_secs(3));
+        assert_eq!(report.observation.protocol.socks_connect_succeeded, 2);
     }
 
     fn live_tcp_case(ip: IpAddr) {
