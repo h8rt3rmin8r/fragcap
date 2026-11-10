@@ -35,7 +35,7 @@ use fragcap::targets::{
     CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact,
     CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
-    CompatibilityRoutingStrategy, Selection, Store, TargetEntry,
+    CompatibilityRouteIdentity, CompatibilityRoutingStrategy, Selection, Store, TargetEntry,
 };
 #[cfg(test)]
 use fragcap::FlowId;
@@ -140,6 +140,7 @@ pub(crate) fn current_scoped_compatibility_case(
         proxy_backend: "fragcap-native".to_string(),
         proxy_backend_version: env!("CARGO_PKG_VERSION").to_string(),
         routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+        route_identity: fragcap::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
         address_family: compatibility_address_family(family),
         protocol,
         fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -149,6 +150,50 @@ pub(crate) fn current_scoped_compatibility_case(
         middleware_handling,
         inspection_policy_id: inspection_policy_id.to_string(),
     }
+}
+
+fn requested_compatibility_case(
+    args: &DeepCaptureArgs,
+    mut case: CompatibilityCase,
+) -> CompatibilityCase {
+    if args.direct_route {
+        case.route_identity = CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1;
+    }
+    case
+}
+
+fn direct_route_component_directory() -> Result<PathBuf, CliError> {
+    std::env::current_exe()
+        .map_err(|error| {
+            CliError::failure(format!("cannot locate direct-route executable: {error}"))
+        })?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CliError::failure("direct-route executable has no parent directory"))
+}
+
+fn selected_routing_adapter(
+    args: &DeepCaptureArgs,
+    observations: deep_capture_api::NativeObservationContext,
+) -> Result<Box<dyn deep_capture_api::RoutingAdapter>, CliError> {
+    if args.direct_route {
+        #[cfg(all(windows, feature = "direct-route"))]
+        {
+            return Ok(Box::new(fragcap::deep_capture::NativeDirectRouting::new(
+                direct_route_component_directory()?,
+                observations,
+            )));
+        }
+        #[cfg(not(all(windows, feature = "direct-route")))]
+        {
+            let _ = observations;
+            return Err(CliError::usage(
+                "direct route requires a Windows build with the direct-route feature",
+            ));
+        }
+    }
+    let _ = observations;
+    Ok(Box::new(deep_capture_api::ChildEnvironmentRouting))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1088,18 +1133,21 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
             self.args.controlled_target,
             &facts,
             target.launch_case,
-            &current_scoped_compatibility_case(
-                self.selected_launch_case
-                    .borrow()
-                    .expect("resolved launch case retained"),
-                self.args.proxy_family,
-                config
-                    .calibration_protocol
-                    .unwrap_or(CompatibilityProtocol::Routing),
-                self.authorized.inspection_scope.requested,
-                self.authorized.inspection_scope.effective,
-                self.authorized.inspection_scope.middleware_handling,
-                self.authorized.inspection_scope.policy_id,
+            &requested_compatibility_case(
+                self.args,
+                current_scoped_compatibility_case(
+                    self.selected_launch_case
+                        .borrow()
+                        .expect("resolved launch case retained"),
+                    self.args.proxy_family,
+                    config
+                        .calibration_protocol
+                        .unwrap_or(CompatibilityProtocol::Routing),
+                    self.authorized.inspection_scope.requested,
+                    self.authorized.inspection_scope.effective,
+                    self.authorized.inspection_scope.middleware_handling,
+                    self.authorized.inspection_scope.policy_id,
+                ),
             ),
         )?;
         Ok(())
@@ -1176,7 +1224,6 @@ struct LibraryRuntime {
     interrupted: bool,
     backend: Option<ProxyBackend>,
     trust: Option<TrustOutcome>,
-    observations: Vec<Observation>,
     listen_endpoint: Option<SocketAddr>,
     started_at: Option<SystemTime>,
 }
@@ -1655,6 +1702,7 @@ struct LibraryFactAdapter {
     controlled: bool,
     family: DeepCaptureProxyFamilyArg,
     inspection_scope: ResolvedCliInspectionScope,
+    route_identity: CompatibilityRouteIdentity,
 }
 
 impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
@@ -1662,6 +1710,8 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
         &mut self,
         target: &deep_capture_api::PreparedTarget,
         fact: &deep_capture_api::CompatibilityFact,
+        observations: &[Observation],
+        evidence_windows: &[deep_capture_api::EvidenceWindow],
     ) -> deep_capture_api::FactWriteStatus {
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
@@ -1691,9 +1741,37 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
                 }
             }
         };
-        let final_owner = fact
+        let candidate_owner = fact
             .final_owner_index
-            .and_then(|index| runtime.observations.get(index));
+            .and_then(|index| observations.get(index));
+        let direct_positive = self.route_identity
+            == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+            && key == CompatibilityFactKey::ProxyRouting
+            && fact.value == "reached-client";
+        let direct_owner = direct_positive
+            .then(|| {
+                observations
+                    .iter()
+                    .zip(evidence_windows)
+                    .rfind(|(observation, window)| {
+                        **window == deep_capture_api::EvidenceWindow::Observation
+                            && exact_direct_client_receipt(observation)
+                    })
+                    .map(|(observation, _)| observation)
+            })
+            .flatten();
+        if direct_positive && direct_owner.is_none() {
+            return deep_capture_api::FactWriteStatus::Skipped {
+                reason:
+                    "no exact final-client direct-route receipt joined to proxy and packet evidence"
+                        .into(),
+            };
+        }
+        let final_owner = if direct_positive {
+            direct_owner
+        } else {
+            candidate_owner
+        };
         let result = insert_fact(
             &mut self.store.borrow_mut(),
             key,
@@ -1708,6 +1786,7 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
                 address_family: compatibility_address_family(self.family),
                 protocol: fact.protocol,
                 inspection_scope: self.inspection_scope,
+                route_identity: self.route_identity,
             },
         );
         match result {
@@ -1718,6 +1797,15 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
             },
         }
     }
+}
+
+fn exact_direct_client_receipt(observation: &Observation) -> bool {
+    observation.attribution.as_deref() == Some("direct-route-receipt")
+        && observation.correlation_state == deep_capture_api::CorrelationState::Matched
+        && observation.flow_id.is_some()
+        && observation.packet_observations > 0
+        && observation.role.as_deref() == Some("client")
+        && observation.process_id.is_some()
 }
 
 struct LibraryArtifactAdapter<'e, 'w> {
@@ -2580,6 +2668,38 @@ fn build_authorization_plan(
             .map_err(cli_error_from_library_refusal)?;
     let routing = deep_capture_api::RoutingPlan::child_environment(endpoint, &args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
+    let routing = if args.direct_route {
+        let directory = direct_route_component_directory()?;
+        fragcap::deep_capture::verify_windivert_component(&directory).map_err(|detail| {
+            CliError::usage(format!("direct route component unavailable: {detail}"))
+        })?;
+        let prepared_target = deep_capture_api::PreparedTarget {
+            id: target_authority.row_id.ok_or_else(|| {
+                CliError::usage("direct route requires an exact stored target row")
+            })?,
+            handle: target_authority.handle.clone(),
+            launch_case: library_launch_case(target_authority.launch_case),
+        };
+        routing
+            .with_direct_socket(&prepared_target)
+            .map_err(cli_error_from_library_refusal)?
+    } else {
+        routing
+    };
+    let direct_component = routing.direct_socket.as_ref().map(|component| {
+        json!({
+            "target_id": component.target_id,
+            "final_role": component.final_role,
+            "tcp": component.tcp,
+            "udp": component.udp,
+            "max_flows": component.max_flows,
+            "max_packets": component.max_packets,
+            "administrator_required": component.administrator_required,
+            "component_version": component.component_version,
+            "candidate_wait_ms": 100,
+            "component_identity": "certified WinDivert 2.2.2-A x64 exact SHA-256 set",
+        })
+    });
     let bypass = routing
         .bypass
         .as_ref()
@@ -2713,7 +2833,9 @@ fn build_authorization_plan(
             },
             "listener": "exact loopback address; concrete ephemeral port selected after authorization",
             "normalized_bypass_rules": operator_rules,
-            "routing_scope": "managed child environment only",
+            "routing_scope": if args.direct_route { "managed child environment and exact final-client direct socket" } else { "managed child environment only" },
+            "route_identity": if args.direct_route { CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1.as_str() } else { CompatibilityRouteIdentity::ChildEnvironmentV1.as_str() },
+            "direct_socket": direct_component,
             "system_proxy_change": false,
         },
         "refusal_boundaries": [
@@ -2771,14 +2893,17 @@ fn validate_authorization_target(
         args.controlled_target,
         &facts,
         library_launch_case(launch_case),
-        &current_scoped_compatibility_case(
-            launch_case,
-            args.proxy_family,
-            protocol.unwrap_or(CompatibilityProtocol::Routing),
-            inspection_scope.requested,
-            inspection_scope.effective,
-            inspection_scope.middleware_handling,
-            inspection_scope.policy_id,
+        &requested_compatibility_case(
+            args,
+            current_scoped_compatibility_case(
+                launch_case,
+                args.proxy_family,
+                protocol.unwrap_or(CompatibilityProtocol::Routing),
+                inspection_scope.requested,
+                inspection_scope.effective,
+                inspection_scope.middleware_handling,
+                inspection_scope.policy_id,
+            ),
         ),
     )
     .map_err(cli_error_from_library_refusal)?;
@@ -3051,6 +3176,11 @@ pub(crate) fn run_with_outcome(
     emitter: &mut Emitter,
     inherited_authorization: Option<&InheritedRetryAuthorization>,
 ) -> Result<RunOutcome, CliError> {
+    if args.direct_route && !cfg!(all(windows, feature = "direct-route")) {
+        return Err(CliError::usage(
+            "direct route requires a Windows build with the direct-route feature",
+        ));
+    }
     if !args.launch {
         return Err(CliError::usage(
             "Deep Capture requires --launch: fragcap must start the selected game so only that launch receives its proxy settings",
@@ -3403,7 +3533,7 @@ pub(crate) fn run_with_outcome(
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
         }),
-        routing: Box::new(deep_capture_api::ChildEnvironmentRouting),
+        routing: selected_routing_adapter(args, observation_context.clone())?,
         launch: Box::new(LibraryLaunchAdapter),
         capture: Box::new(LibraryCaptureAdapter {
             args,
@@ -3424,6 +3554,11 @@ pub(crate) fn run_with_outcome(
             controlled: args.controlled_target,
             family: args.proxy_family,
             inspection_scope: authorization_plan.target_authority.inspection_scope,
+            route_identity: if args.direct_route {
+                CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+            } else {
+                CompatibilityRouteIdentity::ChildEnvironmentV1
+            },
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
             recipient: Rc::clone(&recipient),
@@ -3450,7 +3585,12 @@ pub(crate) fn run_with_outcome(
             progress: session_ux::SessionProgress::default(),
         }),
     };
-    let prepared = match deep_capture_api::DeepCapture::preflight(config, &mut adapters) {
+    let preflight = if args.direct_route {
+        deep_capture_api::DeepCapture::preflight_direct_socket(config, &mut adapters)
+    } else {
+        deep_capture_api::DeepCapture::preflight(config, &mut adapters)
+    };
+    let prepared = match preflight {
         Ok(prepared) => prepared,
         Err(refusal) => {
             if let Some(restart) = &restart {
@@ -5045,6 +5185,16 @@ fn routing_policy_json(plan: &deep_capture_api::RoutingPlan) -> serde_json::Valu
         .expect("implemented routing plan carries bypass policy");
     json!({
         "policy_version": 1,
+        "route_identity": route_identity_for_plan(plan).as_str(),
+        "direct_socket": plan.direct_socket.as_ref().map(|component| json!({
+            "target_id": component.target_id,
+            "final_role": component.final_role,
+            "tcp": component.tcp,
+            "udp": component.udp,
+            "max_flows": component.max_flows,
+            "max_packets": component.max_packets,
+            "component_version": component.component_version,
+        })),
         "operator_rules": bypass
             .operator_rules()
             .iter()
@@ -5060,6 +5210,14 @@ fn routing_policy_json(plan: &deep_capture_api::RoutingPlan) -> serde_json::Valu
         "resolved_address_policy": "evaluate-every-answer-every-attempt",
         "fallback": "none",
     })
+}
+
+fn route_identity_for_plan(plan: &deep_capture_api::RoutingPlan) -> CompatibilityRouteIdentity {
+    if plan.direct_socket.is_some() {
+        CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+    } else {
+        CompatibilityRouteIdentity::ChildEnvironmentV1
+    }
 }
 
 fn routing_decisions_json(observations: &[Observation]) -> serde_json::Value {
@@ -5107,6 +5265,7 @@ fn compatibility_json(
         "proxy_backend": ctx.session.backend.name,
         "proxy_backend_version": ctx.session.backend.version,
         "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+        "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
         "address_family": ctx.session.address_family.as_str(),
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
         "inspection": {
@@ -5480,6 +5639,7 @@ fn manifest_json(
             "backend": ctx.session.backend.name,
             "version": ctx.session.backend.version,
             "mode": "launch-scoped-env",
+            "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
             "listen_addr": ctx.session.listen_addr,
             "listen_port": ctx.session.listen_port,
             "routing_policy": routing_policy_json(&ctx.session.routing),
@@ -5505,6 +5665,7 @@ fn manifest_json(
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
             "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
             "address_family": ctx.session.address_family.as_str(),
             "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
             "fragcap_version": env!("CARGO_PKG_VERSION"),
@@ -5725,8 +5886,9 @@ fn insert_fact(
     fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
     fact.proxy_backend = Some(ctx.backend.name.clone());
     fact.proxy_backend_version = Some(ctx.backend.version.clone());
-    fact.proxy_mode = Some("launch-scoped-env".to_string());
+    fact.proxy_mode = Some(ctx.route_identity.as_str().to_string());
     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+    fact.route_identity = Some(ctx.route_identity);
     fact.address_family = Some(ctx.address_family);
     fact.protocol = Some(ctx.protocol);
     fact.requested_scope = Some(ctx.inspection_scope.requested);
@@ -5765,6 +5927,7 @@ struct FactContext<'a> {
     address_family: CompatibilityAddressFamily,
     protocol: CompatibilityProtocol,
     inspection_scope: ResolvedCliInspectionScope,
+    route_identity: CompatibilityRouteIdentity,
 }
 
 fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<(), CliError> {
@@ -6348,6 +6511,136 @@ mod tests {
     }
 
     #[test]
+    fn direct_positive_requires_exact_receipt_proxy_and_packet_join() {
+        let mut record = observation();
+        record.process_id = Some(42);
+        record.role = Some("client".into());
+        record.correlation_state = deep_capture_api::CorrelationState::Matched;
+        record.attribution = Some("live".into());
+        assert!(!exact_direct_client_receipt(&record));
+        record.attribution = Some("direct-route-receipt".into());
+        assert!(exact_direct_client_receipt(&record));
+        record.packet_observations = 0;
+        assert!(!exact_direct_client_receipt(&record));
+        record.packet_observations = 1;
+        record.role = Some("launcher".into());
+        assert!(!exact_direct_client_receipt(&record));
+    }
+
+    #[test]
+    fn direct_positive_fact_uses_coordinator_observations_at_append() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("facts.db")).unwrap();
+        let target_id = store
+            .insert_target(&TargetEntry {
+                id: None,
+                stable_id: 75_000,
+                handle: "sample-target".into(),
+                name: "Sample Target".into(),
+                classification: fragcap::targets::TargetClassification::Game,
+                classification_source: fragcap::targets::ClassificationSource::User,
+                fidelity: fragcap::profile::FidelityTier::Authored,
+                provenance: None,
+                anchor: None,
+                launch_entries: Some(fragcap::targets::resolved_client_launch("client.exe")),
+                install_root: None,
+                evidence: None,
+                detection_scan: None,
+                folder_name: None,
+                executable_hint: Some("client.exe".into()),
+            })
+            .unwrap();
+        let store = Rc::new(RefCell::new(store));
+        let runtime = Rc::new(RefCell::new(LibraryRuntime {
+            backend: Some(ProxyBackend {
+                name: "fragcap-native".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            }),
+            ..LibraryRuntime::default()
+        }));
+        let mut adapter = LibraryFactAdapter {
+            store: Rc::clone(&store),
+            selected_launch_case: Rc::new(RefCell::new(Some(
+                CompatibilityLaunchCase::DirectExeCold,
+            ))),
+            runtime,
+            controlled: false,
+            family: DeepCaptureProxyFamilyArg::Ipv4,
+            inspection_scope: resolve_cli_inspection_scope(InspectionScopeArg::Auto),
+            route_identity: CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1,
+        };
+        let target = deep_capture_api::PreparedTarget {
+            id: target_id,
+            handle: "sample-target".into(),
+            launch_case: deep_capture_api::LaunchCase::DirectExeCold,
+        };
+        let fact = deep_capture_api::CompatibilityFact {
+            kind: CompatibilityFactKey::ProxyRouting.as_str().into(),
+            value: "reached-client".into(),
+            evidence: "exact direct route".into(),
+            phase: CalibrationPhase::Reachability,
+            protocol: CompatibilityProtocol::Routing,
+            final_owner_index: Some(0),
+        };
+        let mut record = observation();
+        record.process_id = Some(42);
+        record.process_image = Some("client.exe".into());
+        record.role = Some("client".into());
+        record.correlation_state = deep_capture_api::CorrelationState::Matched;
+        record.attribution = Some("child-environment".into());
+        assert!(matches!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record.clone()],
+                &[deep_capture_api::EvidenceWindow::Observation],
+            ),
+            deep_capture_api::FactWriteStatus::Skipped { .. }
+        ));
+        assert!(store
+            .borrow()
+            .compatibility_facts_for_target(target_id)
+            .unwrap()
+            .is_empty());
+
+        record.attribution = Some("direct-route-receipt".into());
+        assert!(matches!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record.clone()],
+                &[deep_capture_api::EvidenceWindow::PreClient],
+            ),
+            deep_capture_api::FactWriteStatus::Skipped { .. }
+        ));
+        assert_eq!(
+            deep_capture_api::CompatibilityRepository::append(
+                &mut adapter,
+                &target,
+                &fact,
+                &[record],
+                &[deep_capture_api::EvidenceWindow::Observation],
+            ),
+            deep_capture_api::FactWriteStatus::Appended
+        );
+        let facts = store
+            .borrow()
+            .compatibility_facts_for_target(target_id)
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].route_identity,
+            Some(CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1)
+        );
+        assert_eq!(
+            facts[0].evidence_source,
+            CompatibilityEvidenceSource::ObservedRun
+        );
+    }
+
+    #[test]
     fn manifest_reports_observed_roles_without_promoting_missing_ownership_or_partial_trace() {
         let root = tempfile::tempdir().unwrap();
         let listener =
@@ -6899,6 +7192,7 @@ mod tests {
             fact.proxy_backend = Some("fragcap-native".to_string());
             fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
             fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+            fact.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentV1);
             fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
             fact.protocol = Some(CompatibilityProtocol::NotApplicable);
             fact.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);
@@ -6950,6 +7244,7 @@ mod tests {
         latest.proxy_backend = Some("fragcap-native".to_string());
         latest.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
         latest.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        latest.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentV1);
         latest.address_family = Some(CompatibilityAddressFamily::Ipv4);
         latest.protocol = Some(CompatibilityProtocol::NotApplicable);
         latest.requested_scope = Some(CompatibilityRequestedInspectionScope::LaunchChain);

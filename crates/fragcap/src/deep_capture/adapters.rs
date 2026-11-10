@@ -345,7 +345,13 @@ impl std::fmt::Debug for ProxyRoute {
 
 /// Append-only target-owned compatibility persistence.
 pub trait CompatibilityRepository {
-    fn append(&mut self, target: &PreparedTarget, fact: &CompatibilityFact) -> FactWriteStatus;
+    fn append(
+        &mut self,
+        target: &PreparedTarget,
+        fact: &CompatibilityFact,
+        observations: &[CompatibilityObservation],
+        evidence_windows: &[super::EvidenceWindow],
+    ) -> FactWriteStatus;
 }
 
 /// Bundle destination validation and independent artifact persistence.

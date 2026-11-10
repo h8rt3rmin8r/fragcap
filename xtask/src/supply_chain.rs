@@ -12,7 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const POLICY_REL: &str = "supply-chain/policy-v1.json";
 const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
-const RELEASE_FEATURES: &str = "fragcap-cli/etw,fragcap-cli/live,fragcap-cli/socket-table";
+const RELEASE_FEATURES: &str =
+    "fragcap-cli/direct-route,fragcap-cli/etw,fragcap-cli/live,fragcap-cli/socket-table";
 const MAX_FINDINGS: usize = 256;
 const WINDIVERT_REF: &str = "pkg:generic/WinDivert@2.2.2-A";
 const WINDIVERT_ID: &str = "WinDivert 2.2.2-A";
@@ -150,7 +151,7 @@ fn restrict_release_graph(root: &Path, mut graph: Graph) -> Result<Graph, String
             WINDOWS_TARGET,
             "--no-default-features",
             "--features",
-            "live,socket-table,etw",
+            "live,socket-table,etw,direct-route",
             "--edges",
             "normal",
             "--prefix",
@@ -488,11 +489,13 @@ fn validate_policy(policy: &Value, graphs: &[Graph], today: String) -> Vec<Strin
             "graph-drift: release_target must be {WINDOWS_TARGET}"
         ));
     }
-    let expected_features = ["etw", "live", "socket-table"];
+    let expected_features = ["direct-route", "etw", "live", "socket-table"];
     let actual_features = strings(object.get("release_features"));
     if actual_features != expected_features {
-        findings
-            .push("critical-feature: release features must be etw, live, socket-table".to_string());
+        findings.push(
+            "critical-feature: release features must be direct-route, etw, live, socket-table"
+                .to_string(),
+        );
     }
     let msrv = object
         .get("workspace_msrv")
@@ -577,6 +580,19 @@ fn validate_packages(
     findings: &mut Vec<String>,
 ) {
     let allowed: BTreeSet<String> = strings(object.get("allowed_sources")).into_iter().collect();
+    let ordinary_licenses: BTreeSet<String> = [
+        "MIT",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "ISC",
+        "Unicode-3.0",
+        "Unicode-DFS-2016",
+        "Zlib",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
     for graph in graphs {
         for package in graph.packages.values() {
             if let Some(source) = &package.source {
@@ -595,6 +611,18 @@ fn validate_packages(
                 if package.license.is_none() {
                     findings.push(format!(
                         "license-metadata: {} has no declared license",
+                        package.key
+                    ));
+                }
+                if package.license.as_deref().is_some_and(|license| {
+                    license.contains("0BSD")
+                        && !license_expression_satisfied(license, &ordinary_licenses)
+                }) && !matches!(
+                    (package.name.as_str(), package.version.as_str()),
+                    ("smoltcp", "0.12.0") | ("managed", "0.8.0")
+                ) {
+                    findings.push(format!(
+                        "license-exception: {} is outside the reviewed 0BSD pair",
                         package.key
                     ));
                 }
@@ -1191,7 +1219,7 @@ fn stamp_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Result<
         ("fragcap:sbom-tool", sbom_tool.as_str()),
         ("fragcap:notices-tool", notices_tool.as_str()),
         ("fragcap:target", WINDOWS_TARGET),
-        ("fragcap:features", "etw,live,socket-table"),
+        ("fragcap:features", "direct-route,etw,live,socket-table"),
         ("fragcap:lock-sha256", &sha256_hex(&lock)),
         ("fragcap:policy-sha256", &sha256_hex(&policy)),
     ];
@@ -1665,7 +1693,10 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
             ),
         ),
         ("fragcap:target", WINDOWS_TARGET.to_string()),
-        ("fragcap:features", "etw,live,socket-table".to_string()),
+        (
+            "fragcap:features",
+            "direct-route,etw,live,socket-table".to_string(),
+        ),
         ("fragcap:lock-sha256", sha256_hex(&lock)),
         ("fragcap:policy-sha256", sha256_hex(&policy_bytes)),
     ] {
@@ -2889,7 +2920,7 @@ mod tests {
             "schema_version": 1,
             "release_root": "fragcap-cli",
             "release_target": WINDOWS_TARGET,
-            "release_features": ["etw", "live", "socket-table"],
+            "release_features": ["direct-route", "etw", "live", "socket-table"],
             "workspace_msrv": "1.89",
             "graph_views": [],
             "allowed_sources": [],

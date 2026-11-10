@@ -31,6 +31,8 @@ fragcap doctor --json
 
 Doctor checks without starting Capture, a proxy, a target, or trust changes. Capture and Deep Capture readiness are separate verdicts. Missing elevation, Npcap, required backend features, or usable interfaces can block packet recording without proving that the native proxy is unavailable. Indeterminate means the check could not establish the fact; it is not a green result. Target compatibility is separate from environment readiness.
 
+Plain Doctor runs without Administrator. In the S201 Windows candidate it reads the packaged WinDivert component's exact identity and service status without opening the route. A present component does not prove driver-open permission or selected target routing. An explicit `deep-capture --direct-route` session requires Administrator and current composite-route calibration; missing or altered component bytes refuse before effects. Npcap still supplies live packet capture independently. Wireshark and per-user extcap registration are optional; live extcap capture uses the same elevated Capture path.
+
 Since v0.10.6 (S168), Doctor summarizes healthy completed history with distinct observed session and resource counts. The inventory remains bounded and explicitly reports incomplete coverage; a terminal resource does not prove its session has no active owner. Active, mixed, stale, cleanup-failed, unknown, unsupported, and actionable findings remain individually visible. Retained evidence is separate from cleanup residue, and ordinary Doctor never deletes it.
 
 ```powershell

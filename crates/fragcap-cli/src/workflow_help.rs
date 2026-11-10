@@ -9,7 +9,7 @@ use clap::ValueEnum;
 use crate::{
     cli::{
         CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationProtocolArg,
-        DeepCaptureProxyFamilyArg,
+        DeepCaptureProxyFamilyArg, GuidedCalibrationRoutingArg,
     },
     exit::CliError,
 };
@@ -224,7 +224,9 @@ impl CalibrationCommandContext {
             catalog_db: args.catalog_db.clone(),
             local_db: effective_local_db.or_else(|| args.local_db.clone()),
             launch_case: args.launch_case.as_ref().map(value_name),
-            routing_strategy: None,
+            routing_strategy: args
+                .direct_route
+                .then(|| value_name(&GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)),
             proxy_family: Some(value_name(&args.proxy_family)),
             protocols: args
                 .calibration_protocol
@@ -598,7 +600,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::Cli;
+    use crate::cli::{Cli, Command};
 
     #[test]
     fn every_displayed_example_has_a_unique_identity_and_parses() {
@@ -761,6 +763,32 @@ mod tests {
             "https",
         ])
         .expect("exact-case calibration continuation parses");
+    }
+
+    #[test]
+    fn direct_route_refusal_guidance_preserves_composite_calibration() {
+        let cli = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "My Game",
+            "--launch",
+            "--direct-route",
+        ])
+        .unwrap();
+        let Some(Command::DeepCapture(args)) = cli.command else {
+            panic!("Deep Capture command");
+        };
+        let context = CalibrationCommandContext::for_deep_capture(&args, None);
+        let command = next_command(
+            FirstRunRefusal::Compatibility,
+            Some(TargetReference::Id(75_000)),
+            Some(&context),
+        );
+        assert!(
+            command.contains("--routing-strategy child-environment-direct-socket"),
+            "{command}"
+        );
+        Cli::try_parse_from(command.split_whitespace()).unwrap();
     }
 
     #[test]

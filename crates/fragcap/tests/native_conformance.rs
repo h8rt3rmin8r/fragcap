@@ -348,6 +348,8 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     }));
                 }
                 let current = CompatibilityCase {
+                    route_identity:
+                        fragcap::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
                     launch_case: launch,
                     proxy_backend: "fragcap-native".to_string(),
                     proxy_backend_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -370,6 +372,8 @@ fn native_calibration_matrix_executes_and_persists_every_supported_case() {
                     )
                     .unwrap();
                     fact.launch_case = Some(launch);
+                    fact.route_identity =
+                        Some(fragcap::targets::CompatibilityRouteIdentity::ChildEnvironmentV1);
                     fact.proxy_backend = Some("fragcap-native".to_string());
                     fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
                     fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);

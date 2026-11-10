@@ -219,6 +219,32 @@ pub enum CompatibilityRoutingStrategy {
     ProtocolSpecific,
 }
 
+/// Exact composition and version of the route whose evidence was measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityRouteIdentity {
+    ChildEnvironmentV1,
+    ChildEnvironmentDirectSocketV1,
+}
+
+impl CompatibilityRouteIdentity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChildEnvironmentV1 => "child-environment-v1",
+            Self::ChildEnvironmentDirectSocketV1 => "child-environment+direct-socket-v1",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "child-environment-v1" => Ok(Self::ChildEnvironmentV1),
+            "child-environment+direct-socket-v1" => Ok(Self::ChildEnvironmentDirectSocketV1),
+            other => Err(TargetsError::Model(format!(
+                "unknown compatibility route identity {other:?}"
+            ))),
+        }
+    }
+}
+
 impl CompatibilityRoutingStrategy {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -344,6 +370,7 @@ pub struct CompatibilityCase {
     pub proxy_backend: String,
     pub proxy_backend_version: String,
     pub routing_strategy: CompatibilityRoutingStrategy,
+    pub route_identity: CompatibilityRouteIdentity,
     pub address_family: CompatibilityAddressFamily,
     pub protocol: CompatibilityProtocol,
     pub fragcap_version: String,
@@ -444,6 +471,8 @@ pub struct CompatibilityFact {
     pub proxy_mode: Option<String>,
     /// Target-scoped routing strategy used for this observation.
     pub routing_strategy: Option<CompatibilityRoutingStrategy>,
+    /// Exact route composition and version; NULL is older unqualified history.
+    pub route_identity: Option<CompatibilityRouteIdentity>,
     /// Exact loopback family used for this observation.
     pub address_family: Option<CompatibilityAddressFamily>,
     /// Exact protocol family, or explicit inapplicability for route facts.
@@ -491,6 +520,7 @@ impl CompatibilityFact {
             proxy_backend_version: None,
             proxy_mode: None,
             routing_strategy: None,
+            route_identity: None,
             address_family: None,
             protocol: None,
             requested_scope: None,
@@ -516,6 +546,7 @@ impl CompatibilityFact {
             Some(backend),
             Some(backend_version),
             Some(routing),
+            Some(route_identity),
             Some(family),
             Some(protocol),
             Some(fragcap_version),
@@ -527,6 +558,7 @@ impl CompatibilityFact {
             self.proxy_backend.as_deref(),
             self.proxy_backend_version.as_deref(),
             self.routing_strategy,
+            self.route_identity,
             self.address_family,
             self.protocol,
             self.fragcap_version.as_deref(),
@@ -538,6 +570,16 @@ impl CompatibilityFact {
         else {
             return CompatibilityApplicability::LegacyIncomplete;
         };
+        if route_identity == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+            && matches!(
+                (self.key, self.value.as_str()),
+                (CompatibilityFactKey::ProxyRouting, "reached-client")
+                    | (CompatibilityFactKey::ProxyPropagation, "confirmed")
+            )
+            && self.evidence_source != CompatibilityEvidenceSource::ObservedRun
+        {
+            return CompatibilityApplicability::LegacyIncomplete;
+        }
         for (matches, dimension) in [
             (launch_case == current.launch_case, "launch-case"),
             (backend == current.proxy_backend, "proxy-backend"),
@@ -546,6 +588,7 @@ impl CompatibilityFact {
                 "proxy-backend-version",
             ),
             (routing == current.routing_strategy, "routing-strategy"),
+            (route_identity == current.route_identity, "route-identity"),
             (family == current.address_family, "address-family"),
             (
                 requested_scope == current.requested_scope,
@@ -886,6 +929,7 @@ mod tests {
             proxy_backend: "fragcap-native".to_string(),
             proxy_backend_version: "0.6.0".to_string(),
             routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: CompatibilityRouteIdentity::ChildEnvironmentV1,
             address_family: CompatibilityAddressFamily::Ipv4,
             protocol,
             fragcap_version: "0.6.0".to_string(),
@@ -912,6 +956,7 @@ mod tests {
         fact.proxy_backend = Some("fragcap-native".to_string());
         fact.proxy_backend_version = Some("0.6.0".to_string());
         fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        fact.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentV1);
         fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
         fact.protocol = Some(protocol);
         fact.fragcap_version = Some("0.6.0".to_string());
@@ -997,6 +1042,9 @@ mod tests {
             ("routing-strategy", |f| {
                 f.routing_strategy = Some(CompatibilityRoutingStrategy::Socks)
             }),
+            ("route-identity", |f| {
+                f.route_identity = Some(CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1)
+            }),
             ("address-family", |f| {
                 f.address_family = Some(CompatibilityAddressFamily::Ipv6)
             }),
@@ -1070,6 +1118,52 @@ mod tests {
         assert_eq!(
             wrong.applicability(&current),
             CompatibilityApplicability::Mismatch("protocol-family")
+        );
+    }
+
+    #[test]
+    fn environment_fact_cannot_authorize_composite_direct_route() {
+        let environment = exact_case(CompatibilityProtocol::Routing);
+        let mut direct = environment.clone();
+        direct.route_identity = CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1;
+        let fact = exact_fact(
+            CompatibilityFactKey::ProxyRouting,
+            CompatibilityProtocol::NotApplicable,
+        );
+        assert_eq!(
+            fact.applicability(&environment),
+            CompatibilityApplicability::Applicable
+        );
+        assert_eq!(
+            fact.applicability(&direct),
+            CompatibilityApplicability::Mismatch("route-identity")
+        );
+        let mut legacy = fact;
+        legacy.route_identity = None;
+        assert_eq!(
+            legacy.applicability(&direct),
+            CompatibilityApplicability::LegacyIncomplete
+        );
+    }
+
+    #[test]
+    fn direct_positive_route_requires_observed_run_authority() {
+        let mut direct = exact_case(CompatibilityProtocol::Routing);
+        direct.route_identity = CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1;
+        let mut fact = exact_fact(
+            CompatibilityFactKey::ProxyRouting,
+            CompatibilityProtocol::NotApplicable,
+        );
+        fact.route_identity = Some(direct.route_identity);
+        fact.evidence_source = CompatibilityEvidenceSource::UserConfirmed;
+        assert_eq!(
+            fact.applicability(&direct),
+            CompatibilityApplicability::LegacyIncomplete
+        );
+        fact.evidence_source = CompatibilityEvidenceSource::ObservedRun;
+        assert_eq!(
+            fact.applicability(&direct),
+            CompatibilityApplicability::Applicable
         );
     }
 

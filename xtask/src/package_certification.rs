@@ -354,6 +354,7 @@ fn validate_release_identity(value: &Value, problems: &mut Vec<String>) {
     }
     let features = string_set(&value["features"], "release_identity.features", problems);
     let expected = BTreeSet::from([
+        "direct-route".to_string(),
         "etw".to_string(),
         "live".to_string(),
         "native-deep-capture".to_string(),

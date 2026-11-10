@@ -35,9 +35,9 @@ use super::{
 
 const PACKET_QUEUE: usize = 256;
 const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
-const CANDIDATE_WAIT_NS: u64 = 10_000_000;
+const CANDIDATE_WAIT_NS: u64 = 100_000_000;
 const SOCKET_EVENTS: usize = 4096;
-const EVENT_HISTORY_NS: i64 = 30_000_000;
+const EVENT_HISTORY_NS: i64 = 300_000_000;
 const REFUSED_FLOWS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
@@ -56,8 +56,24 @@ fn unix_now_ns() -> io::Result<u64> {
         .map_err(|_| io::Error::other("system clock beyond route timestamp range"))
 }
 
+#[cfg(test)]
+fn candidate_timeline(
+    received_ns: u64,
+    socket_event_published_ns: Option<u64>,
+    process_proof_observed_ns: Option<u64>,
+    decided_ns: u64,
+    outcome: &str,
+) {
+    // Controlled metadata-only timeline. No packet or application bytes leave
+    // the candidate path, including for unrelated owners.
+    eprintln!(
+        "S201 candidate timing: receipt_ns={received_ns}, socket_event_published_ns={socket_event_published_ns:?}, process_proof_observed_ns={process_proof_observed_ns:?}, decision_ns={decided_ns}, held_ns={}, outcome={outcome}",
+        decided_ns.saturating_sub(received_ns),
+    );
+}
+
 enum WorkPacket {
-    Candidate(super::direct_route::DirectPacketHead, Vec<u8>, Address),
+    Candidate(super::direct_route::DirectPacketHead, Vec<u8>, Address, u64),
     Selected(DirectTuple, Vec<u8>, Address),
 }
 
@@ -232,6 +248,9 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
             Err(error) if error.raw_os_error() == Some(232) => return Ok(()),
             Err(error) => return Err(error),
         };
+        // Candidate hold time starts when WinDivert delivers the packet, not
+        // when the processing worker eventually dequeues it.
+        let received_ns = stats.started.elapsed().as_nanos() as u64;
         packet_received(&stats)?;
         let bytes = &packet[..length];
         let event_health = observer.lock().expect("socket observer lock").stats();
@@ -327,7 +346,9 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
         if !is_candidate || busy_unowned || is_excluded || is_refused {
             if is_refused {
                 stats.record_bypass("proxy-refused-flow");
-            } else if is_candidate {
+            } else if is_excluded {
+                stats.record_bypass("helper-self-excluded");
+            } else if busy_unowned && is_candidate {
                 stats
                     .admission_busy_bypassed
                     .fetch_add(1, Ordering::Relaxed);
@@ -340,7 +361,12 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
             .and_then(|clock| address.initial_packet_head(bytes, clock));
         if let Some(candidate) = candidate {
             if sender
-                .try_send(WorkPacket::Candidate(candidate, bytes.to_vec(), address))
+                .try_send(WorkPacket::Candidate(
+                    candidate,
+                    bytes.to_vec(),
+                    address,
+                    received_ns,
+                ))
                 .is_ok()
             {
                 continue;
@@ -483,6 +509,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let mut candidates = CandidateBuffer::new(PACKET_QUEUE, CANDIDATE_BYTES, CANDIDATE_WAIT_NS)
         .expect("fixed candidate bounds");
     let mut events = Vec::<DirectSocketEvent>::new();
+    #[cfg(test)]
+    let mut event_published_ns = BTreeMap::<DirectTuple, u64>::new();
+    #[cfg(test)]
+    let mut process_proof_observed_ns = None::<u64>;
     let mut active = BTreeMap::<DirectTuple, ActiveTcp>::new();
     let mut active_udp = BTreeMap::<DirectTuple, ActiveUdp>::new();
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
@@ -491,7 +521,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     loop {
         stats.processor_progress();
         match receiver.recv_timeout(Duration::from_millis(1)) {
-            Ok(WorkPacket::Candidate(head, packet, address)) => {
+            Ok(WorkPacket::Candidate(head, packet, address, received_ns)) => {
                 #[cfg(test)]
                 if STALL_NEXT_CANDIDATE.swap(false, Ordering::AcqRel) {
                     thread::sleep(Duration::from_millis(150));
@@ -513,8 +543,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     reinject(&handle, &stats, &packet, &address)?;
                     continue;
                 }
-                let now_ns = started.elapsed().as_nanos() as u64;
-                if let Err(pending) = candidates.enqueue(head, packet, address, now_ns) {
+                if let Err(pending) = candidates.enqueue(head, packet, address, received_ns) {
                     stats
                         .candidate_capacity_bypassed
                         .fetch_add(1, Ordering::Relaxed);
@@ -543,6 +572,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         reason,
                         packet,
                         address,
+                        ..
                     } = decision
                     {
                         stats.record_bypass(reason);
@@ -558,11 +588,14 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        let mut new_events = observer.lock().expect("socket observer lock").take_events();
-        // The native proxy and its upstream sockets share fragcap's PID.
-        // They cannot be promoted to target ownership even if a test or
-        // stale process snapshot happens to name this process as a client.
-        new_events.retain(|event| event.pid != std::process::id());
+        let new_events = observer.lock().expect("socket observer lock").take_events();
+        #[cfg(test)]
+        for event in &new_events {
+            event_published_ns.insert(event.tuple, stats.started.elapsed().as_nanos() as u64);
+        }
+        // Keep exact helper socket events for prompt pass-through. The
+        // candidate decision rejects this PID before process binding, so a
+        // stale snapshot cannot promote proxy traffic to target ownership.
         for event in new_events
             .iter()
             .filter(|event| event.kind == super::direct_route::SocketEventKind::Close)
@@ -637,10 +670,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         } else {
             None
         };
+        #[cfg(test)]
+        if evidence.is_some() && process_proof_observed_ns.is_none() {
+            process_proof_observed_ns = Some(stats.started.elapsed().as_nanos() as u64);
+        }
         let decisions = candidates.resolve(
             evidence.as_ref(),
             &events,
-            started.elapsed().as_nanos() as u64,
+            stats.started.elapsed().as_nanos() as u64,
+            std::process::id(),
         );
         for decision in decisions {
             match decision {
@@ -648,7 +686,29 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     reason,
                     packet,
                     address,
+                    received_ns,
                 } => {
+                    #[cfg(test)]
+                    if session_id == "s200-managed-chain" {
+                        let publication = raw_transport_head(&packet).ok().and_then(|head| {
+                            event_published_ns
+                                .get(&DirectTuple {
+                                    transport: head.transport,
+                                    local: head.source,
+                                    remote: head.destination,
+                                })
+                                .copied()
+                        });
+                        candidate_timeline(
+                            received_ns,
+                            publication,
+                            process_proof_observed_ns,
+                            stats.started.elapsed().as_nanos() as u64,
+                            reason,
+                        );
+                    }
+                    #[cfg(not(test))]
+                    let _ = received_ns;
                     #[cfg(test)]
                     if session_id == "s200-managed-chain" && reason == "candidate-wait-expired" {
                         match raw_transport_head(&packet) {
@@ -676,7 +736,20 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     flow,
                     packet,
                     address,
+                    received_ns,
                 } => {
+                    #[cfg(test)]
+                    if session_id == "s200-managed-chain" {
+                        candidate_timeline(
+                            received_ns,
+                            event_published_ns.get(&flow.tuple).copied(),
+                            process_proof_observed_ns,
+                            stats.started.elapsed().as_nanos() as u64,
+                            "selected",
+                        );
+                    }
+                    #[cfg(not(test))]
+                    let _ = received_ns;
                     if refused
                         .lock()
                         .expect("refused route lock")
@@ -1880,7 +1953,7 @@ mod tests {
         let server = thread::spawn(move || {
             let mut selected = 0;
             let mut publisher = 0;
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = origin.accept().unwrap();
                 let mut first = [0u8; 1];
                 stream.read_exact(&mut first).unwrap();
@@ -1890,6 +1963,11 @@ mod tests {
                     assert_eq!(body, b"runtime-client-request");
                     selected += 1;
                     stream.write_all(b"runtime-origin-reply").unwrap();
+                } else if first == *b"s" {
+                    let mut body = vec![first[0]];
+                    stream.read_to_end(&mut body).unwrap();
+                    assert_eq!(body, b"sentinel-request");
+                    stream.write_all(b"sentinel-reply").unwrap();
                 } else {
                     let mut head = vec![first[0]];
                     while !head.ends_with(b"\r\n\r\n") {
@@ -1948,6 +2026,7 @@ mod tests {
             .stderr(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW);
         let mut chain = command.spawn().unwrap();
+        let mut unrelated = spawn_client("sentinel-tcp", original);
         let mut output = BufReader::new(chain.stdout.take().unwrap());
         let platform = read_chain_pid(&mut output, "PLATFORM");
         let publisher = read_chain_pid(&mut output, "PUBLISHER");
@@ -1966,7 +2045,11 @@ mod tests {
         assert_ne!(publisher, client);
         assert_ne!(platform, client);
         context.record_process_evidence(&chain_evidence(platform, publisher, client));
+        // The unrelated process shares the exact original destination and is
+        // released beside the final client, not after the route has stopped.
+        release_client(&mut unrelated);
         chain.stdin.as_mut().unwrap().write_all(b"g").unwrap();
+        finish_client(unrelated);
         drop(chain.stdin.take());
         let outcome = chain.wait_with_output().unwrap();
         assert!(

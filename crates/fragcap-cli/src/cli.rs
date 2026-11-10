@@ -550,6 +550,13 @@ pub struct DeepCaptureArgs {
     )]
     pub inspect_scope: InspectionScopeArg,
 
+    /// Add the signed exact final-client direct socket route.
+    ///
+    /// This complements the managed child proxy environment and requires
+    /// Administrator and the packaged WinDivert component.
+    #[arg(long, help_heading = "Advanced compatibility")]
+    pub direct_route: bool,
+
     /// Permit one fresh game-scope successor after a failed launch-chain attempt.
     #[arg(long, help_heading = "Advanced compatibility")]
     pub retry_game_scope: bool,
@@ -920,6 +927,7 @@ pub enum GuidedCalibrationPauseArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum GuidedCalibrationRoutingArg {
     ChildEnvironment,
+    ChildEnvironmentDirectSocket,
     CommandArguments,
     TargetConfiguration,
     HttpProxy,
@@ -1786,6 +1794,37 @@ mod tests {
         assert_eq!(
             args.proxy_bypass,
             [".example.com,192.0.2.0/24", "[2001:db8::1]:443"]
+        );
+    }
+
+    #[test]
+    fn direct_route_is_explicit_in_deep_capture_and_guided_calibration() {
+        let cli = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--direct-route",
+        ])
+        .expect("parse direct route");
+        let Some(Command::DeepCapture(args)) = cli.command else {
+            panic!("expected Deep Capture command");
+        };
+        assert!(args.direct_route);
+        let cli = Cli::try_parse_from([
+            "fragcap",
+            "calibrate",
+            "target",
+            "--routing-strategy",
+            "child-environment-direct-socket",
+        ])
+        .expect("parse composite calibration route");
+        let Some(Command::Calibrate(args)) = cli.command else {
+            panic!("expected calibration command");
+        };
+        assert_eq!(
+            args.routing_strategy,
+            Some(GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)
         );
     }
 

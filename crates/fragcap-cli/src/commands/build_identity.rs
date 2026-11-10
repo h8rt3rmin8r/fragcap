@@ -17,6 +17,9 @@ pub fn run(out: &mut dyn Write) -> Result<Exit, CliError> {
     if cfg!(feature = "socket-table") {
         features.push("socket-table");
     }
+    if cfg!(feature = "direct-route") {
+        features.push("direct-route");
+    }
     features.sort_unstable();
     let identity = serde_json::json!({
         "schema_version": 1,

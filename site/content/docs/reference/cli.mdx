@@ -127,6 +127,7 @@ authorization, and compatible launch facts.
 ```powershell
 fragcap deep-capture sample-target --launch --har --key-log
 fragcap deep-capture sample-target --launch --inspect-scope game
+fragcap deep-capture sample-target --launch --direct-route
 ```
 
 | Option | Values | Default | Availability | Meaning |
@@ -149,6 +150,7 @@ fragcap deep-capture sample-target --launch --inspect-scope game
 | `--client-certificate` | open | none | all | Present this explicit operator-owned certificate chain to an upstream requiring mutual TLS. Requires `--client-private-key`. |
 | `--client-private-key` | open | none | all | Use the private key matching `--client-certificate`. The key is never written to session output. |
 | `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
+| `--direct-route` | open | `false` | all | Add the exact signed final-client TCP/UDP route to child environment routing on a Windows build with the direct-route feature. Requires Administrator, packaged WinDivert, and current facts for `child-environment+direct-socket-v1`; published v0.10.14 has no such route. |
 | `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the case measured by `--calibrate`. Cold Steam, direct executable, and declared publisher-chain launches are supported. Unsupported or warm authority receives a pre-effect refusal. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop after a byte count. |
@@ -232,7 +234,7 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 | `--proxy-family` | `ipv4`, `ipv6` | none | all | Fresh workflow only. Persist the exact loopback family and use it in every fresh proposal and attempt. Omission selects IPv4. |
 | `--resume` | open | none | all | Resume one positive target-bound workflow identifier from the effective local store. Conflicts with target selectors and `--protocol`. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, take a fresh process snapshot, and measure the selected cold launch. Conflicts with `--authorize-stdin`. |
-| `--routing-strategy` | `child-environment`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension. Omission selects child-environment. Only child-environment is currently implemented; other values refuse before effects. |
+| `--routing-strategy` | `child-environment`, `child-environment-direct-socket`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension and route identity. Omission selects child-environment. The composite direct-socket value is available in the S201 Windows candidate and requires Administrator and packaged WinDivert. Other values refuse before effects. |
 | `--target` | open | none | all | Explicit target selector. Stored resolution runs first; a clean miss may exactly match an installed title name or Steam application identifier. |
 | `--wait` | open | none | all | Set the target acquisition timeout for an attempt or the bounded client observation. Client observation defaults to 60 seconds. |
 

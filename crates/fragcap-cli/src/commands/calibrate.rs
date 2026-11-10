@@ -20,8 +20,8 @@ use fragcap::targets::{
     CalibrationWorkflowUpdateOutcome, CandidateIdentity, CandidateTarget,
     CompatibilityAddressFamily, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
-    CompatibilityRoutingStrategy, Discovery, DiscoveryAccount, LaunchEntry, Selection, Store,
-    TargetEntry,
+    CompatibilityRouteIdentity, CompatibilityRoutingStrategy, Discovery, DiscoveryAccount,
+    LaunchEntry, Selection, Store, TargetEntry,
 };
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
@@ -71,6 +71,7 @@ struct LowLevelScopeIntent {
     requested: CompatibilityRequestedInspectionScope,
     allow_game_scope_retry: bool,
     allow_capture_fallback: bool,
+    route_identity: CompatibilityRouteIdentity,
 }
 
 impl LowLevelScopeIntent {
@@ -79,6 +80,7 @@ impl LowLevelScopeIntent {
             requested: workflow.requested_scope,
             allow_game_scope_retry: workflow.allow_game_scope_retry,
             allow_capture_fallback: workflow.allow_capture_fallback,
+            route_identity: workflow.route_identity,
         }
     }
 }
@@ -90,6 +92,7 @@ struct ExactAttemptCase {
     proxy_backend: String,
     proxy_backend_version: String,
     routing_strategy: CompatibilityRoutingStrategy,
+    route_identity: CompatibilityRouteIdentity,
     address_family: CompatibilityAddressFamily,
     protocol: CompatibilityProtocol,
     fragcap_version: String,
@@ -137,6 +140,7 @@ impl ExactAttemptCase {
             proxy_backend: step.case.proxy_backend.clone(),
             proxy_backend_version: step.case.proxy_backend_version.clone(),
             routing_strategy: step.case.routing_strategy,
+            route_identity: step.case.route_identity,
             address_family: step.case.address_family,
             protocol: step.case.protocol,
             fragcap_version: step.case.fragcap_version.clone(),
@@ -158,6 +162,7 @@ impl ExactAttemptCase {
             "proxy_backend": self.proxy_backend,
             "proxy_backend_version": self.proxy_backend_version,
             "routing_strategy": self.routing_strategy.as_str(),
+            "route_identity": self.route_identity.as_str(),
             "target_version": self.target_version,
             "requested_scope": self.requested_scope.as_str(),
             "effective_scope": self.effective_scope.as_str(),
@@ -2788,11 +2793,16 @@ fn record_early_stored_case(
         .or(args.routing_strategy.map(compatibility_routing_arg))
         .unwrap_or(CompatibilityRoutingStrategy::ChildEnvironment);
     if let Some(workflow) = workflow {
+        case.route_identity = workflow.route_identity;
         case.requested_scope = workflow.requested_scope;
         case.effective_scope = workflow.effective_scope;
         case.middleware_handling = workflow.middleware_handling;
         case.inspection_policy_id = workflow.inspection_policy_id.clone();
     } else {
+        if args.routing_strategy == Some(GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)
+        {
+            case.route_identity = CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1;
+        }
         let scope = deep_capture::resolve_cli_inspection_scope(
             args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
         );
@@ -3241,13 +3251,20 @@ fn run_inner(
             args.inspect_scope.unwrap_or(InspectionScopeArg::Auto),
         );
         let workflow = store
-            .create_calibration_workflow_with_scope_intent(
+            .create_calibration_workflow_with_route_intent(
                 &target,
                 &requested_protocols,
                 args.launch_case.map(compatibility_launch_case_arg),
                 args.routing_strategy
                     .map(compatibility_routing_arg)
                     .unwrap_or(CompatibilityRoutingStrategy::ChildEnvironment),
+                if args.routing_strategy
+                    == Some(GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)
+                {
+                    CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+                } else {
+                    CompatibilityRouteIdentity::ChildEnvironmentV1
+                },
                 args.proxy_family
                     .map(compatibility_family_arg)
                     .unwrap_or(CompatibilityAddressFamily::Ipv4),
@@ -3607,6 +3624,7 @@ fn run_inner(
             workflow.routing_strategy,
             workflow.address_family,
             active_requested_scope,
+            workflow.route_identity,
         )?;
         let (completed_protocols, remaining_protocols) =
             coverage_from_proposal(&selected, &all_protocols);
@@ -3736,11 +3754,8 @@ fn run_inner(
 
         if selected.steps.is_empty() {
             let launch_case = ready_launch_case(&selected)?;
-            let current = proposal_compatibility_case(
-                &selected,
-                launch_case,
-                CompatibilityProtocol::Routing,
-            )?;
+            let current =
+                workflow_compatibility_case(&workflow, launch_case, CompatibilityProtocol::Routing);
             let mut requested_case = current.clone();
             requested_case.protocol = all_protocols
                 .first()
@@ -3798,6 +3813,7 @@ fn run_inner(
                         fresh_target.stable_id,
                         &local_store_argument,
                         current.requested_scope,
+                        workflow.route_identity,
                     )),
                 },
             );
@@ -3883,6 +3899,7 @@ fn run_inner(
                 allow_game_scope_retry: workflow.allow_game_scope_retry
                     && !workflow.game_scope_successor_active,
                 allow_capture_fallback: workflow.allow_capture_fallback,
+                route_identity: workflow.route_identity,
             },
         )?;
         low_level.bundle = attempt_bundle(
@@ -4128,6 +4145,7 @@ fn run_inner(
             workflow.routing_strategy,
             workflow.address_family,
             active_requested_scope,
+            workflow.route_identity,
         ) {
             Ok(proposal) => proposal,
             Err(error) => {
@@ -4232,6 +4250,7 @@ fn run_inner(
                 completed_target.stable_id,
                 &local_store_argument,
                 active_requested_scope,
+                workflow.route_identity,
             ))
         } else {
             Some(calibration_resume_command(
@@ -4668,17 +4687,24 @@ fn deep_capture_handoff_command(
     target_id: i64,
     local_store: &str,
     requested_scope: CompatibilityRequestedInspectionScope,
+    route_identity: CompatibilityRouteIdentity,
 ) -> String {
     let scope = match requested_scope {
         CompatibilityRequestedInspectionScope::Auto => "auto",
         CompatibilityRequestedInspectionScope::ExactGame => "game",
         CompatibilityRequestedInspectionScope::LaunchChain => "launch-chain",
     };
+    let direct_route =
+        if route_identity == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1 {
+            " --direct-route"
+        } else {
+            ""
+        };
     target_command(
         "deep-capture",
         target_id,
         local_store,
-        &format!(" --launch --inspect-scope {scope}"),
+        &format!(" --launch --inspect-scope {scope}{direct_route}"),
     )
 }
 
@@ -4727,6 +4753,7 @@ fn continuation_command(
             target_id,
             local_store,
             proposal.scope.as_ref()?.requested,
+            proposal.route_identity,
         ))
     } else {
         Some(calibrate_command(
@@ -4864,6 +4891,7 @@ fn build_proposal(
         routing_strategy,
         address_family,
         CompatibilityRequestedInspectionScope::Auto,
+        CompatibilityRouteIdentity::ChildEnvironmentV1,
     )
 }
 
@@ -4876,6 +4904,7 @@ fn build_proposal_with_scope(
     routing_strategy: CompatibilityRoutingStrategy,
     address_family: CompatibilityAddressFamily,
     requested_scope: CompatibilityRequestedInspectionScope,
+    route_identity: CompatibilityRouteIdentity,
 ) -> Result<deep_capture_api::CalibrationProposal, CliError> {
     let facts = store
         .compatibility_facts_for_target(required_row_id(target)?)
@@ -4888,6 +4917,7 @@ fn build_proposal_with_scope(
     )
     .with_process_snapshot(snapshot)
     .with_routing_strategy(routing_strategy)
+    .with_route_identity(route_identity)
     .with_address_family(address_family)
     .with_requested_scope(requested_scope)
     .with_protocol_candidates(protocols.iter().copied())
@@ -4910,6 +4940,7 @@ fn build_proposal_for_workflow(
         workflow.routing_strategy,
         workflow.address_family,
         workflow.requested_scope,
+        workflow.route_identity,
     )
 }
 
@@ -4965,6 +4996,8 @@ fn low_level_args(
         catalog_db: args.catalog_db.clone(),
         local_db: args.local_db.clone(),
         launch: true,
+        direct_route: scope.route_identity
+            == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1,
         bundle: args.bundle.clone(),
         retain_bundle: args.retain_bundle,
         output_recipient: args.output_recipient.clone(),
@@ -5007,7 +5040,7 @@ fn workflow_compatibility_case(
     launch_case: CompatibilityLaunchCase,
     protocol: CompatibilityProtocol,
 ) -> fragcap::targets::CompatibilityCase {
-    deep_capture::current_scoped_compatibility_case(
+    let mut case = deep_capture::current_scoped_compatibility_case(
         launch_case,
         proxy_family_arg(workflow.address_family),
         protocol,
@@ -5015,25 +5048,12 @@ fn workflow_compatibility_case(
         workflow.effective_scope,
         workflow.middleware_handling,
         &workflow.inspection_policy_id,
-    )
+    );
+    case.route_identity = workflow.route_identity;
+    case
 }
 
-fn proposal_compatibility_case(
-    proposal: &deep_capture_api::CalibrationProposal,
-    launch_case: CompatibilityLaunchCase,
-    protocol: CompatibilityProtocol,
-) -> Result<fragcap::targets::CompatibilityCase, CliError> {
-    let scope = proposal.scope.as_ref().ok_or_else(|| {
-        CliError::usage("calibration proposal did not resolve an inspection scope")
-    })?;
-    Ok(resolved_scope_compatibility_case(
-        proposal.address_family,
-        scope,
-        launch_case,
-        protocol,
-    ))
-}
-
+#[cfg(test)]
 fn resolved_scope_compatibility_case(
     address_family: CompatibilityAddressFamily,
     scope: &deep_capture_api::CalibrationScopeResolution,
@@ -5147,6 +5167,9 @@ fn compatibility_launch_case_arg(value: DeepCaptureLaunchCaseArg) -> Compatibili
 fn compatibility_routing_arg(value: GuidedCalibrationRoutingArg) -> CompatibilityRoutingStrategy {
     match value {
         GuidedCalibrationRoutingArg::ChildEnvironment => {
+            CompatibilityRoutingStrategy::ChildEnvironment
+        }
+        GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket => {
             CompatibilityRoutingStrategy::ChildEnvironment
         }
         GuidedCalibrationRoutingArg::CommandArguments => {
@@ -5356,6 +5379,7 @@ fn emit_guidance_with_attempt(
         "observed_launch_case": guidance.observed_launch_case,
         "selected_launch_case": guidance.selected_launch_case,
         "routing_strategy": workflow.map(|(value, _)| value.routing_strategy.as_str()),
+        "route_identity": workflow.map(|(value, _)| value.route_identity.as_str()),
         "address_family": workflow.map(|(value, _)| value.address_family.as_str()),
         "inspection": workflow.map(|(value, _)| json!({
             "requested_scope": attempt.as_ref().map(|attempt| attempt.requested_scope).unwrap_or(value.requested_scope).as_str(),
@@ -5468,6 +5492,7 @@ mod tests {
                 requested: CompatibilityRequestedInspectionScope::Auto,
                 allow_game_scope_retry: false,
                 allow_capture_fallback: false,
+                route_identity: CompatibilityRouteIdentity::ChildEnvironmentV1,
             },
         )
         .unwrap();
@@ -6068,12 +6093,24 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                deep_capture_handoff_command(42, "local.db", scope),
+                deep_capture_handoff_command(
+                    42,
+                    "local.db",
+                    scope,
+                    CompatibilityRouteIdentity::ChildEnvironmentV1,
+                ),
                 format!(
                     "fragcap deep-capture --id 42 --local-db local.db --launch --inspect-scope {expected}"
                 )
             );
         }
+        assert!(deep_capture_handoff_command(
+            42,
+            "local.db",
+            CompatibilityRequestedInspectionScope::Auto,
+            CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1,
+        )
+        .ends_with(" --launch --inspect-scope auto --direct-route"));
     }
 
     #[test]

@@ -496,7 +496,7 @@ impl StoredCaseAssessment {
             "launch_readiness": "independent-fresh-preflight-required",
             "identity": {
                 "target_id": self.target_id, "launch_case": self.case.launch_case.as_str(),
-                "routing_strategy": self.case.routing_strategy.as_str(), "address_family": self.case.address_family.as_str(),
+                "routing_strategy": self.case.routing_strategy.as_str(), "route_identity": self.case.route_identity.as_str(), "address_family": self.case.address_family.as_str(),
                 "proxy_backend": self.case.proxy_backend, "proxy_backend_version": self.case.proxy_backend_version,
                 "fragcap_version": self.case.fragcap_version, "target_version": self.case.target_version,
                 "protocol": self.case.protocol.as_str(),
@@ -521,6 +521,7 @@ mod tests {
             proxy_backend: "native".into(),
             proxy_backend_version: "1".into(),
             routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: fragcap::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
             address_family: CompatibilityAddressFamily::Ipv4,
             protocol,
             fragcap_version: "controlled-version".into(),
@@ -549,6 +550,7 @@ mod tests {
         fact.proxy_backend = Some(current.proxy_backend.clone());
         fact.proxy_backend_version = Some(current.proxy_backend_version.clone());
         fact.routing_strategy = Some(current.routing_strategy);
+        fact.route_identity = Some(current.route_identity);
         fact.address_family = Some(current.address_family);
         fact.protocol = Some(if key == CompatibilityFactKey::ProxyRouting {
             CompatibilityProtocol::NotApplicable

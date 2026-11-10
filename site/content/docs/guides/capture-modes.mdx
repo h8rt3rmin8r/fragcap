@@ -5,8 +5,8 @@ description: The three capture modes -- file, stream, and ring -- and when to re
 
 <Callout title="Why it matters here">
 The mode decides where captured packets go. Whichever you pick, capture needs the
-**npcap** driver installed in WinPcap-compatible mode; run `fragcap doctor` to
-confirm it before a first capture.
+**Npcap** driver installed in WinPcap-compatible mode and an elevated terminal;
+run read-only `fragcap doctor` to check readiness before a first capture.
 </Callout>
 
 fragcap captures in one of three modes, set by `--mode`. They differ only in where

@@ -68,6 +68,14 @@ truncation remain authoritative. A TLS key log is an analyzer aid produced by
 the proxy side of the session. It is not a key extracted from the selected
 process.
 
+## S201 direct-route source candidate
+
+The S201 source candidate adds `fragcap calibrate <target> --routing-strategy child-environment-direct-socket` and `fragcap deep-capture <target> --launch --direct-route`. The composite plan keeps child-scoped proxy environment settings and adds one signed, exact final-client direct TCP or supported UDP route. It requires Administrator and the packaged WinDivert 2.2.2-A x64 component. Published v0.10.14 has no direct-route command path.
+
+Calibration stores the composite route identity `child-environment+direct-socket-v1` separately from earlier `child-environment-v1` facts. A positive direct-route fact needs a correlated original final-client flow, a native proxy observation, and independently retained packet evidence. Launcher-only traffic, proxy traffic from the environment route, missing owner proof, and an old environment-only positive fact do not qualify the composite route.
+
+The route result is separate from inspection: **selected** means the exact original flow reached the proxy; **inspected** means supported application semantics were observed; **opaque** means routing succeeded without readable semantics; **bypassed** means the packet was reinjected without selected ownership; **refused** names a routing, trust, protocol, or resource boundary; **packet-only** is Capture evidence without a qualifying proxy observation. Candidate queue and worker failures retain explicit loss and cleanup outcomes. WinDivert queue loss before packet delivery is not measurable by the route counters.
+
 ## Local target matrix
 
 Compatibility depends on the launch path and local evidence. fragcap therefore

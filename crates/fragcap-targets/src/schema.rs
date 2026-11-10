@@ -85,9 +85,13 @@
 //! dimensions to compatibility facts and immutable workflow intent. Existing
 //! facts keep NULL scope dimensions and therefore remain legacy-incomplete;
 //! existing workflows keep their historical launch-chain behavior explicitly.
+//!
+//! Version 15 (slice S201) adds one exact route composition/version dimension.
+//! Existing child-environment facts retain that known identity; all other legacy
+//! facts remain unqualified. Workflows retain the historical environment route.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -224,6 +228,8 @@ CREATE TABLE deep_capture_facts (
                        ('child-environment', 'command-arguments',
                         'target-configuration', 'http-proxy', 'socks',
                         'protocol-specific')),
+    route_identity   TEXT CHECK (route_identity IS NULL OR route_identity IN
+                       ('child-environment-v1', 'child-environment+direct-socket-v1')),
     address_family   TEXT CHECK (address_family IS NULL OR address_family IN
                        ('ipv4', 'ipv6')),
     protocol_family  TEXT CHECK (protocol_family IS NULL OR protocol_family IN
@@ -309,6 +315,9 @@ CREATE TABLE calibration_workflows (
                             ('child-environment', 'command-arguments',
                              'target-configuration', 'http-proxy', 'socks',
                              'protocol-specific')),
+    route_identity      TEXT NOT NULL DEFAULT 'child-environment-v1'
+                        CHECK (route_identity IN
+                        ('child-environment-v1', 'child-environment+direct-socket-v1')),
     address_family      TEXT NOT NULL CHECK (address_family IN ('ipv4', 'ipv6')),
     requested_inspection_scope TEXT NOT NULL CHECK (requested_inspection_scope IN
                             ('auto', 'exact-game', 'launch-chain')),
@@ -358,6 +367,20 @@ CREATE TABLE calibration_workflows (
 
 /// Add exact scope applicability and immutable fallback authority without
 /// promoting legacy compatibility evidence.
+pub const MIGRATE_14_TO_15_FACT: &str = "\
+ALTER TABLE deep_capture_facts ADD COLUMN route_identity TEXT
+    CHECK (route_identity IS NULL OR route_identity IN
+        ('child-environment-v1', 'child-environment+direct-socket-v1'));
+UPDATE deep_capture_facts SET route_identity = 'child-environment-v1'
+    WHERE routing_strategy = 'child-environment';
+";
+pub const MIGRATE_14_TO_15_WORKFLOW: &str = "\
+ALTER TABLE calibration_workflows ADD COLUMN route_identity TEXT NOT NULL
+    DEFAULT 'child-environment-v1'
+    CHECK (route_identity IN
+        ('child-environment-v1', 'child-environment+direct-socket-v1'));
+";
+
 pub const MIGRATE_13_TO_14: &str = "\
 ALTER TABLE deep_capture_facts ADD COLUMN requested_inspection_scope TEXT
     CHECK (requested_inspection_scope IS NULL OR

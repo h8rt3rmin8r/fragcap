@@ -46,6 +46,7 @@ pub struct CalibrationProposalRequest {
     fragcap_version: String,
     target_version: Option<String>,
     routing_strategy: CompatibilityRoutingStrategy,
+    route_identity: crate::targets::CompatibilityRouteIdentity,
     address_family: CompatibilityAddressFamily,
     protocol_candidates: Vec<CompatibilityProtocol>,
     facts: Vec<CompatibilityFact>,
@@ -69,6 +70,7 @@ impl CalibrationProposalRequest {
             fragcap_version: fragcap_version.into(),
             target_version: None,
             routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
             address_family: CompatibilityAddressFamily::Ipv4,
             protocol_candidates: Vec::new(),
             facts: Vec::new(),
@@ -88,6 +90,14 @@ impl CalibrationProposalRequest {
 
     pub fn with_routing_strategy(mut self, strategy: CompatibilityRoutingStrategy) -> Self {
         self.routing_strategy = strategy;
+        self
+    }
+
+    pub fn with_route_identity(
+        mut self,
+        route_identity: crate::targets::CompatibilityRouteIdentity,
+    ) -> Self {
+        self.route_identity = route_identity;
         self
     }
 
@@ -262,6 +272,7 @@ pub struct CalibrationProposal {
     pub topology: Option<CalibrationTopologyKind>,
     pub readiness: CalibrationLaunchReadiness,
     pub routing_strategy: CompatibilityRoutingStrategy,
+    pub route_identity: crate::targets::CompatibilityRouteIdentity,
     pub address_family: CompatibilityAddressFamily,
     pub scope: Option<CalibrationScopeResolution>,
     pub steps: Vec<CalibrationProposalStep>,
@@ -275,6 +286,7 @@ pub fn propose_calibration(request: &CalibrationProposalRequest) -> CalibrationP
         topology: None,
         readiness: CalibrationLaunchReadiness::Unavailable,
         routing_strategy: request.routing_strategy,
+        route_identity: request.route_identity,
         address_family: request.address_family,
         scope: None,
         steps: Vec::new(),
@@ -651,6 +663,7 @@ fn exact_case(
         proxy_backend: request.backend_name.clone(),
         proxy_backend_version: request.backend_version.clone(),
         routing_strategy: request.routing_strategy,
+        route_identity: request.route_identity,
         address_family: request.address_family,
         protocol,
         fragcap_version: request.fragcap_version.clone(),
@@ -862,6 +875,7 @@ mod tests {
         fact.proxy_backend = Some("native".into());
         fact.proxy_backend_version = Some("0.9.0".into());
         fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        fact.route_identity = Some(crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1);
         fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
         fact.protocol = Some(protocol);
         fact.fragcap_version = Some("0.9.0".into());
@@ -1538,6 +1552,7 @@ mod tests {
             proxy_backend: "native".into(),
             proxy_backend_version: "0.9.0".into(),
             routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
             address_family: CompatibilityAddressFamily::Ipv4,
             protocol: CompatibilityProtocol::Routing,
             fragcap_version: "0.9.0".into(),
