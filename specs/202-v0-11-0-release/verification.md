@@ -23,6 +23,29 @@
 - The edited source and documentation passed `git diff --check` and a targeted scan for common mojibake markers.
 - Spec-Kit convergence found no missing candidate implementation task. The existing T014 through T027 already name official review, owner merge, publication, public readback, and current-record work; those stages are not yet claimed complete.
 
+## Official candidate and accepted merge
+
+- [PR #590](https://github.com/h8rt3rmin8r/fragcap/pull/590) reviewed candidate head `c08f0bf65b5243f82ccee09cf65f0533859868f6` and merged at `2026-11-11T01:38:05Z` as `5e2c0435fcb642ab9ca42d91854def3357f32a7b`.
+- All 24 applicable exact-head PR checks passed, including final Windows package certification, Windows native integration, docs, audit, platform, analyzer, fuzz, performance, and CodeQL. Pages deployment and the manually dispatched soak job were intentionally skipped on the PR.
+- The first Codex code review completed on the exact candidate head with no findings, no inline comments or review threads, and a thumbs-up reaction. The security review produced no receipt. No explicit second review was requested.
+- The accepted merge tree has no diff from the reviewed candidate tree. The authenticated owner authorized public release after the squash merge.
+- Annotated tag `v0.11.0` was pushed on the exact accepted merge. Tagged release run [42940637534](https://github.com/h8rt3rmin8r/fragcap/actions/runs/42940637534) passed identity and started final package certification. Public release and registry publication remain in progress.
+
 ## Release boundary
 
-The official candidate PR, exact-head hosted checks, and actual review disposition will be recorded here. Candidate acceptance does not publish v0.11.0 or advance current-public records. Owner merge and later annotated tag and registry approval remain separate actions.
+Candidate acceptance alone did not advance current-public records. The following public readback preceded every current-version edit in the publication-record branch.
+
+## Tagged publication and independent readback
+
+- Annotated tag object `659e65dd05f875833967505ee78c768c969906ac` selects accepted merge `5e2c0435fcb642ab9ca42d91854def3357f32a7b`. Tagged run 42940637534 passed identity, final Windows certification, and GitHub release creation. The public release was published at `2026-11-11T01:57:37Z`, neither draft nor prerelease.
+- The normal crates.io environment approval for deployment `7699528996` allowed publication. Nine crates published; the tenth encountered a crates.io HTTP/2 framing error while fetching `brotli`. `gh run rerun --failed` retried only the failed job, with normal protected deployment approval `7699571514`. Attempt 2 succeeded. The publisher skipped the already uploaded crates, and no source or public package bytes changed.
+- Six separately downloaded public files matched GitHub API lengths and SHA-256 digests. The three checksum sidecars independently matched their named downloads. Exact values are in [the release handoff](../../docs/maintainers/v0.11.0-release-handoff.md).
+- Downloaded tagged schema-4 certification report passed `cargo xtask package-certification validate-report target/s202-public-readback/certification/report.json target/s202-public-readback`. It names official 0.11.0, the accepted source, exact feature closure including `direct-route`, ten package entries, two controlled loopback smokes, six lifecycle cases, complete fresh start, and zero findings.
+- All ten separately downloaded v0.11.0 crates matched the crates.io API checksums and were non-yanked. The downloaded ZIP contains the WinDivert files and its `fragcap.exe --version` printed `fragcap 0.11.0` without elevation.
+- Current metadata, documentation, frozen review candidate, and replay asset authority advanced after this reconciliation. Independent whole-product security review and private-title behavior remain unobserved.
+
+## Publication-record validation
+
+- `cargo xtask review-record`, `cargo xtask docs check`, `cargo xtask docs build`, `cargo xtask spec`, and `cargo xtask notes 0.11.0` passed on the current v0.11.0 records. The docs build generated 114 static pages.
+- The first full `cargo xtask ci` run passed formatting, Clippy, all Rust tests, repository lint, dependency and license checks, supply chain, package certification, wrappers, skills, and documentation, then found that the new publication `.fixed.md` fragment lacked the required leading spec-impact comment. That comment was added. `cargo xtask spec` passed, and the subsequent complete `cargo xtask ci` passed every stage through guided calibration, threat model, review readiness, frozen candidate, fuzz inventory, failure matrix, conformance, performance, and Windows integration authority.
+- `git diff --check` and a targeted mojibake scan passed after the record edits. The official records PR and site readback follow below.

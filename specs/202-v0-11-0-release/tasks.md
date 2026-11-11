@@ -25,24 +25,24 @@
 
 ## Phase 3: Official Candidate Review
 
-- [ ] T014 Push the authorized `release/0.11.0` branch and open the official candidate PR, referencing the release issue without closing it before publication (FR-005, FR-006).
-- [ ] T015 Watch applicable exact-head CI, Windows package certification, docs, and dependency checks to terminal results and repair concrete failures (FR-004, FR-005).
-- [ ] T016 Inspect code and security review surfaces, respond to every actual finding, resolve review threads, and request at most one explicit second Codex round (FR-005, FR-010).
-- [ ] T017 Reconfirm the final candidate head, checks, review disposition, current-public baseline, and PR merge readiness; hand the PR to the owner for final review and merge (FR-005, FR-006).
+- [x] T014 Push the authorized `release/0.11.0` branch and open the official candidate PR, referencing the release issue without closing it before publication (FR-005, FR-006).
+- [x] T015 Watch applicable exact-head CI, Windows package certification, docs, and dependency checks to terminal results and repair concrete failures (FR-004, FR-005).
+- [x] T016 Inspect code and security review surfaces, respond to every actual finding, resolve review threads, and request at most one explicit second Codex round (FR-005, FR-010).
+- [x] T017 Reconfirm the final candidate head, checks, review disposition, current-public baseline, and PR merge readiness; hand the PR to the owner for final review and merge (FR-005, FR-006).
 
 ## Phase 4: Owner-Controlled Public Release
 
-- [ ] T018 After owner merge, record the exact accepted source and verify no candidate source drift or conflicting v0.11.0 tag (FR-006, FR-007).
-- [ ] T019 After separate owner authorization, create and push the annotated v0.11.0 tag selecting the accepted merge, then watch release identity and Windows package certification (FR-006, FR-007).
-- [ ] T020 Observe GitHub release creation and the normal owner-approved registry deployment; require terminal successful jobs for both (FR-006, FR-007).
-- [ ] T021 Independently retrieve six public files, compare three checksum sidecars, public API digests, and package certification report against the tagged source (FR-008).
-- [ ] T022 Independently verify all ten non-yanked v0.11.0 registry archives and their checksums (FR-008).
-- [ ] T023 Reconcile the complete public receipt set before claiming v0.11.0 current (FR-008, FR-009).
+- [x] T018 After owner merge, record the exact accepted source and verify no candidate source drift or conflicting v0.11.0 tag (FR-006, FR-007).
+- [x] T019 After owner authorization, create and push the annotated v0.11.0 tag selecting the accepted merge, then watch release identity and Windows package certification (FR-006, FR-007).
+- [x] T020 Observe GitHub release creation and the normal owner-approved registry deployment; require terminal successful jobs for both (FR-006, FR-007).
+- [x] T021 Independently retrieve six public files, compare three checksum sidecars, public API digests, and package certification report against the tagged source (FR-008).
+- [x] T022 Independently verify all ten non-yanked v0.11.0 registry archives and their checksums (FR-008).
+- [x] T023 Reconcile the complete public receipt set before claiming v0.11.0 current (FR-008, FR-009).
 
 ## Phase 5: Current Records And Housekeeping
 
-- [ ] T024 Advance published-release metadata, current-version documentation, frozen review candidate, and release handoff only from verified public receipts; preserve historical v0.10.14 records (FR-009).
-- [ ] T025 Validate records locally, publish a reviewed records PR, reconcile its checks and actual review findings, and obtain owner merge (FR-004, FR-005, FR-009).
+- [x] T024 Advance published-release metadata, current-version documentation, frozen review candidate, and release handoff only from verified public receipts; preserve historical v0.10.14 records (FR-009).
+- [ ] T025 Validate records locally, publish a reviewed records PR, reconcile its checks and actual review findings, and merge under the owner's explicit completion authorization (FR-004, FR-005, FR-009).
 - [ ] T026 Verify public site deployment and current v0.11.0 guidance; close release tracking and milestone from public evidence (FR-009).
 - [ ] T027 Sync `main`, remove spent release branches and local Spec-Kit pointer, and confirm final GitHub, registry, site, issue, and repository state (FR-009).
 

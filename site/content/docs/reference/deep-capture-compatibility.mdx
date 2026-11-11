@@ -3,18 +3,18 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-Published baseline: [v0.10.14](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14).
+Published baseline: [v0.11.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.0).
 
 <Callout title="Installation CA in v0.10.10">
 v0.10.10 uses one installation CA in `LocalMachine/Root`. The MSI discloses and provisions it for all Windows users after removing identified pre-S185 Fragcap state. Portable users run elevated `fragcap ca install`; `fragcap ca status` is read-only. Both reachability and TLS calibration verify the installation identity before session effects. The plan and manifest carry its fingerprint. Session cleanup, including failed managed-client release, leaves the installation root trusted. If it is missing or unhealthy, use elevated `fragcap ca repair` after reviewing status. Explicit removal requires `fragcap ca remove --fingerprint <SHA-256> --yes`.
 
 v0.10.11 lets an ordinary account confirm that public CA health without reading the protected signer metadata. Deep Capture still proves signing before it starts. HTTPS CONNECT treats an inner authority without an explicit port as port 443, distinguishes a real cross-authority request from a header timeout, and requires completed HTTPS evidence for an HTTPS compatibility result.
 
-v0.10.14 preserves exact managed-client handoff and observation timing, reports causal proxy diagnostics, decides exact-game inspection from process-instance and socket ownership, supports blind middleware relay, and carries requested and effective scope through calibration and artifacts. Missing or ambiguous ownership remains an explicit evidence gap. Installed-product failures return as version-specific issues.
+v0.11.0 preserves exact managed-client handoff and observation timing, reports causal proxy diagnostics, decides exact-game inspection from process-instance and socket ownership, supports blind middleware relay, and adds the explicit direct final-client route. Missing or ambiguous ownership remains an explicit evidence gap. Installed-product failures return as version-specific issues.
 </Callout>
 
 <Callout title="Native implementation and bounded compatibility">
-This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.10.14. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
+This matrix describes native protocols, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15 and retained by v0.11.0. Controlled conformance and packaging evidence are not a universal title-compatibility claim. File a concrete defect against the affected active release when an observed title or environment contradicts this matrix.
 </Callout>
 
 <Callout title="The short version">
@@ -68,9 +68,9 @@ truncation remain authoritative. A TLS key log is an analyzer aid produced by
 the proxy side of the session. It is not a key extracted from the selected
 process.
 
-## v0.11.0 direct-route candidate
+## v0.11.0 direct route
 
-The v0.11.0 candidate adds `fragcap calibrate <target> --routing-strategy child-environment-direct-socket` and `fragcap deep-capture <target> --launch --direct-route`. The composite plan keeps child-scoped proxy environment settings and adds one signed, exact final-client direct TCP or supported UDP route. It requires Administrator and the packaged WinDivert 2.2.2-A x64 component. Published v0.10.14 has no direct-route command path.
+The v0.11.0 release adds `fragcap calibrate <target> --routing-strategy child-environment-direct-socket` and `fragcap deep-capture <target> --launch --direct-route`. The composite plan keeps child-scoped proxy environment settings and adds one signed, exact final-client direct TCP or supported UDP route. It requires Administrator and the packaged WinDivert 2.2.2-A x64 component.
 
 Calibration stores the composite route identity `child-environment+direct-socket-v1` separately from earlier `child-environment-v1` facts. A positive direct-route fact needs a correlated original final-client flow, a native proxy observation, and independently retained packet evidence. Launcher-only traffic, proxy traffic from the environment route, missing owner proof, and an old environment-only positive fact do not qualify the composite route.
 
@@ -159,7 +159,7 @@ fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
 fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 ```
 
-The workflow stores an immutable target snapshot and exact-case intent. Resume rebuilds process inventory, fact applicability, proposal, recovery, bundle, plan, and confirmation authority; it never reuses an old plan or response. An in-flight record first becomes an effect-free interruption pause. Login, EULA, update, anti-cheat, gameplay, shutdown, and interruption pauses record operator work, not compatibility proof. Advanced fresh workflows can assert the inferred cold launch case, choose IPv4 or IPv6, and select child-environment routing; other routing strategies remain pre-effect refusals. Resume cannot change those dimensions or the candidate.
+The workflow stores an immutable target snapshot and exact-case intent. Resume rebuilds process inventory, fact applicability, proposal, recovery, bundle, plan, and confirmation authority; it never reuses an old plan or response. An in-flight record first becomes an effect-free interruption pause. Login, EULA, update, anti-cheat, gameplay, shutdown, and interruption pauses record operator work, not compatibility proof. Advanced fresh workflows can assert the inferred cold launch case, choose IPv4 or IPv6, and select child-environment routing or the explicit composite direct-socket route; remaining routing strategies refuse before effects. Resume cannot change those dimensions or the candidate.
 
 If a delegated session fails, the terminal diagnosis names the earliest known stage from retained launch, process, route, fact, and cleanup evidence. An artifact marked written can contain zero retained target packets. A paused failed workflow retains its attempt history, so `--resume` does not automatically retry that failed exact case. A fresh workflow may include `--retry-game-scope` to authorize one new exact-game successor after a failed launch-chain attempt, with a separate attempt bundle and fresh authority. `--fallback-capture` may retain eligible packet-only evidence under its actual window without appending a positive inspection fact. Neither authority can be added on resume. A zero-observation attempt may append a launch-case fact while appending no proxy-routing fact; inspect the exact fact-write report.
 

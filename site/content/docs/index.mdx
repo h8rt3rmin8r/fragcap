@@ -3,10 +3,10 @@ title: Documentation
 description: Process-attributed Capture and explicit, target-scoped Deep Capture for Windows game traffic.
 ---
 
-Published baseline: [v0.10.14](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14).
+Published baseline: [v0.11.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.0).
 
 <Callout title="Deep Capture status">
-Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied independent-review readiness, not an audit. v0.10.14 retains every prior published correction and adds managed-client handoff continuity, causal proxy diagnostics, exact-game inspection ownership, stable current-user storage, blind middleware relay, and scope-aware calibration. Concrete failures observed in an active release are tracked as defects against that release.
+Deep Capture uses the native Rust proxy, with supported protocols, scoped routing, managed launch, recovery, final-package certification, stable API and guided calibration shipped in v0.10.0 on 2026-09-15. S150 supplied independent-review readiness, not an audit. v0.11.0 retains every prior published correction and adds managed launch-chain inspection and cleanup, clearer TLS failure reporting, and the signed direct final-client TCP and supported UDP route. Concrete failures observed in an active release are tracked as defects against that release.
 </Callout>
 
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
@@ -43,4 +43,4 @@ assume, one term to a heading.
 
 ## The security posture
 
-Capture observes passively. Deep Capture is active by design, but runs only after explicit selection and remains scoped to the chosen target session, visible in output, reversible through cleanup, and auditable afterward. Neither mode injects code, hooks target functions, reads target memory, changes installed game files, changes the Winsock catalog, or bypasses certificate pinning. The v0.11.0 Windows candidate adds an explicit final-client direct route with the packaged signed WinDivert component; published v0.10.14 has no direct route. Deep Capture never falls back silently to system-wide proxy settings or silent certificate trust. Voluntary application-supported key export is separate research.
+Capture observes passively. Deep Capture is active by design, but runs only after explicit selection and remains scoped to the chosen target session, visible in output, reversible through cleanup, and auditable afterward. Neither mode injects code, hooks target functions, reads target memory, changes installed game files, changes the Winsock catalog, or bypasses certificate pinning. The v0.11.0 release adds an explicit final-client direct route with the packaged signed WinDivert component. Deep Capture never falls back silently to system-wide proxy settings or silent certificate trust. Voluntary application-supported key export is separate research.
