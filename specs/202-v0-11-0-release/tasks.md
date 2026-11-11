@@ -42,9 +42,9 @@
 ## Phase 5: Current Records And Housekeeping
 
 - [x] T024 Advance published-release metadata, current-version documentation, frozen review candidate, and release handoff only from verified public receipts; preserve historical v0.10.14 records (FR-009).
-- [ ] T025 Validate records locally, publish a reviewed records PR, reconcile its checks and actual review findings, and merge under the owner's explicit completion authorization (FR-004, FR-005, FR-009).
-- [ ] T026 Verify public site deployment and current v0.11.0 guidance; close release tracking and milestone from public evidence (FR-009).
-- [ ] T027 Sync `main`, remove spent release branches and local Spec-Kit pointer, and confirm final GitHub, registry, site, issue, and repository state (FR-009).
+- [x] T025 Validate records locally, publish a reviewed records PR, reconcile its checks and actual review findings, and merge under the owner's explicit completion authorization (FR-004, FR-005, FR-009).
+- [x] T026 Verify public site deployment and current v0.11.0 guidance; close release tracking and milestone from public evidence (FR-009).
+- [x] T027 Sync `main`, remove spent release branches and local Spec-Kit pointer, and confirm final GitHub, registry, site, issue, and repository state (FR-009).
 
 ## Dependency Order
 
