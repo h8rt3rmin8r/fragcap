@@ -641,6 +641,6 @@ mod tests {
             &fixture().1,
             &crate::spec::workspace_version(root()).unwrap()
         ));
-        assert!(!template_matches_version(&fixture().1, "0.11.0"));
+        assert!(!template_matches_version(&fixture().1, "0.0.0"));
     }
 }

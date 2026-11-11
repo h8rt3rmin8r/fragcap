@@ -60,7 +60,7 @@ fn staged_binary_runs_from_relocated_layout() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        "fragcap 0.10.14"
+        "fragcap 0.11.0"
     );
 }
 

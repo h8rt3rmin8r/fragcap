@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.122-draft \
-**Applies-To:** 0.10.14 \
+**Version:** 0.1.125-draft \
+**Applies-To:** 0.11.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-11-10 \
@@ -53,6 +53,8 @@ without further design negotiation.
 Published baseline: [v0.10.14](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14).
 
 Two version fields mean different things. **Applies-To** tracks the workspace package version, bound by `cargo xtask spec` so specification and prepared artifact cannot drift (P-11); it does not prove publication. **Version** is this document's revision, recorded below. Published software runs from the nonfunctional v0.1.0 namespace stub through v0.10.14, published 2026-11-06 UTC from `5efb38ee93daff140e1ba79f57eea0a93d5b572f`. The reviewed `docs/published-release.json` and fifteen current baseline markers bind actual publication independently from candidate version. v0.10.14 verifies S189 through S194 managed-client handoff continuity, causal proxy diagnostics, exact-game inspection ownership, stable current-user storage, blind middleware relay, and scope-aware calibration. Earlier publication lineage remains in section 27.3. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal live-title compatibility are not claimed; failures observed in an active release become concrete defects against that release.
+
+The v0.11.0 source candidate includes accepted S197 through S201 and the public direct final-client TCP and supported UDP route. Until its tagged packages and registry crates are published and independently checked, v0.10.14 remains the public download and current-version record.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -211,6 +213,8 @@ enforcement.
 | 0.1.121-draft | 2026-11-09 | Codex | S199 reconciles the owner-approved signed direct-route policy and pins official WinDivert distribution evidence. Hosted audit also requires patched bundled SQLite 3.54.1 and a Rust 1.89 floor. Updates sections 2, 3, 5, 19, 20, 21, 24, 27, and 28 without claiming live diversion or changing published v0.10.14 identity. |
 | 0.1.122-draft | 2026-11-10 | Codex | S200's failed narrow first-packet probe and owner-approved broad pass-through amend the planned direct-route boundary. Unrelated TCP/UDP packets may be briefly intercepted only for immediate reinjection, while selected proxy routing retains exact client and original-destination proof. Controlled probes measured sub-millisecond local delay and caught the initial SYN; full route and failure gates remain pending. Updates sections 5 and 19 without changing published v0.10.14 identity. |
 | 0.1.123-draft | 2026-11-10 | Codex | S200 implements a feature-gated native library route through the signed WinDivert component and an authenticated TCP/UDP bridge to the existing proxy. Exact process-generation and original-flow receipts govern selected admission; unrelated traffic passes through. The controlled Windows oracle and failure matrix are the completion gate. Public CLI and calibration selection remain #583, and published v0.10.14 identity is unchanged. Updates sections 2, 19, 20, and 27. |
+| 0.1.124-draft | 2026-11-10 | Codex | S201 qualifies the candidate owner wait, integrates the composite direct route into guided calibration and ordinary Deep Capture, versions its compatibility facts, and reconciles the packaged operator journey. Published v0.10.14 identity remains unchanged. Updates sections 2, 17, 19, 24, and 27. |
+| 0.1.125-draft | 2026-11-10 | Codex | S202 prepares v0.11.0 from accepted S197 through S201 with coherent source, package, changelog, notes, and candidate documentation identities. Public v0.10.14 markers remain authoritative until tagged publication and independent readback. Updates sections 1, 22, 24, and 27. |
 
 ## 2. Purpose and Problem Statement
 

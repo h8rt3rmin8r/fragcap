@@ -1,2 +1,0 @@
-<!-- spec-impact: 1, 22.7, 25.2, 27.3 -->
-Current documentation and frozen replay authority now identify the independently verified v0.10.14 files and all ten published crates. Managed client handoff continuity, causal diagnostics, exact-game ownership, current-user storage, blind middleware relay, and scope-aware calibration are described as shipped while unperformed installed and real-title behavior remains explicit.
