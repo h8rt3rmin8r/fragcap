@@ -14,6 +14,8 @@ Elevated signed-driver probes for cancellation and restart, proxy refusal, and r
 
 The signed broad pass-through sentinel probe completed 200 baseline, 200 active, and 200 post-route exchanges plus 2,000 parallel active exchanges with exact echoed bytes and no missing replies. Baseline, active, and post-route p99 values were 93, 527, and 55 microseconds; the parallel active p99 was 355 microseconds. All are below the versioned 50 ms or four-times-baseline bound. This generic pass-through probe is separate from the selected external transaction timings above.
 
+The first two hosted Windows native-integration attempts each failed one TLS classification probe with an unknown issuer, while the other 22 signed-driver probes passed. Five isolated local repetitions passed. The ordered local matrix initially exposed a startup race and a test-only loopback ACK overconstraint; after a bounded packet-worker readiness handoff and limiting the strict ACK assertion to the external round trip, the full ordered 23-probe matrix passed locally with zero skipped rows. Hosted confirmation of that revision remains pending.
+
 ## Outstanding qualification
 
 The hosted MSI and ZIP certification, exact-head Windows integration, CI, and third-party reviews remain pending at this record's creation. Do not use this file alone to claim package, installed default-path, or review completion.

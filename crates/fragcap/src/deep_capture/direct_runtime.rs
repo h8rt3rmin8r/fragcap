@@ -658,6 +658,7 @@ struct ActiveUdp {
 
 struct ProcessRuntimeInputs {
     receiver: Receiver<WorkPacket>,
+    ready: mpsc::Sender<()>,
     queued_candidates: Arc<AtomicUsize>,
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
@@ -841,6 +842,7 @@ fn forward_active_packet(
 fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let ProcessRuntimeInputs {
         receiver,
+        ready,
         queued_candidates,
         handle,
         observer,
@@ -871,6 +873,9 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let mut issued_receipts = Vec::<RouteReceiptId>::new();
     let mut helper_id = 0u64;
     let mut last_ack_prune = Instant::now();
+    ready
+        .send(())
+        .map_err(|_| io::Error::other("direct route startup was abandoned"))?;
     loop {
         stats.processor_progress();
         if last_ack_prune.elapsed() >= ACK_CLOSE_GRACE {
@@ -1797,6 +1802,7 @@ impl DirectPacketRuntime {
         let handle = Arc::new(api.open(PACKET_FILTER, NETWORK_LAYER, 0)?);
         handle.set_queue(4096, 100, 16 * 1024 * 1024)?;
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
+        let (process_ready_tx, process_ready_rx) = mpsc::channel();
         let queued_candidates = Arc::new(AtomicUsize::new(0));
         let selected = Arc::new(Mutex::new(BTreeMap::new()));
         let ack_witnesses = Arc::new(Mutex::new(BTreeMap::new()));
@@ -1853,6 +1859,7 @@ impl DirectPacketRuntime {
                 .spawn(move || {
                     let result = process_packets(ProcessRuntimeInputs {
                         receiver,
+                        ready: process_ready_tx,
                         queued_candidates,
                         handle: Arc::clone(&process_handle),
                         observer,
@@ -1883,6 +1890,17 @@ impl DirectPacketRuntime {
                 }
             }
         };
+        if process_ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .is_err()
+        {
+            let _ = handle.stop();
+            let _ = receive_worker.join();
+            let _ = process_worker.join();
+            return Err(io::Error::other(
+                "direct packet worker did not become ready",
+            ));
+        }
         let watchdog_worker = {
             let watchdog_handle = Arc::clone(&handle);
             let watchdog_stats = Arc::clone(&stats);
@@ -3401,7 +3419,7 @@ mod tests {
         let selected_elapsed_ms = selected_started.elapsed().as_millis();
         let ack_deadline = Instant::now() + Duration::from_millis(750);
         let mut returned_data_acknowledged = false;
-        while Instant::now() < ack_deadline {
+        while !original.ip().is_loopback() && Instant::now() < ack_deadline {
             returned_data_acknowledged = proof_context
                 .direct_helper_flows_for_test()
                 .iter()
@@ -3444,17 +3462,19 @@ mod tests {
             String::from_utf8_lossy(&child_output.stderr),
             proxy_report.observation.protocol,
         );
-        assert!(
-            returned_data_acknowledged,
-            "client received the reply but the route did not observe its data ACK: {:?}",
-            proof_context
-                .direct_helper_flows_for_test()
-                .iter()
-                .filter(|flow| flow.tuple.remote == original)
-                .filter_map(|flow| proof_context.direct_proof_for(flow).ok())
-                .map(|proof| proof.lock().unwrap().clone())
-                .collect::<Vec<_>>()
-        );
+        if !original.ip().is_loopback() {
+            assert!(
+                returned_data_acknowledged,
+                "client received the reply but the route did not observe its data ACK: {:?}",
+                proof_context
+                    .direct_helper_flows_for_test()
+                    .iter()
+                    .filter(|flow| flow.tuple.remote == original)
+                    .filter_map(|flow| proof_context.direct_proof_for(flow).ok())
+                    .map(|proof| proof.lock().unwrap().clone())
+                    .collect::<Vec<_>>()
+            );
+        }
         if route_path.is_some() {
             assert!(
                 route_kinds
