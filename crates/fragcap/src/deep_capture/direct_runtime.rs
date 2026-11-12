@@ -47,6 +47,8 @@ const REFUSED_FLOWS: usize = 4096;
 const PACKET_FILTER: &str = "tcp or udp";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
+const ACK_CLOSE_GRACE: Duration = Duration::from_secs(1);
+const MAX_ACK_WITNESSES: usize = 4096;
 
 #[cfg(test)]
 static STALL_NEXT_CANDIDATE: AtomicBool = AtomicBool::new(false);
@@ -327,10 +329,91 @@ struct ReceiveRuntimeInputs {
     sender: SyncSender<WorkPacket>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    ack_witnesses: Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
     refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
+    route_events: Option<RouteEventSink>,
+}
+
+#[derive(Clone)]
+struct AckWitness {
+    endpoint_id: u64,
+    flow_id: u64,
+    proof: Arc<Mutex<DirectRouteProof>>,
+    closed_at: Option<Instant>,
+}
+
+impl AckWitness {
+    fn accepts_owner(
+        &self,
+        current_owner: Option<u64>,
+        selected_endpoint: Option<u64>,
+        now: Instant,
+    ) -> bool {
+        match current_owner {
+            Some(endpoint_id) => endpoint_id == self.endpoint_id,
+            None => {
+                selected_endpoint == Some(self.endpoint_id)
+                    || self
+                        .closed_at
+                        .is_some_and(|closed_at| now.duration_since(closed_at) <= ACK_CLOSE_GRACE)
+            }
+        }
+    }
+}
+
+fn observe_returned_ack(
+    packet: &[u8],
+    tuple: DirectTuple,
+    selected: &Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    observer: &Arc<Mutex<DirectSocketObserver>>,
+    witnesses: &Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
+    route_events: Option<&RouteEventSink>,
+) {
+    let Some(witness) = witnesses
+        .lock()
+        .expect("ACK witness lock")
+        .get(&tuple)
+        .cloned()
+    else {
+        return;
+    };
+    let selected_endpoint = selected
+        .lock()
+        .expect("selected route lock")
+        .get(&tuple)
+        .copied();
+    let current_owner = observer
+        .lock()
+        .expect("socket observer lock")
+        .current_owner_endpoint_id(tuple);
+    if !witness.accepts_owner(current_owner, selected_endpoint, Instant::now()) {
+        return;
+    }
+    let mut proof = witness.proof.lock().expect("direct proof lock");
+    let acknowledged = !proof.returned_data_acknowledged
+        && proof
+            .first_returned_data_end
+            .is_some_and(|end| tcp_acknowledges_returned_data(packet, end));
+    if !acknowledged {
+        return;
+    }
+    proof.client_ack = true;
+    proof.returned_data_acknowledged = true;
+    drop(proof);
+    record_route(
+        route_events,
+        witness.flow_id,
+        RouteEventKind::ReturnedDataAcknowledged,
+    );
+    let mut witnesses = witnesses.lock().expect("ACK witness lock");
+    if witnesses.get(&tuple).is_some_and(|current| {
+        current.endpoint_id == witness.endpoint_id && current.flow_id == witness.flow_id
+    }) {
+        witnesses.remove(&tuple);
+    }
 }
 
 fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
@@ -339,10 +422,12 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
         sender,
         observer,
         selected,
+        ack_witnesses,
         excluded,
         refused,
         connecting,
         stats,
+        route_events,
     } = inputs;
     let mut packet = [0u8; 65_535];
     loop {
@@ -401,6 +486,25 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 return Err(io::Error::other("selected packet queue saturated"));
             }
             continue;
+        }
+        if address.outbound() {
+            if let Some(head) = head
+                .as_ref()
+                .filter(|head| head.transport == Proto::Tcp && head.tcp_ack)
+            {
+                observe_returned_ack(
+                    bytes,
+                    DirectTuple {
+                        transport: Proto::Tcp,
+                        local: head.source,
+                        remote: head.destination,
+                    },
+                    &selected,
+                    &observer,
+                    &ack_witnesses,
+                    route_events.as_ref(),
+                );
+            }
         }
         let is_candidate = address.outbound()
             && head.as_ref().is_some_and(|head| {
@@ -512,6 +616,7 @@ struct ProcessRuntimeInputs {
     observer: Arc<Mutex<DirectSocketObserver>>,
     context: NativeObservationContext,
     selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    ack_witnesses: Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
     refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     connecting: Arc<AtomicBool>,
@@ -693,6 +798,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         observer,
         context,
         selected,
+        ack_witnesses,
         excluded,
         refused,
         connecting,
@@ -716,8 +822,20 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
     let mut issued_receipts = Vec::<RouteReceiptId>::new();
     let mut helper_id = 0u64;
+    let mut last_ack_prune = Instant::now();
     loop {
         stats.processor_progress();
+        if last_ack_prune.elapsed() >= ACK_CLOSE_GRACE {
+            ack_witnesses
+                .lock()
+                .expect("ACK witness lock")
+                .retain(|_, witness| {
+                    witness
+                        .closed_at
+                        .is_none_or(|closed_at| closed_at.elapsed() <= ACK_CLOSE_GRACE)
+                });
+            last_ack_prune = Instant::now();
+        }
         match receiver.recv_timeout(Duration::from_millis(1)) {
             Ok(WorkPacket::Candidate(head, packet, address, received_ns)) => {
                 #[cfg(test)]
@@ -839,6 +957,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 != Some(event.endpoint_id)
             {
                 continue;
+            }
+            if let Some(witness) = ack_witnesses
+                .lock()
+                .expect("ACK witness lock")
+                .get_mut(&event.tuple)
+            {
+                if witness.endpoint_id == event.endpoint_id {
+                    witness.closed_at = Some(Instant::now());
+                }
             }
             selected
                 .lock()
@@ -1423,6 +1550,58 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             proof: Arc::clone(&proof),
                         },
                     );
+                    {
+                        let mut witnesses = ack_witnesses.lock().expect("ACK witness lock");
+                        witnesses.retain(|_, witness| {
+                            witness
+                                .closed_at
+                                .is_none_or(|closed_at| closed_at.elapsed() <= ACK_CLOSE_GRACE)
+                        });
+                        if witnesses.len() >= MAX_ACK_WITNESSES
+                            && !witnesses.contains_key(&flow.tuple)
+                        {
+                            if let Some((old_tuple, old_flow_id)) = witnesses
+                                .iter()
+                                .filter_map(|(tuple, witness)| {
+                                    witness
+                                        .closed_at
+                                        .map(|closed_at| (*tuple, witness.flow_id, closed_at))
+                                })
+                                .min_by_key(|(_, _, closed_at)| *closed_at)
+                                .map(|(tuple, flow_id, _)| (tuple, flow_id))
+                            {
+                                witnesses.remove(&old_tuple);
+                                record_route(
+                                    route_events.as_ref(),
+                                    old_flow_id,
+                                    RouteEventKind::Terminal {
+                                        reason: "ack-witness-capacity",
+                                    },
+                                );
+                            }
+                        }
+                        if witnesses.len() < MAX_ACK_WITNESSES
+                            || witnesses.contains_key(&flow.tuple)
+                        {
+                            witnesses.insert(
+                                flow.tuple,
+                                AckWitness {
+                                    endpoint_id: flow.endpoint_id,
+                                    flow_id: helper_id,
+                                    proof: Arc::clone(&proof),
+                                    closed_at: None,
+                                },
+                            );
+                        } else {
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::Terminal {
+                                    reason: "ack-witness-capacity",
+                                },
+                            );
+                        }
+                    }
                     inject_replies(
                         &handle,
                         &stats,
@@ -1571,15 +1750,18 @@ impl DirectPacketRuntime {
         handle.set_queue(4096, 100, 16 * 1024 * 1024)?;
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
         let selected = Arc::new(Mutex::new(BTreeMap::new()));
+        let ack_witnesses = Arc::new(Mutex::new(BTreeMap::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
         let refused = Arc::new(Mutex::new(BTreeMap::new()));
         let connecting = Arc::new(AtomicBool::new(false));
         let route_context = context.clone();
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
+            let receive_route_sink = route_sink.clone();
             let handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
+            let ack_witnesses = Arc::clone(&ack_witnesses);
             let excluded = Arc::clone(&excluded);
             let refused = Arc::clone(&refused);
             let connecting = Arc::clone(&connecting);
@@ -1592,10 +1774,12 @@ impl DirectPacketRuntime {
                         sender,
                         observer,
                         selected,
+                        ack_witnesses,
                         excluded,
                         refused,
                         connecting,
                         stats,
+                        route_events: receive_route_sink,
                     });
                     if result.is_err() {
                         let _ = handle.stop();
@@ -1607,6 +1791,7 @@ impl DirectPacketRuntime {
             let process_handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
+            let ack_witnesses = Arc::clone(&ack_witnesses);
             let excluded = Arc::clone(&excluded);
             let refused = Arc::clone(&refused);
             let connecting = Arc::clone(&connecting);
@@ -1620,6 +1805,7 @@ impl DirectPacketRuntime {
                         observer,
                         context,
                         selected,
+                        ack_witnesses,
                         excluded,
                         refused,
                         connecting,
@@ -1882,6 +2068,26 @@ mod tests {
         assert!(tcp_acknowledges_returned_data(
             &packet(2000, 1, 0x10, b""),
             wrapping
+        ));
+    }
+
+    #[test]
+    fn returned_ack_witness_rejects_reused_owner_and_expired_close() {
+        let now = Instant::now();
+        let witness = AckWitness {
+            endpoint_id: 7,
+            flow_id: 1,
+            proof: Arc::new(Mutex::new(DirectRouteProof::default())),
+            closed_at: Some(now),
+        };
+        assert!(witness.accepts_owner(Some(7), None, now));
+        assert!(witness.accepts_owner(None, Some(7), now));
+        assert!(witness.accepts_owner(None, None, now));
+        assert!(!witness.accepts_owner(Some(8), Some(7), now));
+        assert!(!witness.accepts_owner(
+            None,
+            None,
+            now + ACK_CLOSE_GRACE + Duration::from_millis(1)
         ));
     }
     use std::{
@@ -3018,11 +3224,16 @@ mod tests {
             }
             (selected, unrelated)
         });
-        live_tcp_case_for_origin(ip, original, writer_retired);
+        live_tcp_case_for_origin(ip, original, writer_retired, None);
         assert_eq!(server.join().unwrap(), (1, 3));
     }
 
-    fn live_tcp_case_for_origin(ip: IpAddr, original: SocketAddr, writer_retired: bool) {
+    fn live_tcp_case_for_origin(
+        ip: IpAddr,
+        original: SocketAddr,
+        writer_retired: bool,
+        route_path: Option<&Path>,
+    ) {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
         let mut before = spawn_client("sentinel-tcp", original);
@@ -3047,20 +3258,21 @@ mod tests {
             proxy = proxy.with_application_event_sink(Arc::new(RetiredApplicationSink::default()));
         }
         let mut lease = proxy.start(Duration::from_secs(2)).unwrap();
-        let mut runtime = DirectPacketRuntime::start(
+        let mut runtime = DirectPacketRuntime::start_with_artifact(
             Path::new(&root),
             context,
             "s200-direct-runtime".into(),
             lease.endpoint(),
             lease.capability_proof().proxy_password(),
             4,
+            route_path,
         )
         .unwrap();
         let mut during = spawn_client("sentinel-tcp", original);
         release_client(&mut during);
         release_client(&mut child);
         finish_client(during);
-        finish_client(child);
+        let child_output = child.wait_with_output().unwrap();
         let stop_result = runtime.stop();
         eprintln!("direct runtime probe: family={ip}, stop={stop_result:?}");
         let stats = stop_result.unwrap();
@@ -3071,7 +3283,31 @@ mod tests {
         let mut after = spawn_client("sentinel-tcp", original);
         release_client(&mut after);
         finish_client(after);
+        let mut route_kinds = Vec::new();
+        if let Some(path) = route_path {
+            let prefix = crate::deep_capture::route_events::read_route_prefix(path).unwrap();
+            assert!(prefix.complete(), "route stream incomplete");
+            route_kinds = prefix
+                .events
+                .iter()
+                .map(|event| event.kind.clone())
+                .collect();
+        }
         let proxy_report = lease.cleanup(Duration::from_secs(2));
+        assert!(
+            child_output.status.success(),
+            "child failed: {}; stats={stats:?}; proxy={:?}; route={route_kinds:?}",
+            String::from_utf8_lossy(&child_output.stderr),
+            proxy_report.observation.protocol,
+        );
+        if route_path.is_some() {
+            assert!(
+                route_kinds
+                    .iter()
+                    .any(|kind| kind == "returned-data-acknowledged"),
+                "route kinds: {route_kinds:?}"
+            );
+        }
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
         if writer_retired {
@@ -3082,6 +3318,11 @@ mod tests {
     #[test]
     #[ignore = "requires elevated WinDivert and controlled non-loopback IPv4/IPv6 peers"]
     fn disposable_direct_runtime_routes_external_peers() {
+        let ipv4 = std::env::var("FRAGCAP_S203_EXTERNAL_IPV4");
+        let ipv6 = std::env::var("FRAGCAP_S203_EXTERNAL_IPV6");
+        if ipv4.is_err() && ipv6.is_err() {
+            return;
+        }
         for (variable, ip) in [
             (
                 "FRAGCAP_S203_EXTERNAL_IPV4",
@@ -3092,16 +3333,25 @@ mod tests {
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ),
         ] {
-            let original: SocketAddr = std::env::var(variable)
-                .unwrap_or_else(|_| panic!("{variable} is required"))
-                .parse()
-                .unwrap();
+            let original: SocketAddr = match variable {
+                "FRAGCAP_S203_EXTERNAL_IPV4" => ipv4.as_ref(),
+                _ => ipv6.as_ref(),
+            }
+            .unwrap_or_else(|_| panic!("{variable} is required"))
+            .parse()
+            .unwrap();
             assert!(
                 !original.ip().is_loopback(),
                 "external peer must not be loopback"
             );
             assert_eq!(original.is_ipv4(), ip.is_ipv4(), "peer family mismatch");
-            live_tcp_case_for_origin(ip, original, false);
+            let evidence = tempfile::tempdir().unwrap();
+            live_tcp_case_for_origin(
+                ip,
+                original,
+                false,
+                Some(&evidence.path().join("route.jsonl")),
+            );
         }
     }
 
