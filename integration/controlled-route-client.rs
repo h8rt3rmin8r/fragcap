@@ -5,7 +5,8 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const REQUEST: &[u8] = b"runtime-client-request";
 const REPLY: &[u8] = b"runtime-origin-reply";
@@ -23,6 +24,30 @@ fn exchange(peer: SocketAddr) -> std::io::Result<()> {
             std::io::ErrorKind::InvalidData,
             "controlled origin reply differed",
         ));
+    }
+    if let Some(gate) = std::env::var_os("S205_CONTROLLED_GATE") {
+        let signal = PathBuf::from(gate);
+        if !signal.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "controlled gate path must be absolute",
+            ));
+        }
+        std::fs::write(&signal, b"reply-received")?;
+        let release = signal.with_extension("release");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if std::fs::read(&release).is_ok_and(|bytes| bytes == b"release") {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "controlled gate release timed out",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     stream.write_all(FINISH)?;
     stream.shutdown(Shutdown::Write)?;

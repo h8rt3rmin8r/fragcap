@@ -157,6 +157,7 @@ fragcap deep-capture sample-target --launch --direct-route
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
 | `--proxy-bypass` | open | none | all | Add an explicit target bypass rule. Repeat or comma-separate DNS domain, IP, CIDR, or port-qualified authority rules. Bare and leading-dot domains both include descendants. Ambient proxy variables are never inherited. |
+| `--proxy-allow-destination` | open | none | all | Authorize one exact upstream IP and port in the session plan, including a local peer. Repeat for more endpoints; the proxy listener remains refused. |
 | `--proxy-family` | `ipv4`, `ipv6` | `ipv4` | all | Bind the exact loopback family authorized by this session. No wildcard or automatic family fallback is used. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. Conflicts with calibration. |

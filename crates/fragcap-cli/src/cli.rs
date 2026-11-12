@@ -16,7 +16,7 @@
 //! They are hidden rather than removed because the same assembly seam serves the
 //! feature-gated live path, and a test needs to reach it.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -613,6 +613,13 @@ pub struct DeepCaptureArgs {
     /// DNS inputs both include descendants. The complete-bypass wildcard is refused.
     #[arg(long, value_name = "RULE", help_heading = "Networking")]
     pub proxy_bypass: Vec<String>,
+
+    /// Allow one exact IP and port through the native proxy, including a local peer.
+    ///
+    /// Repeat for multiple destinations. Each address appears in the session
+    /// authorization plan; the proxy listener itself remains unavailable.
+    #[arg(long, value_name = "IP:PORT", help_heading = "Networking")]
+    pub proxy_allow_destination: Vec<SocketAddr>,
 
     /// Write an HTTP archive (HAR) of observed requests and responses; it may contain private data.
     #[arg(long, help_heading = "Sensitive outputs")]

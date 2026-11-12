@@ -208,11 +208,16 @@ impl DestinationPolicy {
         }
     }
 
-    pub fn grant_for_test(&mut self, address: SocketAddr) {
+    /// Allow one exact destination explicitly named by the session plan.
+    pub fn grant_exact(&mut self, address: SocketAddr) {
         let address = canonical_address(address);
         if address != self.listener {
             self.exact_grants.insert(address);
         }
+    }
+
+    pub fn grant_for_test(&mut self, address: SocketAddr) {
+        self.grant_exact(address);
     }
 
     pub fn evaluate(&self, address: SocketAddr) -> DestinationDecision {
@@ -1033,6 +1038,24 @@ mod address_tests {
         assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
         assert_eq!(
             policy.evaluate("127.0.0.2:443".parse().unwrap()).reason,
+            "local-destination-refused"
+        );
+    }
+
+    #[test]
+    fn exact_session_grant_allows_only_one_local_peer_and_never_the_listener() {
+        let listener = "127.0.0.1:8080".parse().unwrap();
+        let peer = "192.168.1.177:49173".parse().unwrap();
+        let mut policy = DestinationPolicy::new(listener);
+        assert_eq!(policy.evaluate(peer).reason, "local-destination-refused");
+        policy.grant_exact(peer);
+        policy.grant_exact(listener);
+        assert_eq!(policy.evaluate(peer).reason, "controlled-origin-grant");
+        assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
+        assert_eq!(
+            policy
+                .evaluate("192.168.1.177:49174".parse().unwrap())
+                .reason,
             "local-destination-refused"
         );
     }

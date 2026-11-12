@@ -70,6 +70,7 @@ pub struct NativeProxyAdapter {
     listener_reservation: Option<NativeListenerReservation>,
     prepared_authority: Option<PreparedNativeAuthority>,
     inspection_decider: Option<Arc<dyn fragcap_proxy::InspectionDecider>>,
+    exact_upstream_grants: Vec<SocketAddr>,
 }
 
 static NEXT_PREPARED_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -318,6 +319,8 @@ impl Default for SocketInceptionCollector {
 pub struct NativeObservationContext {
     flow_registry: Arc<FlowRegistry>,
     controlled_process_id: Arc<AtomicU32>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_managed_root_pid: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
@@ -395,6 +398,19 @@ const DIRECT_HELPER_ACCEPT_SLACK_NS: u64 = 50_000_000;
 const DIRECT_PACKET_JOIN_SLACK_NS: u64 = 50_000_000;
 
 impl NativeObservationContext {
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn record_direct_managed_root_pid(&self, pid: u32) {
+        self.direct_managed_root_pid.store(pid, Ordering::Release);
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_managed_root_pid(&self) -> Option<u32> {
+        match self.direct_managed_root_pid.load(Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
     /// Publish only newly retained process facts during an active capture.
     /// Cloning the full event history on every ETW event would be quadratic.
     pub fn record_live_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
@@ -1415,6 +1431,7 @@ impl NativeProxyAdapter {
             listener_reservation: None,
             prepared_authority: None,
             inspection_decider: None,
+            exact_upstream_grants: Vec::new(),
         }
     }
 
@@ -1448,6 +1465,12 @@ impl NativeProxyAdapter {
         decider: Arc<dyn fragcap_proxy::InspectionDecider>,
     ) -> Self {
         self.inspection_decider = Some(decider);
+        self
+    }
+
+    /// Carry only reviewed exact destinations into this session's proxy.
+    pub fn with_exact_upstream_grants(mut self, grants: Vec<SocketAddr>) -> Self {
+        self.exact_upstream_grants = grants;
         self
     }
 
@@ -1673,8 +1696,11 @@ impl ProxyBackend for NativeProxyAdapter {
                 .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
             backend = backend.with_tls_client_config(tls);
         }
+        let mut policy = DestinationPolicy::new(endpoint);
+        for address in &self.exact_upstream_grants {
+            policy.grant_exact(*address);
+        }
         if let Some(lab) = &controlled_lab {
-            let mut policy = DestinationPolicy::new(endpoint);
             policy.grant_for_test(lab.http_origin);
             policy.grant_for_test(lab.https_origin);
             let mut roots = rustls::RootCertStore::empty();
@@ -1690,10 +1716,9 @@ impl ProxyBackend for NativeProxyAdapter {
                     .map_err(|error| {
                         StageFailure::new(Stage::ProxyStart, error.code, error.detail)
                     })?;
-            backend = backend
-                .with_destination_policy(policy)
-                .with_tls_client_config(tls);
+            backend = backend.with_tls_client_config(tls);
         }
+        backend = backend.with_destination_policy(policy);
         let lease = match backend.start(budget.remaining()) {
             Ok(lease) => lease,
             Err(error) => {

@@ -14,6 +14,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -67,6 +69,15 @@ impl Drop for RegisteredTarget<'_> {
 
 struct SessionChild(Child);
 
+struct GateFiles(PathBuf, PathBuf);
+
+impl Drop for GateFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.1);
+    }
+}
+
 impl Drop for SessionChild {
     fn drop(&mut self) {
         if self.0.try_wait().is_ok_and(|status| status.is_none()) {
@@ -106,6 +117,9 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     assert!(!peer.ip().is_loopback(), "the peer must be external");
     let binary = binary.canonicalize().expect("package binary exists");
     let client = client.canonicalize().expect("controlled client exists");
+    let baseline = (0..3)
+        .map(|_| unrelated_sentinel(peer).expect("baseline unrelated sentinel"))
+        .collect::<Vec<_>>();
     let handle = "s205_controlled_route_client";
     let registration = native_command(&binary)
         .args([
@@ -128,6 +142,43 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         removed: false,
     };
 
+    let gate_signal = client
+        .parent()
+        .unwrap()
+        .join(format!("s205-gate-{}.signal", std::process::id()));
+    let gate_release = gate_signal.with_extension("release");
+    let _gate_files = GateFiles(gate_signal.clone(), gate_release.clone());
+    let gate_for_sentinels = gate_signal.clone();
+    let route_active = Arc::new(AtomicBool::new(false));
+    let gate_active = Arc::clone(&route_active);
+    let sentinels = std::thread::spawn(move || -> std::io::Result<Vec<Duration>> {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == b"reply-received") {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "selected client did not reach the reply gate",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !gate_active.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "selected reply arrived without confirmed route activation",
+            ));
+        }
+        let mut elapsed = Vec::new();
+        for _ in 0..3 {
+            elapsed.push(unrelated_sentinel(peer)?);
+        }
+        std::fs::write(&gate_release, b"release")?;
+        Ok(elapsed)
+    });
+
     let mut child = SessionChild(
         native_command(&binary)
             .args([
@@ -136,6 +187,8 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                 handle,
                 "--launch",
                 "--direct-route",
+                "--proxy-allow-destination",
+                &peer.to_string(),
                 "--authorize-stdin",
                 "--calibrate",
                 "reachability",
@@ -149,6 +202,7 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                 "30s",
             ])
             .env("S205_CONTROLLED_PEER", peer.to_string())
+            .env("S205_CONTROLLED_GATE", &gate_signal)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -158,6 +212,7 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     let mut stdin = child.0.stdin.take().unwrap();
     let stderr = child.0.stderr.take().unwrap();
     let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let reader_active = Arc::clone(&route_active);
     let reader = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let line = line.expect("JSON event line");
@@ -167,20 +222,17 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                         .expect("authorize exact plan");
                     stdin.flush().expect("flush authorization");
                 }
+                if event["event"] == "deep_capture.proxy_started" {
+                    reader_active.store(true, Ordering::Release);
+                }
                 event_tx.send(event).expect("event receiver");
             }
         }
     });
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut events = Vec::new();
-    let mut sentinels = Vec::new();
     let status = loop {
         while let Ok(event) = event_rx.try_recv() {
-            if event["event"] == "deep_capture.authorization_plan" {
-                for _ in 0..3 {
-                    sentinels.push(unrelated_sentinel(peer).expect("unrelated sentinel"));
-                }
-            }
             events.push(event);
         }
         if let Some(status) = child.0.try_wait().expect("session status") {
@@ -198,6 +250,15 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     };
     reader.join().expect("event reader");
     events.extend(event_rx.try_iter());
+    let sentinels = sentinels
+        .join()
+        .expect("sentinel gate thread")
+        .unwrap_or_else(|error| {
+            panic!("unrelated sentinels during selected transfer: {error}; events={events:#?}")
+        });
+    let post = (0..3)
+        .map(|_| unrelated_sentinel(peer).expect("post-route unrelated sentinel"))
+        .collect::<Vec<_>>();
     assert_eq!(sentinels.len(), 3, "unrelated sentinel count");
     assert!(status.success(), "session failed: {events:#?}");
     assert_eq!(
@@ -233,17 +294,27 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
             report["flows"][0]["upstream_to_client_bytes"],
             b"runtime-origin-reply".len() as u64
         );
+        let limit = std::cmp::max(
+            Duration::from_millis(50),
+            baseline.iter().copied().max().unwrap().saturating_mul(4),
+        );
+        assert!(
+            sentinels.iter().all(|elapsed| *elapsed <= limit),
+            "active unrelated sentinel exceeded {limit:?}: baseline={baseline:?}, active={sentinels:?}"
+        );
     }
     assert!(bundle.join("capture.fcapng").is_file());
     eprintln!(
-        "S205 package={} peer={} bundle={} sentinel_ms={:?}",
+        "S205 package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
         binary.display(),
         peer,
         bundle.display(),
+        baseline.iter().map(Duration::as_millis).collect::<Vec<_>>(),
         sentinels
             .iter()
             .map(Duration::as_millis)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        post.iter().map(Duration::as_millis).collect::<Vec<_>>()
     );
     registration_guard
         .remove()

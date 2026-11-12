@@ -23,8 +23,8 @@ def receive_exact(connection, length):
     return bytes(result)
 
 
-def serve(family, address, port, runs, result):
-    expected = {"selected": runs, "sentinel": runs * 3}
+def serve(family, address, port, runs, sentinels_per_run, result):
+    expected = {"selected": runs, "sentinel": runs * sentinels_per_run}
     counts = {"selected": 0, "sentinel": 0}
     errors = []
     workers = []
@@ -33,7 +33,7 @@ def serve(family, address, port, runs, result):
     def handle(connection):
         try:
             with connection:
-                connection.settimeout(5)
+                connection.settimeout(12)
                 first = connection.recv(16)
                 if not first:
                     return
@@ -90,9 +90,12 @@ def main():
     parser.add_argument("--ipv4-port", type=int, required=True)
     parser.add_argument("--ipv6-port", type=int, required=True)
     parser.add_argument("--runs", type=int, default=2)
+    parser.add_argument("--sentinels-per-run", type=int, default=3)
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")
+    if args.sentinels_per_run < 1:
+        parser.error("--sentinels-per-run must be positive")
     result = {}
     errors = []
 
@@ -105,7 +108,7 @@ def main():
     threads = [
         threading.Thread(
             target=run,
-            args=(family, address, port, args.runs, result),
+            args=(family, address, port, args.runs, args.sentinels_per_run, result),
             daemon=True,
         )
         for family, address, port in [

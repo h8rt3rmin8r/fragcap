@@ -10,7 +10,7 @@
 
 ## Decision 2: Use one cold controlled client and ephemeral external peer as the acceptance spine
 
-**Decision**: Reuse the S204 finite cloudbase peer and exact byte/sentinel assertions. Drive the client through candidate package entry points, including an installed MSI invocation when exact preservation and restoration of the existing v0.11.0 installation are established. Record the published v0.11.0 comparison separately.
+**Decision**: Reuse the S204 finite cloudbase peer and exact byte/sentinel assertions. The S205 package case uses three paired sentinels before route activation, three after an exact selected-client reply while that connection remains open, and three after cleanup; the S204 peer default remains unchanged. Drive the client through candidate package entry points, including an installed MSI invocation when exact preservation and restoration of the existing v0.11.0 installation are established. Record the published v0.11.0 comparison separately.
 
 **Rationale**: The same flow can prove #593 and produce route, proxy, packet, calibration, and cleanup evidence for #594 and #595. Cloudbase is shared; the peer remains unprivileged, creates no remote file or service, and must be verified closed. The workstation currently has published v0.11.0 at C:\Program Files\fragcap\fragcap.exe. Candidate package certification already compares installed MSI and ZIP executable bytes, but its redirected smoke roots cannot prove the workstation default-path journey.
 

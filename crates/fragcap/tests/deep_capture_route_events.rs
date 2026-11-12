@@ -5,8 +5,9 @@
 use std::net::SocketAddr;
 
 use fragcap::deep_capture::{
-    build_route_debug_report, read_route_prefix, LifecycleWriter, RouteEvent, RouteEventKind,
-    RouteEventLease, RouteRecordDisposition,
+    build_process_trace, build_route_debug_report, read_route_prefix, CaptureProcessEvidence,
+    LifecycleWriter, ProcessTraceInput, RouteEvent, RouteEventKind, RouteEventLease,
+    RouteRecordDisposition,
 };
 
 #[test]
@@ -319,7 +320,9 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
         serde_json::json!({
             "observations":[{"proxy_connection_id":"17","correlation_state":"matched",
                 "correlation_reason":"direct-route-client-transfer-original-packet-unavailable",
-                "flow_id":null,"packet_observations":0,"packet_observations_unretained":0}]
+                "flow_id":null,"packet_observations":0,"packet_observations_unretained":0,
+                "role":"client","process_id":42,"attribution":"direct-route-receipt",
+                "connection_owner":{"pid":42,"process_instance_id":"process-42-100"}}]
         })
         .to_string(),
     )
@@ -331,6 +334,20 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
     assert_eq!(row["proxy_transfer"]["client_to_upstream_bytes"], 5);
     assert_eq!(row["packet_correlation"]["observations"], 0);
     assert_eq!(row["packet_correlation"]["state"], "matched");
+    assert_eq!(row["process_generation_join"], "exact");
+    assert_eq!(row["final_client_generation_proven"], true);
+    let compatibility_path = temp.path().join("compatibility.json");
+    let mut incompatible: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&compatibility_path).unwrap()).unwrap();
+    incompatible["observations"][0]["connection_owner"]["process_instance_id"] =
+        serde_json::json!("process-42-99");
+    std::fs::write(&compatibility_path, incompatible.to_string()).unwrap();
+    let mismatch = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(mismatch["flows"][0]["process_generation_join"], "mismatch");
+    assert_eq!(
+        mismatch["flows"][0]["final_client_generation_proven"],
+        false
+    );
     let rendered = report.to_string();
     assert!(!rendered.contains("192.0.2.10") && !rendered.contains("process-42-100"));
 }
@@ -468,24 +485,42 @@ fn empty_udp_datagrams_do_not_prove_payload_reachability() {
 #[test]
 fn report_declares_process_trace_source_without_disclosing_private_records() {
     let temp = tempfile::tempdir().unwrap();
-    let mut trace = LifecycleWriter::create(
-        temp.path().join("process-trace.jsonl"),
-        "process-trace",
-        "private-session",
-    )
-    .unwrap();
-    trace
-        .append(
-            "process.started",
-            serde_json::json!({"path":"C:\\private\\game.exe","pid":42}),
-        )
-        .unwrap();
-    trace.finish().unwrap();
+    let evidence = CaptureProcessEvidence::default();
+    let trace = build_process_trace(ProcessTraceInput {
+        session_id: "private-session",
+        target_id: Some(42),
+        target_handle: "private-target",
+        launch_case: "direct-exe-cold",
+        evidence: &evidence,
+        flows: &[],
+        globally_unretained_flow_observations: 0,
+    });
+    let path = temp.path().join("process-trace.jsonl");
+    std::fs::write(&path, &trace.jsonl).unwrap();
     let report = build_route_debug_report(temp.path()).unwrap();
     assert_eq!(report["process_trace"]["state"], "complete");
-    assert_eq!(report["process_trace"]["events"], 1);
-    assert!(!report.to_string().contains("C:\\private\\game.exe"));
-    std::fs::write(temp.path().join("process-trace.jsonl"), b"broken\n").unwrap();
+    assert_eq!(
+        report["process_trace"]["completeness"],
+        trace.summary.completeness
+    );
+    assert_eq!(report["process_trace"]["events"], trace.summary.records - 2);
+    assert!(!report.to_string().contains("private-target"));
+    let prefix = format!("{}\n", trace.jsonl.lines().next().unwrap());
+    std::fs::write(&path, &prefix).unwrap();
+    let partial = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(partial["process_trace"]["state"], "crash-prefix");
+    assert_eq!(partial["process_trace"]["events"], 0);
+    std::fs::write(
+        &path,
+        format!(
+            "{prefix}{}\n",
+            serde_json::json!({"sequence":1,"type":"process.started","session_id":"other-session"})
+        ),
+    )
+    .unwrap();
+    let wrong_session = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(wrong_session["process_trace"]["state"], "invalid");
+    std::fs::write(&path, b"broken\n").unwrap();
     let invalid = build_route_debug_report(temp.path()).unwrap();
     assert_eq!(invalid["process_trace"]["state"], "invalid");
     assert_eq!(invalid["process_trace"]["events"], 0);

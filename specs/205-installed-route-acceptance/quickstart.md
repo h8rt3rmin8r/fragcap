@@ -14,7 +14,7 @@ cargo xtask ci
 
 ## Physical route and package checks
 
-Run the candidate ZIP and MSI controlled entry points against the external peer for IPv4 and IPv6 with the required native route stream. Run the signed-driver library matrix separately with route diagnostics on and off. Record exact client and peer bytes, sentinel counts and latency, selected route events, proxy leg, loss, bundle artifacts, effective native paths, Doctor and cleanup. Run a published v0.11.0 comparison as a separate baseline. Verify the cloudbase ports are closed after each run.
+Run the candidate ZIP and MSI controlled entry points against the external peer for IPv4 and IPv6 with the required native route stream. Run the signed-driver library matrix separately with route diagnostics on and off. Send three paired sentinels before activation, three while the selected connection is held open after its exact reply, and three after cleanup; enforce the larger of 50 ms and four times baseline for the candidate. Record exact client and peer bytes, sentinel counts and latency, selected route events, proxy leg, loss, bundle artifacts, effective native paths, Doctor and cleanup. Run a published v0.11.0 comparison as a separate baseline. Verify the cloudbase ports are closed after each run.
 
 Observe both original-present and original-absent Npcap packet cases from actual passive artifacts, and reconcile each against the same route proof across compatibility, terminal calibration, target store, and later admission. Never mark a fixture as a physical observation.
 

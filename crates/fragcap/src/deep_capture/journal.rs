@@ -431,15 +431,20 @@ pub fn recover_resource_journal(
         let Some(previous) = latest.get(action.resource_id.as_str()) else {
             continue;
         };
-        journal.append(ResourceTransition::new(
-            &action.resource_id,
-            action.kind,
-            &action.target,
-            &action.ownership,
-            &action.action,
-            ResourceState::CleanupPending,
-            "recovery attempt",
-        ))?;
+        // A crash can happen after the cleanup attempt was synchronized.
+        // Replaying that exact action is idempotent, but another transition
+        // into CleanupPending would be an invalid duplicate state change.
+        if previous.state != ResourceState::CleanupPending {
+            journal.append(ResourceTransition::new(
+                &action.resource_id,
+                action.kind,
+                &action.target,
+                &action.ownership,
+                &action.action,
+                ResourceState::CleanupPending,
+                "recovery attempt",
+            ))?;
+        }
         let (state, detail) = match execute(action) {
             Ok(detail) => (ResourceState::Released, detail),
             Err(detail) => {

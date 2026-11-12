@@ -1074,6 +1074,17 @@ fn capture_live(
                 process_evidence.launch_earliest_at = launch_earliest;
                 let launch_latest = wall_timestamp();
                 process_evidence.launch_at = launch_latest;
+                // The exact managed-root receipt is available before ETW
+                // publishes the start event. Let the direct route use that
+                // generation proof for a cold client's first SYN.
+                if let Some(context) = &inspection_context {
+                    context.record_live_process_evidence(process_evidence);
+                    if matches!(request, fragcap::managed_launch::ManagedLaunch::Direct(_)) {
+                        if let Some(pid) = receipt.process_id() {
+                            context.record_direct_managed_root_pid(pid);
+                        }
+                    }
+                }
                 if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
                     platform_dispatch.arm(receipt.process_id());
                     if let (Some(pid), Some(earliest), Some(latest)) =

@@ -5023,6 +5023,7 @@ fn low_level_args(
         client_private_key: None,
         proxy_family: proxy_family_arg(address_family),
         proxy_bypass: Vec::new(),
+        proxy_allow_destination: Vec::new(),
         controlled_target: args.controlled_target,
     })
 }

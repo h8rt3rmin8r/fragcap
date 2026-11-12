@@ -2724,6 +2724,25 @@ fn build_authorization_plan(
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+    if args.proxy_allow_destination.len() > 32
+        || args.proxy_allow_destination.iter().any(|address| {
+            address.port() == 0
+                || address.ip().is_unspecified()
+                || address.ip().is_multicast()
+                || address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+        })
+    {
+        return Err(CliError::usage(
+            "--proxy-allow-destination needs at most 32 unicast IP:port endpoints with nonzero ports",
+        ));
+    }
+    let mut exact_upstream_grants = args
+        .proxy_allow_destination
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    exact_upstream_grants.sort();
+    exact_upstream_grants.dedup();
     let environment_variables = routing
         .effects
         .iter()
@@ -2848,6 +2867,7 @@ fn build_authorization_plan(
             },
             "listener": "exact loopback address; concrete ephemeral port selected after authorization",
             "normalized_bypass_rules": operator_rules,
+            "exact_upstream_grants": exact_upstream_grants,
             "routing_scope": if args.direct_route { "managed child environment and exact final-client direct socket" } else { "managed child environment only" },
             "route_identity": if args.direct_route { CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1.as_str() } else { CompatibilityRouteIdentity::ChildEnvironmentV1.as_str() },
             "direct_socket": direct_component,
@@ -3512,6 +3532,7 @@ pub(crate) fn run_with_outcome(
             let mut proxy = deep_capture_api::NativeProxyAdapter::default()
                 .with_prepared_authority(prepared_authority)
                 .with_observation_context(observation_context.clone())
+                .with_exact_upstream_grants(args.proxy_allow_destination.clone())
                 .with_application_artifact(bundle.join("application.jsonl"))
                 .with_proxy_lifecycle_artifact(bundle.join("proxy.jsonl"))
                 .with_key_log_artifact(bundle.join("tls-keylog.log"))
