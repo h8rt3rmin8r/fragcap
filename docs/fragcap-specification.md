@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.128-draft \
+**Version:** 0.1.129-draft \
 **Applies-To:** 0.11.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -218,6 +218,7 @@ enforcement.
 | 0.1.126-draft | 2026-11-11 | Codex | S202 reconciles the accepted v0.11.0 tag, certified public files, registry crates, and current documentation only after independent readback. Updates sections 1, 22, 24, and 27. |
 | 0.1.127-draft | 2026-11-12 | Codex | S203 separates selected direct-route client delivery from an upstream CONNECT and passive packet presence, and adds bounded route diagnostics and a source-preserving debug report. Corrects active auto scope help. Updates sections 17, 26, and 27; published v0.11.0 identity is unchanged. |
 | 0.1.128-draft | 2026-11-12 | Codex | S204 qualifies controlled non-loopback IPv4/IPv6 direct TCP, reserves packet work-queue space for selected traffic, requires two-way UDP payload bytes for positive route facts, and checks packaged help. Updates sections 17 and 27; published v0.11.0 identity is unchanged. |
+| 0.1.129-draft | 2026-11-12 | Codex | S205 adds a public default-storage external-route acceptance harness and reports process-trace source completion separately in the shareable debug report. Updates sections 17 and 27; physical installed and passive-packet-order qualification remains evidence-gated. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4824,6 +4825,8 @@ S203 records selected direct TCP and supported UDP route stages in a bounded, pr
 
 S204 requires an actual nonempty datagram payload in each direction before a supported UDP route can qualify reachability; an empty datagram response remains a distinct observed non-positive outcome. Direct packet candidate admission is capped at half of the finite work queue, leaving headroom for packets from already selected flows during unrelated candidate bursts. Candidate bypass remains explicit in route accounting; selected packets still fail closed if their reserved capacity is exhausted. The route publishes active status only after its packet worker reaches the initialized receive loop, with a finite startup refusal if it cannot become ready.
 
+S205's controlled package acceptance uses public target registration and a cold selected client against a finite external peer, with the installed default local store and generated bundle when claiming default placement. The accepted route stream must reconcile the exact two-way client and peer bytes and remain distinct from the signed-driver diagnostics-on/off library matrix. The shareable debug report identifies whether the bounded native process-trace source is complete, a crash prefix, missing, or invalid, while omitting its private records. Installed replacement, physical Npcap ordering, and any issue closeout depend on their own recorded evidence.
+
 `fragcap bundle debug-report <bundle> --out <file>` derives a separate bounded JSON report from complete or partial route, proxy, compatibility, manifest, and cleanup sources. It does not modify the source bundle. The report replaces exact endpoints and process identity with opaque flow labels, records source gaps and packet-correlation availability, and distinguishes a connected zero-byte tunnel from client transfer. Direct-route calibration may accept an exact final-client receipt with observed bidirectional TCP bytes even when WinDivert consumed the original packet before Npcap retained it; packet evidence stays independently unavailable. A handshake without transfer is not a positive TCP fact.
 
 S171 source adds whole-session retention and garbage collection under issue #458. Newly generated Deep Capture and calibration output declares managed history limits of 30 days, 20 completed sessions and 2 GiB of logical contents, oldest eligible first. Terminal manifest publication is the age origin. Explicit `--retain-bundle` or `--bundle` destinations, including guided sibling attempts, retain evidence until explicit cleanup. Historical evidence keeps its previous promise. Authorization, retained metadata and terminal output expose policy; no release of this source correction is implied.
@@ -5250,6 +5253,8 @@ S154 adds deterministic controlled stalled-consumer loss evidence and current do
 S203 (`specs/203-direct-route-recovery-and-debug-report`) groups active direct-route defects #593 and #594, native diagnostic export #595, and auto-scope wording #598 after v0.11.0 publication. It separates selected-flow client delivery and bidirectional TCP transfer from upstream proxy connection and passive original-packet presence, retains bounded protected route-stage evidence, and exports a source-preserving report with opaque flow labels. External non-loopback and package qualification remain explicit acceptance gates.
 
 S204 (`specs/204-direct-route-acceptance`) qualifies exact selected TCP exchange against controlled non-loopback IPv4 and IPv6 peers with active unrelated sentinels and route diagnostics on and off. The finite direct packet work queue reserves half its entries from candidate traffic so a broad candidate burst cannot crowd out an already selected flow. UDP route reachability requires nonempty payload bytes in both directions as well as both datagram counts. The package tier checks current ZIP and installed MSI help for direct-route, debug-report, and auto inspection-scope guidance. This controlled proof does not by itself establish a private-title result or a default installed-storage journey.
+
+S205 (`specs/205-installed-route-acceptance`) provides a default-storage package acceptance harness for a cold raw-TCP client and external peer, with public target registration, exact bidirectional bytes, unrelated sentinels, route-report reconciliation, and target removal. The debug report names the process-trace source state and event count without disclosing private process records. Candidate installed MSI and portable ZIP runs, observed passive packet ordering, and issue completion remain subject to their recorded qualification results.
 
 ### 27.4 Critical Path
 

@@ -1,4 +1,5 @@
-"""Finite, exact-address TCP peer for the S204 controlled route matrix.
+# SPDX-License-Identifier: Apache-2.0
+"""Finite, exact-address TCP peer for the controlled route matrix.
 
 Run on a disposable peer with --ipv4 and --ipv6 set to that host's actual
 non-loopback addresses. The script creates no files or background service.

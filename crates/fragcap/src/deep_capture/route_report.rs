@@ -74,6 +74,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         "compatibility.json",
         "cleanup.json",
         "proxy.jsonl",
+        "process-trace.jsonl",
         "route.jsonl",
     ] {
         let path = bundle.join(name);
@@ -101,6 +102,8 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         optional_source(bounded_json(&bundle.join("cleanup.json")));
     let (proxy, proxy_source_state) =
         optional_source(read_lifecycle_prefix(&bundle.join("proxy.jsonl")));
+    let (process_trace, process_trace_source_state) =
+        optional_source(read_lifecycle_prefix(&bundle.join("process-trace.jsonl")));
     let (route, route_source_state) =
         optional_source(read_route_prefix(&bundle.join("route.jsonl")));
     let mut proxy_pairs = BTreeMap::<(String, String), Vec<u64>>::new();
@@ -234,6 +237,10 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         .as_ref()
         .map(|prefix| stream_status(prefix.status))
         .unwrap_or(proxy_source_state);
+    let process_trace_state = process_trace
+        .as_ref()
+        .map(|prefix| stream_status(prefix.status))
+        .unwrap_or(process_trace_source_state);
     let selected_flows = flow_rows.len();
     let bidirectional_flows = flow_rows
         .iter()
@@ -272,6 +279,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         },
         "route": {"state":route_state,"complete":route_complete,"dropped_events":route_loss,"events":route.as_ref().map_or(0, |prefix| prefix.events.len()),"selected_flows":selected_flows,"client_reachable_flows":client_reachable_flows,"bidirectional_flows":bidirectional_flows,"zero_byte_connected_flows":zero_byte_connected_flows},
         "proxy": {"state":proxy_state,"events":proxy.as_ref().map_or(0, |prefix| prefix.records.len())},
+        "process_trace": {"state":process_trace_state,"events":process_trace.as_ref().map_or(0, |prefix| prefix.records.len())},
         "packet": {"state":if bundle.join("capture.fcapng").is_file() { "artifact-present" } else { "artifact-unavailable" }, "original_flow_reconciliation":if packet_joined_flows > 0 { "joined-by-proxy-connection" } else { "unavailable" }, "joined_flows":packet_joined_flows},
         "compatibility": {"state":compatibility_source_state,"available":compatibility.is_some(),"calibration_phase":compatibility.as_ref().and_then(|value| value["calibration"]["phase"].as_str()),"calibration_outcome":compatibility.as_ref().and_then(|value| value["calibration"]["outcome"].as_str()),"process_trace":compatibility.as_ref().map(|value| json!({"completeness":value["process_trace"]["completeness"],"unresolved_flow_owners":value["process_trace"]["unresolved_flow_owners"]}))},
         "cleanup": {"state":cleanup_source_state,"available":cleanup.is_some(),"status":manifest.as_ref().and_then(|value| value["cleanup"]["status"].as_str())},

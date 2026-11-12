@@ -464,3 +464,29 @@ fn empty_udp_datagrams_do_not_prove_payload_reachability() {
         "client-datagram-response-observed-no-bidirectional-data"
     );
 }
+
+#[test]
+fn report_declares_process_trace_source_without_disclosing_private_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut trace = LifecycleWriter::create(
+        temp.path().join("process-trace.jsonl"),
+        "process-trace",
+        "private-session",
+    )
+    .unwrap();
+    trace
+        .append(
+            "process.started",
+            serde_json::json!({"path":"C:\\private\\game.exe","pid":42}),
+        )
+        .unwrap();
+    trace.finish().unwrap();
+    let report = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(report["process_trace"]["state"], "complete");
+    assert_eq!(report["process_trace"]["events"], 1);
+    assert!(!report.to_string().contains("C:\\private\\game.exe"));
+    std::fs::write(temp.path().join("process-trace.jsonl"), b"broken\n").unwrap();
+    let invalid = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(invalid["process_trace"]["state"], "invalid");
+    assert_eq!(invalid["process_trace"]["events"], 0);
+}
