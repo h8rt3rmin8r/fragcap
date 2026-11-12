@@ -12,7 +12,7 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ### Decisions
 
-- 2026-11-12 (S204): Package certification now checks the ZIP and installed MSI command help for the current direct-route, debug-report, and inspection-scope wording. This makes the shipped help part of the pinned package acceptance contract.
+- 2026-11-12 (S204): Package certification now checks the candidate ZIP and installed MSI command help for the current direct-route, debug-report, and inspection-scope wording. Exact replay of the already published v0.11.0 bytes retains its historical help contract. This makes candidate help part of the pinned package acceptance contract without rewriting published evidence.
 
 ## [0.11.0] - 2026-11-10
 

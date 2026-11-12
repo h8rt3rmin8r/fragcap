@@ -871,7 +871,9 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
-        Assert-DirectRouteHelp -Executable $zipExe -Environment $cleanEnvironment
+        if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) {
+            Assert-DirectRouteHelp -Executable $zipExe -Environment $cleanEnvironment
+        }
         $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
         $legacyStorageReplay = (-not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) -and ($buildIdentity.version -ceq '0.10.13')
         $fixtureRoamingRoot = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.APPDATA 'fragcap' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming' }
@@ -992,7 +994,9 @@ Param(
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
         $installedPe = Get-PeInspection -ExecutablePath $installedExecutable -Dumper $dumper -Policy $contract.pe_imports -Surface 'installed-msi'
         $installedIdentity = (Invoke-Fragcap -Executable $installedExecutable -Arguments @('__build-identity') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json
-        Assert-DirectRouteHelp -Executable $installedExecutable -Environment $cleanEnvironment
+        if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) {
+            Assert-DirectRouteHelp -Executable $installedExecutable -Environment $cleanEnvironment
+        }
         if (($installedIdentity | ConvertTo-Json -Compress) -cne ($buildIdentity | ConvertTo-Json -Compress)) { throw 'installed executable identity differs from the portable executable identity' }
         $uninstall = Invoke-MsiOperation -Case 'uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'uninstall.log')
         if ((Test-Path -LiteralPath $installDirectory) -or (Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Get-SystemPathCount -ExpectedPath $installDirectory) -ne 0) { throw 'uninstall left installer-owned files, registration, or PATH state' }
