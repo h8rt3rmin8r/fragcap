@@ -52,6 +52,8 @@ The v0.11.0 public release and current documentation now name the same verified 
 
 2026-11-12: Prepare a v0.11.1 patch candidate from accepted S203 through S206 fixes. Advance the not-started review record template to the candidate version and add a short release summary; keep frozen v0.11.0 public package and review authorities unchanged until the new release is independently verified.
 
+2026-11-12: Hosted short-performance runs exposed two isolated lockfiles still carrying first-party v0.11.0 identities. Rebind the performance and fuzz locks to v0.11.1, preserving every third-party version and checksum; the release script's root-workspace bump does not update those isolated graphs.
+
 ## [0.11.0] - 2026-11-10
 
 ### Added
