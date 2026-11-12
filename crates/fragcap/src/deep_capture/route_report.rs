@@ -2,17 +2,27 @@
 
 //! Shareable, bounded projection of one direct-route bundle.
 
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Read},
+    path::Path,
+};
 
 use serde_json::{json, Value};
 
-use super::{read_lifecycle_prefix, read_route_prefix, LifecycleStreamStatus};
+use super::{
+    read_application_prefix_bytes, read_lifecycle_prefix, read_process_trace, read_route_prefix,
+    ApplicationPrefix, ApplicationStreamStatus, LifecycleStreamStatus,
+};
 
 const MAX_SUMMARY_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Default)]
 struct FlowSummary {
     protocol: Option<String>,
+    pid: Option<u64>,
+    process_instance_id: Option<String>,
     first_packet_at_ns: Option<i64>,
     first_packet_clock_error_ns: Option<u64>,
     last_route_event_at_ns: Option<u64>,
@@ -33,6 +43,126 @@ struct FlowSummary {
     helper_pair: Option<(String, String)>,
 }
 
+struct ProcessTraceSource {
+    state: &'static str,
+    completeness: Option<&'static str>,
+    events: u64,
+}
+
+fn process_trace_source(path: &Path) -> io::Result<ProcessTraceSource> {
+    if fs::metadata(path)?.len() > MAX_SUMMARY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process trace exceeds report byte limit",
+        ));
+    }
+    let bytes = fs::read(path)?;
+    if bytes.len() as u64 > MAX_SUMMARY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process trace exceeds report byte limit",
+        ));
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut lines = text.lines().peekable();
+    let mut records = 0_u64;
+    let mut trailer = false;
+    let mut session_id = None;
+    while let Some(line) = lines.next() {
+        if records >= 65_536 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace exceeds report record limit",
+            ));
+        }
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) if lines.peek().is_none() && !text.ends_with('\n') => break,
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+        };
+        if value["sequence"].as_u64() != Some(records) || trailer {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace sequence is invalid",
+            ));
+        }
+        if records == 0 {
+            if value["type"] != "process-trace.header" {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "process trace header is missing",
+                ));
+            }
+            if value["schema_version"] != 1 {
+                return Ok(ProcessTraceSource {
+                    state: "unknown-version",
+                    completeness: None,
+                    events: 0,
+                });
+            }
+            session_id = value["session_id"].as_str().map(str::to_owned);
+            if session_id.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "process trace session is missing",
+                ));
+            }
+        } else if value["type"] == "process-trace.header" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace has a second header",
+            ));
+        }
+        if value["session_id"].as_str() != session_id.as_deref() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace record session differs",
+            ));
+        }
+        if value["type"] == "process-trace.trailer" {
+            if value["session_id"].as_str() != session_id.as_deref() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "process trace trailer session differs",
+                ));
+            }
+            trailer = true;
+        }
+        records += 1;
+    }
+    if records == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process trace is empty",
+        ));
+    }
+    if trailer && text.ends_with('\n') {
+        let summary = read_process_trace(text).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace trailer is invalid",
+            )
+        })?;
+        if summary.records != records {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process trace record count differs",
+            ));
+        }
+        return Ok(ProcessTraceSource {
+            state: "complete",
+            completeness: Some(summary.completeness),
+            events: records - 2,
+        });
+    }
+    Ok(ProcessTraceSource {
+        state: "crash-prefix",
+        completeness: None,
+        events: records - 1,
+    })
+}
+
 fn bounded_json(path: &Path) -> io::Result<Value> {
     if fs::metadata(path)?.len() > MAX_SUMMARY_BYTES {
         return Err(io::Error::new(
@@ -41,6 +171,44 @@ fn bounded_json(path: &Path) -> io::Result<Value> {
         ));
     }
     serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)
+}
+
+fn bounded_application(path: &Path) -> io::Result<ApplicationPrefix> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_SUMMARY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SUMMARY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "application stream exceeds report byte limit",
+        ));
+    }
+    read_application_prefix_bytes(&bytes)
+}
+
+fn application_status(prefix: &ApplicationPrefix) -> &'static str {
+    match prefix.status {
+        ApplicationStreamStatus::UnknownVersion => "unknown-version",
+        _ if prefix.schema_version == 2 && !application_joinable(prefix) => "invalid",
+        ApplicationStreamStatus::Complete => "complete",
+        ApplicationStreamStatus::Incomplete => "incomplete",
+    }
+}
+
+fn application_joinable(prefix: &ApplicationPrefix) -> bool {
+    let session = prefix.records.first().and_then(|record| {
+        (record["type"] == "application.header")
+            .then(|| record["session_id"].as_str())
+            .flatten()
+    });
+    prefix.schema_version == 2
+        && session.is_some()
+        && prefix.records.iter().enumerate().all(|(index, record)| {
+            record["schema_version"] == 2
+                && record["sequence"].as_u64() == Some(index as u64)
+                && record["session_id"].as_str() == session
+        })
 }
 
 fn optional_source<T>(result: io::Result<T>) -> (Option<T>, &'static str) {
@@ -74,6 +242,8 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         "compatibility.json",
         "cleanup.json",
         "proxy.jsonl",
+        "application.jsonl",
+        "process-trace.jsonl",
         "route.jsonl",
     ] {
         let path = bundle.join(name);
@@ -101,6 +271,10 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         optional_source(bounded_json(&bundle.join("cleanup.json")));
     let (proxy, proxy_source_state) =
         optional_source(read_lifecycle_prefix(&bundle.join("proxy.jsonl")));
+    let (application, application_source_state) =
+        optional_source(bounded_application(&bundle.join("application.jsonl")));
+    let (process_trace, process_trace_source_state) =
+        optional_source(process_trace_source(&bundle.join("process-trace.jsonl")));
     let (route, route_source_state) =
         optional_source(read_route_prefix(&bundle.join("route.jsonl")));
     let mut proxy_pairs = BTreeMap::<(String, String), Vec<u64>>::new();
@@ -130,6 +304,10 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             match event.kind.as_str() {
                 "selected" => {
                     flow.protocol = event.fields["protocol"].as_str().map(str::to_owned);
+                    flow.pid = event.fields["pid"].as_u64();
+                    flow.process_instance_id = event.fields["process_instance_id"]
+                        .as_str()
+                        .map(str::to_owned);
                     flow.first_packet_at_ns = event.fields["first_packet_at_ns"].as_i64();
                     flow.first_packet_clock_error_ns =
                         event.fields["first_packet_clock_error_ns"].as_u64();
@@ -196,6 +374,18 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             record["type"] == "proxy.connection-terminal" && record["fields"]["connection_id"] == connection_id
         })));
         let packet = proxy_connection_id.and_then(|connection_id| compatibility.as_ref().and_then(|value| value["observations"].as_array()).and_then(|records| records.iter().find(|record| record["proxy_connection_id"].as_str().and_then(|value| value.parse::<u64>().ok()) == Some(connection_id))));
+        let correlations = proxy_connection_id.and_then(|connection_id| application.as_ref().filter(|prefix| application_joinable(prefix)).map(|prefix| prefix.records.iter().filter(|record| record["type"] == "application.correlation" && record["proxy_connection_id"].as_u64() == Some(connection_id)).collect::<Vec<_>>()));
+        let generation_join = match (flow.pid, flow.process_instance_id.as_deref(), correlations.as_deref()) {
+            (Some(pid), Some(instance), Some([record])) => {
+                if record["connection_owner"]["pid"].as_u64() == Some(pid)
+                    && record["connection_owner"]["process_instance_id"].as_str() == Some(instance)
+                    && record["connection_owner"]["state"] == "exact"
+                    && record["connection_owner"]["role"] == "client"
+                { Some("exact") } else { Some("mismatch") }
+            }
+            (_, _, Some(records)) if records.len() > 1 => Some("ambiguous"),
+            _ => None,
+        };
         json!({
             "flow": format!("flow-{}", index + 1),
             "protocol": flow.protocol,
@@ -220,7 +410,8 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             "proxy_join": if proxy_connection_id.is_some() { "exact-helper-socket" } else if matching_proxy.is_some_and(|matches| matches.len() > 1) { "ambiguous-helper-socket" } else { "unavailable" },
             "proxy_transfer": proxy_transfer.map(|record| json!({"client_to_upstream_bytes":record["fields"]["detail"]["client_to_upstream_bytes"], "upstream_to_client_bytes":record["fields"]["detail"]["upstream_to_client_bytes"]})),
             "proxy_terminal": proxy_terminal.and_then(|record| record["fields"]["detail"]["kind"].as_str()).map(|kind| if kind == "ConnectionTerminal(Complete)" { "complete" } else { "other" }),
-            "final_client_generation_proven": packet.is_some_and(|record| record["role"] == "client" && record["process_id"].as_u64().is_some() && record["attribution"] == "direct-route-receipt"),
+            "final_client_generation_proven": generation_join == Some("exact") && packet.is_some_and(|record| record["role"] == "client" && record["process_id"].as_u64() == flow.pid && record["attribution"] == "direct-route-receipt"),
+            "process_generation_join": generation_join.unwrap_or("unavailable"),
             "packet_correlation": packet.map(|record| json!({"state":record["correlation_state"],"reason":record["correlation_reason"],"flow_id":record["flow_id"],"observations":record["packet_observations"],"unretained":record["packet_observations_unretained"]})),
         })
     }).collect();
@@ -234,6 +425,10 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         .as_ref()
         .map(|prefix| stream_status(prefix.status))
         .unwrap_or(proxy_source_state);
+    let process_trace_state = process_trace
+        .as_ref()
+        .map(|source| source.state)
+        .unwrap_or(process_trace_source_state);
     let selected_flows = flow_rows.len();
     let bidirectional_flows = flow_rows
         .iter()
@@ -272,6 +467,8 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         },
         "route": {"state":route_state,"complete":route_complete,"dropped_events":route_loss,"events":route.as_ref().map_or(0, |prefix| prefix.events.len()),"selected_flows":selected_flows,"client_reachable_flows":client_reachable_flows,"bidirectional_flows":bidirectional_flows,"zero_byte_connected_flows":zero_byte_connected_flows},
         "proxy": {"state":proxy_state,"events":proxy.as_ref().map_or(0, |prefix| prefix.records.len())},
+        "application": {"state":application.as_ref().map(application_status).unwrap_or(application_source_state),"records":application.as_ref().map_or(0, |prefix| prefix.records.len())},
+        "process_trace": {"state":process_trace_state,"completeness":process_trace.as_ref().and_then(|source| source.completeness),"events":process_trace.as_ref().map_or(0, |source| source.events)},
         "packet": {"state":if bundle.join("capture.fcapng").is_file() { "artifact-present" } else { "artifact-unavailable" }, "original_flow_reconciliation":if packet_joined_flows > 0 { "joined-by-proxy-connection" } else { "unavailable" }, "joined_flows":packet_joined_flows},
         "compatibility": {"state":compatibility_source_state,"available":compatibility.is_some(),"calibration_phase":compatibility.as_ref().and_then(|value| value["calibration"]["phase"].as_str()),"calibration_outcome":compatibility.as_ref().and_then(|value| value["calibration"]["outcome"].as_str()),"process_trace":compatibility.as_ref().map(|value| json!({"completeness":value["process_trace"]["completeness"],"unresolved_flow_owners":value["process_trace"]["unresolved_flow_owners"]}))},
         "cleanup": {"state":cleanup_source_state,"available":cleanup.is_some(),"status":manifest.as_ref().and_then(|value| value["cleanup"]["status"].as_str())},
@@ -279,6 +476,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         "transformations": [
             {"source":"route.selected.local,remote,pid,process_instance_id,endpoint_id","operation":"replace-with-session-ordinal","output":"flows[].flow"},
             {"source":"route.proxy-connected.helper_local,proxy_local","operation":"exact-join-then-omit-endpoints","output":"flows[].proxy_connection_id"},
+            {"source":"application.correlation.connection_owner","operation":"compare-generation-then-omit-private-identity","output":"flows[].process_generation_join"},
             {"source":"manifest paths, target identity, capability, certificate material, payloads","operation":"omit","output":null}
         ],
         "limitations": ["A WinDivert send success alone does not prove delivery to the client.", "Packet artifact presence does not prove an original diverted packet was retained.", "A crash prefix or lost route event may omit a later outcome."],

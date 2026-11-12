@@ -5,8 +5,9 @@
 use std::net::SocketAddr;
 
 use fragcap::deep_capture::{
-    build_route_debug_report, read_route_prefix, LifecycleWriter, RouteEvent, RouteEventKind,
-    RouteEventLease, RouteRecordDisposition,
+    build_process_trace, build_route_debug_report, read_route_prefix, CaptureProcessEvidence,
+    LifecycleWriter, ProcessTraceInput, RouteEvent, RouteEventKind, RouteEventLease,
+    RouteRecordDisposition,
 };
 
 #[test]
@@ -229,7 +230,7 @@ fn report_requires_client_response_and_omits_route_identity() {
         "proxy-connected-without-client-reachability-proof"
     );
     let serialized = incomplete.to_string();
-    assert_eq!(incomplete["transformations"].as_array().unwrap().len(), 3);
+    assert_eq!(incomplete["transformations"].as_array().unwrap().len(), 4);
     for secret in [
         "192.0.2.10",
         "198.51.100.20",
@@ -319,9 +320,26 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
         serde_json::json!({
             "observations":[{"proxy_connection_id":"17","correlation_state":"matched",
                 "correlation_reason":"direct-route-client-transfer-original-packet-unavailable",
-                "flow_id":null,"packet_observations":0,"packet_observations_unretained":0}]
+                "flow_id":null,"packet_observations":0,"packet_observations_unretained":0,
+                "role":"client","process_id":42,"attribution":"direct-route-receipt"}]
         })
         .to_string(),
+    )
+    .unwrap();
+    let application_path = temp.path().join("application.jsonl");
+    let application = [
+        serde_json::json!({"type":"application.header","schema_version":2,"session_id":"private-session","sequence":0}),
+        serde_json::json!({"type":"application.correlation","schema_version":2,"session_id":"private-session","sequence":1,"proxy_connection_id":17,
+            "connection_owner":{"pid":42,"process_instance_id":"process-42-100","state":"exact","role":"client"}}),
+    ];
+    std::fs::write(
+        &application_path,
+        application
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
     )
     .unwrap();
     let report = build_route_debug_report(temp.path()).unwrap();
@@ -331,6 +349,43 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
     assert_eq!(row["proxy_transfer"]["client_to_upstream_bytes"], 5);
     assert_eq!(row["packet_correlation"]["observations"], 0);
     assert_eq!(row["packet_correlation"]["state"], "matched");
+    assert_eq!(row["process_generation_join"], "exact");
+    assert_eq!(row["final_client_generation_proven"], true);
+    let mut incompatible = application;
+    incompatible[1]["connection_owner"]["process_instance_id"] = serde_json::json!("process-42-99");
+    std::fs::write(
+        &application_path,
+        incompatible
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let mismatch = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(mismatch["flows"][0]["process_generation_join"], "mismatch");
+    assert_eq!(
+        mismatch["flows"][0]["final_client_generation_proven"],
+        false
+    );
+    incompatible[1]["sequence"] = serde_json::json!(9);
+    std::fs::write(
+        &application_path,
+        incompatible
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let invalid = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(invalid["application"]["state"], "invalid");
+    assert_eq!(
+        invalid["flows"][0]["process_generation_join"],
+        "unavailable"
+    );
     let rendered = report.to_string();
     assert!(!rendered.contains("192.0.2.10") && !rendered.contains("process-42-100"));
 }
@@ -463,4 +518,48 @@ fn empty_udp_datagrams_do_not_prove_payload_reachability() {
         report["flows"][0]["status"],
         "client-datagram-response-observed-no-bidirectional-data"
     );
+}
+
+#[test]
+fn report_declares_process_trace_source_without_disclosing_private_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let evidence = CaptureProcessEvidence::default();
+    let trace = build_process_trace(ProcessTraceInput {
+        session_id: "private-session",
+        target_id: Some(42),
+        target_handle: "private-target",
+        launch_case: "direct-exe-cold",
+        evidence: &evidence,
+        flows: &[],
+        globally_unretained_flow_observations: 0,
+    });
+    let path = temp.path().join("process-trace.jsonl");
+    std::fs::write(&path, &trace.jsonl).unwrap();
+    let report = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(report["process_trace"]["state"], "complete");
+    assert_eq!(
+        report["process_trace"]["completeness"],
+        trace.summary.completeness
+    );
+    assert_eq!(report["process_trace"]["events"], trace.summary.records - 2);
+    assert!(!report.to_string().contains("private-target"));
+    let prefix = format!("{}\n", trace.jsonl.lines().next().unwrap());
+    std::fs::write(&path, &prefix).unwrap();
+    let partial = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(partial["process_trace"]["state"], "crash-prefix");
+    assert_eq!(partial["process_trace"]["events"], 0);
+    std::fs::write(
+        &path,
+        format!(
+            "{prefix}{}\n",
+            serde_json::json!({"sequence":1,"type":"process.started","session_id":"other-session"})
+        ),
+    )
+    .unwrap();
+    let wrong_session = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(wrong_session["process_trace"]["state"], "invalid");
+    std::fs::write(&path, b"broken\n").unwrap();
+    let invalid = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(invalid["process_trace"]["state"], "invalid");
+    assert_eq!(invalid["process_trace"]["events"], 0);
 }

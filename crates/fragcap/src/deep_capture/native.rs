@@ -70,6 +70,7 @@ pub struct NativeProxyAdapter {
     listener_reservation: Option<NativeListenerReservation>,
     prepared_authority: Option<PreparedNativeAuthority>,
     inspection_decider: Option<Arc<dyn fragcap_proxy::InspectionDecider>>,
+    exact_upstream_grants: Vec<SocketAddr>,
 }
 
 static NEXT_PREPARED_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -318,6 +319,8 @@ impl Default for SocketInceptionCollector {
 pub struct NativeObservationContext {
     flow_registry: Arc<FlowRegistry>,
     controlled_process_id: Arc<AtomicU32>,
+    #[cfg(all(windows, feature = "direct-route"))]
+    direct_managed_root_pid: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
@@ -395,6 +398,19 @@ const DIRECT_HELPER_ACCEPT_SLACK_NS: u64 = 50_000_000;
 const DIRECT_PACKET_JOIN_SLACK_NS: u64 = 50_000_000;
 
 impl NativeObservationContext {
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn record_direct_managed_root_pid(&self, pid: u32) {
+        self.direct_managed_root_pid.store(pid, Ordering::Release);
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_managed_root_pid(&self) -> Option<u32> {
+        match self.direct_managed_root_pid.load(Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
     /// Publish only newly retained process facts during an active capture.
     /// Cloning the full event history on every ETW event would be quadratic.
     pub fn record_live_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
@@ -1415,6 +1431,7 @@ impl NativeProxyAdapter {
             listener_reservation: None,
             prepared_authority: None,
             inspection_decider: None,
+            exact_upstream_grants: Vec::new(),
         }
     }
 
@@ -1448,6 +1465,12 @@ impl NativeProxyAdapter {
         decider: Arc<dyn fragcap_proxy::InspectionDecider>,
     ) -> Self {
         self.inspection_decider = Some(decider);
+        self
+    }
+
+    /// Carry only reviewed exact destinations into this session's proxy.
+    pub fn with_exact_upstream_grants(mut self, grants: Vec<SocketAddr>) -> Self {
+        self.exact_upstream_grants = grants;
         self
     }
 
@@ -1673,8 +1696,11 @@ impl ProxyBackend for NativeProxyAdapter {
                 .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
             backend = backend.with_tls_client_config(tls);
         }
+        let mut policy = DestinationPolicy::new(endpoint);
+        for address in &self.exact_upstream_grants {
+            policy.grant_exact(*address);
+        }
         if let Some(lab) = &controlled_lab {
-            let mut policy = DestinationPolicy::new(endpoint);
             policy.grant_for_test(lab.http_origin);
             policy.grant_for_test(lab.https_origin);
             let mut roots = rustls::RootCertStore::empty();
@@ -1690,10 +1716,9 @@ impl ProxyBackend for NativeProxyAdapter {
                     .map_err(|error| {
                         StageFailure::new(Stage::ProxyStart, error.code, error.detail)
                     })?;
-            backend = backend
-                .with_destination_policy(policy)
-                .with_tls_client_config(tls);
+            backend = backend.with_tls_client_config(tls);
         }
+        backend = backend.with_destination_policy(policy);
         let lease = match backend.start(budget.remaining()) {
             Ok(lease) => lease,
             Err(error) => {
@@ -2203,12 +2228,20 @@ impl ManagedClientWindows {
         if evidence.shutdown_scope.is_empty() {
             return None;
         }
+        let direct_root = evidence
+            .launch_pid
+            .filter(|_| evidence.shutdown_scope.len() == 1);
+        let has_client = evidence.stage_transitions.iter().any(|transition| {
+            transition.role == "client" && transition.kind == super::StageTransitionKind::Matched
+        });
+        let final_role = if has_client { "client" } else { "target" };
         let mut matches: Vec<(u32, u64)> = evidence
             .stage_transitions
             .iter()
             .filter(|transition| {
-                transition.role == "client"
-                    && transition.kind == super::StageTransitionKind::Matched
+                transition.kind == super::StageTransitionKind::Matched
+                    && transition.role == final_role
+                    && (has_client || Some(transition.pid) == direct_root)
             })
             .filter_map(|transition| {
                 u64::try_from(transition.at.as_nanos())
@@ -2231,7 +2264,8 @@ impl ManagedClientWindows {
                 .stage_transitions
                 .iter()
                 .filter(|transition| {
-                    transition.role == "client"
+                    transition.role == final_role
+                        && (has_client || Some(transition.pid) == direct_root)
                         && transition.kind == super::StageTransitionKind::Exited
                         && transition.pid == pid
                 })
@@ -3263,6 +3297,49 @@ mod tests {
         assert_eq!(
             native_evidence_window(Some(99), None),
             super::super::EvidenceWindow::Unavailable
+        );
+    }
+
+    #[test]
+    fn managed_direct_root_target_stage_qualifies_observation_window() {
+        let mut evidence = super::super::CaptureProcessEvidence {
+            launch_pid: Some(42),
+            shutdown_scope: vec![PathBuf::from("C:\\Games\\client.exe")],
+            ..Default::default()
+        };
+        evidence
+            .stage_transitions
+            .push(super::super::StageTransition {
+                kind: super::super::StageTransitionKind::Matched,
+                pid: 42,
+                role: "target".into(),
+                stage: Some("target".into()),
+                at: Timestamp::from_nanos(100),
+            });
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(101)),
+            super::super::EvidenceWindow::Observation
+        );
+        evidence
+            .stage_transitions
+            .push(super::super::StageTransition {
+                kind: super::super::StageTransitionKind::Exited,
+                pid: 42,
+                role: "target".into(),
+                stage: Some("target".into()),
+                at: Timestamp::from_nanos(200),
+            });
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(200)),
+            super::super::EvidenceWindow::OwnerRelease
+        );
+        evidence.launch_pid = Some(43);
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(101)),
+            super::super::EvidenceWindow::PreClient
         );
     }
 

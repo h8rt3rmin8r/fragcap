@@ -172,6 +172,31 @@ fn a_complete_journal_with_an_unresolved_effect_can_resume_recovery() {
 }
 
 #[test]
+fn recovery_resumes_an_already_synchronized_cleanup_attempt() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = {
+        let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+        for state in [
+            ResourceState::Pending,
+            ResourceState::Applied,
+            ResourceState::CleanupPending,
+        ] {
+            journal.append(transition("trust", state)).unwrap();
+        }
+        journal.path().to_path_buf()
+    };
+    let plan = recover_resource_journal(&path, |_| Ok("exact effect absent".into())).unwrap();
+    assert_eq!(plan.actions.len(), 1);
+    let prefix = read_resource_journal(&path).unwrap();
+    assert_eq!(prefix.status, JournalStatus::Complete);
+    assert_eq!(
+        prefix.transitions.last().unwrap().state,
+        ResourceState::Released
+    );
+    assert!(prefix.recovery_plan().actions.is_empty());
+}
+
+#[test]
 fn completed_journal_compacts_to_latest_audit_state() {
     let temp = tempfile::tempdir().unwrap();
     let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();

@@ -45,7 +45,10 @@ const CANDIDATE_WAIT_NS: u64 = 100_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const EVENT_HISTORY_NS: i64 = 300_000_000;
 const REFUSED_FLOWS: usize = 4096;
-const PACKET_FILTER: &str = "tcp or udp";
+// Selection and subsequent client packets are outbound. Returned selected
+// bytes enter through the synthetic-reply path, so diverting unrelated
+// inbound traffic only adds work and latency to every other connection.
+const PACKET_FILTER: &str = "outbound and (tcp or udp)";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 const ACK_CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -371,6 +374,7 @@ fn inject_replies(
 
 struct ReceiveRuntimeInputs {
     handle: Arc<Handle>,
+    context: NativeObservationContext,
     sender: SyncSender<WorkPacket>,
     queued_candidates: Arc<AtomicUsize>,
     observer: Arc<Mutex<DirectSocketObserver>>,
@@ -465,6 +469,7 @@ fn observe_returned_ack(
 fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
     let ReceiveRuntimeInputs {
         handle,
+        context,
         sender,
         queued_candidates,
         observer,
@@ -533,6 +538,28 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 return Err(io::Error::other("selected packet queue saturated"));
             }
             continue;
+        }
+        // A managed direct target has one exact root. Once the socket table
+        // names a different PID, its packet cannot be selected by this route.
+        // Pass it through on the receive worker so unrelated traffic never
+        // waits behind a selected flow's proxy work. Unknown owners retain
+        // the bounded candidate path.
+        if let (Some(root_pid), Some(head)) = (context.direct_managed_root_pid(), head.as_ref()) {
+            let tuple = DirectTuple {
+                transport: head.transport,
+                local: head.source,
+                remote: head.destination,
+            };
+            if observer
+                .lock()
+                .expect("socket observer lock")
+                .current_owner_pid(tuple)
+                .is_some_and(|owner_pid| owner_pid != root_pid)
+            {
+                stats.record_bypass("other-managed-root-pid");
+                reinject(&handle, &stats, bytes, &address)?;
+                continue;
+            }
         }
         if address.outbound() {
             if let Some(head) = head
@@ -1813,6 +1840,7 @@ impl DirectPacketRuntime {
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let receive_route_sink = route_sink.clone();
+            let receive_context = route_context.clone();
             let queued_candidates = Arc::clone(&queued_candidates);
             let handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
@@ -1827,6 +1855,7 @@ impl DirectPacketRuntime {
                 .spawn(move || {
                     let result = receive_packets(ReceiveRuntimeInputs {
                         handle: Arc::clone(&handle),
+                        context: receive_context,
                         sender,
                         queued_candidates,
                         observer,

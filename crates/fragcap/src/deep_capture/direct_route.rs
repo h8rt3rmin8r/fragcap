@@ -132,6 +132,26 @@ pub fn select_direct_flow(
     if !packet.initial {
         return DirectAdmission::Bypassed("initial-packet-missed");
     }
+    if evidence.shutdown_scope.len() == 1
+        && evidence.launch_identity.as_ref().is_some_and(|identity| {
+            evidence.launch_pid == Some(identity.pid)
+                && std::fs::canonicalize(&identity.path)
+                    .ok()
+                    .zip(std::fs::canonicalize(&evidence.shutdown_scope[0]).ok())
+                    .is_some_and(|(actual, expected)| {
+                        actual
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&expected.to_string_lossy())
+                    })
+                && event.pid != identity.pid
+        })
+    {
+        return DirectAdmission::Bypassed("owner-not-final-client");
+    }
+    #[cfg(windows)]
+    if let Some(flow) = managed_direct_root_flow(evidence, event, packet) {
+        return DirectAdmission::Selected(flow);
+    }
     let inception = ConnectionInception {
         state: "exact",
         reason: "windivert-socket-event",
@@ -146,7 +166,10 @@ pub fn select_direct_flow(
     if owner.state != "exact" {
         return DirectAdmission::Unavailable("process-generation-unproven");
     }
-    if owner.role.as_deref() != Some("client") {
+    let direct_root_target = owner.role.as_deref() == Some("target")
+        && evidence.launch_pid == Some(event.pid)
+        && evidence.shutdown_scope.len() == 1;
+    if owner.role.as_deref() != Some("client") && !direct_root_target {
         return DirectAdmission::Bypassed("owner-not-final-client");
     }
     let Some(process_instance_id) = owner.process_instance_id else {
@@ -163,6 +186,62 @@ pub fn select_direct_flow(
         pid: event.pid,
         process_instance_id,
         process_image,
+    })
+}
+
+#[cfg(windows)]
+fn managed_direct_root_flow(
+    evidence: &CaptureProcessEvidence,
+    event: DirectSocketEvent,
+    packet: DirectPacketHead,
+) -> Option<OriginalFlow> {
+    // The managed root's query-only process object is a generation receipt
+    // available before ETW delivers its start event. This path applies only
+    // to a single exact direct target, never a publisher or platform root.
+    if evidence.events_unretained != 0
+        || evidence.unparseable_events != 0
+        || evidence.watcher_ended
+        || evidence.watcher_report.as_ref()?.lost_anything()
+        || evidence.shutdown_scope.len() != 1
+    {
+        return None;
+    }
+    let identity = evidence.launch_identity.as_ref()?;
+    if evidence.launch_pid != Some(event.pid) || identity.pid != event.pid {
+        return None;
+    }
+    let operator = crate::managed_shutdown::ProcessIdentity::current().ok()?;
+    if !identity.same_user_session(&operator) {
+        return None;
+    }
+    let expected = std::fs::canonicalize(&evidence.shutdown_scope[0]).ok()?;
+    let actual = std::fs::canonicalize(&identity.path).ok()?;
+    if !expected
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&actual.to_string_lossy())
+    {
+        return None;
+    }
+    let created = identity.created_unix_nanos();
+    let earliest = i128::from(evidence.launch_earliest_at?.as_nanos());
+    let latest = i128::from(evidence.launch_at?.as_nanos());
+    if created < earliest.saturating_sub(1_000_000_000)
+        || created > latest.saturating_add(1_000_000_000)
+        || created > i128::from(event.at_unix_ns) + i128::from(event.clock_error_ns)
+        || created > i128::from(packet.at_unix_ns) + i128::from(packet.clock_error_ns)
+        || identity.exited().ok()?
+    {
+        return None;
+    }
+    let image = actual.file_name()?.to_str()?.to_owned();
+    Some(OriginalFlow {
+        tuple: packet.tuple,
+        first_packet_at_ns: packet.at_unix_ns,
+        first_packet_clock_error_ns: packet.clock_error_ns,
+        endpoint_id: event.endpoint_id,
+        pid: event.pid,
+        process_instance_id: format!("process-{}-{created}", event.pid),
+        process_image: image,
     })
 }
 
@@ -793,6 +872,36 @@ mod tests {
                 }
             ),
             DirectAdmission::Bypassed("initial-packet-missed")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exact_managed_direct_root_receipt_selects_before_etw_arrives() {
+        let identity = crate::managed_shutdown::ProcessIdentity::current().unwrap();
+        let created = i64::try_from(identity.created_unix_nanos()).unwrap();
+        let now = created + 1_000_000;
+        let proof = CaptureProcessEvidence {
+            launch_pid: Some(identity.pid),
+            launch_earliest_at: Some(Timestamp::from_nanos(created - 1_000_000)),
+            launch_at: Some(Timestamp::from_nanos(now)),
+            launch_identity: Some(identity.clone()),
+            shutdown_scope: vec![identity.path.clone()],
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        };
+        let mut socket = event(identity.pid, 40000);
+        socket.at_unix_ns = now;
+        let mut first = packet(40000);
+        first.at_unix_ns = now + 1_000_000;
+        assert!(matches!(
+            select_direct_flow(&proof, &[socket], first),
+            DirectAdmission::Selected(_)
+        ));
+        socket.pid = identity.pid.wrapping_add(1);
+        assert!(matches!(
+            select_direct_flow(&proof, &[socket], first),
+            DirectAdmission::Bypassed("owner-not-final-client")
         ));
     }
 
