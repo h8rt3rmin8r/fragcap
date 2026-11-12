@@ -765,6 +765,7 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
                 "application.jsonl"
                     | "http.har"
                     | "proxy.jsonl"
+                    | "route.jsonl"
                     | "cleanup.jsonl"
                     | "process-trace.jsonl"
             ) {
@@ -1043,7 +1044,10 @@ pub(crate) fn manifest_declared_artifacts(
         }
         match role {
             Some("tls-key-log") => push_unique(stale_tls_key_logs, resolved),
-            Some("application-jsonl" | "har" | "proxy-log" | "process-trace") => {
+            Some(
+                "application-jsonl" | "har" | "proxy-log" | "proxy-lifecycle" | "route-lifecycle"
+                | "process-trace",
+            ) => {
                 push_unique(sensitive_artifacts, resolved);
             }
             _ => {}

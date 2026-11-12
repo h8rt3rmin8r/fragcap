@@ -45,6 +45,8 @@ mod policy;
 mod process;
 mod proposal;
 mod restart;
+mod route_events;
+mod route_report;
 mod routing;
 mod session;
 #[cfg(all(windows, feature = "direct-route"))]
@@ -73,14 +75,16 @@ pub use native::{
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,
     compatibility_fact_candidates_in_windows, compatibility_owner_role,
-    observation_is_correlated_to_final_client, observation_proves_final_client_ca_acceptance,
-    observed_protocol_candidates, observed_protocol_candidates_in_windows,
-    terminal_calibration_outcome, terminal_calibration_outcome_in_windows,
-    validate_compatibility_prerequisites,
+    observation_has_direct_client_transfer, observation_is_correlated_to_final_client,
+    observation_proves_final_client_ca_acceptance, observed_protocol_candidates,
+    observed_protocol_candidates_in_windows, terminal_calibration_outcome,
+    terminal_calibration_outcome_in_windows, validate_compatibility_prerequisites,
 };
 pub use process::*;
 pub use proposal::*;
 pub use restart::*;
+pub use route_events::*;
+pub use route_report::*;
 pub use routing::*;
 pub use session::{DeepCapture, DeepCaptureSession, PreparedSession};
 pub use windivert_component::verify_windivert_component;

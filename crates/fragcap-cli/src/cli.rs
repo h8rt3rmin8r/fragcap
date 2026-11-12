@@ -540,8 +540,8 @@ pub struct DeepCaptureArgs {
 
     /// Select which managed process roles may receive application inspection.
     ///
-    /// Auto selects game-only inspection for launcher-mediated targets and
-    /// launch-chain inspection for direct targets before any effect begins.
+    /// Auto selects launch-chain inspection for every managed launch.
+    /// Select game to inspect only the final game client.
     #[arg(
         long,
         value_enum,
@@ -879,6 +879,14 @@ pub enum BundleCommand {
         /// The source Deep Capture bundle, which is never modified.
         bundle: PathBuf,
         /// The new destination directory.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Publish a bounded, source-preserving direct-route diagnosis.
+    DebugReport {
+        /// A complete or partial Deep Capture bundle.
+        bundle: PathBuf,
+        /// A new JSON report path outside the source bundle.
         #[arg(long)]
         out: PathBuf,
     },

@@ -58,6 +58,8 @@ pub struct DirectTcpBridge {
     client_send_closed: bool,
     proxy_send_closed: bool,
     stack_send_closed: bool,
+    client_to_upstream: u64,
+    upstream_to_client: u64,
 }
 
 impl DirectTcpBridge {
@@ -72,17 +74,30 @@ impl DirectTcpBridge {
             client_send_closed: false,
             proxy_send_closed: false,
             stack_send_closed: false,
+            client_to_upstream: 0,
+            upstream_to_client: 0,
         })
+    }
+
+    pub fn transferred_bytes(&self) -> (u64, u64) {
+        (self.client_to_upstream, self.upstream_to_client)
     }
 
     pub fn ingest_diverted(
         &mut self,
         packet: &[u8],
-        kernel_validated_ipv4: bool,
+        ip_checksum_valid: bool,
+        tcp_checksum_valid: bool,
+        selected_outbound: bool,
         now_ms: i64,
     ) -> Result<Vec<Vec<u8>>, DirectBridgeError> {
-        self.stack
-            .ingest_diverted(packet, now_ms, kernel_validated_ipv4)?;
+        self.stack.ingest_diverted(
+            packet,
+            now_ms,
+            ip_checksum_valid,
+            tcp_checksum_valid,
+            selected_outbound,
+        )?;
         self.poll(now_ms)
     }
 
@@ -106,6 +121,7 @@ impl DirectTcpBridge {
                 Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
                 Ok(count) => {
                     self.to_proxy.drain(..count);
+                    self.client_to_upstream = self.client_to_upstream.saturating_add(count as u64);
                 }
                 Err(error)
                     if matches!(
@@ -143,6 +159,7 @@ impl DirectTcpBridge {
                 break;
             }
             self.to_client.drain(..sent);
+            self.upstream_to_client = self.upstream_to_client.saturating_add(sent as u64);
         }
         if self.proxy_send_closed && self.to_client.is_empty() && !self.stack_send_closed {
             self.stack.close_send(now_ms);
@@ -411,7 +428,10 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "bridge stalled");
             iface.poll(Instant::from_millis(tick), &mut device, &mut sockets);
             while let Some(packet) = device.pop_egress() {
-                for reply in bridge.ingest_diverted(&packet, false, tick).unwrap() {
+                for reply in bridge
+                    .ingest_diverted(&packet, false, false, true, tick)
+                    .unwrap()
+                {
                     device.push(&reply).unwrap();
                 }
             }

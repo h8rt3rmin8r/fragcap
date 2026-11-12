@@ -4,13 +4,15 @@
 
 use std::{collections::VecDeque, net::IpAddr};
 
-use fragcap_core::{HeaderParser, InterfaceAddrs, LinkType, ParseOutcome, Proto};
+use fragcap_core::{
+    parse::raw_transport_head, HeaderParser, InterfaceAddrs, LinkType, ParseOutcome, Proto,
+};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     socket::tcp,
     time::Instant,
-    wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Packet},
+    wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Packet, TcpPacket},
 };
 
 use super::direct_route::DirectTuple;
@@ -196,27 +198,49 @@ impl TcpFlowStack {
         Ok(())
     }
 
-    /// WinDivert marks some loopback IPv4 headers as kernel-validated even
-    /// though their wire checksum is unfinished. Normalize only that header
-    /// for the private stack; never modify the packet used for reinjection.
+    /// Normalize unfinished checksums on an exact selected local outbound
+    /// packet for the private TCP stack. The original packet is never changed.
     pub fn ingest_diverted(
         &mut self,
         packet: &[u8],
         now_ms: i64,
-        kernel_validated_ipv4: bool,
+        ip_checksum_valid: bool,
+        tcp_checksum_valid: bool,
+        selected_outbound: bool,
     ) -> Result<(), StackError> {
+        let head = raw_transport_head(packet).map_err(|_| StackError::FlowMismatch)?;
+        if head.transport != Proto::Tcp {
+            return Err(StackError::FlowMismatch);
+        }
+        let mut normalized = None::<Vec<u8>>;
         if packet.first().is_some_and(|version| version >> 4 == 4) {
             let header = Ipv4Packet::new_checked(packet).map_err(|_| StackError::FlowMismatch)?;
             if !header.verify_checksum() {
-                if !kernel_validated_ipv4 {
+                if !ip_checksum_valid && !selected_outbound {
                     return Err(StackError::UntrustedChecksum);
                 }
-                let mut normalized = packet.to_vec();
-                Ipv4Packet::new_unchecked(&mut normalized).fill_checksum();
-                return self.ingest(&normalized, now_ms);
+                let bytes = normalized.get_or_insert_with(|| packet.to_vec());
+                Ipv4Packet::new_unchecked(bytes.as_mut_slice()).fill_checksum();
             }
         }
-        self.ingest(packet, now_ms)
+        let source = ip_address(head.source.ip());
+        let destination = ip_address(head.destination.ip());
+        let bytes = normalized.as_deref().unwrap_or(packet);
+        let transport = bytes
+            .get(head.transport_offset..head.transport_offset + head.transport_len)
+            .ok_or(StackError::FlowMismatch)?;
+        let tcp = TcpPacket::new_checked(transport).map_err(|_| StackError::FlowMismatch)?;
+        if !tcp.verify_checksum(&source, &destination) {
+            if !tcp_checksum_valid && !selected_outbound {
+                return Err(StackError::UntrustedChecksum);
+            }
+            let bytes = normalized.get_or_insert_with(|| packet.to_vec());
+            let transport = bytes
+                .get_mut(head.transport_offset..head.transport_offset + head.transport_len)
+                .ok_or(StackError::FlowMismatch)?;
+            TcpPacket::new_unchecked(transport).fill_checksum(&source, &destination);
+        }
+        self.ingest(normalized.as_deref().unwrap_or(packet), now_ms)
     }
 
     pub fn poll(&mut self, now_ms: i64) {
@@ -345,12 +369,21 @@ mod tests {
                 if !checked_kernel_checksum {
                     let mut unfinished = packet.clone();
                     unfinished[10..12].copy_from_slice(&[0, 0]);
+                    let head = raw_transport_head(&unfinished).unwrap();
+                    unfinished[head.transport_offset + 16..head.transport_offset + 18]
+                        .copy_from_slice(&[0, 0]);
+                    let original = unfinished.clone();
                     assert_eq!(
-                        server.ingest_diverted(&unfinished, now, false),
+                        server.ingest_diverted(&unfinished, now, false, false, false),
                         Err(StackError::UntrustedChecksum)
                     );
-                    server.ingest_diverted(&unfinished, now, true).unwrap();
-                    server.ingest_diverted(&unfinished, now, true).unwrap();
+                    server
+                        .ingest_diverted(&unfinished, now, false, false, true)
+                        .unwrap();
+                    server
+                        .ingest_diverted(&unfinished, now, false, false, true)
+                        .unwrap();
+                    assert_eq!(unfinished, original);
                     checked_kernel_checksum = true;
                 } else {
                     server.ingest(&packet, now).unwrap();

@@ -20,6 +20,20 @@ use fragcap::targets::{
     CompatibilityRoutingStrategy, Selection, Store, TargetClassification, TargetEntry,
 };
 
+#[test]
+fn auto_inspection_help_matches_resolved_launch_chain_default() {
+    let (code, help, error) = run(&["deep-capture", "--help"]);
+    assert_eq!(code, 0, "{error}");
+    assert!(
+        help.contains("Auto selects launch-chain inspection for every managed launch."),
+        "{help}"
+    );
+    assert!(
+        !help.contains("game-only inspection for launcher-mediated"),
+        "{help}"
+    );
+}
+
 fn controlled_environment() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))

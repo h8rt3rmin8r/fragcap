@@ -5,7 +5,7 @@
   "release_features": ["direct-route", "etw", "live", "socket-table"],
   "workspace_msrv": "1.89",
   "graph_views": [
-    {"name": "linux-all", "digest": "7bfe7c5ff293d0bdbe59be9d1d8f9f9e57d2e7039a7cc3924e065f199a9c4019", "packages": 188, "edges": 461},
+    {"name": "linux-all", "digest": "8fa1685103aa0374be9a8cc6915109d817fbfb594dfc0a223af6f3e52981c5e7", "packages": 188, "edges": 461},
     {"name": "windows-all", "digest": "56ccd5733d3a9b839b4470c0df195562e1faaf211d04aabb49401cf2a0de3b1b", "packages": 197, "edges": 455},
     {"name": "windows-release", "digest": "99a5d3e542d3e6fb838908f57c8593b483cb454cd4a984d08a32ba6f46955235", "packages": 172, "edges": 382}
   ],

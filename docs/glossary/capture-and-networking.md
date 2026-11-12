@@ -202,6 +202,8 @@ A calibration proposal is a deterministic read-only projection that identifies a
 
 The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. Its immutable workflow records requested and effective scope, handling policy, and separately selected retry and packet-only fallback authority. A declared launch-chain failure can create at most one fresh exact-game successor after cleanup and target authority are revalidated. A declared packet-only fallback retains eligible passive observations under their actual window and does not create positive inspection evidence.
 
+For current Deep Capture planning, `auto` resolves to launch-chain application inspection for direct and launcher-mediated targets. Explicit `game` selects game-only application inspection while retaining the managed packet scope. A direct-route calibration fact requires exact final-client route and client transfer evidence; an upstream connection or passive packet absence alone does not establish reachability.
+
 {: .matters }
 > Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.
 

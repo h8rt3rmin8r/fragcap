@@ -656,6 +656,18 @@ fragcap bundle export .\fragcap-session --out .\fragcap-session-share
 | --- | --- | --- | --- | --- |
 | `--out` | open | none | all | Required destination directory for the new share copy. |
 
+### `bundle debug-report`
+
+Export a bounded route diagnosis from a complete or partial native bundle to a separate JSON file. The source bundle stays unchanged, and the report omits exact endpoints and process identities while naming unavailable evidence.
+
+```powershell
+fragcap bundle debug-report .\fragcap-session --out .\route-debug.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--out` | open | none | all | Required new JSON file outside the source bundle. |
+
 ### `fresh-start`
 
 Preview or irreversibly remove canonical fragcap user data. Preview is read-only and emits an inventory identifier. Execution requires both `--confirm` with that exact unchanged identifier and `--yes`. Current-user scope covers only `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap`. All-users scope requires an elevated Administrator session and a report path. It enumerates Windows profiles through the operating system profile authority rather than searching the filesystem. Deep Capture evidence in another profile remains for current-user recovery under that profile's Windows trust identity, so such an all-users result is partial until that recovery is complete.

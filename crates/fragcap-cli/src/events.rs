@@ -371,6 +371,11 @@ pub enum Event {
         sensitivity: String,
         required: bool,
     },
+    /// Bounded direct-route terminal facts from the same bundle evidence as debug report.
+    DeepCaptureRouteSummary {
+        session_id: String,
+        summary: serde_json::Value,
+    },
     /// Deep Capture cleanup reported a resource outcome.
     DeepCaptureCleanup {
         session_id: String,
@@ -475,6 +480,7 @@ impl Event {
             Event::DeepCaptureOutputAccess { .. } => "deep_capture.output_access",
             Event::SessionCollection { .. } => "session.collection",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
+            Event::DeepCaptureRouteSummary { .. } => "deep_capture.route_summary",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
             Event::DeepCaptureComplete { .. } => "deep_capture.complete",
             #[cfg(all(feature = "etw", windows))]
@@ -1293,6 +1299,15 @@ impl Event {
                 write_json_string(sensitivity, &mut line);
                 line.push_str(",\"required\":");
                 line.push_str(if *required { "true" } else { "false" });
+            }
+            Event::DeepCaptureRouteSummary {
+                session_id,
+                summary,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"summary\":");
+                line.push_str(&summary.to_string());
             }
             Event::DeepCaptureCleanup {
                 session_id,
