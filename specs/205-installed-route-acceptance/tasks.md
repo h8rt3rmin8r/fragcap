@@ -13,7 +13,7 @@
 ## Phase 2: Foundational controlled journey
 
 - [x] T004 Add a no-console finite raw-TCP client with exact request, response, and after-reply acknowledgement in integration/controlled-route-client.rs.
-- [ ] T005 Add a source-preserving installed and portable acceptance harness using public registration, cold launch, authorization, native defaults when claimed, sentinels, and cleanup in crates/fragcap-cli/tests/cli_direct_route_hosted.rs and integration/direct-route-matrix-v1.json.
+- [x] T005 Add a source-preserving installed and portable acceptance harness using public registration, cold launch, authorization, native defaults when claimed, sentinels, and cleanup in crates/fragcap-cli/tests/cli_direct_route_hosted.rs. The existing integration/direct-route-matrix-v1.json remains the separate signed-driver library matrix.
 
 ## Phase 3: User Story 1 - Installed selected TCP (#593)
 

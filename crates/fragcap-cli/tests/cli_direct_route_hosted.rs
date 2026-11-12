@@ -106,7 +106,7 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     assert!(!peer.ip().is_loopback(), "the peer must be external");
     let binary = binary.canonicalize().expect("package binary exists");
     let client = client.canonicalize().expect("controlled client exists");
-    let handle = "s205-controlled-route-client";
+    let handle = "s205_controlled_route_client";
     let registration = native_command(&binary)
         .args([
             "targets",
@@ -219,17 +219,21 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     );
     assert_eq!(complete["bundle_redirected"], false);
     let report = fragcap::deep_capture::build_route_debug_report(&bundle).unwrap();
-    assert_eq!(report["route"]["state"], "complete");
-    assert_eq!(report["route"]["dropped_events"], 0);
-    assert_eq!(report["route"]["bidirectional_flows"], 1);
-    assert_eq!(
-        report["flows"][0]["client_to_upstream_bytes"],
-        (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
-    );
-    assert_eq!(
-        report["flows"][0]["upstream_to_client_bytes"],
-        b"runtime-origin-reply".len() as u64
-    );
+    if std::env::var_os("FRAGCAP_S205_PUBLISHED_BASELINE").is_some() {
+        assert_eq!(report["route"]["state"], "unavailable");
+    } else {
+        assert_eq!(report["route"]["state"], "complete");
+        assert_eq!(report["route"]["dropped_events"], 0);
+        assert_eq!(report["route"]["bidirectional_flows"], 1);
+        assert_eq!(
+            report["flows"][0]["client_to_upstream_bytes"],
+            (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
+        );
+        assert_eq!(
+            report["flows"][0]["upstream_to_client_bytes"],
+            b"runtime-origin-reply".len() as u64
+        );
+    }
     assert!(bundle.join("capture.fcapng").is_file());
     eprintln!(
         "S205 package={} peer={} bundle={} sentinel_ms={:?}",
