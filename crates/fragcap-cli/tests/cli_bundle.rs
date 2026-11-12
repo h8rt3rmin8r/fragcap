@@ -160,6 +160,41 @@ fn export_is_a_separate_copy_with_an_exhaustive_manifest() {
 }
 
 #[test]
+fn debug_report_exports_partial_route_without_changing_source() {
+    let root = tempfile::tempdir().unwrap();
+    let bundle = make_bundle(root.path());
+    let route = bundle.join("route.jsonl");
+    let prefix = b"{\"type\":\"lifecycle.header\",\"schema_version\":1,\"stream\":\"route\",\"session_id\":\"private-session\"}\n";
+    std::fs::write(&route, prefix).unwrap();
+    let destination = root.path().join("debug-report.json");
+    let (code, output, error) = run(&[
+        "--json",
+        "bundle",
+        "debug-report",
+        &bundle.to_string_lossy(),
+        "--out",
+        &destination.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "{output} {error}");
+    let response: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(response["event"], "bundle.debug-report");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+    assert_eq!(report["route"]["state"], "crash-prefix");
+    assert_eq!(report["route"]["complete"], false);
+    assert!(!report.to_string().contains("private-session"));
+    assert_eq!(std::fs::read(&route).unwrap(), prefix);
+    let (repeat, _, _) = run(&[
+        "bundle",
+        "debug-report",
+        &bundle.to_string_lossy(),
+        "--out",
+        &destination.to_string_lossy(),
+    ]);
+    assert_ne!(repeat, 0);
+}
+
+#[test]
 fn collection_preview_never_offers_apply_for_missing_or_unowned_bundle() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("missing bundle");

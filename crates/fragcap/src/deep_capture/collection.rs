@@ -737,6 +737,7 @@ fn auxiliary_paths() -> BTreeSet<PathBuf> {
         "capture.fcapng",
         "application.jsonl",
         "proxy.jsonl",
+        "route.jsonl",
         "cleanup.jsonl",
         "process-trace.jsonl",
         "compatibility.json",

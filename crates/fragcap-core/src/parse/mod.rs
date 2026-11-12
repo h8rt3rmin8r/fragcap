@@ -109,6 +109,10 @@ pub struct RawTransportHead {
     pub source: SocketAddr,
     pub destination: SocketAddr,
     pub initial_tcp_syn: bool,
+    pub tcp_ack: bool,
+    pub tcp_flags: Option<u8>,
+    pub transport_offset: usize,
+    pub transport_len: usize,
 }
 
 pub fn raw_transport_head(packet: &[u8]) -> Result<RawTransportHead, ParseReject> {
@@ -122,7 +126,7 @@ pub fn raw_transport_head(packet: &[u8]) -> Result<RawTransportHead, ParseReject
         .get(net.transport_offset..net.extent)
         .ok_or(ParseReject::ShortHeader)?;
     let (proto, source_port, destination_port) = transport::ports(net.proto, transport)?;
-    let initial_tcp_syn = if proto == Proto::Tcp {
+    let (initial_tcp_syn, tcp_ack, tcp_flags) = if proto == Proto::Tcp {
         if transport.len() < 20 {
             return Err(ParseReject::ShortHeader);
         }
@@ -133,15 +137,23 @@ pub fn raw_transport_head(packet: &[u8]) -> Result<RawTransportHead, ParseReject
         if header_len > transport.len() {
             return Err(ParseReject::ShortHeader);
         }
-        transport[13] & 0x02 != 0 && transport[13] & 0x10 == 0
+        (
+            transport[13] & 0x02 != 0 && transport[13] & 0x10 == 0,
+            transport[13] & 0x10 != 0,
+            Some(transport[13]),
+        )
     } else {
-        false
+        (false, false, None)
     };
     Ok(RawTransportHead {
         transport: proto,
         source: SocketAddr::new(net.src, source_port),
         destination: SocketAddr::new(net.dst, destination_port),
         initial_tcp_syn,
+        tcp_ack,
+        tcp_flags,
+        transport_offset: net.transport_offset,
+        transport_len: transport.len(),
     })
 }
 

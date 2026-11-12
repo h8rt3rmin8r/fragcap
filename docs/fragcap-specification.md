@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.126-draft \
+**Version:** 0.1.127-draft \
 **Applies-To:** 0.11.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-11-10 \
+**Date:** 2026-11-12 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -216,6 +216,7 @@ enforcement.
 | 0.1.124-draft | 2026-11-10 | Codex | S201 qualifies the candidate owner wait, integrates the composite direct route into guided calibration and ordinary Deep Capture, versions its compatibility facts, and reconciles the packaged operator journey. Published v0.10.14 identity remains unchanged. Updates sections 2, 17, 19, 24, and 27. |
 | 0.1.125-draft | 2026-11-10 | Codex | S202 prepares v0.11.0 from accepted S197 through S201 with coherent source, package, changelog, notes, and candidate documentation identities. Public v0.10.14 markers remain authoritative until tagged publication and independent readback. Updates sections 1, 22, 24, and 27. |
 | 0.1.126-draft | 2026-11-11 | Codex | S202 reconciles the accepted v0.11.0 tag, certified public files, registry crates, and current documentation only after independent readback. Updates sections 1, 22, 24, and 27. |
+| 0.1.127-draft | 2026-11-12 | Codex | S203 separates selected direct-route client delivery from an upstream CONNECT and passive packet presence, and adds bounded route diagnostics and a source-preserving debug report. Corrects active auto scope help. Updates sections 17, 26, and 27; published v0.11.0 identity is unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4818,6 +4819,10 @@ in the final drop count.
 
 ### 26.3 Diagnostics
 
+S203 records selected direct TCP and supported UDP route stages in a bounded, protected `route.jsonl` stream. Each selected flow has a session-local identity, source sequence and timestamp, first-packet clock uncertainty, proxy attempt, synthetic response generation and send outcome, client response or datagram evidence, directional transfer counts, and terminal reason. Queue loss and crash prefixes remain explicit. The stream is sensitive bundle content and is omitted from ordinary share copies. A successful upstream proxy connection or WinDivert send is not proof of a client-visible exchange.
+
+`fragcap bundle debug-report <bundle> --out <file>` derives a separate bounded JSON report from complete or partial route, proxy, compatibility, manifest, and cleanup sources. It does not modify the source bundle. The report replaces exact endpoints and process identity with opaque flow labels, records source gaps and packet-correlation availability, and distinguishes a connected zero-byte tunnel from client transfer. Direct-route calibration may accept an exact final-client receipt with observed bidirectional TCP bytes even when WinDivert consumed the original packet before Npcap retained it; packet evidence stays independently unavailable. A handshake without transfer is not a positive TCP fact.
+
 S171 source adds whole-session retention and garbage collection under issue #458. Newly generated Deep Capture and calibration output declares managed history limits of 30 days, 20 completed sessions and 2 GiB of logical contents, oldest eligible first. Terminal manifest publication is the age origin. Explicit `--retain-bundle` or `--bundle` destinations, including guided sibling attempts, retain evidence until explicit cleanup. Historical evidence keeps its previous promise. Authorization, retained metadata and terminal output expose policy; no release of this source correction is implied.
 
 `fragcap bundle collect` previews the configured root with eligible, retained, unresolved and empty sessions, recoverable logical bytes, refusal reasons and scan limits. `--include-retained` explicitly selects historical retained evidence; `--bundle <PATH>` selects a custom destination. `--authorize <PROPOSAL_ID>` applies only the unchanged exact preview. Applying deletes eligible bundle contents while preserving the container; retained or custom evidence requires explicit wider selection, and empty-container removal requires separate `--purge-empty`. S178 recommends Apply only on Windows for a complete preview with eligible work and no unresolved authority, and retains concrete refusal detail in human and structured reports. Missing or unowned paths get a read-only next step. Cleanup and export reject missing bundle paths before suggesting any destructive retry. Automatic maintenance runs after an authorized effectful shared session, excludes its returned bundle and never runs from plan-only or read-only Doctor. It preserves saved/custom output, active generations and recovery-required authority.
@@ -5238,6 +5243,8 @@ v0.10.14 publishes S189 through S195 from merged PR #568 at `5efb38ee93daff140e1
 v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 publication with all release jobs green, certified Windows ZIP/MSI/catalog bytes, retained owner administrator bypass, normal owner environment approval and all ten crates at 0.10.2. Native Deep Capture implementation and documentation are complete for the shipped support boundary. Independent security review and universal field compatibility are not claimed.
 
 S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability. S155 binds a published review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. S159 publishes these changes as v0.10.2 and reconciles their exact public evidence. These slices do not supply independent reviewer identity, and no such work is claimed as performed.
+
+S203 (`specs/203-direct-route-recovery-and-debug-report`) groups active direct-route defects #593 and #594, native diagnostic export #595, and auto-scope wording #598 after v0.11.0 publication. It separates selected-flow client delivery and bidirectional TCP transfer from upstream proxy connection and passive original-packet presence, retains bounded protected route-stage evidence, and exports a source-preserving report with opaque flow labels. External non-loopback and package qualification remain explicit acceptance gates.
 
 ### 27.4 Critical Path
 

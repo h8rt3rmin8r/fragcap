@@ -96,6 +96,7 @@ pub struct DirectPacketHead {
 pub struct OriginalFlow {
     pub tuple: DirectTuple,
     pub first_packet_at_ns: i64,
+    pub first_packet_clock_error_ns: u64,
     pub endpoint_id: u64,
     pub pid: u32,
     pub process_instance_id: String,
@@ -157,6 +158,7 @@ pub fn select_direct_flow(
     DirectAdmission::Selected(OriginalFlow {
         tuple: packet.tuple,
         first_packet_at_ns: packet.at_unix_ns,
+        first_packet_clock_error_ns: packet.clock_error_ns,
         endpoint_id: event.endpoint_id,
         pid: event.pid,
         process_instance_id,

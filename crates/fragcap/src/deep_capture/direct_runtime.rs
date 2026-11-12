@@ -22,13 +22,18 @@ use fragcap_core::{
 use zeroize::Zeroizing;
 
 use super::{
-    direct_bridge::{connect_authenticated_socks5_with_hook, DirectTcpBridge},
+    direct_bridge::{connect_authenticated_socks5_with_hook, DirectBridgeError, DirectTcpBridge},
     direct_observer::{DirectSocketObserver, SocketObserverStats},
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
         DirectSocketEvent, DirectTuple, PacketDisposition, RouteReceiptId,
     },
+    direct_stack::StackError,
     direct_udp::{build_udp_reply, DirectUdpAssociation},
+    native::DirectRouteProof,
+    route_events::{
+        RouteEvent, RouteEventKind, RouteEventLease, RouteEventSink, RouteStreamOutcome,
+    },
     windivert::{sample_qpc_anchor, Address, Api, Handle, NETWORK_LAYER},
     NativeObservationContext,
 };
@@ -91,6 +96,30 @@ pub struct DirectRuntimeStats {
     pub pre_receive_loss_unmeasurable: bool,
     pub watchdog_released: bool,
     pub watchdog_release_after_progress_ms: u64,
+    pub route_stream: Option<RouteStreamOutcome>,
+}
+
+fn record_route(sink: Option<&RouteEventSink>, flow_id: u64, kind: RouteEventKind) {
+    if let Some(sink) = sink {
+        let _ = sink.record(RouteEvent {
+            flow_id,
+            at_ns: unix_now_ns().unwrap_or(0),
+            clock_error_ns: None,
+            kind,
+        });
+    }
+}
+
+fn bridge_failure_reason(error: &DirectBridgeError) -> &'static str {
+    match error {
+        DirectBridgeError::Stack(StackError::UntrustedChecksum) => "untrusted-ip-checksum",
+        DirectBridgeError::Stack(StackError::FlowMismatch) => "private-stack-flow-mismatch",
+        DirectBridgeError::Stack(StackError::PacketTooLarge) => "private-stack-packet-too-large",
+        DirectBridgeError::Stack(StackError::QueueFull) => "private-stack-queue-full",
+        DirectBridgeError::Stack(StackError::InvalidScope) => "private-stack-invalid-scope",
+        DirectBridgeError::Stack(StackError::ListenFailed) => "private-stack-listen-failed",
+        DirectBridgeError::Io(_) => "proxy-helper-io-failed",
+    }
 }
 
 struct SharedStats {
@@ -207,13 +236,52 @@ fn inject_replies(
     stats: &SharedStats,
     replies: Vec<Vec<u8>>,
     address: Address,
+    route_events: Option<&RouteEventSink>,
+    flow_id: u64,
+    proof: Option<&Arc<Mutex<DirectRouteProof>>>,
 ) -> io::Result<()> {
-    let address = address.response_address();
+    if !replies.is_empty() {
+        let (if_idx, sub_if_idx) = address.network_interface();
+        record_route(
+            route_events,
+            flow_id,
+            RouteEventKind::SyntheticReplyGenerated {
+                packets: replies.len() as u32,
+                if_idx,
+                sub_if_idx,
+            },
+        );
+    }
     for reply in replies {
         if !matches!(handle.send(&reply, &address), Ok(sent) if sent == reply.len()) {
+            if let Some(proof) = proof {
+                proof.lock().expect("direct proof lock").reply_failed = true;
+            }
+            record_route(
+                route_events,
+                flow_id,
+                RouteEventKind::SyntheticReplyFailed {
+                    reason: "send-failed",
+                },
+            );
+            record_route(
+                route_events,
+                flow_id,
+                RouteEventKind::Terminal {
+                    reason: "reply-injection-failed",
+                },
+            );
             stats.synthetic_reply_lost.fetch_add(1, Ordering::Relaxed);
             return Err(io::Error::other("synthetic TCP reply injection failed"));
         }
+        if let Some(proof) = proof {
+            proof.lock().expect("direct proof lock").reply_sent = true;
+        }
+        record_route(
+            route_events,
+            flow_id,
+            RouteEventKind::SyntheticReplySent { packets: 1 },
+        );
     }
     Ok(())
 }
@@ -279,7 +347,8 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 .copied();
             let observer = observer.lock().expect("socket observer lock");
             let event_health = observer.stats();
-            (selected_endpoint.is_some()
+            (address.outbound()
+                && selected_endpoint.is_some()
                 && event_health.capacity_lost == 0
                 && event_health.clock_lost == 0
                 && !stats.event_history_overflow.load(Ordering::Acquire)
@@ -385,6 +454,9 @@ struct ActiveTcp {
     endpoint_id: u64,
     receipt: RouteReceiptId,
     helper: DirectTuple,
+    flow_id: u64,
+    last_transfer: (u64, u64),
+    proof: Arc<Mutex<DirectRouteProof>>,
 }
 
 struct ActiveUdp {
@@ -394,6 +466,8 @@ struct ActiveUdp {
     receipt: RouteReceiptId,
     relay: DirectTuple,
     control: DirectTuple,
+    flow_id: u64,
+    proof: Arc<Mutex<DirectRouteProof>>,
 }
 
 struct ProcessRuntimeInputs {
@@ -410,11 +484,17 @@ struct ProcessRuntimeInputs {
     proxy: std::net::SocketAddr,
     password: Zeroizing<String>,
     max_flows: usize,
+    route_events: Option<RouteEventSink>,
 }
 
 struct ActiveFlows<'a> {
     tcp: &'a mut BTreeMap<DirectTuple, ActiveTcp>,
     udp: &'a mut BTreeMap<DirectTuple, ActiveUdp>,
+}
+
+struct ForwardEvidence<'a> {
+    started: Instant,
+    route_events: Option<&'a RouteEventSink>,
 }
 
 fn prune_socket_events(events: &mut Vec<DirectSocketEvent>, cutoff_unix_ns: i64) {
@@ -442,8 +522,12 @@ fn forward_active_packet(
     flows: ActiveFlows<'_>,
     handle: &Handle,
     stats: &SharedStats,
-    started: Instant,
+    evidence: ForwardEvidence<'_>,
 ) -> io::Result<bool> {
+    let ForwardEvidence {
+        started,
+        route_events,
+    } = evidence;
     if tuple.transport == Proto::Udp {
         let Some(flow) = flows.udp.get_mut(&tuple) else {
             return Ok(false);
@@ -466,7 +550,23 @@ fn forward_active_packet(
             return Err(io::Error::other(format!("selected UDP relay: {error}")));
         }
         packet_finished(stats, PacketDisposition::Consumed)?;
-        flow.address = address;
+        {
+            let mut proof = flow.proof.lock().expect("direct proof lock");
+            proof.client_to_upstream = proof
+                .client_to_upstream
+                .saturating_add(datagram.payload.len() as u64);
+            proof.client_datagrams = proof.client_datagrams.saturating_add(1);
+        }
+        record_route(
+            route_events,
+            flow.flow_id,
+            RouteEventKind::DatagramTransfer {
+                client_to_upstream: datagram.payload.len() as u64,
+                upstream_to_client: 0,
+                client_datagrams: 1,
+                peer_datagrams: 0,
+            },
+        );
         return Ok(true);
     }
     let Some(flow) = flows.tcp.get_mut(&tuple) else {
@@ -475,17 +575,58 @@ fn forward_active_packet(
     let replies = match flow.bridge.ingest_diverted(
         packet,
         address.ip_checksum_valid(),
+        address.tcp_checksum_valid(),
+        address.outbound(),
         started.elapsed().as_millis() as i64,
     ) {
         Ok(replies) => replies,
         Err(error) => {
+            record_route(
+                route_events,
+                flow.flow_id,
+                RouteEventKind::Terminal {
+                    reason: bridge_failure_reason(&error),
+                },
+            );
             packet_finished(stats, PacketDisposition::Lost)?;
             return Err(io::Error::other(format!("selected TCP bridge: {error}")));
         }
     };
     packet_finished(stats, PacketDisposition::Consumed)?;
-    flow.address = address;
-    inject_replies(handle, stats, replies, address)?;
+    if raw_transport_head(packet).is_ok_and(|head| head.tcp_ack) {
+        flow.proof.lock().expect("direct proof lock").client_ack = true;
+        record_route(
+            route_events,
+            flow.flow_id,
+            RouteEventKind::ClientResponse { ack: true },
+        );
+    }
+    let transferred = flow.bridge.transferred_bytes();
+    if transferred != flow.last_transfer {
+        {
+            let mut proof = flow.proof.lock().expect("direct proof lock");
+            proof.client_to_upstream = transferred.0;
+            proof.upstream_to_client = transferred.1;
+        }
+        record_route(
+            route_events,
+            flow.flow_id,
+            RouteEventKind::Transfer {
+                client_to_upstream: transferred.0,
+                upstream_to_client: transferred.1,
+            },
+        );
+        flow.last_transfer = transferred;
+    }
+    inject_replies(
+        handle,
+        stats,
+        replies,
+        flow.address,
+        route_events,
+        flow.flow_id,
+        Some(&flow.proof),
+    )?;
     Ok(true)
 }
 
@@ -504,6 +645,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         proxy,
         password,
         max_flows,
+        route_events,
     } = inputs;
     let started = Instant::now();
     let mut candidates = CandidateBuffer::new(PACKET_QUEUE, CANDIDATE_BYTES, CANDIDATE_WAIT_NS)
@@ -561,7 +703,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     },
                     &handle,
                     &stats,
-                    started,
+                    ForwardEvidence {
+                        started,
+                        route_events: route_events.as_ref(),
+                    },
                 )? {
                     reinject(&handle, &stats, &packet, &address)?;
                 }
@@ -583,6 +728,24 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     receipts.retire(receipt).map_err(|error| {
                         io::Error::other(format!("retire route receipt: {error:?}"))
                     })?;
+                }
+                for flow in active.values() {
+                    record_route(
+                        route_events.as_ref(),
+                        flow.flow_id,
+                        RouteEventKind::Terminal {
+                            reason: "runtime-stopped",
+                        },
+                    );
+                }
+                for flow in active_udp.values() {
+                    record_route(
+                        route_events.as_ref(),
+                        flow.flow_id,
+                        RouteEventKind::Terminal {
+                            reason: "runtime-stopped",
+                        },
+                    );
                 }
                 return Ok(());
             }
@@ -627,6 +790,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 .remove(&event.tuple);
             let retired = if let Some(flow) = active.remove(&event.tuple) {
                 debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+                record_route(
+                    route_events.as_ref(),
+                    flow.flow_id,
+                    RouteEventKind::Terminal {
+                        reason: "socket-closed",
+                    },
+                );
                 excluded
                     .lock()
                     .expect("helper route lock")
@@ -634,6 +804,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 Some(flow.receipt)
             } else if let Some(flow) = active_udp.remove(&event.tuple) {
                 debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+                record_route(
+                    route_events.as_ref(),
+                    flow.flow_id,
+                    RouteEventKind::Terminal {
+                        reason: "socket-closed",
+                    },
+                );
                 let mut helpers = excluded.lock().expect("helper route lock");
                 helpers.remove(&flow.relay);
                 helpers.remove(&flow.control);
@@ -780,7 +957,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 },
                                 &handle,
                                 &stats,
-                                started,
+                                ForwardEvidence {
+                                    started,
+                                    route_events: route_events.as_ref(),
+                                },
                             )?;
                         if !forwarded {
                             reinject(&handle, &stats, &packet, &address)?;
@@ -806,6 +986,59 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         };
                         let helper_open_earliest = unix_now_ns()?;
                         helper_id = helper_id.saturating_add(1);
+                        let proof = context.direct_proof_for(&flow).map_err(io::Error::other)?;
+                        let (if_idx, sub_if_idx) = address.network_interface();
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::Selected {
+                                protocol: "udp",
+                                local: flow.tuple.local,
+                                remote: flow.tuple.remote,
+                                pid: flow.pid,
+                                process_instance_id: flow.process_instance_id.clone(),
+                                endpoint_id: flow.endpoint_id,
+                                first_packet_at_ns: flow.first_packet_at_ns,
+                                first_packet_clock_error_ns: flow.first_packet_clock_error_ns,
+                                tcp_flags: None,
+                                packet_flags: address.flags,
+                                ip_checksum_valid: address.ip_checksum_valid(),
+                                if_idx,
+                                sub_if_idx,
+                                tcp_checksum_valid: false,
+                            },
+                        );
+                        let response_address = match address.response_address(flow.tuple.remote) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                record_route(
+                                    route_events.as_ref(),
+                                    helper_id,
+                                    RouteEventKind::ProxyRefused {
+                                        reason: "reply-interface-unavailable",
+                                    },
+                                );
+                                record_route(
+                                    route_events.as_ref(),
+                                    helper_id,
+                                    RouteEventKind::Terminal {
+                                        reason: "reply-interface-unavailable",
+                                    },
+                                );
+                                stats.record_bypass("reply-interface-unavailable");
+                                if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
+                                    reinject(&handle, &stats, &packet, &address)?;
+                                    return Err(io::Error::other("refused route ledger full"));
+                                }
+                                reinject(&handle, &stats, &packet, &address)?;
+                                continue;
+                            }
+                        };
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::ProxyAttempt,
+                        );
                         let now = started.elapsed().as_nanos() as u64;
                         let receipt = receipts
                             .issue(flow.clone(), now.saturating_add(10_000_000_000))
@@ -840,6 +1073,20 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         let association = match association {
                             Ok(association) => association,
                             Err(_) => {
+                                record_route(
+                                    route_events.as_ref(),
+                                    helper_id,
+                                    RouteEventKind::ProxyRefused {
+                                        reason: "socks5-association-failed",
+                                    },
+                                );
+                                record_route(
+                                    route_events.as_ref(),
+                                    helper_id,
+                                    RouteEventKind::Terminal {
+                                        reason: "proxy-refused",
+                                    },
+                                );
                                 receipts.retire(receipt).map_err(|error| {
                                     io::Error::other(format!(
                                         "retire refused UDP receipt: {error:?}"
@@ -855,6 +1102,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             }
                         };
                         let relay = association.relay_tuple()?;
+                        proof.lock().expect("direct proof lock").proxy_connected = true;
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::ProxyConnected {
+                                helper_local: relay.local,
+                                proxy_local: relay.remote,
+                            },
+                        );
                         let control = association.control_tuple()?;
                         let registered_at = unix_now_ns()?;
                         context
@@ -874,6 +1130,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         }
                         issued_receipts.push(receipt);
                         if let Err(error) = association.send(datagram.payload) {
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::Terminal {
+                                    reason: "first-datagram-send-failed",
+                                },
+                            );
                             packet_finished(&stats, PacketDisposition::Lost)?;
                             return Err(io::Error::other(format!(
                                 "first selected UDP packet: {error}"
@@ -884,15 +1147,32 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             .expect("selected route lock")
                             .insert(flow.tuple, flow.endpoint_id);
                         packet_finished(&stats, PacketDisposition::Consumed)?;
+                        {
+                            let mut proof = proof.lock().expect("direct proof lock");
+                            proof.client_to_upstream = datagram.payload.len() as u64;
+                            proof.client_datagrams = 1;
+                        }
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::DatagramTransfer {
+                                client_to_upstream: datagram.payload.len() as u64,
+                                upstream_to_client: 0,
+                                client_datagrams: 1,
+                                peer_datagrams: 0,
+                            },
+                        );
                         active_udp.insert(
                             flow.tuple,
                             ActiveUdp {
                                 association,
-                                address,
+                                address: response_address,
                                 endpoint_id: flow.endpoint_id,
                                 receipt,
                                 relay,
                                 control,
+                                flow_id: helper_id,
+                                proof,
                             },
                         );
                         continue;
@@ -903,6 +1183,61 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     }
                     let helper_open_earliest = unix_now_ns()?;
                     helper_id = helper_id.saturating_add(1);
+                    let proof = context.direct_proof_for(&flow).map_err(io::Error::other)?;
+                    let (if_idx, sub_if_idx) = address.network_interface();
+                    record_route(
+                        route_events.as_ref(),
+                        helper_id,
+                        RouteEventKind::Selected {
+                            protocol: "tcp",
+                            local: flow.tuple.local,
+                            remote: flow.tuple.remote,
+                            pid: flow.pid,
+                            process_instance_id: flow.process_instance_id.clone(),
+                            endpoint_id: flow.endpoint_id,
+                            first_packet_at_ns: flow.first_packet_at_ns,
+                            first_packet_clock_error_ns: flow.first_packet_clock_error_ns,
+                            tcp_flags: raw_transport_head(&packet)
+                                .ok()
+                                .and_then(|head| head.tcp_flags),
+                            packet_flags: address.flags,
+                            ip_checksum_valid: address.ip_checksum_valid(),
+                            if_idx,
+                            sub_if_idx,
+                            tcp_checksum_valid: address.tcp_checksum_valid(),
+                        },
+                    );
+                    let response_address = match address.response_address(flow.tuple.remote) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::ProxyRefused {
+                                    reason: "reply-interface-unavailable",
+                                },
+                            );
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::Terminal {
+                                    reason: "reply-interface-unavailable",
+                                },
+                            );
+                            stats.record_bypass("reply-interface-unavailable");
+                            if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
+                                reinject(&handle, &stats, &packet, &address)?;
+                                return Err(io::Error::other("refused route ledger full"));
+                            }
+                            reinject(&handle, &stats, &packet, &address)?;
+                            continue;
+                        }
+                    };
+                    record_route(
+                        route_events.as_ref(),
+                        helper_id,
+                        RouteEventKind::ProxyAttempt,
+                    );
                     let now = started.elapsed().as_nanos() as u64;
                     let receipt = receipts
                         .issue(flow.clone(), now.saturating_add(10_000_000_000))
@@ -937,6 +1272,20 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let helper = match helper {
                         Ok(helper) => helper,
                         Err(_) => {
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::ProxyRefused {
+                                    reason: "socks5-connect-failed",
+                                },
+                            );
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::Terminal {
+                                    reason: "proxy-refused",
+                                },
+                            );
                             receipts.retire(receipt).map_err(|error| {
                                 io::Error::other(format!("retire refused route receipt: {error:?}"))
                             })?;
@@ -954,6 +1303,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         local: helper.local_addr()?,
                         remote: helper.peer_addr()?,
                     };
+                    proof.lock().expect("direct proof lock").proxy_connected = true;
+                    record_route(
+                        route_events.as_ref(),
+                        helper_id,
+                        RouteEventKind::ProxyConnected {
+                            helper_local: helper_tuple.local,
+                            proxy_local: helper_tuple.remote,
+                        },
+                    );
                     excluded
                         .lock()
                         .expect("helper route lock")
@@ -968,10 +1326,19 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let replies = match bridge.ingest_diverted(
                         &packet,
                         address.ip_checksum_valid(),
+                        address.tcp_checksum_valid(),
+                        address.outbound(),
                         started.elapsed().as_millis() as i64,
                     ) {
                         Ok(replies) => replies,
                         Err(error) => {
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::Terminal {
+                                    reason: bridge_failure_reason(&error),
+                                },
+                            );
                             packet_finished(&stats, PacketDisposition::Lost)?;
                             return Err(io::Error::other(format!(
                                 "first selected TCP packet: {error}"
@@ -983,13 +1350,24 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         flow.tuple,
                         ActiveTcp {
                             bridge,
-                            address,
+                            address: response_address,
                             endpoint_id: flow.endpoint_id,
                             receipt,
                             helper: helper_tuple,
+                            flow_id: helper_id,
+                            last_transfer: (0, 0),
+                            proof: Arc::clone(&proof),
                         },
                     );
-                    inject_replies(&handle, &stats, replies, address)?;
+                    inject_replies(
+                        &handle,
+                        &stats,
+                        replies,
+                        response_address,
+                        route_events.as_ref(),
+                        helper_id,
+                        Some(&proof),
+                    )?;
                 }
             }
         }
@@ -999,7 +1377,32 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 .bridge
                 .poll(started.elapsed().as_millis() as i64)
                 .map_err(|error| io::Error::other(format!("selected TCP poll: {error}")))?;
-            inject_replies(&handle, &stats, replies, flow.address)?;
+            let transferred = flow.bridge.transferred_bytes();
+            if transferred != flow.last_transfer {
+                {
+                    let mut proof = flow.proof.lock().expect("direct proof lock");
+                    proof.client_to_upstream = transferred.0;
+                    proof.upstream_to_client = transferred.1;
+                }
+                record_route(
+                    route_events.as_ref(),
+                    flow.flow_id,
+                    RouteEventKind::Transfer {
+                        client_to_upstream: transferred.0,
+                        upstream_to_client: transferred.1,
+                    },
+                );
+                flow.last_transfer = transferred;
+            }
+            inject_replies(
+                &handle,
+                &stats,
+                replies,
+                flow.address,
+                route_events.as_ref(),
+                flow.flow_id,
+                Some(&flow.proof),
+            )?;
         }
         for (tuple, flow) in &active_udp {
             stats.processor_progress();
@@ -1018,7 +1421,32 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     Err(error) => return Err(error),
                 };
                 let reply = build_udp_reply(*tuple, &payload)?;
-                inject_replies(&handle, &stats, vec![reply], flow.address)?;
+                inject_replies(
+                    &handle,
+                    &stats,
+                    vec![reply],
+                    flow.address,
+                    route_events.as_ref(),
+                    flow.flow_id,
+                    Some(&flow.proof),
+                )?;
+                {
+                    let mut proof = flow.proof.lock().expect("direct proof lock");
+                    proof.upstream_to_client = proof
+                        .upstream_to_client
+                        .saturating_add(payload.len() as u64);
+                    proof.peer_datagrams = proof.peer_datagrams.saturating_add(1);
+                }
+                record_route(
+                    route_events.as_ref(),
+                    flow.flow_id,
+                    RouteEventKind::DatagramTransfer {
+                        client_to_upstream: 0,
+                        upstream_to_client: payload.len() as u64,
+                        client_datagrams: 0,
+                        peer_datagrams: 1,
+                    },
+                );
             }
         }
     }
@@ -1033,9 +1461,11 @@ pub struct DirectPacketRuntime {
     process_worker: Option<JoinHandle<io::Result<()>>>,
     watchdog_worker: Option<JoinHandle<()>>,
     stats: Arc<SharedStats>,
+    route_events: Option<RouteEventLease>,
 }
 
 impl DirectPacketRuntime {
+    #[cfg(test)]
     pub fn start(
         component: &Path,
         context: NativeObservationContext,
@@ -1044,12 +1474,30 @@ impl DirectPacketRuntime {
         password: Zeroizing<String>,
         max_flows: usize,
     ) -> io::Result<Self> {
+        Self::start_with_artifact(
+            component, context, session_id, proxy, password, max_flows, None,
+        )
+    }
+
+    pub fn start_with_artifact(
+        component: &Path,
+        context: NativeObservationContext,
+        session_id: String,
+        proxy: std::net::SocketAddr,
+        password: Zeroizing<String>,
+        max_flows: usize,
+        route_path: Option<&Path>,
+    ) -> io::Result<Self> {
         if max_flows == 0 || max_flows > 256 || !proxy.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid direct route bounds",
             ));
         }
+        let route_events = route_path
+            .map(|path| RouteEventLease::open(path, session_id.clone(), 1024))
+            .transpose()?;
+        let route_sink = route_events.as_ref().map(RouteEventLease::sink);
         let api = Api::load_verified(component)?;
         let observer = Arc::new(Mutex::new(DirectSocketObserver::start(
             &api,
@@ -1116,6 +1564,7 @@ impl DirectPacketRuntime {
                         proxy,
                         password,
                         max_flows,
+                        route_events: route_sink,
                     });
                     if result.is_err() {
                         let _ = process_handle.stop();
@@ -1174,6 +1623,7 @@ impl DirectPacketRuntime {
             process_worker: Some(process_worker),
             watchdog_worker: Some(watchdog_worker),
             stats,
+            route_events,
         })
     }
 
@@ -1272,6 +1722,16 @@ impl DirectPacketRuntime {
                 "unfinished direct packets: {error:?}"
             )));
         }
+        let route_stream = match self.route_events.as_mut() {
+            Some(lease) => match lease.finish() {
+                Ok(outcome) => Some(outcome),
+                Err(error) => {
+                    first_error.get_or_insert(io::Error::other(format!("route stream: {error}")));
+                    Some(lease.accounting())
+                }
+            },
+            None => None,
+        };
         let report = DirectRuntimeStats {
             packets,
             socket_events: self.observer.lock().expect("socket observer lock").stats(),
@@ -1296,6 +1756,7 @@ impl DirectPacketRuntime {
                 .stats
                 .watchdog_release_after_progress_ms
                 .load(Ordering::Relaxed),
+            route_stream,
         };
         if let Some(error) = first_error {
             Err(io::Error::other(format!(

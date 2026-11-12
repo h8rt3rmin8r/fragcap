@@ -489,6 +489,73 @@ pub(crate) fn run_mode(
             }
             Ok(Exit::SUCCESS)
         }
+        BundleCommand::DebugReport {
+            bundle,
+            out: destination,
+        } => {
+            require_existing_bundle(bundle)?;
+            let source = bundle
+                .canonicalize()
+                .map_err(|error| CliError::failure(error.to_string()))?;
+            let destination = std::path::absolute(destination).map_err(|error| {
+                CliError::usage(format!("invalid debug report destination: {error}"))
+            })?;
+            if destination.starts_with(&source) {
+                return Err(CliError::usage(
+                    "debug report output must be outside the source bundle",
+                ));
+            }
+            let report = fragcap::deep_capture::build_route_debug_report(&source)
+                .map_err(|error| CliError::failure(format!("debug report failed: {error}")))?;
+            let bytes = serde_json::to_vec_pretty(&report)
+                .map_err(|error| CliError::failure(error.to_string()))?;
+            let parent = destination
+                .parent()
+                .ok_or_else(|| CliError::usage("debug report destination has no parent"))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| CliError::failure(error.to_string()))?;
+            let exact_parent = parent.canonicalize().map_err(|error| {
+                CliError::failure(format!(
+                    "cannot resolve debug report destination parent: {error}"
+                ))
+            })?;
+            if exact_parent.starts_with(&source) {
+                return Err(CliError::usage(
+                    "debug report output must be outside the source bundle",
+                ));
+            }
+            let temporary = destination.with_extension("json.tmp");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| {
+                    CliError::failure(format!("cannot create debug report staging file: {error}"))
+                })?;
+            let published = (|| -> std::io::Result<()> {
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                drop(file);
+                std::fs::hard_link(&temporary, &destination)?;
+                std::fs::remove_file(&temporary)
+            })();
+            if let Err(error) = published {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(CliError::failure(format!(
+                    "cannot publish debug report: {error}"
+                )));
+            }
+            if json {
+                write_json(
+                    out,
+                    &serde_json::json!({"event":"bundle.debug-report","path":destination.display().to_string(),"route_complete":report["route"]["complete"]}),
+                )?;
+            } else if mode.human_result() {
+                writeln!(out, "{}", destination.display())
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+            }
+            Ok(Exit::SUCCESS)
+        }
     }
 }
 

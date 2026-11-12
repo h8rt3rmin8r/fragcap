@@ -175,24 +175,30 @@ fn direct_route_component_directory() -> Result<PathBuf, CliError> {
 fn selected_routing_adapter(
     args: &DeepCaptureArgs,
     observations: deep_capture_api::NativeObservationContext,
+    bundle: &Path,
 ) -> Result<Box<dyn deep_capture_api::RoutingAdapter>, CliError> {
     if args.direct_route {
         #[cfg(all(windows, feature = "direct-route"))]
         {
-            return Ok(Box::new(fragcap::deep_capture::NativeDirectRouting::new(
-                direct_route_component_directory()?,
-                observations,
-            )));
+            return Ok(Box::new(
+                fragcap::deep_capture::NativeDirectRouting::new(
+                    direct_route_component_directory()?,
+                    observations,
+                )
+                .with_route_path(bundle.join("route.jsonl")),
+            ));
         }
         #[cfg(not(all(windows, feature = "direct-route")))]
         {
             let _ = observations;
+            let _ = bundle;
             return Err(CliError::usage(
                 "direct route requires a Windows build with the direct-route feature",
             ));
         }
     }
     let _ = observations;
+    let _ = bundle;
     Ok(Box::new(deep_capture_api::ChildEnvironmentRouting))
 }
 
@@ -1763,7 +1769,7 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
         if direct_positive && direct_owner.is_none() {
             return deep_capture_api::FactWriteStatus::Skipped {
                 reason:
-                    "no exact final-client direct-route receipt joined to proxy and packet evidence"
+                    "no exact final-client direct-route receipt with packet or client transfer evidence"
                         .into(),
             };
         }
@@ -1800,12 +1806,13 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
 }
 
 fn exact_direct_client_receipt(observation: &Observation) -> bool {
-    observation.attribution.as_deref() == Some("direct-route-receipt")
-        && observation.correlation_state == deep_capture_api::CorrelationState::Matched
-        && observation.flow_id.is_some()
-        && observation.packet_observations > 0
-        && observation.role.as_deref() == Some("client")
-        && observation.process_id.is_some()
+    fragcap::deep_capture::observation_has_direct_client_transfer(observation)
+        || (observation.attribution.as_deref() == Some("direct-route-receipt")
+            && observation.correlation_state == deep_capture_api::CorrelationState::Matched
+            && observation.flow_id.is_some()
+            && observation.packet_observations > 0
+            && observation.role.as_deref() == Some("client")
+            && observation.process_id.is_some())
 }
 
 struct LibraryArtifactAdapter<'e, 'w> {
@@ -2011,6 +2018,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             fact_writes: &fact_writes,
             phase_timing: &runtime.phase_timing,
             inspection_scope: self.inspection_scope,
+            failures: &snapshot.failures,
         };
         let write_result = write_bundle(&context, &mut self.emitter.borrow_mut());
         let roles = [
@@ -2027,6 +2035,11 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             (
                 "proxy-lifecycle",
                 "proxy.jsonl",
+                deep_capture_api::Sensitivity::Payload,
+            ),
+            (
+                "route-lifecycle",
+                "route.jsonl",
                 deep_capture_api::Sensitivity::Payload,
             ),
             (
@@ -2073,6 +2086,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 let selected = match role {
                     "har" => snapshot.artifacts.har,
                     "tls-key-log" => snapshot.artifacts.key_log,
+                    "route-lifecycle" => session.routing.direct_socket.is_some(),
                     _ => true,
                 };
                 let status = if !selected {
@@ -2096,6 +2110,7 @@ impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                     path: full,
                     sensitivity,
                     required: !matches!(role, "har" | "tls-key-log")
+                        && (role != "route-lifecycle" || session.routing.direct_socket.is_some())
                         && (role != "pcapng" || session_state == "complete"),
                     status,
                 }
@@ -3533,7 +3548,7 @@ pub(crate) fn run_with_outcome(
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
         }),
-        routing: selected_routing_adapter(args, observation_context.clone())?,
+        routing: selected_routing_adapter(args, observation_context.clone(), &bundle)?,
         launch: Box::new(LibraryLaunchAdapter),
         capture: Box::new(LibraryCaptureAdapter {
             args,
@@ -4843,6 +4858,7 @@ struct BundleContext<'a> {
     fact_writes: &'a [FactWriteResult],
     phase_timing: &'a [deep_capture_api::PhaseTiming],
     inspection_scope: ResolvedCliInspectionScope,
+    failures: &'a [deep_capture_api::StageFailure],
 }
 
 fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), CliError> {
@@ -4936,6 +4952,25 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     fragcap::deep_capture::publish_final(&ctx.session.bundle, manifest.as_bytes())
         .map_err(|error| CliError::failure(format!("cannot publish final manifest: {error}")))?;
 
+    if ctx.session.routing.direct_socket.is_some() {
+        let report = fragcap::deep_capture::build_route_debug_report(&ctx.session.bundle).map_err(
+            |error| CliError::failure(format!("cannot summarize direct route: {error}")),
+        )?;
+        let route = &report["route"];
+        let selected = route["selected_flows"].as_u64().unwrap_or(0);
+        let reachable = route["client_reachable_flows"].as_u64().unwrap_or(0);
+        let bidirectional = route["bidirectional_flows"].as_u64().unwrap_or(0);
+        let zero_byte = route["zero_byte_connected_flows"].as_u64().unwrap_or(0);
+        emitter.event(&Event::DeepCaptureRouteSummary {
+            session_id: ctx.session.session_id.clone(),
+            summary: json!({"selected_flows":selected,"client_reachable_flows":reachable,"bidirectional_flows":bidirectional,"zero_byte_connected_flows":zero_byte,"stream_state":route["state"],"dropped_events":route["dropped_events"]}),
+        });
+        emitter.terminal_human(&format!(
+            "Direct route: {selected} selected, {reachable} reached a client, {bidirectional} transferred bytes both ways, {zero_byte} upstream-connected with zero bytes; evidence {}. Run `fragcap bundle debug-report <bundle> --out <new-file>` for details.\n",
+            route["state"].as_str().unwrap_or("unavailable"),
+        ));
+    }
+
     let mut produced_artifacts = vec![
         ("application-jsonl", "sensitive"),
         ("proxy-lifecycle", "sensitive"),
@@ -4946,6 +4981,11 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         ("cleanup-summary", "ordinary"),
         ("manifest", "ordinary"),
     ];
+    if ctx.session.routing.direct_socket.is_some()
+        && ctx.session.bundle.join("route.jsonl").is_file()
+    {
+        produced_artifacts.push(("route-lifecycle", "sensitive"));
+    }
     if packet_truth_produced {
         produced_artifacts.insert(0, ("pcapng", "ordinary"));
     }
@@ -5061,6 +5101,7 @@ fn artifact_path(role: &str) -> &'static str {
         "pcapng" => "capture.fcapng",
         "application-jsonl" => "application.jsonl",
         "proxy-lifecycle" => "proxy.jsonl",
+        "route-lifecycle" => "route.jsonl",
         "cleanup-lifecycle" => "cleanup.jsonl",
         "resource-journal" => "resource-journal.jsonl",
         "process-trace" => "process-trace.jsonl",
@@ -5256,6 +5297,7 @@ fn compatibility_json(
     process_trace: &fragcap::deep_capture::ProcessTraceSummary,
 ) -> Result<String, CliError> {
     serde_json::to_string_pretty(&json!({
+        "correlation_contract_version": 2,
         "session_id": ctx.session.session_id,
         "target": {
             "id": ctx.session.target.id,
@@ -5484,6 +5526,51 @@ fn manifest_json(
         ),
     ];
     let mut omissions = Vec::new();
+    if ctx.session.routing.direct_socket.is_some() {
+        let mut route = artifact(
+            "route-lifecycle",
+            "route.jsonl",
+            "route-lifecycle-events",
+            "sensitive",
+            "application/x-ndjson",
+            true,
+        );
+        match fragcap::deep_capture::read_route_prefix(&ctx.session.bundle.join("route.jsonl")) {
+            Ok(prefix) => {
+                route["finalization"] = json!(match prefix.status {
+                    fragcap::deep_capture::LifecycleStreamStatus::Complete => "complete",
+                    fragcap::deep_capture::LifecycleStreamStatus::CrashPrefix => "crash-prefix",
+                    fragcap::deep_capture::LifecycleStreamStatus::UnknownVersion =>
+                        "unknown-version",
+                });
+                route["completeness"] = json!(if prefix.complete() {
+                    "complete"
+                } else {
+                    "partial"
+                });
+                route["loss"] = json!({"state": if prefix.dropped_events == Some(0) { "none" } else { "observed" }, "dropped_events": prefix.dropped_events});
+            }
+            Err(_) => {
+                route["finalization"] = json!("unavailable");
+                route["completeness"] = json!("unavailable");
+                route["loss"] = json!({"state":"unknown"});
+            }
+        }
+        artifacts.push(route);
+    } else {
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "route-lifecycle",
+            ManifestOmissionReason::NotRequested,
+        ));
+        artifacts.push(omitted_artifact(
+            "route-lifecycle",
+            "route-lifecycle-events",
+            "sensitive",
+            "application/x-ndjson",
+            false,
+            "not-requested",
+        ));
+    }
     if packet_truth_produced {
         let mut packet_artifact = artifact(
             "pcapng",
@@ -5609,6 +5696,7 @@ fn manifest_json(
         "session_id": ctx.session.session_id,
         "mode": "deep-capture",
         "state": manifest_state,
+        "failures": ctx.failures.iter().map(|failure| json!({"stage":format!("{:?}", failure.stage),"code":failure.code})).collect::<Vec<_>>(),
         "target": {
             "id": ctx.session.target.id,
             "stable_id": ctx.session.target.stable_id,
@@ -5674,6 +5762,7 @@ fn manifest_json(
         "artifacts": artifacts,
         "omissions": omissions,
         "correlation": {
+            "contract_version": 2,
             "flow_ids": ctx.observations
                 .iter()
                 .filter_map(|observation| observation.flow_id.map(|flow_id| flow_id.to_string()))
@@ -5681,11 +5770,12 @@ fn manifest_json(
             "process_roles": if ctx.controlled { json!(["client"]) } else {
                 json!(ctx.observations.iter()
                     .filter(|observation| {
-                        observation.correlation_state == deep_capture_api::CorrelationState::Matched
+                        fragcap::deep_capture::observation_has_direct_client_transfer(observation)
+                            || (observation.correlation_state == deep_capture_api::CorrelationState::Matched
                             && observation.flow_id.is_some()
                             && observation.process_id.is_some()
                             && observation.packet_observations > 0
-                            && matches!(observation.attribution.as_deref(), Some("live" | "retained"))
+                            && matches!(observation.attribution.as_deref(), Some("live" | "retained")))
                     })
                     .filter_map(|observation| observation.role.as_deref())
                     .collect::<BTreeSet<_>>())
@@ -5762,9 +5852,10 @@ fn omitted_artifact(
 
 fn authority_contract(authority: &str) -> serde_json::Value {
     let (kind, source_role) = match authority {
-        "packet-truth" | "application-events" | "proxy-lifecycle-events" => {
-            ("primary-evidence", None)
-        }
+        "packet-truth"
+        | "application-events"
+        | "proxy-lifecycle-events"
+        | "route-lifecycle-events" => ("primary-evidence", None),
         "http-projection" => ("derived-projection", Some("application-jsonl")),
         "cleanup-projection" => ("derived-projection", Some("cleanup-lifecycle")),
         "bundle-index" => ("bundle-index", None),
@@ -6511,6 +6602,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_inspection_scope_is_launch_chain_for_every_launch_case() {
+        let resolved = resolve_cli_inspection_scope(InspectionScopeArg::Auto);
+        assert_eq!(
+            resolved.effective,
+            CompatibilityInspectionScope::LaunchChain
+        );
+        assert_eq!(resolved.recommendation_source, "default");
+        assert_eq!(resolved.policy_id, "launch-chain-v2");
+    }
+
+    #[test]
     fn direct_positive_requires_exact_receipt_proxy_and_packet_join() {
         let mut record = observation();
         record.process_id = Some(42);
@@ -6522,6 +6624,19 @@ mod tests {
         assert!(exact_direct_client_receipt(&record));
         record.packet_observations = 0;
         assert!(!exact_direct_client_receipt(&record));
+        record.flow_id = None;
+        record.correlation_reason =
+            "direct-route-client-transfer-original-packet-unavailable".into();
+        assert!(exact_direct_client_receipt(&record));
+        record.correlation_reason =
+            "direct-route-client-handshake-original-packet-unavailable".into();
+        assert!(!exact_direct_client_receipt(&record));
+        record.correlation_reason =
+            "direct-route-client-datagram-response-original-packet-unavailable".into();
+        assert!(exact_direct_client_receipt(&record));
+        record.correlation_reason = "direct-original-packet-not-retained".into();
+        assert!(!exact_direct_client_receipt(&record));
+        record.flow_id = fragcap::FlowId::new(1);
         record.packet_observations = 1;
         record.role = Some("launcher".into());
         assert!(!exact_direct_client_receipt(&record));
@@ -6728,6 +6843,7 @@ mod tests {
                 policy_id: "exact-game-v2",
                 recommendation_source: "explicit",
             },
+            failures: &[],
         };
         let trace = fragcap::deep_capture::ProcessTraceSummary {
             finalization: "complete",

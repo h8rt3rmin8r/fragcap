@@ -1023,6 +1023,7 @@ fn walk_journals(
                                 | "tls-keylog.log"
                                 | "sslkeylog.log"
                                 | "proxy.jsonl"
+                                | "route.jsonl"
                                 | "cleanup.jsonl"
                                 | "process-trace.jsonl"
                         )

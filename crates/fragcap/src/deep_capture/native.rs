@@ -322,6 +322,9 @@ pub struct NativeObservationContext {
     #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
     #[cfg(all(windows, feature = "direct-route"))]
+    direct_proofs:
+        Arc<Mutex<BTreeMap<super::direct_route::OriginalFlow, Arc<Mutex<DirectRouteProof>>>>>,
+    #[cfg(all(windows, feature = "direct-route"))]
     direct_route_active: Arc<AtomicBool>,
     #[cfg(all(windows, feature = "socket-table"))]
     socket_collector: Arc<SocketInceptionCollector>,
@@ -333,6 +336,43 @@ struct DirectHelperOwner {
     flow: super::direct_route::OriginalFlow,
     opened_earliest_ns: u64,
     opened_latest_ns: u64,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DirectRouteProof {
+    pub proxy_connected: bool,
+    pub reply_sent: bool,
+    pub reply_failed: bool,
+    pub client_ack: bool,
+    pub client_to_upstream: u64,
+    pub upstream_to_client: u64,
+    pub client_datagrams: u64,
+    pub peer_datagrams: u64,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+impl DirectRouteProof {
+    fn confirms_reachability(&self, transport: Proto) -> bool {
+        self.proxy_connected
+            && self.reply_sent
+            && !self.reply_failed
+            && match transport {
+                Proto::Tcp => {
+                    self.client_ack && self.client_to_upstream > 0 && self.upstream_to_client > 0
+                }
+                Proto::Udp => self.client_datagrams > 0 && self.peer_datagrams > 0,
+            }
+    }
+
+    fn proof_kind(&self, transport: Proto) -> &'static str {
+        match transport {
+            Proto::Tcp if self.client_to_upstream > 0 && self.upstream_to_client > 0 => "transfer",
+            Proto::Tcp => "handshake",
+            Proto::Udp if self.client_to_upstream > 0 && self.upstream_to_client > 0 => "transfer",
+            Proto::Udp => "datagram-response",
+        }
+    }
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -429,7 +469,25 @@ impl NativeObservationContext {
             opened_earliest_ns,
             opened_latest_ns,
         });
+        self.direct_proof_for(&owners.last().expect("new direct helper").flow)?;
         Ok(())
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_proof_for(
+        &self,
+        flow: &super::direct_route::OriginalFlow,
+    ) -> Result<Arc<Mutex<DirectRouteProof>>, &'static str> {
+        let mut proofs = self.direct_proofs.lock().expect("direct proof lock");
+        if let Some(proof) = proofs.get(flow) {
+            return Ok(Arc::clone(proof));
+        }
+        if proofs.len() >= 512 {
+            return Err("direct-proof-registry-full");
+        }
+        let proof = Arc::new(Mutex::new(DirectRouteProof::default()));
+        proofs.insert(flow.clone(), Arc::clone(&proof));
+        Ok(proof)
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
@@ -438,6 +496,10 @@ impl NativeObservationContext {
             self.direct_helpers
                 .lock()
                 .expect("direct helper lock")
+                .clear();
+            self.direct_proofs
+                .lock()
+                .expect("direct proof lock")
                 .clear();
         }
         self.direct_route_active.store(active, Ordering::Release);
@@ -511,8 +573,34 @@ impl NativeObservationContext {
                 ));
             }
         };
+        let route_proof = self
+            .direct_proofs
+            .lock()
+            .expect("direct proof lock")
+            .get(&flow)
+            .map(|proof| proof.lock().expect("direct proof lock").clone());
+        let route_positive = route_proof
+            .as_ref()
+            .is_some_and(|proof| proof.confirms_reachability(flow.tuple.transport));
+        let proof_kind = route_proof
+            .as_ref()
+            .map(|proof| proof.proof_kind(flow.tuple.transport))
+            .unwrap_or("unavailable");
         let key = FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote);
         let Some(summary) = self.flow_registry.summary(&key) else {
+            if route_positive {
+                return Some((
+                    None,
+                    Some(flow.pid),
+                    Some(flow.process_image),
+                    Some("client".into()),
+                    Some("direct-route-receipt".into()),
+                    0,
+                    0,
+                    CorrelationState::Matched,
+                    format!("direct-route-client-{proof_kind}-original-packet-unavailable"),
+                ));
+            }
             return Some((
                 None,
                 None,
@@ -558,6 +646,23 @@ impl NativeObservationContext {
                     owner.pid != flow.pid || owner.process.as_ref() != flow.process_image
                 })
         });
+        if route_positive && !competing_owner && (incomplete || !first_packet_retained) {
+            return Some((
+                Some(summary.id),
+                Some(flow.pid),
+                Some(flow.process_image),
+                Some("client".into()),
+                Some("direct-route-receipt".into()),
+                observed,
+                summary.unretained_observations,
+                CorrelationState::Matched,
+                if incomplete {
+                    format!("direct-route-client-{proof_kind}-packet-history-incomplete")
+                } else {
+                    format!("direct-route-client-{proof_kind}-original-packet-unavailable")
+                },
+            ));
+        }
         if incomplete || !first_packet_retained || competing_owner {
             return Some((
                 Some(summary.id),
@@ -578,6 +683,19 @@ impl NativeObservationContext {
                     "direct-original-packet-history-incomplete"
                 }
                 .into(),
+            ));
+        }
+        if !route_positive {
+            return Some((
+                Some(summary.id),
+                None,
+                None,
+                None,
+                None,
+                observed,
+                summary.unretained_observations,
+                CorrelationState::Unavailable,
+                "direct-route-client-delivery-unproven".into(),
             ));
         }
         Some((
@@ -751,6 +869,102 @@ mod direct_helper_tests {
     use fragcap_proxy::InspectionDecider;
 
     #[test]
+    fn empty_handshake_stays_unproven_and_datagram_response_keeps_packet_absence() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 2,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "client.exe".into(),
+        };
+        let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        let window = ApplicationConnectionWindow {
+            descriptor,
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let proof = context.direct_proof_for(&flow).unwrap();
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_ack = true;
+        }
+        let handshake = context.correlate_proxy_window(&window);
+        assert_eq!(handshake.0, None);
+        assert_eq!(handshake.5, 0);
+        assert_eq!(handshake.7, CorrelationState::Unavailable);
+        assert_eq!(handshake.8, "direct-route-client-delivery-unproven");
+
+        let packet_only = NativeObservationContext::default();
+        packet_only
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        packet_only.flow_registry.observe_at(
+            FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
+            Timestamp::from_nanos(101),
+            Some(
+                &fragcap_core::Attribution::new(42, "client.exe", Fidelity::Live)
+                    .with_role("client"),
+            ),
+        );
+        let no_delivery = packet_only.correlate_proxy_window(&window);
+        assert_eq!(no_delivery.7, CorrelationState::Unavailable);
+        assert_eq!(no_delivery.8, "direct-route-client-delivery-unproven");
+
+        let udp = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Udp,
+                ..flow.tuple
+            },
+            ..flow
+        };
+        let udp_context = NativeObservationContext::default();
+        udp_context
+            .register_direct_helper("udp", helper, proxy, udp.clone(), 100, 200)
+            .unwrap();
+        let udp_proof = udp_context.direct_proof_for(&udp).unwrap();
+        {
+            let mut proof = udp_proof.lock().unwrap();
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_datagrams = 1;
+            proof.peer_datagrams = 1;
+        }
+        let udp_window = ApplicationConnectionWindow {
+            descriptor: ConnectionDescriptor {
+                transport: "udp",
+                ..descriptor
+            },
+            ..window
+        };
+        let response = udp_context.correlate_proxy_window(&udp_window);
+        assert_eq!(response.5, 0);
+        assert_eq!(response.7, CorrelationState::Matched);
+        assert_eq!(
+            response.8,
+            "direct-route-client-datagram-response-original-packet-unavailable"
+        );
+    }
+
+    #[test]
     fn helper_receipt_restores_original_owner_only_for_exact_accept_window() {
         let context = NativeObservationContext::default();
         let helper: SocketAddr = "127.0.0.1:31001".parse().unwrap();
@@ -762,6 +976,7 @@ mod direct_helper_tests {
                 remote: "127.0.0.1:31004".parse().unwrap(),
             },
             first_packet_at_ns: 120,
+            first_packet_clock_error_ns: 2,
             endpoint_id: 7,
             pid: 42,
             process_instance_id: "process-42-100".into(),
@@ -812,6 +1027,27 @@ mod direct_helper_tests {
         let missing_packet = context.correlate_proxy_window(&window);
         assert_eq!(missing_packet.7, CorrelationState::Unavailable);
         assert_eq!(missing_packet.8, "direct-original-packet-not-retained");
+        let proof = context.direct_proof_for(&flow).unwrap();
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_to_upstream = 5;
+            proof.upstream_to_client = 8;
+        }
+        assert_eq!(
+            context.correlate_proxy_window(&window).7,
+            CorrelationState::Unavailable
+        );
+        proof.lock().unwrap().client_ack = true;
+        let without_packet = context.correlate_proxy_window(&window);
+        assert_eq!(without_packet.0, None);
+        assert_eq!(without_packet.5, 0);
+        assert_eq!(without_packet.7, CorrelationState::Matched);
+        assert_eq!(
+            without_packet.8,
+            "direct-route-client-transfer-original-packet-unavailable"
+        );
         context.flow_registry.observe_at(
             FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
             Timestamp::from_nanos(121),

@@ -613,14 +613,24 @@ pub trait RoutingLease {
     fn applied(&self) -> &AppliedRoute;
 
     fn verify(&self, observations: &[CompatibilityObservation]) -> RouteVerification {
-        if observations.iter().any(|observation| {
-            observation.process_id.is_some()
-                && observation.flow_id.is_some()
-                && observation.role.as_deref() == Some("client")
-        }) {
+        let direct_transfer = observations
+            .iter()
+            .any(super::observation_has_direct_client_transfer);
+        if direct_transfer
+            || observations.iter().any(|observation| {
+                observation.process_id.is_some()
+                    && observation.flow_id.is_some()
+                    && observation.role.as_deref() == Some("client")
+            })
+        {
             RouteVerification {
                 state: RouteVerificationState::ReachedSocketOwner,
-                reason: "packet flow and final client ownership were observed".to_string(),
+                reason: if direct_transfer {
+                    "exact direct route receipt and final client transfer were observed"
+                } else {
+                    "packet flow and final client ownership were observed"
+                }
+                .to_string(),
             }
         } else if observations
             .iter()
@@ -716,6 +726,7 @@ struct ChildEnvironmentLease {
 pub struct NativeDirectRouting {
     component_directory: std::path::PathBuf,
     observations: super::NativeObservationContext,
+    route_path: Option<std::path::PathBuf>,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -727,7 +738,13 @@ impl NativeDirectRouting {
         Self {
             component_directory,
             observations,
+            route_path: None,
         }
+    }
+
+    pub fn with_route_path(mut self, path: std::path::PathBuf) -> Self {
+        self.route_path = Some(path);
+        self
     }
 }
 
@@ -789,13 +806,14 @@ impl RoutingAdapter for NativeDirectRouting {
         let password = Zeroizing::new(password.to_string());
         let endpoint = proxy.endpoint().address();
         let applied = AppliedRoute::child_environment(&session.routing, proxy)?;
-        let runtime = super::direct_runtime::DirectPacketRuntime::start(
+        let runtime = super::direct_runtime::DirectPacketRuntime::start_with_artifact(
             &self.component_directory,
             self.observations.clone(),
             session.session_id.clone(),
             endpoint,
             password,
             component.max_flows,
+            self.route_path.as_deref(),
         )
         .map_err(|error| {
             StageFailure::new(
@@ -836,7 +854,7 @@ impl RoutingLease for NativeDirectLease {
                 resource: "target-route".into(),
                 status: CleanupStatus::Released,
                 reason: format!(
-                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, bypass-reasons={:?}, proxy-refused={}, udp-relay-resets={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}, watchdog-release-after-progress-ms={}; pre-receive loss unmeasurable={}",
+                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, bypass-reasons={:?}, proxy-refused={}, udp-relay-resets={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}, watchdog-release-after-progress-ms={}; route-stream={:?}; pre-receive loss unmeasurable={}",
                     stats.packets.received,
                     stats.packets.reinjected,
                     stats.packets.consumed,
@@ -853,6 +871,7 @@ impl RoutingLease for NativeDirectLease {
                     stats.event_history_overflow,
                     stats.watchdog_released,
                     stats.watchdog_release_after_progress_ms,
+                    stats.route_stream,
                     stats.pre_receive_loss_unmeasurable,
                 ),
             },

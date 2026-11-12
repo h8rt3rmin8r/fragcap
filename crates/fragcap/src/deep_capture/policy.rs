@@ -548,14 +548,30 @@ fn classification_proves_tls(classification: &super::ProtocolClassification) -> 
         && classification.reason().is_none()
 }
 
-/// Whether the observation is packet-correlated to the final client role.
+/// Whether an exact direct-route receipt has independent client transfer proof.
+pub fn observation_has_direct_client_transfer(observation: &CompatibilityObservation) -> bool {
+    observation.correlation_state == CorrelationState::Matched
+        && observation.attribution.as_deref() == Some("direct-route-receipt")
+        && observation.process_id.is_some()
+        && observation.role.as_deref() == Some("client")
+        && matches!(
+            observation.correlation_reason.as_str(),
+            "direct-route-client-transfer-original-packet-unavailable"
+                | "direct-route-client-transfer-packet-history-incomplete"
+                | "direct-route-client-datagram-response-original-packet-unavailable"
+                | "direct-route-client-datagram-response-packet-history-incomplete"
+        )
+}
+
+/// Whether packet evidence or an exact direct-route receipt binds the final client.
 pub fn observation_is_correlated_to_final_client(observation: &CompatibilityObservation) -> bool {
-    observation.flow_id.is_some()
+    (observation.flow_id.is_some()
         && observation
             .role
             .as_deref()
             .and_then(compatibility_owner_role)
-            == Some("client")
+            == Some("client"))
+        || observation_has_direct_client_transfer(observation)
 }
 
 /// Whether the observation directly demonstrates final-client CA acceptance.

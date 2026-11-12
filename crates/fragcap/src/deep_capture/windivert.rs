@@ -18,6 +18,8 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{FILETIME, INVALID_HANDLE_VALUE},
+    NetworkManagement::IpHelper::GetBestInterfaceEx,
+    Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6},
     System::{
         LibraryLoader::{
             FreeLibrary, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
@@ -63,6 +65,41 @@ pub(super) fn sample_qpc_anchor() -> io::Result<QpcAnchor> {
 pub(super) const NETWORK_LAYER: i32 = 0;
 pub(super) const FLOW_LAYER: i32 = 2;
 pub(super) const SOCKET_LAYER: i32 = 3;
+
+fn best_route_interface(remote: SocketAddr) -> io::Result<u32> {
+    let mut index = 0u32;
+    let status = match remote {
+        SocketAddr::V4(remote) => {
+            let mut address: SOCKADDR_IN = unsafe { mem::zeroed() };
+            address.sin_family = AF_INET as u16;
+            address.sin_addr.S_un.S_addr = u32::from_ne_bytes(remote.ip().octets());
+            unsafe {
+                GetBestInterfaceEx(
+                    (&address as *const SOCKADDR_IN).cast::<SOCKADDR>(),
+                    &mut index,
+                )
+            }
+        }
+        SocketAddr::V6(remote) => {
+            let mut address: SOCKADDR_IN6 = unsafe { mem::zeroed() };
+            address.sin6_family = AF_INET6 as u16;
+            address.sin6_addr.u.Byte = remote.ip().octets();
+            address.Anonymous.sin6_scope_id = remote.scope_id();
+            unsafe {
+                GetBestInterfaceEx(
+                    (&address as *const SOCKADDR_IN6).cast::<SOCKADDR>(),
+                    &mut index,
+                )
+            }
+        }
+    };
+    if status != 0 || index == 0 {
+        return Err(io::Error::other(format!(
+            "no valid direct reply interface: status={status}, index={index}"
+        )));
+    }
+    Ok(index)
+}
 pub(super) const FLAG_SNIFF: u64 = 0x0001;
 pub(super) const FLAG_RECV_ONLY: u64 = 0x0004;
 const SHUTDOWN_BOTH: i32 = 3;
@@ -139,6 +176,21 @@ impl Address {
         self.flags & (1 << 21) != 0
     }
 
+    pub fn tcp_checksum_valid(self) -> bool {
+        self.flags & (1 << 22) != 0
+    }
+
+    pub fn network_interface(self) -> (u32, u32) {
+        (
+            u32::from_ne_bytes(self.data[0..4].try_into().expect("fixed interface index")),
+            u32::from_ne_bytes(
+                self.data[4..8]
+                    .try_into()
+                    .expect("fixed sub-interface index"),
+            ),
+        )
+    }
+
     pub fn socket(self) -> Option<SocketData> {
         (self.layer() == SOCKET_LAYER as u8 || self.layer() == FLOW_LAYER as u8)
             .then(|| unsafe { ptr::read_unaligned(self.data.as_ptr().cast()) })
@@ -172,12 +224,27 @@ impl Address {
 
     /// A synthetic reply to an external outbound packet enters the local
     /// stack as inbound. Windows loopback packets remain outbound by design.
-    pub fn response_address(self) -> Self {
+    pub fn response_address(self, remote: SocketAddr) -> io::Result<Self> {
+        if self.loopback() {
+            return Ok(self);
+        }
+        self.response_address_with_interface(best_route_interface(remote)?)
+    }
+
+    fn response_address_with_interface(self, index: u32) -> io::Result<Self> {
+        if index == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct reply interface index is zero",
+            ));
+        }
         let mut response = self;
         if !self.loopback() {
             response.flags &= !(1 << 17);
+            response.data[0..4].copy_from_slice(&index.to_ne_bytes());
+            response.data[4..8].copy_from_slice(&0u32.to_ne_bytes());
         }
-        response
+        Ok(response)
     }
 }
 
@@ -423,6 +490,38 @@ impl Drop for Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_reply_uses_resolved_interface_and_loopback_preserves_outbound() {
+        let mut outbound = Address {
+            flags: 1 << 17,
+            ..Address::default()
+        };
+        outbound.data[0..4].copy_from_slice(&999u32.to_ne_bytes());
+        outbound.data[4..8].copy_from_slice(&999u32.to_ne_bytes());
+        assert!(outbound.response_address_with_interface(0).is_err());
+        let inbound = outbound.response_address_with_interface(7).unwrap();
+        assert!(!inbound.outbound());
+        assert_eq!(inbound.network_interface(), (7, 0));
+        assert_eq!(outbound.network_interface(), (999, 999));
+
+        let mut loopback = outbound;
+        loopback.flags |= 1 << 18;
+        assert_eq!(
+            loopback
+                .response_address("127.0.0.1:443".parse().unwrap())
+                .unwrap()
+                .flags,
+            loopback.flags
+        );
+        assert_eq!(
+            loopback
+                .response_address("127.0.0.1:443".parse().unwrap())
+                .unwrap()
+                .network_interface(),
+            (999, 999)
+        );
+    }
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
@@ -799,7 +898,13 @@ mod tests {
                     let now = start.elapsed().as_millis() as i64;
                     let stack = stack.as_mut().unwrap();
                     stack
-                        .ingest_diverted(&packet[..length], now, address.ip_checksum_valid())
+                        .ingest_diverted(
+                            &packet[..length],
+                            now,
+                            address.ip_checksum_valid(),
+                            address.tcp_checksum_valid(),
+                            address.outbound(),
+                        )
                         .map_err(|error| io::Error::other(format!("ingest: {error:?}")))?;
                     let mut body = [0u8; 32];
                     let count = stack.receive_bytes(&mut body);
@@ -960,6 +1065,8 @@ mod tests {
                         let replies = bridge.as_mut().unwrap().ingest_diverted(
                             &packet,
                             address.ip_checksum_valid(),
+                            address.tcp_checksum_valid(),
+                            address.outbound(),
                             start.elapsed().as_millis() as i64,
                         );
                         for reply in replies.map_err(|error| {
