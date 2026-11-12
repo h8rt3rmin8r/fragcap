@@ -161,11 +161,34 @@ pub enum FlowOmissionCause {
     Waiting,
     OutOfWindow,
     ScopeUnresolved,
+    NoSocketAttribution,
+    CausalProofUnavailable,
+    CausalProofCooldown,
     DirectionWithheld,
     DirectionUnknown,
     VolumeReached,
     HistoryCapacity,
     Unknown,
+}
+
+impl FlowOmissionCause {
+    /// Stable diagnostic cause for a retained, flow-local omission interval.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeWithheld => "scope-withheld",
+            Self::Waiting => "waiting",
+            Self::OutOfWindow => "out-of-window",
+            Self::ScopeUnresolved => "scope-unresolved",
+            Self::NoSocketAttribution => "socket-owner-unavailable",
+            Self::CausalProofUnavailable => "causal-generation-unproved-after-wait",
+            Self::CausalProofCooldown => "causal-generation-wait-cooldown",
+            Self::DirectionWithheld => "direction-withheld",
+            Self::DirectionUnknown => "direction-unknown",
+            Self::VolumeReached => "volume-reached",
+            Self::HistoryCapacity => "history-capacity",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// A bounded consecutive run of omitted packet observations.

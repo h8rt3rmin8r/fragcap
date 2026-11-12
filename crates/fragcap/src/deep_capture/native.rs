@@ -2597,6 +2597,15 @@ fn correlate_native_observation(
             fragcap_core::FlowOmissionCause::Waiting => "packet-waiting-withheld",
             fragcap_core::FlowOmissionCause::OutOfWindow => "packet-out-of-window",
             fragcap_core::FlowOmissionCause::ScopeUnresolved => "packet-scope-unresolved",
+            fragcap_core::FlowOmissionCause::NoSocketAttribution => {
+                "packet-socket-owner-unavailable"
+            }
+            fragcap_core::FlowOmissionCause::CausalProofUnavailable => {
+                "packet-causal-generation-unproved-after-wait"
+            }
+            fragcap_core::FlowOmissionCause::CausalProofCooldown => {
+                "packet-causal-generation-wait-cooldown"
+            }
             fragcap_core::FlowOmissionCause::DirectionWithheld => "packet-direction-withheld",
             fragcap_core::FlowOmissionCause::DirectionUnknown => "packet-direction-unresolved",
             fragcap_core::FlowOmissionCause::VolumeReached => "packet-volume-reached",
@@ -3616,6 +3625,32 @@ mod tests {
         let overlapping = correlate_native_observation(&registry, client, proxy, 5, 40);
         assert_eq!(overlapping.7, CorrelationState::Unavailable);
         assert_eq!(overlapping.8, "packet-scope-withheld");
+    }
+
+    #[test]
+    fn missing_socket_proof_on_another_flow_does_not_veto_exact_connection() {
+        use fragcap_core::FlowOmissionCause;
+        let registry = FlowRegistry::default();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let missing_client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proven_client: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+        registry.mark_unretained_at(
+            FlowKey::new(Proto::Tcp, missing_client, proxy),
+            Timestamp::from_nanos(15),
+            FlowOmissionCause::NoSocketAttribution,
+        );
+        registry.observe_at(
+            FlowKey::new(Proto::Tcp, proven_client, proxy),
+            Timestamp::from_nanos(15),
+            Some(&Attribution::new(7, "selected.exe", Fidelity::Live).with_role("client")),
+        );
+
+        let unresolved = correlate_native_observation(&registry, missing_client, proxy, 10, 20);
+        assert_eq!(unresolved.7, CorrelationState::Unavailable);
+        assert_eq!(unresolved.8, "packet-socket-owner-unavailable");
+        let exact = correlate_native_observation(&registry, proven_client, proxy, 10, 20);
+        assert_eq!(exact.1, Some(7));
+        assert_eq!(exact.7, CorrelationState::Matched);
     }
 
     #[test]

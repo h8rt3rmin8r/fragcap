@@ -1697,6 +1697,7 @@ impl SessionGate {
                 .admits(packet.attribution.as_ref(), shared.allowed_roles.as_deref())
         };
         if !in_scope {
+            let mut in_cooldown = false;
             if allow_pending && shared.causal.is_some() {
                 if let Some(attribution) = &packet.attribution {
                     let now = std::time::Instant::now();
@@ -1707,13 +1708,20 @@ impl SessionGate {
                     {
                         return GateDecision::Pending;
                     }
+                    in_cooldown = true;
                 }
             }
             let reason = if shared.causal.is_some() {
                 shared
                     .scope_unresolved_discarded
                     .fetch_add(1, Ordering::Relaxed);
-                GateRejection::Unresolved
+                if packet.attribution.is_none() {
+                    GateRejection::NoSocketAttribution
+                } else if in_cooldown {
+                    GateRejection::CausalProofCooldown
+                } else {
+                    GateRejection::CausalProofUnavailable
+                }
             } else if packet.attribution.is_some() {
                 shared.scope_discarded.fetch_add(1, Ordering::Relaxed);
                 GateRejection::OutOfScope
@@ -2044,12 +2052,19 @@ mod gate_tests {
                 pid: 102,
                 started: Some(Timestamp::from_nanos(20)),
                 exited: Some(Timestamp::from_nanos(50)),
-                role: Some("client".into()),
+                role: Some("publisher".into()),
                 stage: None,
             },
             RoleBindingInterval {
                 pid: 103,
                 started: Some(Timestamp::from_nanos(30)),
+                exited: Some(Timestamp::from_nanos(55)),
+                role: Some("client".into()),
+                stage: None,
+            },
+            RoleBindingInterval {
+                pid: 104,
+                started: Some(Timestamp::from_nanos(35)),
                 exited: Some(Timestamp::from_nanos(60)),
                 role: None,
                 stage: None,
@@ -2057,8 +2072,9 @@ mod gate_tests {
         ]);
         for (pid, image, at) in [
             (101, "launcher.exe", 15),
-            (102, "client.exe", 25),
-            (103, "updater.exe", 45),
+            (102, "publisher.exe", 25),
+            (103, "client.exe", 32),
+            (104, "updater.exe", 45),
         ] {
             let mut observed = packet(32, at);
             observed.attribution = Some(Attribution::new(pid, image, Fidelity::Live));
@@ -2071,15 +2087,15 @@ mod gate_tests {
             "a reused PID has no chain membership"
         );
         let mut unrelated = packet(32, 35);
-        unrelated.attribution = Some(Attribution::new(104, "updater.exe", Fidelity::Live));
+        unrelated.attribution = Some(Attribution::new(105, "updater.exe", Fidelity::Live));
         assert!(!gate.admit(&unrelated), "a same-name sibling is not owned");
         handle.close_at(Timestamp::from_nanos(60));
         let mut late = packet(32, 60);
-        late.attribution = Some(Attribution::new(103, "updater.exe", Fidelity::Live));
+        late.attribution = Some(Attribution::new(104, "updater.exe", Fidelity::Live));
         assert!(!gate.admit(&late), "release closes the packet window");
         let receipts: Vec<_> = rx.try_iter().collect();
-        assert_eq!(receipts.len(), 3);
-        assert_eq!(handle.admitted(), 3);
+        assert_eq!(receipts.len(), 4);
+        assert_eq!(handle.admitted(), 4);
         assert_eq!(handle.scope_unresolved_discarded(), 2);
         assert_eq!(handle.out_of_window_discarded(), 1);
     }
@@ -2105,6 +2121,35 @@ mod gate_tests {
         }]);
         assert_eq!(writer.join().unwrap(), GateDecision::Admit);
         assert_eq!(handle.admitted(), 1);
+    }
+
+    #[test]
+    fn managed_scope_names_missing_socket_proof_and_finite_causal_wait() {
+        let publisher = BindingPublisher::default();
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed(&unscoped(), tx, publisher);
+        handle.open_from(Timestamp::from_nanos(10));
+
+        let without_socket_owner = packet(32, 15);
+        assert_eq!(
+            gate.decide(&without_socket_owner),
+            GateDecision::Reject(GateRejection::NoSocketAttribution)
+        );
+
+        let mut without_causal_proof = packet(32, 16);
+        without_causal_proof.attribution =
+            Some(Attribution::new(4242, "launcher.exe", Fidelity::Live));
+        assert_eq!(gate.decide(&without_causal_proof), GateDecision::Pending);
+        assert_eq!(
+            gate.finish_pending(&without_causal_proof, Duration::ZERO),
+            GateDecision::Reject(GateRejection::CausalProofUnavailable)
+        );
+        assert_eq!(
+            gate.decide(&without_causal_proof),
+            GateDecision::Reject(GateRejection::CausalProofCooldown)
+        );
+        assert_eq!(handle.admitted(), 0);
+        assert_eq!(handle.scope_unresolved_discarded(), 3);
     }
 
     // SC-003. A watch-time frame is read, discarded, and counted. The gate starts
