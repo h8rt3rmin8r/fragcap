@@ -1138,6 +1138,15 @@ fn output_loop(
                         GateRejection::Unresolved => {
                             crate::flow::FlowOmissionCause::ScopeUnresolved
                         }
+                        GateRejection::NoSocketAttribution => {
+                            crate::flow::FlowOmissionCause::NoSocketAttribution
+                        }
+                        GateRejection::CausalProofUnavailable => {
+                            crate::flow::FlowOmissionCause::CausalProofUnavailable
+                        }
+                        GateRejection::CausalProofCooldown => {
+                            crate::flow::FlowOmissionCause::CausalProofCooldown
+                        }
                         GateRejection::Direction => {
                             crate::flow::FlowOmissionCause::DirectionWithheld
                         }
@@ -1955,6 +1964,56 @@ mod tests {
         // received (4) + buffer_dropped (0) + gate_dropped (4) + refusals (0) == 8.
         assert_conserved(&report, &log, 0);
         assert!(report.is_clean(), "a gate discard is not a failure");
+    }
+
+    #[test]
+    fn managed_rejection_causes_survive_the_packet_conservation_path() {
+        struct ReasonGate;
+        impl WriteGate for ReasonGate {
+            fn admit(&self, packet: &CapturedPacket) -> bool {
+                marker_of(packet) == 5
+            }
+
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                let reason = match marker_of(packet) {
+                    0 => GateRejection::Waiting,
+                    1 => GateRejection::NoSocketAttribution,
+                    2 => GateRejection::CausalProofUnavailable,
+                    3 => GateRejection::CausalProofCooldown,
+                    4 => GateRejection::OutOfWindow,
+                    _ => return GateDecision::Admit,
+                };
+                GateDecision::Reject(reason)
+            }
+        }
+
+        let log = log();
+        let registry = Arc::new(FlowRegistry::default());
+        let mut pipeline = pipeline(Box::new(StubSource::new(frames(6))), 64);
+        pipeline.set_flow_registry(Arc::clone(&registry));
+        pipeline.set_write_gate(Arc::new(ReasonGate));
+        pipeline.add_sink(StubSink::recording(&log));
+        let report = pipeline.run();
+        assert_eq!(written(&log), vec![5]);
+        assert_eq!(report.stats.gate_dropped, 5);
+        for (marker, expected) in [
+            (0, crate::flow::FlowOmissionCause::Waiting),
+            (1, crate::flow::FlowOmissionCause::NoSocketAttribution),
+            (2, crate::flow::FlowOmissionCause::CausalProofUnavailable),
+            (3, crate::flow::FlowOmissionCause::CausalProofCooldown),
+            (4, crate::flow::FlowOmissionCause::OutOfWindow),
+        ] {
+            let key = FlowKey::new(
+                crate::flow::Proto::Udp,
+                format!("192.0.2.10:{}", 40000 + marker).parse().unwrap(),
+                "198.51.100.5:5055".parse().unwrap(),
+            );
+            let summary = registry.summary(&key).expect("observed flow");
+            assert_eq!(summary.unretained_observations, 1);
+            assert_eq!(summary.omissions.len(), 1);
+            assert_eq!(summary.omissions[0].cause, expected);
+        }
+        assert_conserved(&report, &log, 0);
     }
 
     // T032, T034. FR-025, US6.

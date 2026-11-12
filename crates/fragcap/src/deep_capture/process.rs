@@ -853,6 +853,21 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             flow_owner_intervals += 1;
             cursor = next;
         }
+        for omission in &flow.omissions {
+            timeline.push((
+                Some(omission.first),
+                2,
+                0,
+                flow.id.to_string(),
+                json!({
+                    "type": "packet.omission", "session_id": input.session_id,
+                    "flow_id": flow.id.to_string(),
+                    "from_nanos": omission.first.as_nanos(),
+                    "to_nanos": omission.last.as_nanos(),
+                    "count": omission.count, "cause": omission.cause.as_str()
+                }),
+            ));
+        }
         if flow.unretained_observations > 0 {
             *limitations.entry("packet-evidence-unretained").or_default() +=
                 flow.unretained_observations;
@@ -1502,6 +1517,59 @@ mod tests {
             .unwrap();
         assert_eq!(interval["from_nanos"], 20);
         assert_eq!(interval["to_nanos"], 30);
+    }
+
+    #[test]
+    fn packet_omission_keeps_exact_flow_interval_and_cause() {
+        let mut evidence = CaptureProcessEvidence::default();
+        evidence.events.push(ProcessEvent::started(
+            7,
+            0,
+            "client.exe",
+            "client",
+            Timestamp::from_nanos(10),
+        ));
+        evidence.events.push(ProcessEvent::Exited {
+            pid: 7,
+            at: Timestamp::from_nanos(30),
+        });
+        evidence.launch_pid = Some(7);
+        evidence.launch_at = Some(Timestamp::from_nanos(10));
+        let flow = FlowSummary {
+            id: fragcap_core::FlowId::new(1).unwrap(),
+            observations: Vec::new(),
+            unretained_observations: 2,
+            global_unretained_observations: 0,
+            omissions: vec![fragcap_core::flow::FlowOmission {
+                first: Timestamp::from_nanos(20),
+                last: Timestamp::from_nanos(25),
+                count: 2,
+                cause: fragcap_core::flow::FlowOmissionCause::NoSocketAttribution,
+            }],
+            omission_precision_lost: false,
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[flow],
+            globally_unretained_flow_observations: 0,
+        });
+        let omission = trace
+            .jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|record| record["type"] == "packet.omission")
+            .expect("flow-local omission record");
+        assert_eq!(omission["flow_id"], "flow-00000001");
+        assert_eq!(omission["from_nanos"], 20);
+        assert_eq!(omission["to_nanos"], 25);
+        assert_eq!(omission["count"], 2);
+        assert_eq!(omission["cause"], "socket-owner-unavailable");
+        assert_eq!(trace.summary.completeness, "partial");
+        assert!(read_process_trace(&trace.jsonl).is_some());
     }
 
     #[test]

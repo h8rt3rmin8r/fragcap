@@ -220,6 +220,12 @@ pub enum GateRejection {
     OutOfWindow,
     OutOfScope,
     Unresolved,
+    /// Socket ownership was not available when managed-chain scope was decided.
+    NoSocketAttribution,
+    /// A socket owner was known, but no exact causal generation appeared in time.
+    CausalProofUnavailable,
+    /// A recent failed proof bounded repeated waits for this PID.
+    CausalProofCooldown,
     Direction,
     DirectionUnknown,
     VolumeReached,
