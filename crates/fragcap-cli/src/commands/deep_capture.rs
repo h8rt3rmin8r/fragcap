@@ -2724,16 +2724,14 @@ fn build_authorization_plan(
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    if args.proxy_allow_destination.len() > 32
-        || args.proxy_allow_destination.iter().any(|address| {
-            address.port() == 0
-                || address.ip().is_unspecified()
-                || address.ip().is_multicast()
-                || address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
-        })
-    {
+    if args.proxy_allow_destination.iter().any(|address| {
+        address.port() == 0
+            || address.ip().is_unspecified()
+            || address.ip().is_multicast()
+            || address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+    }) {
         return Err(CliError::usage(
-            "--proxy-allow-destination needs at most 32 unicast IP:port endpoints with nonzero ports",
+            "--proxy-allow-destination needs unicast IP:port endpoints with nonzero ports",
         ));
     }
     let mut exact_upstream_grants = args
