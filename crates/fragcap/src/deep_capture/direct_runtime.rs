@@ -2998,8 +2998,6 @@ mod tests {
     }
 
     fn live_tcp_case(ip: IpAddr, writer_retired: bool) {
-        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
-            .expect("WINDIVERT_VERIFIED_ROOT is required");
         let origin = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
         let original = origin.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -3020,6 +3018,13 @@ mod tests {
             }
             (selected, unrelated)
         });
+        live_tcp_case_for_origin(ip, original, writer_retired);
+        assert_eq!(server.join().unwrap(), (1, 3));
+    }
+
+    fn live_tcp_case_for_origin(ip: IpAddr, original: SocketAddr, writer_retired: bool) {
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
         let mut before = spawn_client("sentinel-tcp", original);
         release_client(&mut before);
         finish_client(before);
@@ -3066,12 +3071,37 @@ mod tests {
         let mut after = spawn_client("sentinel-tcp", original);
         release_client(&mut after);
         finish_client(after);
-        assert_eq!(server.join().unwrap(), (1, 3));
         let proxy_report = lease.cleanup(Duration::from_secs(2));
         assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
         if writer_retired {
             assert!(proxy_report.observation.protocol.application_events_dropped > 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires elevated WinDivert and controlled non-loopback IPv4/IPv6 peers"]
+    fn disposable_direct_runtime_routes_external_peers() {
+        for (variable, ip) in [
+            (
+                "FRAGCAP_S203_EXTERNAL_IPV4",
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ),
+            (
+                "FRAGCAP_S203_EXTERNAL_IPV6",
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ),
+        ] {
+            let original: SocketAddr = std::env::var(variable)
+                .unwrap_or_else(|_| panic!("{variable} is required"))
+                .parse()
+                .unwrap();
+            assert!(
+                !original.ip().is_loopback(),
+                "external peer must not be loopback"
+            );
+            assert_eq!(original.is_ipv4(), ip.is_ipv4(), "peer family mismatch");
+            live_tcp_case_for_origin(ip, original, false);
         }
     }
 
