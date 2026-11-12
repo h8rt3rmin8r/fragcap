@@ -345,6 +345,8 @@ pub(crate) struct DirectRouteProof {
     pub reply_sent: bool,
     pub reply_failed: bool,
     pub client_ack: bool,
+    pub first_returned_data_end: Option<u32>,
+    pub returned_data_acknowledged: bool,
     pub client_to_upstream: u64,
     pub upstream_to_client: u64,
     pub client_datagrams: u64,
@@ -359,7 +361,10 @@ impl DirectRouteProof {
             && !self.reply_failed
             && match transport {
                 Proto::Tcp => {
-                    self.client_ack && self.client_to_upstream > 0 && self.upstream_to_client > 0
+                    self.client_ack
+                        && self.returned_data_acknowledged
+                        && self.client_to_upstream > 0
+                        && self.upstream_to_client > 0
                 }
                 Proto::Udp => self.client_datagrams > 0 && self.peer_datagrams > 0,
             }
@@ -610,7 +615,15 @@ impl NativeObservationContext {
                 0,
                 0,
                 CorrelationState::Unavailable,
-                "direct-original-packet-not-retained".into(),
+                if route_proof
+                    .as_ref()
+                    .is_some_and(|proof| proof.proxy_connected && proof.reply_sent)
+                {
+                    "direct-route-client-delivery-unproven"
+                } else {
+                    "direct-original-packet-not-retained"
+                }
+                .into(),
             ));
         };
         let window_start = flow
@@ -1040,6 +1053,11 @@ mod direct_helper_tests {
             CorrelationState::Unavailable
         );
         proof.lock().unwrap().client_ack = true;
+        assert_eq!(
+            context.correlate_proxy_window(&window).7,
+            CorrelationState::Unavailable
+        );
+        proof.lock().unwrap().returned_data_acknowledged = true;
         let without_packet = context.correlate_proxy_window(&window);
         assert_eq!(without_packet.0, None);
         assert_eq!(without_packet.5, 0);

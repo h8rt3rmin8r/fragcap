@@ -24,6 +24,7 @@ struct FlowSummary {
     reply_sent: bool,
     reply_failed: bool,
     client_ack: bool,
+    returned_data_acknowledged: bool,
     client_to_upstream: u64,
     upstream_to_client: u64,
     client_datagrams: u64,
@@ -146,6 +147,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
                 "synthetic-reply-sent" => flow.reply_sent = true,
                 "synthetic-reply-failed" => flow.reply_failed = true,
                 "client-response" => flow.client_ack |= event.fields["ack"].as_bool() == Some(true),
+                "returned-data-acknowledged" => flow.returned_data_acknowledged = true,
                 "transfer" => {
                     flow.client_to_upstream = flow
                         .client_to_upstream
@@ -180,7 +182,10 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             } else {
                 flow.client_ack
             };
-        let bidirectional = client_response && flow.client_to_upstream > 0 && flow.upstream_to_client > 0;
+        let bidirectional = client_response
+            && (flow.protocol.as_deref() == Some("udp") || flow.returned_data_acknowledged)
+            && flow.client_to_upstream > 0
+            && flow.upstream_to_client > 0;
         let client_reachable = client_response && (flow.protocol.as_deref() == Some("udp") || bidirectional);
         let matching_proxy = flow.helper_pair.as_ref().and_then(|pair| proxy_pairs.get(pair));
         let proxy_connection_id = matching_proxy.and_then(|matches| (matches.len() == 1).then_some(matches[0]));
@@ -201,6 +206,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             "status": if bidirectional { "bidirectional-transfer-observed" } else if client_reachable && flow.protocol.as_deref() == Some("udp") { "client-datagram-response-observed-no-bidirectional-data" } else if client_response { "client-handshake-observed-no-bidirectional-data" } else if flow.proxy_refused { "proxy-refused" } else if flow.reply_failed { "reply-injection-failed" } else if flow.proxy_connected && flow.client_to_upstream == 0 && flow.upstream_to_client == 0 { "upstream-connected-zero-byte" } else if flow.proxy_connected { "proxy-connected-without-client-reachability-proof" } else if flow.proxy_attempted { "proxy-attempt-without-connection" } else { "selected-only" },
             "proxy_connected": flow.proxy_connected,
             "client_ack_observed": flow.client_ack,
+            "returned_data_acknowledged": flow.returned_data_acknowledged,
             "client_response_observed": client_response,
             "client_reachability_observed": client_reachable,
             "synthetic_reply_generated": flow.reply_generated,

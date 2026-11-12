@@ -43,6 +43,10 @@ pub enum RouteEventKind {
         helper_local: SocketAddr,
         proxy_local: SocketAddr,
     },
+    UdpRelayAssociated {
+        relay_local: SocketAddr,
+        relay_remote: SocketAddr,
+    },
     ProxyRefused {
         reason: &'static str,
     },
@@ -60,6 +64,7 @@ pub enum RouteEventKind {
     ClientResponse {
         ack: bool,
     },
+    ReturnedDataAcknowledged,
     Transfer {
         client_to_upstream: u64,
         upstream_to_client: u64,
@@ -110,6 +115,13 @@ impl RouteEventKind {
                 "proxy-connected",
                 json!({"helper_local": helper_local, "proxy_local": proxy_local}),
             ),
+            Self::UdpRelayAssociated {
+                relay_local,
+                relay_remote,
+            } => (
+                "udp-relay-associated",
+                json!({"relay_local": relay_local, "relay_remote": relay_remote}),
+            ),
             Self::ProxyRefused { reason } => ("proxy-refused", json!({"reason": reason})),
             Self::SyntheticReplyGenerated {
                 packets,
@@ -126,6 +138,7 @@ impl RouteEventKind {
                 ("synthetic-reply-failed", json!({"reason": reason}))
             }
             Self::ClientResponse { ack } => ("client-response", json!({"ack": ack})),
+            Self::ReturnedDataAcknowledged => ("returned-data-acknowledged", json!({})),
             Self::Transfer {
                 client_to_upstream,
                 upstream_to_client,

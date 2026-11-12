@@ -274,6 +274,7 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
         },
         RouteEventKind::SyntheticReplySent { packets: 1 },
         RouteEventKind::ClientResponse { ack: true },
+        RouteEventKind::ReturnedDataAcknowledged,
         RouteEventKind::Transfer {
             client_to_upstream: 5,
             upstream_to_client: 8,
@@ -332,4 +333,79 @@ fn report_joins_exact_proxy_connection_and_packet_outcome() {
     assert_eq!(row["packet_correlation"]["state"], "matched");
     let rendered = report.to_string();
     assert!(!rendered.contains("192.0.2.10") && !rendered.contains("process-42-100"));
+}
+
+#[test]
+fn udp_report_joins_control_connection_and_keeps_relay_identity_private() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut route =
+        RouteEventLease::open(temp.path().join("route.jsonl"), "private-session", 16).unwrap();
+    let sink = route.sink();
+    for (index, kind) in [
+        RouteEventKind::Selected {
+            protocol: "udp",
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            endpoint_id: 9,
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 2,
+            tcp_flags: None,
+            packet_flags: 0,
+            ip_checksum_valid: false,
+            if_idx: 2,
+            sub_if_idx: 0,
+            tcp_checksum_valid: false,
+        },
+        RouteEventKind::ProxyConnected {
+            helper_local: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        },
+        RouteEventKind::UdpRelayAssociated {
+            relay_local: "127.0.0.1:43000".parse().unwrap(),
+            relay_remote: "127.0.0.1:44000".parse().unwrap(),
+        },
+        RouteEventKind::SyntheticReplySent { packets: 1 },
+        RouteEventKind::DatagramTransfer {
+            client_to_upstream: 5,
+            upstream_to_client: 8,
+            client_datagrams: 1,
+            peer_datagrams: 1,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sink.record(RouteEvent {
+            flow_id: 1,
+            at_ns: index as u64 + 100,
+            clock_error_ns: Some(2),
+            kind,
+        });
+    }
+    route.finish().unwrap();
+    let mut proxy =
+        LifecycleWriter::create(temp.path().join("proxy.jsonl"), "proxy", "private-session")
+            .unwrap();
+    proxy
+        .append(
+            "proxy.connection-open",
+            serde_json::json!({"connection_id":22,"timestamp_ns":101,
+                "detail":{"client_peer":"127.0.0.1:41000","proxy_local":"127.0.0.1:42000"}}),
+        )
+        .unwrap();
+    proxy.finish().unwrap();
+    std::fs::write(
+        temp.path().join("compatibility.json"),
+        serde_json::json!({"observations":[{"proxy_connection_id":"22",
+            "correlation_state":"matched","packet_observations":0}]})
+        .to_string(),
+    )
+    .unwrap();
+    let report = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(report["flows"][0]["proxy_connection_id"], 22);
+    assert_eq!(report["flows"][0]["packet_correlation"]["state"], "matched");
+    assert_eq!(report["flows"][0]["client_reachability_observed"], true);
+    assert!(!report.to_string().contains("127.0.0.1:43000"));
 }

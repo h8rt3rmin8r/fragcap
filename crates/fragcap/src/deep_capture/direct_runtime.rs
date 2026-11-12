@@ -231,6 +231,38 @@ fn reinject(
     }
 }
 
+fn tcp_payload_end(packet: &[u8]) -> Option<u32> {
+    let head = raw_transport_head(packet).ok()?;
+    if head.transport != Proto::Tcp {
+        return None;
+    }
+    let transport =
+        packet.get(head.transport_offset..head.transport_offset + head.transport_len)?;
+    let header_len = usize::from(transport[12] >> 4) * 4;
+    let payload_len = transport.len().checked_sub(header_len)?;
+    if payload_len == 0 {
+        return None;
+    }
+    let sequence = u32::from_be_bytes(transport[4..8].try_into().ok()?);
+    Some(sequence.wrapping_add(u32::try_from(payload_len).ok()?))
+}
+
+fn tcp_acknowledges_returned_data(packet: &[u8], first_data_end: u32) -> bool {
+    let Ok(head) = raw_transport_head(packet) else {
+        return false;
+    };
+    if head.transport != Proto::Tcp || !head.tcp_ack {
+        return false;
+    }
+    let Some(transport) =
+        packet.get(head.transport_offset..head.transport_offset + head.transport_len)
+    else {
+        return false;
+    };
+    let acknowledged = u32::from_be_bytes(transport[8..12].try_into().expect("validated TCP head"));
+    acknowledged.wrapping_sub(first_data_end) < (1 << 31)
+}
+
 fn inject_replies(
     handle: &Handle,
     stats: &SharedStats,
@@ -275,7 +307,11 @@ fn inject_replies(
             return Err(io::Error::other("synthetic TCP reply injection failed"));
         }
         if let Some(proof) = proof {
-            proof.lock().expect("direct proof lock").reply_sent = true;
+            let mut proof = proof.lock().expect("direct proof lock");
+            proof.reply_sent = true;
+            if proof.first_returned_data_end.is_none() {
+                proof.first_returned_data_end = tcp_payload_end(&reply);
+            }
         }
         record_route(
             route_events,
@@ -594,12 +630,32 @@ fn forward_active_packet(
     };
     packet_finished(stats, PacketDisposition::Consumed)?;
     if raw_transport_head(packet).is_ok_and(|head| head.tcp_ack) {
-        flow.proof.lock().expect("direct proof lock").client_ack = true;
+        let returned_data_acknowledged = {
+            let mut proof = flow.proof.lock().expect("direct proof lock");
+            proof.client_ack = true;
+            if !proof.returned_data_acknowledged
+                && proof
+                    .first_returned_data_end
+                    .is_some_and(|end| tcp_acknowledges_returned_data(packet, end))
+            {
+                proof.returned_data_acknowledged = true;
+                true
+            } else {
+                false
+            }
+        };
         record_route(
             route_events,
             flow.flow_id,
             RouteEventKind::ClientResponse { ack: true },
         );
+        if returned_data_acknowledged {
+            record_route(
+                route_events,
+                flow.flow_id,
+                RouteEventKind::ReturnedDataAcknowledged,
+            );
+        }
     }
     let transferred = flow.bridge.transferred_bytes();
     if transferred != flow.last_transfer {
@@ -1102,16 +1158,24 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             }
                         };
                         let relay = association.relay_tuple()?;
+                        let control = association.control_tuple()?;
                         proof.lock().expect("direct proof lock").proxy_connected = true;
                         record_route(
                             route_events.as_ref(),
                             helper_id,
                             RouteEventKind::ProxyConnected {
-                                helper_local: relay.local,
-                                proxy_local: relay.remote,
+                                helper_local: control.local,
+                                proxy_local: control.remote,
                             },
                         );
-                        let control = association.control_tuple()?;
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::UdpRelayAssociated {
+                                relay_local: relay.local,
+                                relay_remote: relay.remote,
+                            },
+                        );
                         let registered_at = unix_now_ns()?;
                         context
                             .register_direct_helper(
@@ -1777,6 +1841,49 @@ impl Drop for DirectPacketRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_ack_does_not_acknowledge_returned_payload() {
+        fn packet(sequence: u32, acknowledgment: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
+            let mut packet = vec![0u8; 40 + payload.len()];
+            packet[0] = 0x45;
+            let packet_len = u16::try_from(packet.len()).unwrap();
+            packet[2..4].copy_from_slice(&packet_len.to_be_bytes());
+            packet[8] = 64;
+            packet[9] = 6;
+            packet[12..16].copy_from_slice(&[192, 0, 2, 10]);
+            packet[16..20].copy_from_slice(&[198, 51, 100, 20]);
+            packet[20..22].copy_from_slice(&40000u16.to_be_bytes());
+            packet[22..24].copy_from_slice(&443u16.to_be_bytes());
+            packet[24..28].copy_from_slice(&sequence.to_be_bytes());
+            packet[28..32].copy_from_slice(&acknowledgment.to_be_bytes());
+            packet[32] = 0x50;
+            packet[33] = flags;
+            packet[40..].copy_from_slice(payload);
+            packet
+        }
+        let response = packet(1000, 0, 0x18, b"reply");
+        let end = tcp_payload_end(&response).unwrap();
+        assert_eq!(end, 1005);
+        assert!(!tcp_acknowledges_returned_data(
+            &packet(2000, 1000, 0x10, b""),
+            end
+        ));
+        assert!(tcp_acknowledges_returned_data(
+            &packet(2000, 1005, 0x10, b""),
+            end
+        ));
+        assert!(!tcp_acknowledges_returned_data(
+            &packet(2000, 1005, 0x00, b""),
+            end
+        ));
+        let wrapping = tcp_payload_end(&packet(u32::MAX - 2, 0, 0x18, b"wrap")).unwrap();
+        assert_eq!(wrapping, 1);
+        assert!(tcp_acknowledges_returned_data(
+            &packet(2000, 1, 0x10, b""),
+            wrapping
+        ));
+    }
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
