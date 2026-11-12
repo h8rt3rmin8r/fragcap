@@ -287,10 +287,22 @@ fn inject_replies(
         );
     }
     for reply in replies {
-        if !matches!(handle.send(&reply, &address), Ok(sent) if sent == reply.len()) {
-            if let Some(proof) = proof {
-                proof.lock().expect("direct proof lock").reply_failed = true;
+        let sent = if let Some(proof) = proof {
+            let mut proof = proof.lock().expect("direct proof lock");
+            let sent = handle.send(&reply, &address);
+            if matches!(&sent, Ok(length) if *length == reply.len()) {
+                proof.reply_sent = true;
+                if proof.first_returned_data_end.is_none() {
+                    proof.first_returned_data_end = tcp_payload_end(&reply);
+                }
+            } else {
+                proof.reply_failed = true;
             }
+            sent
+        } else {
+            handle.send(&reply, &address)
+        };
+        if !matches!(sent, Ok(length) if length == reply.len()) {
             record_route(
                 route_events,
                 flow_id,
@@ -307,13 +319,6 @@ fn inject_replies(
             );
             stats.synthetic_reply_lost.fetch_add(1, Ordering::Relaxed);
             return Err(io::Error::other("synthetic TCP reply injection failed"));
-        }
-        if let Some(proof) = proof {
-            let mut proof = proof.lock().expect("direct proof lock");
-            proof.reply_sent = true;
-            if proof.first_returned_data_end.is_none() {
-                proof.first_returned_data_end = tcp_payload_end(&reply);
-            }
         }
         record_route(
             route_events,
