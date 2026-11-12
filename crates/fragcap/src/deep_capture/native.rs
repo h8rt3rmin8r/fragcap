@@ -2228,12 +2228,20 @@ impl ManagedClientWindows {
         if evidence.shutdown_scope.is_empty() {
             return None;
         }
+        let direct_root = evidence
+            .launch_pid
+            .filter(|_| evidence.shutdown_scope.len() == 1);
+        let has_client = evidence.stage_transitions.iter().any(|transition| {
+            transition.role == "client" && transition.kind == super::StageTransitionKind::Matched
+        });
+        let final_role = if has_client { "client" } else { "target" };
         let mut matches: Vec<(u32, u64)> = evidence
             .stage_transitions
             .iter()
             .filter(|transition| {
-                transition.role == "client"
-                    && transition.kind == super::StageTransitionKind::Matched
+                transition.kind == super::StageTransitionKind::Matched
+                    && transition.role == final_role
+                    && (has_client || Some(transition.pid) == direct_root)
             })
             .filter_map(|transition| {
                 u64::try_from(transition.at.as_nanos())
@@ -2256,7 +2264,8 @@ impl ManagedClientWindows {
                 .stage_transitions
                 .iter()
                 .filter(|transition| {
-                    transition.role == "client"
+                    transition.role == final_role
+                        && (has_client || Some(transition.pid) == direct_root)
                         && transition.kind == super::StageTransitionKind::Exited
                         && transition.pid == pid
                 })
@@ -3288,6 +3297,49 @@ mod tests {
         assert_eq!(
             native_evidence_window(Some(99), None),
             super::super::EvidenceWindow::Unavailable
+        );
+    }
+
+    #[test]
+    fn managed_direct_root_target_stage_qualifies_observation_window() {
+        let mut evidence = super::super::CaptureProcessEvidence {
+            launch_pid: Some(42),
+            shutdown_scope: vec![PathBuf::from("C:\\Games\\client.exe")],
+            ..Default::default()
+        };
+        evidence
+            .stage_transitions
+            .push(super::super::StageTransition {
+                kind: super::super::StageTransitionKind::Matched,
+                pid: 42,
+                role: "target".into(),
+                stage: Some("target".into()),
+                at: Timestamp::from_nanos(100),
+            });
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(101)),
+            super::super::EvidenceWindow::Observation
+        );
+        evidence
+            .stage_transitions
+            .push(super::super::StageTransition {
+                kind: super::super::StageTransitionKind::Exited,
+                pid: 42,
+                role: "target".into(),
+                stage: Some("target".into()),
+                at: Timestamp::from_nanos(200),
+            });
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(200)),
+            super::super::EvidenceWindow::OwnerRelease
+        );
+        evidence.launch_pid = Some(43);
+        let windows = ManagedClientWindows::from_evidence(&evidence).unwrap();
+        assert_eq!(
+            windows.classify(Some(101)),
+            super::super::EvidenceWindow::PreClient
         );
     }
 

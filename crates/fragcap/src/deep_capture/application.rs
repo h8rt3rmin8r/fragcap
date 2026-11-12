@@ -1601,7 +1601,7 @@ fn event_json(
                 "address_type": value.address_type,
                 "dns_owner": value.dns_owner,
                 "outcome": value.outcome,
-                "classification": value.classification.map(|item| item.as_str()),
+                "upstream_classification": value.classification.map(|item| item.as_str()),
                 "inspectability": "metadata-only",
             }),
         ),
@@ -2817,6 +2817,28 @@ fn trailer_reconciles(records: &[Value]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socks_connect_keeps_protocol_classification_and_upstream_detail_separate() {
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::SocksConnect(fragcap_proxy::SocksConnectEvent {
+                authority: "example.test:443".into(),
+                upstream_local: None,
+                selected_peer: None,
+                address_type: "domain",
+                dns_owner: "proxy",
+                outcome: "connected",
+                classification: Some(fragcap_proxy::SocksClassification::OpaqueTcp),
+            }),
+        );
+        let record = event_json(event, 1, ApplicationCorrelation::default());
+        assert_eq!(record["classification"]["family"], "socks5-tcp");
+        assert_eq!(record["upstream_classification"], "tcp-opaque");
+    }
 
     #[test]
     fn pre_client_connection_owner_does_not_promote_withheld_packet_evidence() {

@@ -286,6 +286,12 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         assert_eq!(report["route"]["state"], "complete");
         assert_eq!(report["route"]["dropped_events"], 0);
         assert_eq!(report["route"]["bidirectional_flows"], 1);
+        assert_eq!(report["flows"][0]["process_generation_join"], "exact");
+        assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
+        assert_eq!(
+            report["compatibility"]["calibration_outcome"],
+            "reached-client"
+        );
         assert_eq!(
             report["flows"][0]["client_to_upstream_bytes"],
             (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64

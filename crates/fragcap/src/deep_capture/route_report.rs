@@ -2,11 +2,19 @@
 
 //! Shareable, bounded projection of one direct-route bundle.
 
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Read},
+    path::Path,
+};
 
 use serde_json::{json, Value};
 
-use super::{read_lifecycle_prefix, read_process_trace, read_route_prefix, LifecycleStreamStatus};
+use super::{
+    read_application_prefix_bytes, read_lifecycle_prefix, read_process_trace, read_route_prefix,
+    ApplicationPrefix, ApplicationStreamStatus, LifecycleStreamStatus,
+};
 
 const MAX_SUMMARY_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -165,6 +173,44 @@ fn bounded_json(path: &Path) -> io::Result<Value> {
     serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)
 }
 
+fn bounded_application(path: &Path) -> io::Result<ApplicationPrefix> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_SUMMARY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SUMMARY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "application stream exceeds report byte limit",
+        ));
+    }
+    read_application_prefix_bytes(&bytes)
+}
+
+fn application_status(prefix: &ApplicationPrefix) -> &'static str {
+    match prefix.status {
+        ApplicationStreamStatus::UnknownVersion => "unknown-version",
+        _ if prefix.schema_version == 2 && !application_joinable(prefix) => "invalid",
+        ApplicationStreamStatus::Complete => "complete",
+        ApplicationStreamStatus::Incomplete => "incomplete",
+    }
+}
+
+fn application_joinable(prefix: &ApplicationPrefix) -> bool {
+    let session = prefix.records.first().and_then(|record| {
+        (record["type"] == "application.header")
+            .then(|| record["session_id"].as_str())
+            .flatten()
+    });
+    prefix.schema_version == 2
+        && session.is_some()
+        && prefix.records.iter().enumerate().all(|(index, record)| {
+            record["schema_version"] == 2
+                && record["sequence"].as_u64() == Some(index as u64)
+                && record["session_id"].as_str() == session
+        })
+}
+
 fn optional_source<T>(result: io::Result<T>) -> (Option<T>, &'static str) {
     match result {
         Ok(value) => (Some(value), "available"),
@@ -196,6 +242,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         "compatibility.json",
         "cleanup.json",
         "proxy.jsonl",
+        "application.jsonl",
         "process-trace.jsonl",
         "route.jsonl",
     ] {
@@ -224,6 +271,8 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         optional_source(bounded_json(&bundle.join("cleanup.json")));
     let (proxy, proxy_source_state) =
         optional_source(read_lifecycle_prefix(&bundle.join("proxy.jsonl")));
+    let (application, application_source_state) =
+        optional_source(bounded_application(&bundle.join("application.jsonl")));
     let (process_trace, process_trace_source_state) =
         optional_source(process_trace_source(&bundle.join("process-trace.jsonl")));
     let (route, route_source_state) =
@@ -325,17 +374,18 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             record["type"] == "proxy.connection-terminal" && record["fields"]["connection_id"] == connection_id
         })));
         let packet = proxy_connection_id.and_then(|connection_id| compatibility.as_ref().and_then(|value| value["observations"].as_array()).and_then(|records| records.iter().find(|record| record["proxy_connection_id"].as_str().and_then(|value| value.parse::<u64>().ok()) == Some(connection_id))));
-        let generation_join = packet.and_then(|record| {
-            flow.pid.zip(flow.process_instance_id.as_deref()).map(|(pid, instance)| {
+        let correlations = proxy_connection_id.and_then(|connection_id| application.as_ref().filter(|prefix| application_joinable(prefix)).map(|prefix| prefix.records.iter().filter(|record| record["type"] == "application.correlation" && record["proxy_connection_id"].as_u64() == Some(connection_id)).collect::<Vec<_>>()));
+        let generation_join = match (flow.pid, flow.process_instance_id.as_deref(), correlations.as_deref()) {
+            (Some(pid), Some(instance), Some([record])) => {
                 if record["connection_owner"]["pid"].as_u64() == Some(pid)
                     && record["connection_owner"]["process_instance_id"].as_str() == Some(instance)
-                {
-                    "exact"
-                } else {
-                    "mismatch"
-                }
-            })
-        });
+                    && record["connection_owner"]["state"] == "exact"
+                    && record["connection_owner"]["role"] == "client"
+                { Some("exact") } else { Some("mismatch") }
+            }
+            (_, _, Some(records)) if records.len() > 1 => Some("ambiguous"),
+            _ => None,
+        };
         json!({
             "flow": format!("flow-{}", index + 1),
             "protocol": flow.protocol,
@@ -417,6 +467,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         },
         "route": {"state":route_state,"complete":route_complete,"dropped_events":route_loss,"events":route.as_ref().map_or(0, |prefix| prefix.events.len()),"selected_flows":selected_flows,"client_reachable_flows":client_reachable_flows,"bidirectional_flows":bidirectional_flows,"zero_byte_connected_flows":zero_byte_connected_flows},
         "proxy": {"state":proxy_state,"events":proxy.as_ref().map_or(0, |prefix| prefix.records.len())},
+        "application": {"state":application.as_ref().map(application_status).unwrap_or(application_source_state),"records":application.as_ref().map_or(0, |prefix| prefix.records.len())},
         "process_trace": {"state":process_trace_state,"completeness":process_trace.as_ref().and_then(|source| source.completeness),"events":process_trace.as_ref().map_or(0, |source| source.events)},
         "packet": {"state":if bundle.join("capture.fcapng").is_file() { "artifact-present" } else { "artifact-unavailable" }, "original_flow_reconciliation":if packet_joined_flows > 0 { "joined-by-proxy-connection" } else { "unavailable" }, "joined_flows":packet_joined_flows},
         "compatibility": {"state":compatibility_source_state,"available":compatibility.is_some(),"calibration_phase":compatibility.as_ref().and_then(|value| value["calibration"]["phase"].as_str()),"calibration_outcome":compatibility.as_ref().and_then(|value| value["calibration"]["outcome"].as_str()),"process_trace":compatibility.as_ref().map(|value| json!({"completeness":value["process_trace"]["completeness"],"unresolved_flow_owners":value["process_trace"]["unresolved_flow_owners"]}))},
@@ -425,6 +476,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         "transformations": [
             {"source":"route.selected.local,remote,pid,process_instance_id,endpoint_id","operation":"replace-with-session-ordinal","output":"flows[].flow"},
             {"source":"route.proxy-connected.helper_local,proxy_local","operation":"exact-join-then-omit-endpoints","output":"flows[].proxy_connection_id"},
+            {"source":"application.correlation.connection_owner","operation":"compare-generation-then-omit-private-identity","output":"flows[].process_generation_join"},
             {"source":"manifest paths, target identity, capability, certificate material, payloads","operation":"omit","output":null}
         ],
         "limitations": ["A WinDivert send success alone does not prove delivery to the client.", "Packet artifact presence does not prove an original diverted packet was retained.", "A crash prefix or lost route event may omit a later outcome."],
