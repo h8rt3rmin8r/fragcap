@@ -409,3 +409,58 @@ fn udp_report_joins_control_connection_and_keeps_relay_identity_private() {
     assert_eq!(report["flows"][0]["client_reachability_observed"], true);
     assert!(!report.to_string().contains("127.0.0.1:43000"));
 }
+
+#[test]
+fn empty_udp_datagrams_do_not_prove_payload_reachability() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut route =
+        RouteEventLease::open(temp.path().join("route.jsonl"), "private-session", 16).unwrap();
+    let sink = route.sink();
+    for (index, kind) in [
+        RouteEventKind::Selected {
+            protocol: "udp",
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            endpoint_id: 9,
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 2,
+            tcp_flags: None,
+            packet_flags: 0,
+            ip_checksum_valid: false,
+            if_idx: 2,
+            sub_if_idx: 0,
+            tcp_checksum_valid: false,
+        },
+        RouteEventKind::ProxyConnected {
+            helper_local: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        },
+        RouteEventKind::SyntheticReplySent { packets: 1 },
+        RouteEventKind::DatagramTransfer {
+            client_to_upstream: 0,
+            upstream_to_client: 0,
+            client_datagrams: 1,
+            peer_datagrams: 1,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sink.record(RouteEvent {
+            flow_id: 1,
+            at_ns: index as u64 + 100,
+            clock_error_ns: None,
+            kind,
+        });
+    }
+    route.finish().unwrap();
+    let report = build_route_debug_report(temp.path()).unwrap();
+    assert_eq!(report["route"]["client_reachable_flows"], 0);
+    assert_eq!(report["flows"][0]["client_reachability_observed"], false);
+    assert_eq!(
+        report["flows"][0]["status"],
+        "client-datagram-response-observed-no-bidirectional-data"
+    );
+}

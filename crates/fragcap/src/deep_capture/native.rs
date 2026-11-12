@@ -366,7 +366,12 @@ impl DirectRouteProof {
                         && self.client_to_upstream > 0
                         && self.upstream_to_client > 0
                 }
-                Proto::Udp => self.client_datagrams > 0 && self.peer_datagrams > 0,
+                Proto::Udp => {
+                    self.client_datagrams > 0
+                        && self.peer_datagrams > 0
+                        && self.client_to_upstream > 0
+                        && self.upstream_to_client > 0
+                }
             }
     }
 
@@ -970,10 +975,19 @@ mod direct_helper_tests {
         };
         let response = udp_context.correlate_proxy_window(&udp_window);
         assert_eq!(response.5, 0);
+        assert_eq!(response.7, CorrelationState::Unavailable);
+        assert_eq!(response.8, "direct-route-client-delivery-unproven");
+        {
+            let mut proof = udp_proof.lock().unwrap();
+            proof.client_to_upstream = 5;
+            proof.upstream_to_client = 8;
+        }
+        let response = udp_context.correlate_proxy_window(&udp_window);
+        assert_eq!(response.5, 0);
         assert_eq!(response.7, CorrelationState::Matched);
         assert_eq!(
             response.8,
-            "direct-route-client-datagram-response-original-packet-unavailable"
+            "direct-route-client-transfer-original-packet-unavailable"
         );
     }
 
