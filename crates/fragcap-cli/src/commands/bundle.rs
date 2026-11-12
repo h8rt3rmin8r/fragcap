@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use crate::cli::{BundleArgs, BundleCommand};
@@ -130,6 +130,44 @@ fn require_existing_bundle(bundle: &std::path::Path) -> Result<(), CliError> {
             "bundle path {} is not an exact directory. Check the bundle path before retrying",
             bundle.display()
         )));
+    }
+    Ok(())
+}
+
+fn validate_debug_output_parent(source: &Path, parent: &Path) -> Result<(), CliError> {
+    if parent
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(CliError::usage(
+            "debug report output path cannot contain parent traversal",
+        ));
+    }
+    let mut ancestor = parent;
+    loop {
+        match ancestor.symlink_metadata() {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    CliError::usage("debug report destination has no existing ancestor")
+                })?;
+            }
+            Err(error) => {
+                return Err(CliError::failure(format!(
+                    "cannot inspect debug report destination parent: {error}"
+                )));
+            }
+        }
+    }
+    let exact_ancestor = ancestor.canonicalize().map_err(|error| {
+        CliError::failure(format!(
+            "cannot resolve debug report destination ancestor: {error}"
+        ))
+    })?;
+    if exact_ancestor.starts_with(source) {
+        return Err(CliError::usage(
+            "debug report output must be outside the source bundle",
+        ));
     }
     Ok(())
 }
@@ -512,6 +550,7 @@ pub(crate) fn run_mode(
             let parent = destination
                 .parent()
                 .ok_or_else(|| CliError::usage("debug report destination has no parent"))?;
+            validate_debug_output_parent(&source, parent)?;
             std::fs::create_dir_all(parent)
                 .map_err(|error| CliError::failure(error.to_string()))?;
             let exact_parent = parent.canonicalize().map_err(|error| {
