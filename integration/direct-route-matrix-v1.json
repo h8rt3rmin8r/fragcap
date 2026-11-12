@@ -38,7 +38,9 @@
     {"id":"proxy-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused","probe":"disposable_proxy_auth_failure_reinjects_selected_first_packet"},
     {"id":"listener-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"refused-without-loss","probe":"disposable_proxy_refusal_reinjects_selected_first_packet"},
     {"id":"writer-failure","tier":"windows-driver","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"loss-accounted","probe":"disposable_writer_retirement_preserves_direct_route_and_counts_loss"},
-    {"id":"cleanup-failure","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"none","event":"cleanup","expected":"recovery-required","probe":"disposable_cleanup_failure_reports_uncertainty_and_releases_handle"}
+    {"id":"cleanup-failure","tier":"windows-driver","transport":"tcp-udp","family":"ipv4","owner":"none","event":"cleanup","expected":"recovery-required","probe":"disposable_cleanup_failure_reports_uncertainty_and_releases_handle"},
+    {"id":"external-tcp-ipv4","tier":"controlled-peer","transport":"tcp","family":"ipv4","owner":"final-client","event":"before-initial","expected":"exact-bidirectional-bytes-with-diagnostics-on-off","probe":"controlled_direct_runtime_routes_external_peers"},
+    {"id":"external-tcp-ipv6","tier":"controlled-peer","transport":"tcp","family":"ipv6","owner":"final-client","event":"before-initial","expected":"exact-bidirectional-bytes-with-diagnostics-on-off","probe":"controlled_direct_runtime_routes_external_peers"}
   ],
   "sentinel": {
     "paired_baseline": true,

@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.127-draft \
+**Version:** 0.1.128-draft \
 **Applies-To:** 0.11.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -217,6 +217,7 @@ enforcement.
 | 0.1.125-draft | 2026-11-10 | Codex | S202 prepares v0.11.0 from accepted S197 through S201 with coherent source, package, changelog, notes, and candidate documentation identities. Public v0.10.14 markers remain authoritative until tagged publication and independent readback. Updates sections 1, 22, 24, and 27. |
 | 0.1.126-draft | 2026-11-11 | Codex | S202 reconciles the accepted v0.11.0 tag, certified public files, registry crates, and current documentation only after independent readback. Updates sections 1, 22, 24, and 27. |
 | 0.1.127-draft | 2026-11-12 | Codex | S203 separates selected direct-route client delivery from an upstream CONNECT and passive packet presence, and adds bounded route diagnostics and a source-preserving debug report. Corrects active auto scope help. Updates sections 17, 26, and 27; published v0.11.0 identity is unchanged. |
+| 0.1.128-draft | 2026-11-12 | Codex | S204 qualifies controlled non-loopback IPv4/IPv6 direct TCP, reserves packet work-queue space for selected traffic, requires two-way UDP payload bytes for positive route facts, and checks packaged help. Updates sections 17 and 27; published v0.11.0 identity is unchanged. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4821,6 +4822,8 @@ in the final drop count.
 
 S203 records selected direct TCP and supported UDP route stages in a bounded, protected `route.jsonl` stream. Each selected flow has a session-local identity, source sequence and timestamp, first-packet clock uncertainty, proxy attempt, synthetic response generation and send outcome, client response or datagram evidence, directional transfer counts, and terminal reason. TCP reachability requires an observed client acknowledgment covering successfully injected returned payload, in addition to two-way transfer; a handshake acknowledgment or bytes queued in the local bridge cannot establish it. The UDP proxy connection stage names the SOCKS5 control connection, while a separate private event names the relay tuple. Queue loss and crash prefixes remain explicit. The stream is sensitive bundle content and is omitted from ordinary share copies. A successful upstream proxy connection or WinDivert send is not proof of a client-visible exchange.
 
+S204 requires an actual nonempty datagram payload in each direction before a supported UDP route can qualify reachability; an empty datagram response remains a distinct observed non-positive outcome. Direct packet candidate admission is capped at half of the finite work queue, leaving headroom for packets from already selected flows during unrelated candidate bursts. Candidate bypass remains explicit in route accounting; selected packets still fail closed if their reserved capacity is exhausted.
+
 `fragcap bundle debug-report <bundle> --out <file>` derives a separate bounded JSON report from complete or partial route, proxy, compatibility, manifest, and cleanup sources. It does not modify the source bundle. The report replaces exact endpoints and process identity with opaque flow labels, records source gaps and packet-correlation availability, and distinguishes a connected zero-byte tunnel from client transfer. Direct-route calibration may accept an exact final-client receipt with observed bidirectional TCP bytes even when WinDivert consumed the original packet before Npcap retained it; packet evidence stays independently unavailable. A handshake without transfer is not a positive TCP fact.
 
 S171 source adds whole-session retention and garbage collection under issue #458. Newly generated Deep Capture and calibration output declares managed history limits of 30 days, 20 completed sessions and 2 GiB of logical contents, oldest eligible first. Terminal manifest publication is the age origin. Explicit `--retain-bundle` or `--bundle` destinations, including guided sibling attempts, retain evidence until explicit cleanup. Historical evidence keeps its previous promise. Authorization, retained metadata and terminal output expose policy; no release of this source correction is implied.
@@ -5245,6 +5248,8 @@ v0.10.0 and v0.10.1 remain immutable historical releases. S159 verifies v0.10.2 
 S154 adds deterministic controlled stalled-consumer loss evidence and current documentation traceability. S155 binds a published review candidate, validates separately supplied completed-review records and replays the published ZIP and installed MSI on disposable hosted Windows. S156 corrects the replay's timing-sensitive positive loopback authority by requiring Rust-validated ordered proxy-start and same-session reached-client evidence while retaining firewall, ownership, observed non-loopback and cleanup gates. S157 establishes the complete current Native documentation contract. S158 corrects the remaining hosted Windows writer-start and terminal-drain races while preserving every bounded queue, loss, deadline and cleanup authority. S159 publishes these changes as v0.10.2 and reconciles their exact public evidence. These slices do not supply independent reviewer identity, and no such work is claimed as performed.
 
 S203 (`specs/203-direct-route-recovery-and-debug-report`) groups active direct-route defects #593 and #594, native diagnostic export #595, and auto-scope wording #598 after v0.11.0 publication. It separates selected-flow client delivery and bidirectional TCP transfer from upstream proxy connection and passive original-packet presence, retains bounded protected route-stage evidence, and exports a source-preserving report with opaque flow labels. External non-loopback and package qualification remain explicit acceptance gates.
+
+S204 (`specs/204-direct-route-acceptance`) qualifies exact selected TCP exchange against controlled non-loopback IPv4 and IPv6 peers with active unrelated sentinels and route diagnostics on and off. The finite direct packet work queue reserves half its entries from candidate traffic so a broad candidate burst cannot crowd out an already selected flow. UDP route reachability requires nonempty payload bytes in both directions as well as both datagram counts. The package tier checks current ZIP and installed MSI help for direct-route, debug-report, and auto inspection-scope guidance. This controlled proof does not by itself establish a private-title result or a default installed-storage journey.
 
 ### 27.4 Critical Path
 

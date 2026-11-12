@@ -7,7 +7,7 @@ use std::{
     io,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender},
         Arc, Mutex,
     },
@@ -39,6 +39,7 @@ use super::{
 };
 
 const PACKET_QUEUE: usize = 256;
+const CANDIDATE_QUEUE_LIMIT: usize = PACKET_QUEUE / 2;
 const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
 const CANDIDATE_WAIT_NS: u64 = 100_000_000;
 const SOCKET_EVENTS: usize = 4096;
@@ -82,6 +83,45 @@ fn candidate_timeline(
 enum WorkPacket {
     Candidate(super::direct_route::DirectPacketHead, Vec<u8>, Address, u64),
     Selected(DirectTuple, Vec<u8>, Address),
+}
+
+fn queue_candidate_with_selected_reserve(
+    sender: &SyncSender<WorkPacket>,
+    queued_candidates: &AtomicUsize,
+    candidate: super::direct_route::DirectPacketHead,
+    packet: &[u8],
+    address: Address,
+    received_ns: u64,
+) -> bool {
+    if queued_candidates.load(Ordering::Acquire) >= CANDIDATE_QUEUE_LIMIT {
+        return false;
+    }
+    queued_candidates.fetch_add(1, Ordering::AcqRel);
+    if sender
+        .try_send(WorkPacket::Candidate(
+            candidate,
+            packet.to_vec(),
+            address,
+            received_ns,
+        ))
+        .is_ok()
+    {
+        true
+    } else {
+        queued_candidates.fetch_sub(1, Ordering::AcqRel);
+        false
+    }
+}
+
+fn receive_work(
+    receiver: &Receiver<WorkPacket>,
+    queued_candidates: &AtomicUsize,
+) -> Result<WorkPacket, mpsc::RecvTimeoutError> {
+    let work = receiver.recv_timeout(Duration::from_millis(1))?;
+    if matches!(work, WorkPacket::Candidate(..)) {
+        queued_candidates.fetch_sub(1, Ordering::AcqRel);
+    }
+    Ok(work)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -332,6 +372,7 @@ fn inject_replies(
 struct ReceiveRuntimeInputs {
     handle: Arc<Handle>,
     sender: SyncSender<WorkPacket>,
+    queued_candidates: Arc<AtomicUsize>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
     ack_witnesses: Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
@@ -425,6 +466,7 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
     let ReceiveRuntimeInputs {
         handle,
         sender,
+        queued_candidates,
         observer,
         selected,
         ack_witnesses,
@@ -574,15 +616,14 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
             .ok()
             .and_then(|clock| address.initial_packet_head(bytes, clock));
         if let Some(candidate) = candidate {
-            if sender
-                .try_send(WorkPacket::Candidate(
-                    candidate,
-                    bytes.to_vec(),
-                    address,
-                    received_ns,
-                ))
-                .is_ok()
-            {
+            if queue_candidate_with_selected_reserve(
+                &sender,
+                &queued_candidates,
+                candidate,
+                bytes,
+                address,
+                received_ns,
+            ) {
                 continue;
             }
             stats
@@ -617,6 +658,7 @@ struct ActiveUdp {
 
 struct ProcessRuntimeInputs {
     receiver: Receiver<WorkPacket>,
+    queued_candidates: Arc<AtomicUsize>,
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     context: NativeObservationContext,
@@ -799,6 +841,7 @@ fn forward_active_packet(
 fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let ProcessRuntimeInputs {
         receiver,
+        queued_candidates,
         handle,
         observer,
         context,
@@ -841,7 +884,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 });
             last_ack_prune = Instant::now();
         }
-        match receiver.recv_timeout(Duration::from_millis(1)) {
+        match receive_work(&receiver, &queued_candidates) {
             Ok(WorkPacket::Candidate(head, packet, address, received_ns)) => {
                 #[cfg(test)]
                 if STALL_NEXT_CANDIDATE.swap(false, Ordering::AcqRel) {
@@ -1754,6 +1797,7 @@ impl DirectPacketRuntime {
         let handle = Arc::new(api.open(PACKET_FILTER, NETWORK_LAYER, 0)?);
         handle.set_queue(4096, 100, 16 * 1024 * 1024)?;
         let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
+        let queued_candidates = Arc::new(AtomicUsize::new(0));
         let selected = Arc::new(Mutex::new(BTreeMap::new()));
         let ack_witnesses = Arc::new(Mutex::new(BTreeMap::new()));
         let excluded = Arc::new(Mutex::new(BTreeSet::new()));
@@ -1763,6 +1807,7 @@ impl DirectPacketRuntime {
         let stats = Arc::new(SharedStats::new());
         let receive_worker = {
             let receive_route_sink = route_sink.clone();
+            let queued_candidates = Arc::clone(&queued_candidates);
             let handle = Arc::clone(&handle);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
@@ -1777,6 +1822,7 @@ impl DirectPacketRuntime {
                     let result = receive_packets(ReceiveRuntimeInputs {
                         handle: Arc::clone(&handle),
                         sender,
+                        queued_candidates,
                         observer,
                         selected,
                         ack_witnesses,
@@ -1794,6 +1840,7 @@ impl DirectPacketRuntime {
         };
         let process_worker = {
             let process_handle = Arc::clone(&handle);
+            let queued_candidates = Arc::clone(&queued_candidates);
             let observer = Arc::clone(&observer);
             let selected = Arc::clone(&selected);
             let ack_witnesses = Arc::clone(&ack_witnesses);
@@ -1806,6 +1853,7 @@ impl DirectPacketRuntime {
                 .spawn(move || {
                     let result = process_packets(ProcessRuntimeInputs {
                         receiver,
+                        queued_candidates,
                         handle: Arc::clone(&process_handle),
                         observer,
                         context,
@@ -2406,16 +2454,29 @@ mod tests {
         let mut gate = [0u8; 1];
         std::io::stdin().read_exact(&mut gate).unwrap();
         assert_eq!(gate, *b"g");
-        if protocol == "tcp" {
+        if protocol == "tcp" || protocol == "tcp-roundtrip" {
             let mut client = TcpStream::connect_timeout(&original, Duration::from_secs(3)).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             client.write_all(b"runtime-client-request").unwrap();
+            if protocol == "tcp-roundtrip" {
+                let mut response = [0u8; 20];
+                client.read_exact(&mut response).unwrap();
+                assert_eq!(&response, b"runtime-origin-reply");
+                client.write_all(b"runtime-client-finish").unwrap();
+            }
             client.shutdown(std::net::Shutdown::Write).unwrap();
             let mut response = Vec::new();
             client.read_to_end(&mut response).unwrap();
-            assert_eq!(response, b"runtime-origin-reply");
+            assert_eq!(
+                response,
+                if protocol == "tcp" {
+                    b"runtime-origin-reply".as_slice()
+                } else {
+                    b"".as_slice()
+                }
+            );
             if let Ok(peer) = std::env::var("FRAGCAP_S200_CHAIN_UDP_ORIGINAL") {
                 let peer: SocketAddr = peer.parse().unwrap();
                 let udp = UdpSocket::bind(SocketAddr::new(peer.ip(), 0)).unwrap();
@@ -2625,6 +2686,56 @@ mod tests {
         packet_finished(&stats, PacketDisposition::Reinjected).unwrap();
         assert!(!stats.stalled_packet(1_000));
         stats.packets.lock().unwrap().release().unwrap();
+    }
+
+    #[test]
+    fn candidate_flood_reserves_work_queue_space_for_selected_packets() {
+        let (sender, receiver) = mpsc::sync_channel(PACKET_QUEUE);
+        let queued_candidates = AtomicUsize::new(0);
+        let tuple = DirectTuple {
+            transport: Proto::Tcp,
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+        };
+        let head = super::super::direct_route::DirectPacketHead {
+            tuple,
+            at_qpc: 1,
+            at_unix_ns: 1,
+            clock_error_ns: 0,
+            initial: true,
+        };
+        for index in 0..1_000 {
+            let _ = queue_candidate_with_selected_reserve(
+                &sender,
+                &queued_candidates,
+                head,
+                b"candidate",
+                Address::default(),
+                index,
+            );
+        }
+        assert_eq!(
+            queued_candidates.load(Ordering::Acquire),
+            CANDIDATE_QUEUE_LIMIT
+        );
+        assert!(sender
+            .try_send(WorkPacket::Selected(
+                tuple,
+                b"selected".to_vec(),
+                Address::default(),
+            ))
+            .is_ok());
+        for _ in 0..CANDIDATE_QUEUE_LIMIT {
+            assert!(matches!(
+                receive_work(&receiver, &queued_candidates),
+                Ok(WorkPacket::Candidate(..))
+            ));
+        }
+        assert_eq!(queued_candidates.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            receive_work(&receiver, &queued_candidates),
+            Ok(WorkPacket::Selected(..))
+        ));
     }
 
     #[test]
@@ -3244,8 +3355,16 @@ mod tests {
         let mut before = spawn_client("sentinel-tcp", original);
         release_client(&mut before);
         finish_client(before);
-        let mut child = spawn_client("tcp", original);
+        let mut child = spawn_client(
+            if original.ip().is_loopback() {
+                "tcp"
+            } else {
+                "tcp-roundtrip"
+            },
+            original,
+        );
         let context = client_context(child.id());
+        let proof_context = context.clone();
         let config =
             NativeProxyConfig::new(SocketAddr::new(ip, 0), 4, 1024, Duration::from_secs(2))
                 .unwrap()
@@ -3275,11 +3394,31 @@ mod tests {
         .unwrap();
         let mut during = spawn_client("sentinel-tcp", original);
         release_client(&mut during);
+        let selected_started = Instant::now();
         release_client(&mut child);
         finish_client(during);
         let child_output = child.wait_with_output().unwrap();
+        let selected_elapsed_ms = selected_started.elapsed().as_millis();
+        let ack_deadline = Instant::now() + Duration::from_millis(750);
+        let mut returned_data_acknowledged = false;
+        while Instant::now() < ack_deadline {
+            returned_data_acknowledged = proof_context
+                .direct_helper_flows_for_test()
+                .iter()
+                .filter(|flow| flow.tuple.remote == original)
+                .any(|flow| {
+                    proof_context
+                        .direct_proof_for(flow)
+                        .is_ok_and(|proof| proof.lock().unwrap().returned_data_acknowledged)
+                });
+            if returned_data_acknowledged {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
         let stop_result = runtime.stop();
         eprintln!("direct runtime probe: family={ip}, stop={stop_result:?}");
+        eprintln!("selected route transaction elapsed_ms={selected_elapsed_ms}");
         let stats = stop_result.unwrap();
         assert!(stats.packets.consumed > 0, "selected flow was not routed");
         assert_eq!(stats.packets.lost, 0);
@@ -3305,6 +3444,17 @@ mod tests {
             String::from_utf8_lossy(&child_output.stderr),
             proxy_report.observation.protocol,
         );
+        assert!(
+            returned_data_acknowledged,
+            "client received the reply but the route did not observe its data ACK: {:?}",
+            proof_context
+                .direct_helper_flows_for_test()
+                .iter()
+                .filter(|flow| flow.tuple.remote == original)
+                .filter_map(|flow| proof_context.direct_proof_for(flow).ok())
+                .map(|proof| proof.lock().unwrap().clone())
+                .collect::<Vec<_>>()
+        );
         if route_path.is_some() {
             assert!(
                 route_kinds
@@ -3322,27 +3472,25 @@ mod tests {
 
     #[test]
     #[ignore = "requires elevated WinDivert and controlled non-loopback IPv4/IPv6 peers"]
-    fn disposable_direct_runtime_routes_external_peers() {
-        let ipv4 = std::env::var("FRAGCAP_S203_EXTERNAL_IPV4");
-        let ipv6 = std::env::var("FRAGCAP_S203_EXTERNAL_IPV6");
-        if ipv4.is_err() && ipv6.is_err() {
-            return;
-        }
+    fn controlled_direct_runtime_routes_external_peers() {
+        let ipv4 = std::env::var("FRAGCAP_S204_EXTERNAL_IPV4")
+            .expect("FRAGCAP_S204_EXTERNAL_IPV4 is required for controlled acceptance");
+        let ipv6 = std::env::var("FRAGCAP_S204_EXTERNAL_IPV6")
+            .expect("FRAGCAP_S204_EXTERNAL_IPV6 is required for controlled acceptance");
         for (variable, ip) in [
             (
-                "FRAGCAP_S203_EXTERNAL_IPV4",
+                "FRAGCAP_S204_EXTERNAL_IPV4",
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
             ),
             (
-                "FRAGCAP_S203_EXTERNAL_IPV6",
+                "FRAGCAP_S204_EXTERNAL_IPV6",
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ),
         ] {
             let original: SocketAddr = match variable {
-                "FRAGCAP_S203_EXTERNAL_IPV4" => ipv4.as_ref(),
-                _ => ipv6.as_ref(),
+                "FRAGCAP_S204_EXTERNAL_IPV4" => &ipv4,
+                _ => &ipv6,
             }
-            .unwrap_or_else(|_| panic!("{variable} is required"))
             .parse()
             .unwrap();
             assert!(
@@ -3350,13 +3498,16 @@ mod tests {
                 "external peer must not be loopback"
             );
             assert_eq!(original.is_ipv4(), ip.is_ipv4(), "peer family mismatch");
-            let evidence = tempfile::tempdir().unwrap();
-            live_tcp_case_for_origin(
-                ip,
-                original,
-                false,
-                Some(&evidence.path().join("route.jsonl")),
-            );
+            for diagnostics in [true, false] {
+                let evidence = tempfile::tempdir().unwrap();
+                let route = evidence.path().join("route.jsonl");
+                live_tcp_case_for_origin(
+                    ip,
+                    original,
+                    false,
+                    diagnostics.then_some(route.as_path()),
+                );
+            }
         }
     }
 

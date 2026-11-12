@@ -186,7 +186,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             && (flow.protocol.as_deref() == Some("udp") || flow.returned_data_acknowledged)
             && flow.client_to_upstream > 0
             && flow.upstream_to_client > 0;
-        let client_reachable = client_response && (flow.protocol.as_deref() == Some("udp") || bidirectional);
+        let client_reachable = bidirectional;
         let matching_proxy = flow.helper_pair.as_ref().and_then(|pair| proxy_pairs.get(pair));
         let proxy_connection_id = matching_proxy.and_then(|matches| (matches.len() == 1).then_some(matches[0]));
         let proxy_transfer = proxy_connection_id.and_then(|connection_id| proxy.as_ref().and_then(|prefix| prefix.records.iter().rev().find(|record| {
@@ -203,7 +203,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             "first_packet_clock_error_ns": flow.first_packet_clock_error_ns,
             "last_route_event_at_ns": flow.last_route_event_at_ns,
             "last_route_event_clock_error_ns": flow.route_clock_error_ns,
-            "status": if bidirectional { "bidirectional-transfer-observed" } else if client_reachable && flow.protocol.as_deref() == Some("udp") { "client-datagram-response-observed-no-bidirectional-data" } else if client_response { "client-handshake-observed-no-bidirectional-data" } else if flow.proxy_refused { "proxy-refused" } else if flow.reply_failed { "reply-injection-failed" } else if flow.proxy_connected && flow.client_to_upstream == 0 && flow.upstream_to_client == 0 { "upstream-connected-zero-byte" } else if flow.proxy_connected { "proxy-connected-without-client-reachability-proof" } else if flow.proxy_attempted { "proxy-attempt-without-connection" } else { "selected-only" },
+            "status": if bidirectional { "bidirectional-transfer-observed" } else if client_response && flow.protocol.as_deref() == Some("udp") { "client-datagram-response-observed-no-bidirectional-data" } else if client_response { "client-handshake-observed-no-bidirectional-data" } else if flow.proxy_refused { "proxy-refused" } else if flow.reply_failed { "reply-injection-failed" } else if flow.proxy_connected && flow.client_to_upstream == 0 && flow.upstream_to_client == 0 { "upstream-connected-zero-byte" } else if flow.proxy_connected { "proxy-connected-without-client-reachability-proof" } else if flow.proxy_attempted { "proxy-attempt-without-connection" } else { "selected-only" },
             "proxy_connected": flow.proxy_connected,
             "client_ack_observed": flow.client_ack,
             "returned_data_acknowledged": flow.returned_data_acknowledged,

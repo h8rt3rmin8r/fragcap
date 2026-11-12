@@ -10,6 +10,10 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+### Decisions
+
+- 2026-11-12 (S204): Package certification now checks the ZIP and installed MSI command help for the current direct-route, debug-report, and inspection-scope wording. This makes the shipped help part of the pinned package acceptance contract.
+
 ## [0.11.0] - 2026-11-10
 
 ### Added
