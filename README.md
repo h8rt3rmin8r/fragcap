@@ -25,7 +25,7 @@ Capture can stream to an analyzer or retain a rolling window for later dumping. 
 
 ## Install on Windows
 
-Published baseline: [v0.11.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.0).
+Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
 
 Download the [latest public release](https://github.com/h8rt3rmin8r/fragcap/releases/latest) and verify the package against its accompanying `.sha256` file. The packages are unsigned, so this checksum checks the downloaded bytes against the published value; it is not a publisher signature.
 
@@ -37,7 +37,7 @@ Download the [latest public release](https://github.com/h8rt3rmin8r/fragcap/rele
 
 Live packet recording also requires a separately installed [Npcap](https://npcap.com) in **WinPcap API-compatible mode** and an elevated terminal. fragcap does not bundle Npcap. [Wireshark](https://www.wireshark.org) is an optional analyzer. The MSI can add a best-effort Windows Defender exclusion for its install directory; review the [packaging and migration guide](https://fragcap.com/docs/guides/packaging-and-migration) for installation, updates, and removal before choosing the installer.
 
-Plain `fragcap doctor`, `fragcap ca status`, offline commands, and per-user Wireshark extcap registration do not require Administrator. Live Capture, extcap live capture, installation CA changes, and the v0.11.0 release `--direct-route` session do. The v0.11.0 release bundles the exact signed WinDivert driver and companion files beside `fragcap.exe`; it needs no separate WinDivert installer.
+Plain `fragcap doctor`, `fragcap ca status`, offline commands, and per-user Wireshark extcap registration do not require Administrator. Live Capture, extcap live capture, installation CA changes, and the v0.11.1 release `--direct-route` session do. The v0.11.1 release bundles the exact signed WinDivert driver and companion files beside `fragcap.exe`; it needs no separate WinDivert installer.
 
 ## Make your first capture
 

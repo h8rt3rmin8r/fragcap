@@ -12,9 +12,9 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-Published baseline: [v0.11.0](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.0).
+Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
 
-This page describes the current source command tree, checked by the production parser without dispatch. The published v0.11.0 release includes guided calibration, the composite direct route, current-user storage reporting, exact-game scope selection, blind middleware relay, managed handoff, and causal diagnostics. Historical v0.10.0 retains the hidden completion-only timing option. Installed-product failures return as version-specific issues. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
+This page describes the current source command tree, checked by the production parser without dispatch. The published v0.11.1 release includes guided calibration, the composite direct route, current-user storage reporting, exact-game scope selection, blind middleware relay, managed handoff, and causal diagnostics. Historical v0.10.0 retains the hidden completion-only timing option. Installed-product failures return as version-specific issues. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
 
 In the tables, `open` means the parser accepts a value whose grammar is explained
 in the Meaning column. `none` means clap declares no default; the application may
@@ -235,7 +235,7 @@ fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
 | `--proxy-family` | `ipv4`, `ipv6` | none | all | Fresh workflow only. Persist the exact loopback family and use it in every fresh proposal and attempt. Omission selects IPv4. |
 | `--resume` | open | none | all | Resume one positive target-bound workflow identifier from the effective local store. Conflicts with target selectors and `--protocol`. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, take a fresh process snapshot, and measure the selected cold launch. Conflicts with `--authorize-stdin`. |
-| `--routing-strategy` | `child-environment`, `child-environment-direct-socket`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension and route identity. Omission selects child-environment. The composite direct-socket value is available in the v0.11.0 release and requires Administrator and packaged WinDivert. Other values refuse before effects. |
+| `--routing-strategy` | `child-environment`, `child-environment-direct-socket`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension and route identity. Omission selects child-environment. The composite direct-socket value is available since the v0.11.0 release and requires Administrator and packaged WinDivert. Other values refuse before effects. |
 | `--target` | open | none | all | Explicit target selector. Stored resolution runs first; a clean miss may exactly match an installed title name or Steam application identifier. |
 | `--wait` | open | none | all | Set the target acquisition timeout for an attempt or the bounded client observation. Client observation defaults to 60 seconds. |
 
