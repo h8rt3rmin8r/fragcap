@@ -10,6 +10,50 @@ The one exception is the `Decisions` section, which records dated decisions to c
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-12
+
+### Added
+
+Deep Capture records bounded selected-flow route stages in a protected bundle stream. `fragcap bundle debug-report` exports a separate, source-preserving report that identifies client transfer, empty tunnels, packet evidence gaps, and cleanup state without exposing exact endpoints. Output ancestors are resolved before directory creation, so a symlink or junction into the source bundle is refused without adding source objects.
+
+The shareable debug report now states whether its native process-trace stream is complete, partial, missing, or invalid, with the number of available events. It does not copy private process records into the report.
+
+### Fixed
+
+Update rustix to 1.1.6 in the workspace and isolated audit lockfiles to address RUSTSEC-2026-0486. The Linux supply-chain graph digest is reconciled without changing package or edge counts.
+
+Selected direct TCP replies now use a resolved inbound interface and normalize unfinished local outbound checksums before the private TCP bridge. Calibration requires acknowledgment of returned payload plus two-way transfer before recording reachability, and can retain exact route evidence when Npcap missed a diverted original packet. UDP route reports link the proxy control connection while keeping the relay tuple private. Auto scope help now describes launch-chain inspection.
+
+Validated the signed direct route against controlled non-loopback IPv4 and IPv6 peers with exact bidirectional TCP exchange, unrelated sentinels, and diagnostics on and off. Reserve half of the finite packet work queue for selected traffic when unrelated candidate traffic surges, and wait for bounded packet-worker readiness before publishing the route. Require nonempty two-way UDP payload transfer before a direct route can qualify a positive reachability fact. Package certification now checks candidate ZIP and installed MSI help for the effective inspection scope and debug report.
+
+Recognize the exact managed direct executable's target stage when qualifying its calibration observation window. The debug report joins route process generation through the bounded application correlation stream, and SOCKS5 CONNECT keeps its typed protocol classification separate from upstream detail so the application trailer can reconcile.
+
+Managed Deep Capture packet scope now distinguishes unavailable socket attribution, unproved causal generation after its finite wait, and wait cooldown. The protected process trace records each retained flow-local omission interval and cause without treating withheld packets as captured packet truth.
+
+The v0.11.0 public release and current documentation now name the same verified Windows downloads, direct-route commands, and published crate versions.
+
+### Decisions
+
+2026-11-11: Advance current v0.11.0 publication markers, first-use documentation, frozen review candidate, and six exact asset authorities only after the accepted merge, annotated tag, certified final packages, independent public-file readback, and ten non-yanked registry archives reconcile. Retarget published-package replay to those verified bytes. Keep the v0.8.0 predecessor, historical release evidence, and unperformed independent whole-product review status distinct. A transient crates.io HTTP/2 failure after nine crates required a protected-job retry; no source or release bytes changed.
+
+2026-11-12: Package certification checks the candidate ZIP and installed MSI command help for the current direct-route, debug-report, and inspection-scope wording. Exact replay of the already published v0.11.0 bytes retains its historical help contract. This makes candidate help part of the pinned package acceptance contract without rewriting published evidence.
+
+2026-11-12: The installed route acceptance peer now permits an explicit sentinel count while retaining the S204 default of three per selected run. S205 uses nine per family: three before route activation, three while the selected client holds an external connection open, and three after cleanup. The candidate compares active latency against the larger of 50 ms and four times its paired baseline. Published v0.11.0 remains a separately recorded transport baseline, including its measured active delay.
+
+2026-11-12: The first portable candidate exchange exposed a real cold-launch race: the initial selected SYN can precede the process watcher start event. A single direct target may use its exact managed process-object receipt before ETW arrival, after checking account, session, canonical executable, creation interval, socket event, and liveness. Launcher-mediated chains keep the established ancestry path. The receive worker now passes through a socket whose known PID differs from that managed direct root, avoiding candidate-queue delay for unrelated traffic. The route filter observes outbound traffic, since selected client packets and returned acknowledgements are outbound and synthetic replies use injection. Native proxy upstream policy accepts explicit exact IP:port session grants in the authorization plan; the listener remains refused and the default local-destination policy is unchanged.
+
+2026-11-12: A crash after synchronizing a cleanup-pending resource can leave the exact recovery action awaiting replay. Recovery now replays that action without writing a duplicate cleanup-pending transition. The debug report reads the actual process-trace schema with bounded sequence and session validation. Real compatibility observations do not carry process-generation identity; the report now joins the bounded application correlation stream by exact proxy connection ID and compares its connection-owner generation with the route receipt. A matching compatibility observation still supplies separate final-client correlation. This does not reinterpret a missing passive packet as captured packet evidence.
+
+2026-11-12: The installed direct executable's managed stage is `target`, while the calibration observation-window classifier previously accepted only a `client` stage. Four successful candidate two-way routes therefore remained inconclusive despite exact direct-route receipts. The classifier now accepts only the managed launch PID's `target` stage when the shutdown scope is a single direct root and no client stage was matched. Other launch chains retain their client-stage rule. The installed candidate must be rerun to verify a positive durable fact; the original-present Npcap ordering remains a separate physical acceptance row.
+
+2026-11-12: A real installed bundle exposed a SOCKS5 CONNECT record whose optional upstream classification detail overwrote the application stream's protocol-classification object. The trailer therefore existed but did not reconcile, and the manifest correctly marked the application artifact partial. The detail now uses `upstream_classification`, preserving the independent typed classification and complete stream accounting. The shareable report calls a nonreconciling application stream `incomplete` and will not use malformed current-version sequences for generation proof.
+
+2026-11-12: Managed-chain `ScopeUnresolved` combined missing socket attribution, expired causal proof, and cooldown into one packet omission reason. S206 preserves the existing wait and unrelated pass-through bounds, but carries those distinct causes through the gate, registry, and native correlation. The protected process-trace version-one stream permits typed additive records, so bounded `packet.omission` records now retain exact flow, observed first/last instants, count, and cause alongside the existing aggregate limitation. Old bundles remain readable, and no omission becomes passive packet evidence.
+
+2026-11-12: Prepare a v0.11.1 patch candidate from accepted S203 through S206 fixes. Advance the not-started review record template to the candidate version and add a short release summary; keep frozen v0.11.0 public package and review authorities unchanged until the new release is independently verified.
+
+2026-11-12: Hosted short-performance runs exposed two isolated lockfiles still carrying first-party v0.11.0 identities. Rebind the performance and fuzz locks to v0.11.1, preserving every third-party version and checksum; the release script's root-workspace bump does not update those isolated graphs.
+
 ## [0.11.0] - 2026-11-10
 
 ### Added
@@ -2718,6 +2762,7 @@ Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39 throu
 - **The disclaimer and the wordmark are wired without touching pinned CI.** The disclaimer is single-sourced from `README.md` by extending the existing `site/scripts/prebuild.mjs` render step, which already generates the glossary content tree; the generated module is gitignored and excluded from the conventions linter, matching the glossary precedent. No workflow, release configuration, toolchain pin, or repository-root script changed. `prebuild.mjs` is a site build script under `site/scripts/`, not the constitution's pinned repository-root `scripts/`; the extension is recorded here regardless, since it is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.11.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1
 [0.11.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.0
 [0.10.14]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.14
 [0.10.13]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.10.13

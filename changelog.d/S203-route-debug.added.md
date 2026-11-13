@@ -1,2 +1,0 @@
-<!-- spec-impact: 1, 17, 26, 27 -->
-Deep Capture records bounded selected-flow route stages in a protected bundle stream. `fragcap bundle debug-report` exports a separate, source-preserving report that identifies client transfer, empty tunnels, packet evidence gaps, and cleanup state without exposing exact endpoints. Output ancestors are resolved before directory creation, so a symlink or junction into the source bundle is refused without adding source objects.
