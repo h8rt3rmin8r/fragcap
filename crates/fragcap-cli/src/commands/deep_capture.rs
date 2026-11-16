@@ -4580,13 +4580,6 @@ fn process_images_running(_images: &[String]) -> Result<Vec<bool>, CliError> {
     ))
 }
 
-#[cfg(not(windows))]
-pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
-    Err(CliError::usage(
-        "guided calibration process inventory is only supported on Windows",
-    ))
-}
-
 fn real_capture_args(
     args: &DeepCaptureArgs,
     bundle: &Path,
