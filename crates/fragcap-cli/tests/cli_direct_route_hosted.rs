@@ -319,11 +319,22 @@ fn package_public_udp_direct_route_case() {
                 .unwrap()
                 .iter()
                 .any(|observation| {
-                    observation["direct_route"]["receipt_state"] == "unconsumed"
-                        && observation["direct_route"]["selected_packet_disposition"]
-                            == "reinjected"
+                    observation["direct_route"]["receipt_state"] == "consumed"
+                        && observation["direct_route"]["selected_packet_disposition"] == "consumed"
+                        && observation["direct_route"]["route_state"] == "delivery-unproven"
                 }),
-            "refused UDP route lacked reinjection evidence: {compatibility:#?}"
+            "refused UDP datagram lacked consumed-but-untransferred evidence: {compatibility:#?}"
+        );
+        let proxy_events =
+            std::fs::read_to_string(bundle.join("proxy.jsonl")).expect("UDP refusal proxy stream");
+        assert!(
+            proxy_events.lines().any(|line| {
+                let event: Value = serde_json::from_str(line).expect("typed proxy event");
+                event["type"] == "proxy.socks5-udp"
+                    && event["fields"]["detail"]["outcome"] == "destination-refused"
+                    && event["fields"]["detail"]["payload_bytes"] == b"runtime-udp-request".len()
+            }),
+            "refused UDP destination did not retain a drop observation"
         );
     }
     let limit = std::cmp::max(

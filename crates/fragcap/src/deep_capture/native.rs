@@ -801,7 +801,12 @@ impl NativeObservationContext {
             process_instance_id: Some(flow.process_instance_id),
             original_tuple: Some(format!(
                 "{}:{}->{}",
-                descriptor.transport, flow.tuple.local, flow.tuple.remote
+                match flow.tuple.transport {
+                    Proto::Tcp => "tcp",
+                    Proto::Udp => "udp",
+                },
+                flow.tuple.local,
+                flow.tuple.remote
             )),
         })
     }
@@ -1289,7 +1294,7 @@ mod direct_helper_tests {
         };
         let udp_context = NativeObservationContext::default();
         udp_context
-            .register_direct_helper("udp", helper, proxy, udp.clone(), 100, 200)
+            .register_direct_helper("tcp", helper, proxy, udp.clone(), 100, 200)
             .unwrap();
         let udp_proof = udp_context.direct_proof_for(&udp).unwrap();
         {
@@ -1301,13 +1306,9 @@ mod direct_helper_tests {
             proof.client_datagrams = 1;
             proof.peer_datagrams = 1;
         }
-        let udp_window = ApplicationConnectionWindow {
-            descriptor: ConnectionDescriptor {
-                transport: "udp",
-                ..descriptor
-            },
-            ..window
-        };
+        // SOCKS5 UDP uses a TCP control connection, even though the selected
+        // original flow and its tuple are UDP.
+        let udp_window = window;
         let response = udp_context.correlate_proxy_window(&udp_window);
         assert_eq!(response.5, 0);
         assert_eq!(response.7, CorrelationState::Unavailable);
@@ -1332,6 +1333,10 @@ mod direct_helper_tests {
         assert_eq!(evidence.route_state, "transferred");
         assert_eq!(evidence.original_packet_state, "unavailable");
         assert_eq!(evidence.packet_history_state, "complete");
+        assert_eq!(
+            evidence.original_tuple.as_deref(),
+            Some("udp:192.0.2.10:49152->198.51.100.20:443")
+        );
 
         // A capture-wide eviction can remove the only original packet before
         // a flow summary exists. Both projections must retain that loss.
