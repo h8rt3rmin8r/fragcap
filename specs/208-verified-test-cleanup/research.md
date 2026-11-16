@@ -54,3 +54,5 @@ The first hosted Ubuntu run found a specialized authorization-output test that c
 | Installed product, package downloads, and packaged-host `LocalCache` redirection | Product default stores or certification harness authority, outside a synthetic unit-test root | Guidance requires effective canonical readback and supported product cleanup. No installed-product or redirected package-host run was performed in S208, so those physical locations are not claimed clean by the local unit-test gate |
 
 This audit records concrete source owners and the observed S208 aggregate run. It does not infer that every `tempfile::TempDir` destructor succeeded in every possible interrupted run, or authorize sweeping historical `fragcap-*` paths.
+
+Initial Codex review found that `cargo xtask ci` forwarded its leading `test` subcommand to a runner that already invokes `cargo test`, silently filtering the test suite by name. S208 now removes that exact prefix before forwarding. The corrected local gate visibly executed the CLI bootstrap integration tests and the complete workspace suite, passed all later checks, and verified its unique run root absent.

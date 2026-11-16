@@ -492,8 +492,11 @@ fn main() -> ExitCode {
             for (name, args) in steps {
                 println!("ci: running {name}");
                 let passed = if *name == "test" {
+                    let test_args = args
+                        .strip_prefix(&["test"])
+                        .expect("CI test step starts with test");
                     test_cleanup::run(
-                        &args
+                        &test_args
                             .iter()
                             .map(|arg| (*arg).to_string())
                             .collect::<Vec<_>>(),
