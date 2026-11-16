@@ -17,9 +17,9 @@ const HARNESS: &str = "scripts/Test-PackageCertification.ps1";
 const CLEAN_GUEST_HARNESS: &str = "scripts/Test-CleanWindowsStartup.ps1";
 const MAX_CONTRACT_BYTES: u64 = 128 * 1024;
 const MAX_SMOKE_EVENT_BYTES: usize = 256 * 1024;
-// The controlled session now emits a route-owner cleanup result. Keep a finite
-// margin above its observed 33 records without relaxing the byte bound.
-const MAX_SMOKE_EVENT_COUNT: usize = 40;
+// Ordinary capture emits more lifecycle and progress records than the retired
+// calibration smoke. Keep a finite count under the independent byte bound.
+const MAX_SMOKE_EVENT_COUNT: usize = 256;
 
 pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let bytes = fs::read(root.join(CONTRACT))?;
@@ -1091,7 +1091,7 @@ fn summarize_capture_smoke_events(
     {
         let session = proxy["session_id"].as_str().unwrap_or_default();
         if session.is_empty()
-            || plan["session_id"] != session
+            || plan["plan"]["session_id"] != session
             || launch["session_id"] != session
             || terminal["session_id"] != session
             || applications
@@ -2203,8 +2203,8 @@ mod tests {
         vec![
             serde_json::json!({
                 "event": "deep_capture.authorization_plan",
-                "session_id": "session-2",
                 "plan": {
+                    "session_id": "session-2",
                     "mode": "capture",
                     "capture": {"scope": "exact-game"},
                     "target": {"launch_case": "direct-exe-warm", "resolved_launch": {"kind": "controlled-test-harness"}},
@@ -2396,6 +2396,12 @@ mod tests {
         assert_eq!(summary["schema_version"], 3);
         assert_eq!(summary["status"], "complete");
         assert_eq!(summary["application_event_count"], 1);
+        let mut with_progress = valid.clone();
+        with_progress.splice(
+            2..2,
+            (0..45).map(|_| serde_json::json!({"event": "capture.progress"})),
+        );
+        assert!(summarize_smoke_events(&encode_events(&with_progress)).is_ok());
         let mut problems = Vec::new();
         validate_session_evidence(&summary, "portable", &mut problems);
         assert!(problems.is_empty(), "{problems:?}");
@@ -2404,7 +2410,8 @@ mod tests {
             ("missing application", "application.count", 0),
             ("wrong route", "authorization-plan.route", 1),
             ("wrong session", "session.mismatch", 2),
-            ("failed terminal", "capture-complete.status", 3),
+            ("wrong plan session", "session.mismatch", 3),
+            ("failed terminal", "capture-complete.status", 4),
         ] {
             let mut events = valid.clone();
             match mutate {
@@ -2418,6 +2425,9 @@ mod tests {
                     events[3]["session_id"] = Value::String("other".into());
                 }
                 3 => {
+                    events[0]["plan"]["session_id"] = Value::String("other".into());
+                }
+                4 => {
                     events[4]["status"] = Value::String("failed".into());
                 }
                 _ => unreachable!(),
