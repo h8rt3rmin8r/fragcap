@@ -99,6 +99,50 @@ fn crash_prefix_does_not_claim_completion() {
 }
 
 #[test]
+fn selected_packet_disposition_round_trips_and_rejects_tampering() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("route.jsonl");
+    let mut lease = RouteEventLease::open(&path, "session-test", 4).unwrap();
+    let sink = lease.sink();
+    for (index, kind) in [
+        RouteEventKind::ReceiptConsumed,
+        RouteEventKind::SelectedPacketDisposition {
+            disposition: "consumed",
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            sink.record(RouteEvent {
+                flow_id: 1,
+                at_ns: index as u64 + 1,
+                clock_error_ns: None,
+                kind,
+            }),
+            RouteRecordDisposition::Accepted
+        );
+    }
+    lease.finish().unwrap();
+    let prefix = read_route_prefix(&path).unwrap();
+    assert!(prefix.complete());
+    assert_eq!(prefix.events[0].kind, "receipt-consumed");
+    assert_eq!(prefix.events[1].fields["disposition"], "consumed");
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen(
+            "\"disposition\":\"consumed\"",
+            "\"disposition\":\"unknown\"",
+            1,
+        ),
+    )
+    .unwrap();
+    assert!(read_route_prefix(&path).is_err());
+}
+
+#[test]
 fn invalid_and_missing_report_inputs_remain_distinct() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("route.jsonl"), b"not-json\n").unwrap();

@@ -499,6 +499,7 @@ pub struct ApplicationCorrelation {
     pub packet_observations_unretained: u64,
     pub state: Option<String>,
     pub reason: Option<String>,
+    pub direct_route: Option<super::DirectRouteCorrelation>,
     pub connection_owner: Option<ConnectionOwnerEvidence>,
 }
 
@@ -1363,6 +1364,16 @@ fn correlation_record(
         "packet_observations_unretained": value.packet_observations_unretained,
         "correlation_state": value.state.unwrap_or_else(|| "unavailable".to_string()),
         "correlation_reason": value.reason.unwrap_or_else(|| "correlation-context-unavailable".to_string()),
+        "direct_route": value.direct_route.as_ref().map(|direct| json!({
+            "schema_version": direct.schema_version,
+            "receipt_state": direct.receipt_state,
+            "selected_packet_disposition": direct.selected_packet_disposition,
+            "route_state": direct.route_state,
+            "original_packet_state": direct.original_packet_state,
+            "packet_history_state": direct.packet_history_state,
+            "process_instance_id": direct.process_instance_id,
+            "original_tuple": direct.original_tuple,
+        })),
         "connection_owner": connection_owner,
     })
 }

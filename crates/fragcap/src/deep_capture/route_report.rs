@@ -94,7 +94,7 @@ fn process_trace_source(path: &Path) -> io::Result<ProcessTraceSource> {
                     "process trace header is missing",
                 ));
             }
-            if value["schema_version"] != 1 {
+            if value["schema_version"] != 1 && value["schema_version"] != 2 {
                 return Ok(ProcessTraceSource {
                     state: "unknown-version",
                     completeness: None,

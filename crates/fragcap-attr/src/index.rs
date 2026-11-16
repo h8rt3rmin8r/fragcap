@@ -121,7 +121,12 @@ struct Candidate<'a> {
 /// name from the retained record and the live path takes it from the current
 /// name map, and neither should be able to reach the other's source by
 /// accident.
-fn attribution(pid: u32, name: Option<Arc<str>>, fidelity: Fidelity) -> Attribution {
+fn attribution(
+    pid: u32,
+    name: Option<Arc<str>>,
+    fidelity: Fidelity,
+    created: Option<Timestamp>,
+) -> Attribution {
     match name {
         Some(name) => Attribution {
             pid,
@@ -129,12 +134,16 @@ fn attribution(pid: u32, name: Option<Arc<str>>, fidelity: Fidelity) -> Attribut
             role: None,
             stage: None,
             fidelity,
+            socket_created_at: created,
         },
         // No name was resolved. The attribution is produced anyway, carrying
         // the identifier, because the identifier is what was observed.
         // Constitution P-9 and requirement FR-032: reporting nothing here would
         // discard an observation because a convenience could not be supplied.
-        None => Attribution::new(pid, "", fidelity),
+        None => Attribution {
+            socket_created_at: created,
+            ..Attribution::new(pid, "", fidelity)
+        },
     }
 }
 
@@ -301,13 +310,19 @@ impl AttributionIndex {
         // the port-reuse case where the inference is wrong.
         if let Some(entry) = self.best_live(key, at) {
             let name = self.names.get(&entry.pid).cloned();
-            return Some(attribution(entry.pid, name, Fidelity::Live));
+            return Some(attribution(entry.pid, name, Fidelity::Live, entry.created));
         }
         // The retained answer takes its name from the record rather than from
         // the current name map, because the process may be gone and its
         // identifier may already belong to something else.
-        self.best_retained(key, at)
-            .map(|r| attribution(r.entry.pid, r.name.clone(), Fidelity::Retained))
+        self.best_retained(key, at).map(|r| {
+            attribution(
+                r.entry.pid,
+                r.name.clone(),
+                Fidelity::Retained,
+                r.entry.created,
+            )
+        })
     }
 
     /// Whether the index carries any socket, live or retained, that this flow
@@ -756,7 +771,9 @@ mod tests {
             ],
             &[],
         );
-        assert_eq!(i.resolve(&udp_key(), at(100)).expect("matches").pid, 5);
+        let answer = i.resolve(&udp_key(), at(100)).expect("matches");
+        assert_eq!(answer.pid, 5);
+        assert_eq!(answer.socket_created_at, Some(at(10)));
     }
 
     // SC-014. The test a first-hit matcher fails.
@@ -855,13 +872,14 @@ mod tests {
     #[test]
     fn a_retained_endpoint_resolves_and_is_marked_retained() {
         let i = retained_index(vec![retained(
-            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5).created_at(at(15)),
             100,
             Some("g.exe"),
         )]);
         let a = i.resolve(&udp_key(), at(110)).expect("inside the window");
         assert_eq!(a.pid, 5);
         assert_eq!(&*a.process, "g.exe");
+        assert_eq!(a.socket_created_at, Some(at(15)));
         assert_eq!(
             a.fidelity,
             Fidelity::Retained,

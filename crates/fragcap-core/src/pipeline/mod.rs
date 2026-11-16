@@ -1164,8 +1164,13 @@ fn output_loop(
             }
         }
         if let Some(flow) = packet.flow {
-            packet.flow_id =
-                Some(flow_registry.observe_at(flow, packet.ts, packet.attribution.as_ref()));
+            packet.flow_id = Some(flow_registry.observe_packet_at(
+                flow,
+                packet.ts,
+                packet.attribution.as_ref(),
+                packet.tcp_flags,
+                packet.packet_digest,
+            ));
         }
         // The packet is admitted. Tally its socket-holding image, so the run can
         // name the dominant observed holder a launch-and-observe promotion records

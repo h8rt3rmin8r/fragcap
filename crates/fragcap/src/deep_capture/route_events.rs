@@ -39,6 +39,10 @@ pub enum RouteEventKind {
         tcp_checksum_valid: bool,
     },
     ProxyAttempt,
+    ReceiptConsumed,
+    SelectedPacketDisposition {
+        disposition: &'static str,
+    },
     ProxyConnected {
         helper_local: SocketAddr,
         proxy_local: SocketAddr,
@@ -108,6 +112,11 @@ impl RouteEventKind {
                     "tcp_checksum_valid": tcp_checksum_valid}),
             ),
             Self::ProxyAttempt => ("proxy-attempt", json!({})),
+            Self::ReceiptConsumed => ("receipt-consumed", json!({"evidence_version": 2})),
+            Self::SelectedPacketDisposition { disposition } => (
+                "selected-packet-disposition",
+                json!({"evidence_version": 2, "disposition": disposition}),
+            ),
             Self::ProxyConnected {
                 helper_local,
                 proxy_local,
@@ -169,6 +178,9 @@ impl RouteEventKind {
                 matches!(*protocol, "tcp" | "udp")
                     && process_instance_id.len() <= MAX_IDENTITY_BYTES
                     && !process_instance_id.is_empty()
+            }
+            Self::SelectedPacketDisposition { disposition } => {
+                matches!(*disposition, "consumed" | "lost")
             }
             _ => true,
         }
@@ -400,14 +412,25 @@ pub fn read_route_prefix(path: &Path) -> io::Result<RoutePrefix> {
                 let kind = fields.get("kind").and_then(Value::as_str).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "route event missing kind")
                 })?;
+                let body = fields.get("fields").ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "route event missing body")
+                })?;
+                if matches!(kind, "receipt-consumed" | "selected-packet-disposition")
+                    && (body["evidence_version"] != 2
+                        || (kind == "selected-packet-disposition"
+                            && !matches!(body["disposition"].as_str(), Some("consumed" | "lost"))))
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "route event has invalid selected packet evidence",
+                    ));
+                }
                 events.push(RouteRecord {
                     flow_id: required("flow_id")?,
                     at_ns: required("at_ns")?,
                     clock_error_ns: fields.get("clock_error_ns").and_then(Value::as_u64),
                     kind: kind.to_owned(),
-                    fields: fields.get("fields").cloned().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "route event missing body")
-                    })?,
+                    fields: body.clone(),
                 });
             }
             Some("lifecycle.gap") => {

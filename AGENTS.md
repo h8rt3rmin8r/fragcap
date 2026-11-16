@@ -274,7 +274,7 @@ load-bearing rather than bookkeeping.
 | `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
 | `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature; since S056 also `fragcap-cli`'s `doctor --fix` npcap installer fetch, same `net` gate (already in the graph, no `Cargo.lock` package added) |
 | `winresource` | build, windows-only | S048 | Stamps the exe's PE FileVersion from `CARGO_PKG_VERSION` (issue #104), behind `[target.'cfg(windows)'.build-dependencies]` |
-| `blake3` | runtime | S051 | The 63-bit anchor identifier, a durable exported contract; `default-features = false` |
+| `blake3` | runtime | S051, admitted to core in S210 | The 63-bit anchor identifier and exact complete-datagram identity for direct-route packet reconciliation; `default-features = false` |
 | `unicode-normalization` | runtime | S051 | The NFKD step of handle normalization |
 | `unicode-properties` | runtime | S051 | The `So`/`Sk`/`Cf`/`Mn` general-category tests of handle normalization |
 | `getrandom` | runtime | S051 | OS entropy for the unanchored 63-bit identifier (already in the graph; a direct edge only) |

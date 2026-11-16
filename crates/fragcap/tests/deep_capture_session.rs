@@ -159,6 +159,7 @@ impl ProxyLease for ProxyRun {
             packet_observations_unretained: 0,
             correlation_state: fragcap::deep_capture::CorrelationState::Matched,
             correlation_reason: "exact-flow-and-owner".into(),
+            direct_route: None,
             protocol: "https".into(),
             inspectability: Inspectability::Full,
             method: Some("GET".into()),

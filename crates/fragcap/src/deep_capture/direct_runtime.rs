@@ -1173,11 +1173,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     reinject(&handle, &stats, &packet, &address)?;
                 }
                 CandidateDecision::Selected {
-                    flow,
+                    mut flow,
                     packet,
                     address,
                     received_ns,
                 } => {
+                    // Exact socket and managed process ownership have already
+                    // selected this target packet. Only now read its complete
+                    // datagram for the passive original-packet join.
+                    flow.first_packet_digest = Some(*blake3::hash(&packet).as_bytes());
                     #[cfg(test)]
                     if session_id == "s200-managed-chain" {
                         candidate_timeline(
@@ -1320,6 +1324,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     .map_err(|error| {
                                         io::Error::other(format!("consume UDP receipt: {error:?}"))
                                     })?;
+                                record_route(
+                                    route_events.as_ref(),
+                                    helper_id,
+                                    RouteEventKind::ReceiptConsumed,
+                                );
                                 context
                                     .register_direct_helper(
                                         "tcp",
@@ -1409,6 +1418,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 },
                             );
                             packet_finished(&stats, PacketDisposition::Lost)?;
+                            proof
+                                .lock()
+                                .expect("direct proof lock")
+                                .selected_packet_lost = true;
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::SelectedPacketDisposition {
+                                    disposition: "lost",
+                                },
+                            );
                             return Err(io::Error::other(format!(
                                 "first selected UDP packet: {error}"
                             )));
@@ -1418,6 +1438,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             .expect("selected route lock")
                             .insert(flow.tuple, flow.endpoint_id);
                         packet_finished(&stats, PacketDisposition::Consumed)?;
+                        proof
+                            .lock()
+                            .expect("direct proof lock")
+                            .selected_packet_consumed = true;
+                        record_route(
+                            route_events.as_ref(),
+                            helper_id,
+                            RouteEventKind::SelectedPacketDisposition {
+                                disposition: "consumed",
+                            },
+                        );
                         {
                             let mut proof = proof.lock().expect("direct proof lock");
                             proof.client_to_upstream = datagram.payload.len() as u64;
@@ -1527,6 +1558,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 .map_err(|error| {
                                     io::Error::other(format!("consume route receipt: {error:?}"))
                                 })?;
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::ReceiptConsumed,
+                            );
                             context
                                 .register_direct_helper(
                                     "tcp",
@@ -1611,12 +1647,34 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 },
                             );
                             packet_finished(&stats, PacketDisposition::Lost)?;
+                            proof
+                                .lock()
+                                .expect("direct proof lock")
+                                .selected_packet_lost = true;
+                            record_route(
+                                route_events.as_ref(),
+                                helper_id,
+                                RouteEventKind::SelectedPacketDisposition {
+                                    disposition: "lost",
+                                },
+                            );
                             return Err(io::Error::other(format!(
                                 "first selected TCP packet: {error}"
                             )));
                         }
                     };
                     packet_finished(&stats, PacketDisposition::Consumed)?;
+                    proof
+                        .lock()
+                        .expect("direct proof lock")
+                        .selected_packet_consumed = true;
+                    record_route(
+                        route_events.as_ref(),
+                        helper_id,
+                        RouteEventKind::SelectedPacketDisposition {
+                            disposition: "consumed",
+                        },
+                    );
                     active.insert(
                         flow.tuple,
                         ActiveTcp {
@@ -2750,6 +2808,7 @@ mod tests {
             at_unix_ns: 1,
             clock_error_ns: 0,
             initial: true,
+            packet_digest: Some([7; 32]),
         };
         for index in 0..1_000 {
             let _ = queue_candidate_with_selected_reserve(

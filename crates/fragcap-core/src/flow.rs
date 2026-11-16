@@ -242,6 +242,8 @@ impl RegisteredFlow {
 pub struct FlowObservation {
     pub timestamp: Timestamp,
     pub attribution: Option<Attribution>,
+    pub tcp_flags: Option<u8>,
+    pub packet_digest: Option<[u8; 32]>,
 }
 
 /// Immutable history for one canonical flow.
@@ -303,6 +305,18 @@ impl FlowRegistry {
         timestamp: Timestamp,
         attribution: Option<&Attribution>,
     ) -> FlowId {
+        self.observe_packet_at(key, timestamp, attribution, None, None)
+    }
+
+    /// Retain packet-side flags alongside the exact socket attribution.
+    pub fn observe_packet_at(
+        &self,
+        key: FlowKey,
+        timestamp: Timestamp,
+        attribution: Option<&Attribution>,
+        tcp_flags: Option<u8>,
+        packet_digest: Option<[u8; 32]>,
+    ) -> FlowId {
         let mut state = self.state.lock().expect("flow registry mutex poisoned");
         let retain = state.retained_observations < state.observation_limit;
         if let Some(flow) = state.flows.get_mut(&key) {
@@ -314,6 +328,8 @@ impl FlowRegistry {
                 flow.observations.push(FlowObservation {
                     timestamp,
                     attribution: attribution.cloned(),
+                    tcp_flags,
+                    packet_digest,
                 });
                 flow.last_was_omission = false;
             } else {
@@ -338,6 +354,8 @@ impl FlowRegistry {
                     .then(|| FlowObservation {
                         timestamp,
                         attribution: attribution.cloned(),
+                        tcp_flags,
+                        packet_digest,
                     })
                     .into_iter()
                     .collect(),

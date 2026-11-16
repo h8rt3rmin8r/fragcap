@@ -275,7 +275,7 @@
       "tests": [
         {
           "path": "crates/fragcap/tests/public_api.rs",
-          "function": "version_one_inventory_is_curated_and_sorted",
+          "function": "version_two_inventory_is_curated_and_sorted",
           "features": [
             "deep-capture"
           ]
@@ -383,7 +383,7 @@
       "tests": [
         {
           "path": "crates/fragcap/tests/public_api.rs",
-          "function": "version_one_inventory_is_curated_and_sorted",
+          "function": "version_two_inventory_is_curated_and_sorted",
           "features": [
             "deep-capture"
           ]
