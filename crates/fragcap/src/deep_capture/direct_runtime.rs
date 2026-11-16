@@ -722,6 +722,27 @@ fn hold_pending_packet(
     Ok(())
 }
 
+fn lose_pending_first_packet(
+    stats: &SharedStats,
+    route_events: Option<&RouteEventSink>,
+    flow_id: u64,
+    proof: &Arc<Mutex<DirectRouteProof>>,
+) -> io::Result<()> {
+    packet_finished(stats, PacketDisposition::Lost)?;
+    proof
+        .lock()
+        .expect("direct proof lock")
+        .selected_packet_lost = true;
+    record_route(
+        route_events,
+        flow_id,
+        RouteEventKind::SelectedPacketDisposition {
+            disposition: "lost",
+        },
+    );
+    Ok(())
+}
+
 struct ActiveUdp {
     association: DirectUdpAssociation,
     address: Address,
@@ -1063,10 +1084,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         packet: _,
                         extra,
                         flow_id,
+                        proof,
                         worker,
                         ..
                     } = pending;
-                    packet_finished(&stats, PacketDisposition::Lost)?;
+                    lose_pending_first_packet(&stats, route_events.as_ref(), flow_id, &proof)?;
                     for _ in extra {
                         packet_finished(&stats, PacketDisposition::Lost)?;
                     }
@@ -1448,6 +1470,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     .map_err(|error| {
                                         io::Error::other(format!("consume UDP receipt: {error:?}"))
                                     })?;
+                                proof.lock().expect("direct proof lock").receipt_consumed = true;
                                 record_route(
                                     route_events.as_ref(),
                                     helper_id,
@@ -1815,7 +1838,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 })?;
                 issued_receipts.retain(|issued| *issued != receipt);
                 selected.lock().expect("selected route lock").remove(&tuple);
-                packet_finished(&stats, PacketDisposition::Lost)?;
+                lose_pending_first_packet(&stats, route_events.as_ref(), flow_id, &proof)?;
                 for _ in extra {
                     packet_finished(&stats, PacketDisposition::Lost)?;
                 }
@@ -1892,6 +1915,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     started.elapsed().as_nanos() as u64,
                 )
                 .map_err(|error| io::Error::other(format!("consume route receipt: {error:?}")))?;
+            proof.lock().expect("direct proof lock").receipt_consumed = true;
             record_route(
                 route_events.as_ref(),
                 flow_id,

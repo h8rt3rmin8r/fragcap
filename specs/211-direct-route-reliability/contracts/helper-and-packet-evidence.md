@@ -1,6 +1,6 @@
 # Helper and Packet Evidence Contract
 
-An admitted selected flow records `selected`, `proxy-attempt`, and a one-use receipt. Helper completion records its exact stage and elapsed time. Success records `proxy-connected`; failure records a typed reason and the actual I/O kind where applicable. A selected packet has one terminal disposition even if admission fails.
+An admitted selected flow records `selected`, `proxy-attempt`, and a one-use receipt. Helper completion records its exact stage and elapsed time. Success records `proxy-connected`; failure records a typed reason and the actual I/O kind where applicable. A helper registered before receipt consumption reports `unconsumed` if admission fails; only actual ledger consumption reports `consumed`. A pending first packet lost after owner change or shutdown records both aggregate loss and `selected-packet-disposition: lost`.
 
 The worker does not wait for SOCKS CONNECT. Its pending state is bounded by exact tuple and endpoint generation. A duplicate selected packet is either retained under the same pending owner or explicitly accounted; it cannot begin a second helper. Session stop closes pending helper work within its finite deadline and retires receipts.
 

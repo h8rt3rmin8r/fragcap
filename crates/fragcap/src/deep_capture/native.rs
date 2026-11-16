@@ -344,6 +344,7 @@ struct DirectHelperOwner {
 #[cfg(all(windows, feature = "direct-route"))]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DirectRouteProof {
+    pub receipt_consumed: bool,
     pub selected_packet_consumed: bool,
     pub selected_packet_lost: bool,
     pub proxy_connected: bool,
@@ -361,7 +362,8 @@ pub(crate) struct DirectRouteProof {
 #[cfg(all(windows, feature = "direct-route"))]
 impl DirectRouteProof {
     fn confirms_reachability(&self, transport: Proto) -> bool {
-        self.selected_packet_consumed
+        self.receipt_consumed
+            && self.selected_packet_consumed
             && self.proxy_connected
             && self.reply_sent
             && !self.reply_failed
@@ -659,7 +661,11 @@ impl NativeObservationContext {
         }
         Some(super::DirectRouteCorrelation {
             schema_version: 2,
-            receipt_state: "consumed",
+            receipt_state: if proof.as_ref().is_some_and(|value| value.receipt_consumed) {
+                "consumed"
+            } else {
+                "unconsumed"
+            },
             selected_packet_disposition: match proof.as_ref() {
                 Some(value) if value.selected_packet_consumed => "consumed",
                 Some(value) if value.selected_packet_lost => "lost",
@@ -1121,6 +1127,7 @@ mod direct_helper_tests {
         let proof = context.direct_proof_for(&flow).unwrap();
         {
             let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;
@@ -1162,6 +1169,7 @@ mod direct_helper_tests {
         let udp_proof = udp_context.direct_proof_for(&udp).unwrap();
         {
             let mut proof = udp_proof.lock().unwrap();
+            proof.receipt_consumed = true;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;
@@ -1288,13 +1296,21 @@ mod direct_helper_tests {
         let missing_packet = context.correlate_proxy_window(&window);
         assert_eq!(missing_packet.7, CorrelationState::Unavailable);
         assert_eq!(missing_packet.8, "direct-original-packet-not-retained");
+        let before_consumption = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(before_consumption.receipt_state, "unconsumed");
+        assert_eq!(
+            before_consumption.route_state,
+            "selected-disposition-unavailable"
+        );
         let proof = context.direct_proof_for(&flow).unwrap();
         proof.lock().unwrap().selected_packet_lost = true;
         let failed = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(failed.receipt_state, "unconsumed");
         assert_eq!(failed.selected_packet_disposition, "lost");
         assert_eq!(failed.route_state, "selected-packet-lost");
         {
             let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
             proof.selected_packet_lost = false;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
