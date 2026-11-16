@@ -404,6 +404,7 @@ dependencies = [
 name = "fragcap-core"
 version = "0.11.1"
 dependencies = [
+ "blake3",
  "bytes",
 ]
 

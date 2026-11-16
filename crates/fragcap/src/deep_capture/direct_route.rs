@@ -90,7 +90,7 @@ pub struct DirectPacketHead {
     pub at_unix_ns: i64,
     pub clock_error_ns: u64,
     pub initial: bool,
-    pub packet_digest: [u8; 32],
+    pub packet_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -102,7 +102,7 @@ pub struct OriginalFlow {
     pub pid: u32,
     pub process_instance_id: String,
     pub process_image: String,
-    pub first_packet_digest: [u8; 32],
+    pub first_packet_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -745,7 +745,7 @@ mod tests {
             at_unix_ns: 1300,
             clock_error_ns: 1,
             initial: true,
-            packet_digest: [7; 32],
+            packet_digest: Some([7; 32]),
         }
     }
 

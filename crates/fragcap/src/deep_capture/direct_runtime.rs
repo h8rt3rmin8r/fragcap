@@ -1173,11 +1173,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     reinject(&handle, &stats, &packet, &address)?;
                 }
                 CandidateDecision::Selected {
-                    flow,
+                    mut flow,
                     packet,
                     address,
                     received_ns,
                 } => {
+                    // Exact socket and managed process ownership have already
+                    // selected this target packet. Only now read its complete
+                    // datagram for the passive original-packet join.
+                    flow.first_packet_digest = Some(*blake3::hash(&packet).as_bytes());
                     #[cfg(test)]
                     if session_id == "s200-managed-chain" {
                         candidate_timeline(
@@ -2804,7 +2808,7 @@ mod tests {
             at_unix_ns: 1,
             clock_error_ns: 0,
             initial: true,
-            packet_digest: [7; 32],
+            packet_digest: Some([7; 32]),
         };
         for index in 0..1_000 {
             let _ = queue_candidate_with_selected_reserve(

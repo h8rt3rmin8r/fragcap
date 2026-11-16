@@ -219,7 +219,9 @@ impl Address {
             at_unix_ns,
             clock_error_ns,
             initial: true,
-            packet_digest: *blake3::hash(bytes).as_bytes(),
+            // Candidate screening is header-only. The processing worker
+            // hashes this datagram only after exact target selection.
+            packet_digest: None,
         })
     }
 
@@ -807,6 +809,10 @@ mod tests {
         let packet_head = syn
             .initial_packet_head(&syn_bytes, anchor)
             .expect("outbound initial SYN head");
+        assert_eq!(
+            packet_head.packet_digest, None,
+            "candidate screening is header-only"
+        );
         assert_eq!(socket_data.tuple(), Some(packet_head.tuple));
         let event_time = anchor
             .convert(event.timestamp_qpc)

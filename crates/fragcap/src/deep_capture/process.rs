@@ -1256,13 +1256,6 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
         }
         for interval in &intervals {
             let basis = interval["tail_basis"].as_str()?;
-            if interval["tcp_flags"].is_null()
-                && interval["socket_created_at_nanos"].is_null()
-                && basis != "in-lifetime"
-                && !basis.ends_with("-unavailable")
-            {
-                return None;
-            }
             if matches!(basis, "post-exit-reset-tail" | "post-exit-contiguous-tail") {
                 let flags = interval["tcp_flags"].as_u64()?;
                 let exit = interval["process_exited_at_nanos"].as_i64()?;
@@ -2009,6 +2002,39 @@ mod tests {
             tail_interval(&nonclosing)["tail_basis"],
             "post-exit-nonclosing-packet"
         );
+    }
+
+    #[test]
+    fn unresolved_owner_without_optional_packet_metadata_round_trips() {
+        let evidence = tail_evidence();
+        let flow = FlowSummary {
+            id: FlowId::new(1).unwrap(),
+            observations: vec![FlowObservation {
+                timestamp: Timestamp::from_nanos(90_000_000),
+                attribution: Some(Attribution::new(7, "other.exe", Fidelity::Live)),
+                tcp_flags: None,
+                packet_digest: None,
+            }],
+            unretained_observations: 0,
+            global_unretained_observations: 0,
+            omissions: Vec::new(),
+            omission_precision_lost: false,
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[flow],
+            globally_unretained_flow_observations: 0,
+        });
+        let interval = tail_interval(&trace);
+        assert_eq!(interval["tail_basis"], "socket-owner-generation-conflict");
+        assert!(interval["process_instance_id"].is_null());
+        assert!(interval["tcp_flags"].is_null());
+        assert!(interval["socket_created_at_nanos"].is_null());
+        assert_eq!(read_process_trace(&trace.jsonl), Some(trace.summary));
     }
 
     #[test]

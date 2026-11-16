@@ -620,7 +620,8 @@ impl NativeObservationContext {
                 if at < window_start || at > window_end {
                     continue;
                 }
-                if observation.packet_digest != Some(flow.first_packet_digest)
+                if flow.first_packet_digest.is_none()
+                    || observation.packet_digest != flow.first_packet_digest
                     || at.abs_diff(flow.first_packet_at_ns) > DIRECT_PACKET_JOIN_SLACK_NS
                 {
                     later_packet = true;
@@ -816,7 +817,8 @@ impl NativeObservationContext {
                     .as_nanos()
                     .abs_diff(flow.first_packet_at_ns)
                     <= DIRECT_PACKET_JOIN_SLACK_NS
-                && observation.packet_digest == Some(flow.first_packet_digest)
+                && flow.first_packet_digest.is_some()
+                && observation.packet_digest == flow.first_packet_digest
         });
         let first_packet_retained = summary.observations.iter().any(|observation| {
             in_window(observation.timestamp.as_nanos())
@@ -825,7 +827,8 @@ impl NativeObservationContext {
                     .as_nanos()
                     .abs_diff(flow.first_packet_at_ns)
                     <= DIRECT_PACKET_JOIN_SLACK_NS
-                && observation.packet_digest == Some(flow.first_packet_digest)
+                && flow.first_packet_digest.is_some()
+                && observation.packet_digest == flow.first_packet_digest
                 && observation.attribution.as_ref().is_some_and(|owner| {
                     owner.pid == flow.pid
                         && owner.process.as_ref() == flow.process_image
@@ -839,7 +842,8 @@ impl NativeObservationContext {
                     .as_nanos()
                     .abs_diff(flow.first_packet_at_ns)
                     <= DIRECT_PACKET_JOIN_SLACK_NS
-                && observation.packet_digest == Some(flow.first_packet_digest)
+                && flow.first_packet_digest.is_some()
+                && observation.packet_digest == flow.first_packet_digest
                 && observation.attribution.as_ref().is_some_and(|owner| {
                     owner.pid != flow.pid || owner.process.as_ref() != flow.process_image
                 })
@@ -1084,7 +1088,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
-            first_packet_digest: [7; 32],
+            first_packet_digest: Some([7; 32]),
         };
         let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
         let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
@@ -1202,7 +1206,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
-            first_packet_digest: [7; 32],
+            first_packet_digest: Some([7; 32]),
         };
         context
             .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
