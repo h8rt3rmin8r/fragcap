@@ -341,7 +341,7 @@ pub(crate) fn prepare_owned_platform(
             .with_existing_root(pid, created_ns)
             .map_err(|error| CliError::usage(error.to_string()))?;
     } else if allow_direct_alternate {
-        if let Ok(candidate) = platform.clone().with_direct_alternate() {
+        if let Ok(candidate) = platform.clone().with_direct_alternate(target) {
             platform = candidate;
         }
     }
@@ -631,7 +631,7 @@ mod authorization_tests {
         .unwrap()
         .with_target_stages(&entry)
         .unwrap()
-        .with_direct_alternate()
+        .with_direct_alternate(&entry)
         .unwrap();
         let cold = managed_launch_authority(Some(&ManagedLaunch::Platform(platform.clone())));
         assert_eq!(cold["root_mode"]["kind"], "created");

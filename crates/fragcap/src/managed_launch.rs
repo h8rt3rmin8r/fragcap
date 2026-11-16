@@ -317,7 +317,10 @@ impl PlatformClientLaunch {
 
     /// Authorize one direct client alternate only if the cold platform root
     /// cannot be created. A successful root creation never selects this path.
-    pub fn with_direct_alternate(mut self) -> Result<Self, LaunchConfigError> {
+    pub fn with_direct_alternate(
+        mut self,
+        target: &TargetEntry,
+    ) -> Result<Self, LaunchConfigError> {
         let terminal = self
             .stages
             .iter()
@@ -326,15 +329,26 @@ impl PlatformClientLaunch {
         let [client] = terminal.as_slice() else {
             return Err(LaunchConfigError::MissingClient);
         };
+        let declared = entry_windows_launch_entries(target);
+        let candidates = declared
+            .iter()
+            .filter(|entry| entry.role().is_none_or(|role| role == "client"))
+            .filter(|entry| {
+                resolve_publisher_executable(target, entry.executable())
+                    .is_ok_and(|path| path == client.executable)
+            })
+            .collect::<Vec<_>>();
+        let [stored_client] = candidates.as_slice() else {
+            return Err(LaunchConfigError::MissingClient);
+        };
+        let arguments = parse_stored_arguments(stored_client.arguments.as_deref())?;
         let executable = client.executable.clone();
         let directory = executable
             .parent()
             .ok_or(LaunchConfigError::MissingClient)?
             .to_path_buf();
         self.direct_alternate = Some(Box::new(DirectExecutableLaunch::new(
-            executable,
-            directory,
-            Vec::new(),
+            executable, directory, arguments,
         )?));
         Ok(self)
     }
@@ -1385,7 +1399,7 @@ mod tests {
         fs::write(root.join("Game.exe"), b"fixture").unwrap();
         let entry = target(
             &root,
-            json!([{ "executable": "Game.exe", "role": "client" }]),
+            json!([{ "executable": "Game.exe", "role": "client", "arguments": "one \"two words\"" }]),
         );
         let executable = std::env::current_exe().unwrap();
         let directory = executable.parent().unwrap().to_path_buf();
@@ -1399,13 +1413,17 @@ mod tests {
         .unwrap()
         .with_target_stages(&entry)
         .unwrap()
-        .with_direct_alternate()
+        .with_direct_alternate(&entry)
         .unwrap();
         assert_eq!(
             platform.direct_alternate().unwrap().executable(),
             root.join("Game.exe").canonicalize().unwrap()
         );
         assert_eq!(platform.stages().last().unwrap().role(), "client");
+        assert_eq!(
+            platform.direct_alternate().unwrap().arguments(),
+            [OsString::from("one"), OsString::from("two words")]
+        );
         let warm = platform.with_existing_root(42, 1).unwrap();
         assert!(warm.direct_alternate().is_none());
         assert!(warm
@@ -1555,13 +1573,17 @@ mod tests {
         .unwrap();
         launch.execute().unwrap();
         let started = Instant::now();
-        while !output.is_file() && started.elapsed() < Duration::from_secs(5) {
+        let mut observed = String::new();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Ok(value) = fs::read_to_string(&output) {
+                observed = value;
+                if observed == "http://127.0.0.1:43124" {
+                    break;
+                }
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(
-            fs::read_to_string(&output).unwrap(),
-            "http://127.0.0.1:43124"
-        );
+        assert_eq!(observed, "http://127.0.0.1:43124");
         fs::remove_file(output).unwrap();
     }
 

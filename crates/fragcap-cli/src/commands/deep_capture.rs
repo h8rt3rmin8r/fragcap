@@ -27,7 +27,8 @@ use deep_capture_api::{
 };
 use deep_capture_api::{
     calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
-    CompatibilityObservation as Observation, Inspectability, ManifestOmissionReason,
+    CompatibilityObservation as Observation, Inspectability, InspectabilityState,
+    ManifestOmissionReason,
 };
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
@@ -4142,25 +4143,13 @@ fn append_attempt_history(
         "unknown"
     }
     .to_string();
-    row.inspection = if report
-        .snapshot
-        .observations
-        .iter()
-        .any(|value| value.inspectability == Inspectability::Full)
-    {
-        "decrypted"
-    } else if report
-        .snapshot
-        .observations
-        .iter()
-        .any(|value| value.inspectability == Inspectability::MetadataOnly)
-    {
-        "metadata-only"
-    } else if report.snapshot.observations.is_empty() {
-        "none"
-    } else {
-        "opaque"
-    }
+    row.inspection = history_inspection_state(
+        report
+            .snapshot
+            .observations
+            .iter()
+            .map(|value| value.classification.inspectability()),
+    )
     .to_string();
     row.failure = report
         .snapshot
@@ -4236,6 +4225,24 @@ fn append_attempt_history(
         drift["state"].as_str().unwrap_or("unknown")
     ));
     Ok(())
+}
+
+fn history_inspection_state(states: impl IntoIterator<Item = InspectabilityState>) -> &'static str {
+    let mut states = states.into_iter();
+    let Some(first) = states.next() else {
+        return "none";
+    };
+    if states.any(|state| state != first) {
+        return "partial";
+    }
+    match first {
+        InspectabilityState::Full => "full",
+        InspectabilityState::DecryptedUnknown => "decrypted-unknown",
+        InspectabilityState::MetadataOnly => "metadata-only",
+        InspectabilityState::EncryptedOpaque => "opaque",
+        InspectabilityState::PacketOnly => "none",
+        _ => "unknown",
+    }
 }
 
 fn selected_retention(args: &DeepCaptureArgs) -> deep_capture_api::SensitiveRetention {
@@ -4729,13 +4736,6 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
 #[cfg(windows)]
 pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
     process_entries_snapshot().map(|entries| entries.into_iter().map(|(_, image)| image).collect())
-}
-
-#[cfg(not(windows))]
-pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
-    Err(CliError::usage(
-        "managed platform dispatch is only supported on Windows",
-    ))
 }
 
 #[cfg(windows)]
@@ -7141,6 +7141,29 @@ mod tests {
         assert_eq!(
             direct_launch_case(false),
             CompatibilityLaunchCase::DirectExeCold
+        );
+    }
+
+    #[test]
+    fn history_inspection_distinguishes_plain_http_from_decrypted_unknown_tls() {
+        assert_eq!(
+            history_inspection_state([InspectabilityState::Full]),
+            "full"
+        );
+        assert_eq!(
+            history_inspection_state([InspectabilityState::DecryptedUnknown]),
+            "decrypted-unknown"
+        );
+        assert_eq!(
+            history_inspection_state([
+                InspectabilityState::Full,
+                InspectabilityState::EncryptedOpaque
+            ]),
+            "partial"
+        );
+        assert_eq!(
+            history_inspection_state([InspectabilityState::Unavailable]),
+            "unknown"
         );
     }
 
