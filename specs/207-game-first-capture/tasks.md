@@ -55,8 +55,8 @@
 
 - [x] T023 Remove public calibration command, guided/resume and embedded flags while preserving ordinary assessment and old store/bundle readers in `crates/fragcap-cli/src/cli.rs`, `crates/fragcap-cli/src/lib.rs`, and `crates/fragcap-cli/src/commands/`.
 - [x] T024 Update directly affected README/help, master specification, chronological plan, and S207 changelog fragments in `README.md`, `crates/fragcap-cli/src/commands/workflow_help.rs`, `docs/fragcap-specification.md`, `docs/plans/README.md`, and `changelog.d/`.
-- [ ] T025 Run focused tests, controlled Windows route matrix, `cargo xtask ci`, encoding check, and exact-head CI; record evidence in `specs/207-game-first-capture/quickstart.md` and PR.
-- [ ] T026 Commit on `codex/s207-game-first-capture`, push, publish PR, resolve no more than two Codex review rounds, wait for terminal green checks, and hand off the final merge ritual.
+- [x] T025 Run focused tests, controlled Windows route matrix, `cargo xtask ci`, encoding check, and exact-head CI; record evidence in `specs/207-game-first-capture/quickstart.md` and PR.
+- [x] T026 Commit on `codex/s207-game-first-capture`, push, publish PR, resolve no more than two Codex review rounds, wait for terminal green checks, and hand off the final merge ritual.
 
 ## Dependencies and delivery order
 
