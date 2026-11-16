@@ -1397,9 +1397,16 @@ mod tests {
         let root = unique_dir("platform-alternate");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("Game.exe"), b"fixture").unwrap();
+        // The stored command line is Windows syntax and is intentionally
+        // refused by the portable parser on other hosts.
+        let arguments = if cfg!(windows) {
+            "one \"two words\""
+        } else {
+            ""
+        };
         let entry = target(
             &root,
-            json!([{ "executable": "Game.exe", "role": "client", "arguments": "one \"two words\"" }]),
+            json!([{ "executable": "Game.exe", "role": "client", "arguments": arguments }]),
         );
         let executable = std::env::current_exe().unwrap();
         let directory = executable.parent().unwrap().to_path_buf();
@@ -1420,10 +1427,13 @@ mod tests {
             root.join("Game.exe").canonicalize().unwrap()
         );
         assert_eq!(platform.stages().last().unwrap().role(), "client");
+        #[cfg(windows)]
         assert_eq!(
             platform.direct_alternate().unwrap().arguments(),
             [OsString::from("one"), OsString::from("two words")]
         );
+        #[cfg(not(windows))]
+        assert!(platform.direct_alternate().unwrap().arguments().is_empty());
         let warm = platform.with_existing_root(42, 1).unwrap();
         assert!(warm.direct_alternate().is_none());
         assert!(warm
