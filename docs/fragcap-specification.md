@@ -225,7 +225,7 @@ enforcement.
 | 0.1.133-draft | 2026-11-16 | Codex | S208 requires exact owned test cleanup and residual reporting. Updates sections 24 and 25; installed default paths remain independent. |
 | 0.1.134-draft | 2026-11-16 | Codex | S209 makes stored Steam association authoritative for warm or cold dispatch and retains bounded target-scoped attempt history. Updates sections 16, 17, and 27. |
 | 0.1.135-draft | 2026-11-16 | Codex | S210 separates exact direct-route transfer from passive original-packet presence and binds post-exit process tails only with finite observed proof. Updates sections 11, 13, 17, and 27; physical packet ordering remains open. |
-| 0.1.136-draft | 2026-11-16 | Codex | S211 moves selected TCP helper admission off the packet worker, records stage, elapsed time and actual error kind, and requires packaged WinDivert/Npcap original-packet ordering acceptance. Updates sections 17, 26, and 27. |
+| 0.1.136-draft | 2026-11-16 | Codex | S211 moves selected TCP helper admission off the packet worker, records stage, elapsed time and actual error kind, and requires packaged WinDivert/Npcap original-packet ordering acceptance. A complete captured datagram may gain `direct-route` attribution only after its full digest, tuple, and time match one selected flow and the managed gate proves the causal process generation; failed joins remain unattributed. Candidate resolution indexes socket events by tuple and records bounded queue and hold timing. Updates sections 13, 17, 26, and 27. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1921,7 +1921,7 @@ a percent sign.
 | `role` | When stage-bound | Profile role name |
 | `stage` | When stage-bound | Profile stage identifier |
 | `dir` | Always | `in`, `out`, or `local` |
-| `attr` | Always | `live`, `retained`, or `none` |
+| `attr` | Always | `live`, `retained`, `direct-route`, or `none` |
 | `iface` | When multi-interface | Capture interface name |
 | `flow_id` | When packet has a flow key | Stable session-local flow identifier |
 
@@ -1966,6 +1966,14 @@ time of resolution. `retained` indicates resolution from the grace
 period map described in section 11.4. `none` indicates the packet could
 not be attributed, in which case `pid`, `proc`, `role`, and `stage` are
 absent.
+
+`direct-route` indicates that a complete datagram independently acquired by
+the capture source matched one selected direct-route first packet by exact
+network-datagram digest, flow tuple, and bounded capture instant. Selection
+already proved the managed process generation, and the packet gate checks that
+generation and role again at the captured instant. This value makes no
+socket-table-presence claim. A missing digest, incomplete datagram, conflicting
+match, or failed causal gate cannot produce this attribution.
 
 Distinguishing `live` from `retained` matters because retained
 attribution is inferential. An endpoint that closed and was reassigned

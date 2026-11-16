@@ -63,6 +63,10 @@ pub enum Fidelity {
     /// socket table attributor in slice S10. The variant exists here so that
     /// slice supplies a value rather than widening this type.
     Retained,
+    /// A complete packet from the capture source matched the exact selected
+    /// direct-route datagram and its causally proven process generation. This
+    /// does not claim that the socket table contained the endpoint.
+    DirectRoute,
     /// Attribution was attempted and did not resolve.
     ///
     /// Rarely constructed: an unresolved attribution is normally the absence of

@@ -8,4 +8,8 @@ The worker does not wait for SOCKS CONNECT. Its pending state is bounded by exac
 
 Route reachability requires actual client transfer. Passive original-packet presence is an independent field. Original-absent and incomplete-history states never become original-present because a helper packet or later same-tuple packet was observed.
 
+When the socket-table attributor misses, the capture pipeline may attribute one complete datagram to a selected direct flow only if its full network-datagram digest, tuple, and capture instant match exactly one route-selected first packet. The managed write gate must still prove the selected process generation and terminal role at that packet instant. The output marks this evidence `attr=direct-route`, never `live`. Missing, truncated, time-mismatched, digest-mismatched, or competing evidence remains unresolved. Capture-side aggregate counts distinguish tuple observations, time mismatches, incomplete packets, digest mismatches, ambiguous matches, and exact matches without storing raw bytes or digests in diagnostic text.
+
+Candidate resolution indexes socket events by tuple so traffic for other sockets does not multiply each held packet's scan cost. Cleanup records the largest candidate queue delay, the largest held duration, and the count held over 50 ms. These are diagnostic facts; they do not waive the physical unrelated-traffic limit.
+
 The portable package test checks full route journal, compatibility, terminal result, and manifest readback for original-present, original-absent, truncated, refusal, no-payload, reuse, ambiguity, and TCP/UDP cases. A controlled test result does not assert an installed ESO result.

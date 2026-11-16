@@ -835,6 +835,12 @@ fn spawn_pipeline(
         pipeline_config,
     )?;
     components.configure_pipeline_filters(&mut pipeline);
+    #[cfg(all(windows, feature = "direct-route"))]
+    if let Some(context) = components.inspection_context.clone() {
+        pipeline.set_packet_attributor(Arc::new(move |packet| {
+            context.attest_direct_original(packet)
+        }));
+    }
     if let Some(registry) = components.flow_registry.take() {
         pipeline.set_flow_registry(registry);
     }

@@ -138,6 +138,9 @@ pub struct DirectRuntimeStats {
     pub socket_events: SocketObserverStats,
     pub admission_busy_bypassed: u64,
     pub candidate_capacity_bypassed: u64,
+    pub candidate_max_queue_us: u64,
+    pub candidate_max_hold_us: u64,
+    pub candidate_over_50ms: u64,
     pub bypass_reasons: BTreeMap<&'static str, u64>,
     pub proxy_refused: u64,
     pub udp_relay_resets: u64,
@@ -181,6 +184,9 @@ struct SharedStats {
     stop_watchdog: AtomicBool,
     admission_busy_bypassed: AtomicU64,
     candidate_capacity_bypassed: AtomicU64,
+    candidate_max_queue_us: AtomicU64,
+    candidate_max_hold_us: AtomicU64,
+    candidate_over_50ms: AtomicU64,
     bypass_reasons: Mutex<BTreeMap<&'static str, u64>>,
     proxy_refused: AtomicU64,
     udp_relay_resets: AtomicU64,
@@ -199,6 +205,9 @@ impl SharedStats {
             stop_watchdog: AtomicBool::new(false),
             admission_busy_bypassed: AtomicU64::new(0),
             candidate_capacity_bypassed: AtomicU64::new(0),
+            candidate_max_queue_us: AtomicU64::new(0),
+            candidate_max_hold_us: AtomicU64::new(0),
+            candidate_over_50ms: AtomicU64::new(0),
             bypass_reasons: Mutex::new(BTreeMap::new()),
             proxy_refused: AtomicU64::new(0),
             udp_relay_resets: AtomicU64::new(0),
@@ -228,6 +237,21 @@ impl SharedStats {
         let mut reasons = self.bypass_reasons.lock().expect("bypass reason lock");
         let count = reasons.entry(reason).or_insert(0);
         *count = count.checked_add(1).expect("bounded route bypass count");
+    }
+
+    fn record_candidate_queue_delay(&self, received_ns: u64) {
+        let elapsed = (self.started.elapsed().as_nanos() as u64).saturating_sub(received_ns);
+        self.candidate_max_queue_us
+            .fetch_max(elapsed / 1_000, Ordering::Relaxed);
+    }
+
+    fn record_candidate_terminal_delay(&self, received_ns: u64) {
+        let elapsed = (self.started.elapsed().as_nanos() as u64).saturating_sub(received_ns);
+        self.candidate_max_hold_us
+            .fetch_max(elapsed / 1_000, Ordering::Relaxed);
+        if elapsed > 50_000_000 {
+            self.candidate_over_50ms.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1045,6 +1069,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         }
         match receive_work(&receiver, &queued_candidates) {
             Ok(WorkPacket::Candidate(head, packet, address, received_ns)) => {
+                stats.record_candidate_queue_delay(received_ns);
                 #[cfg(test)]
                 if STALL_NEXT_CANDIDATE.swap(false, Ordering::AcqRel) {
                     thread::sleep(Duration::from_millis(150));
@@ -1067,6 +1092,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     continue;
                 }
                 if let Err(pending) = candidates.enqueue(head, packet, address, received_ns) {
+                    stats.record_candidate_terminal_delay(received_ns);
                     stats
                         .candidate_capacity_bypassed
                         .fetch_add(1, Ordering::Relaxed);
@@ -1289,6 +1315,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     address,
                     received_ns,
                 } => {
+                    stats.record_candidate_terminal_delay(received_ns);
                     #[cfg(test)]
                     if session_id == "s200-managed-chain" {
                         let publication = raw_transport_head(&packet).ok().and_then(|head| {
@@ -1339,6 +1366,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     address,
                     received_ns,
                 } => {
+                    stats.record_candidate_terminal_delay(received_ns);
                     // Exact socket and managed process ownership have already
                     // selected this target packet. Only now read its complete
                     // datagram for the passive original-packet join.
@@ -2451,6 +2479,9 @@ impl DirectPacketRuntime {
                 .stats
                 .candidate_capacity_bypassed
                 .load(Ordering::Relaxed),
+            candidate_max_queue_us: self.stats.candidate_max_queue_us.load(Ordering::Relaxed),
+            candidate_max_hold_us: self.stats.candidate_max_hold_us.load(Ordering::Relaxed),
+            candidate_over_50ms: self.stats.candidate_over_50ms.load(Ordering::Relaxed),
             bypass_reasons: self
                 .stats
                 .bypass_reasons

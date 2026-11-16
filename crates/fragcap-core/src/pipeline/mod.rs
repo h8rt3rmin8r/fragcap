@@ -86,6 +86,7 @@ use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
+use crate::attribution::Attribution;
 use crate::error::{SinkError, SourceError};
 use crate::filter::{FilterConfig, FilterManager, FilterProgram};
 use crate::flow::Endpoint;
@@ -337,6 +338,9 @@ impl fmt::Display for PipelineError {
 
 impl Error for PipelineError {}
 
+/// Optional packet-specific owner proof consulted after flow attribution misses.
+pub type PacketAttributor = dyn Fn(&CapturedPacket) -> Option<Attribution> + Send + Sync;
+
 /// Everything one run owns.
 ///
 /// Built from trait objects throughout, so a new source, attributor, or sink
@@ -346,6 +350,9 @@ impl Error for PipelineError {}
 pub struct Pipeline {
     sources: Vec<SourceBinding>,
     attributor: Box<dyn FlowAttributor>,
+    /// Optional packet-specific owner proof. Used only after a socket-table
+    /// miss; it must name its own fidelity rather than impersonate a live row.
+    packet_attributor: Option<Arc<PacketAttributor>>,
     sinks: Vec<Box<dyn Sink>>,
     config: PipelineConfig,
     filter_config: FilterConfig,
@@ -464,6 +471,7 @@ impl Pipeline {
             fixed_filter_endpoints: vec![Vec::new(); sources.len()],
             sources,
             attributor,
+            packet_attributor: None,
             sinks: Vec::new(),
             config,
             filter_config: FilterConfig::default(),
@@ -490,6 +498,13 @@ impl Pipeline {
     /// produce an exactly-bounded file and to discard and count watch-time frames.
     pub fn set_write_gate(&mut self, gate: Arc<dyn WriteGate>) {
         self.gate = Some(gate);
+    }
+
+    /// Attach a packet-specific owner proof for a socket-table miss. The
+    /// callback sees the parsed complete datagram before attribution counters
+    /// and the write gate, and must return a truthfully stamped fidelity.
+    pub fn set_packet_attributor(&mut self, attributor: Arc<PacketAttributor>) {
+        self.packet_attributor = Some(attributor);
     }
 
     /// Override the filter maintenance timings the control thread uses. Defaults
@@ -562,6 +577,7 @@ impl Pipeline {
         let Pipeline {
             sources,
             attributor,
+            packet_attributor,
             sinks,
             config,
             filter_config,
@@ -651,6 +667,7 @@ impl Pipeline {
             let (filter_tx, filter_rx) = mpsc::channel::<FilterProgram>();
             filter_senders.push(filter_tx);
             let attributor = Arc::clone(&attributor);
+            let packet_attributor = packet_attributor.clone();
             let tx = Arc::clone(guard.producer());
             let stop = stop.clone();
             let read_timeout = config.read_timeout;
@@ -680,6 +697,7 @@ impl Pipeline {
                     handle,
                     &ack_tx,
                     &flow_registry,
+                    packet_attributor.as_deref(),
                 );
                 stats.parse = *parser.stats();
                 stats.set_source(id, source.stats());
@@ -913,6 +931,7 @@ fn acquire(
     handle: usize,
     ack_tx: &Sender<(usize, bool)>,
     flow_registry: &FlowRegistry,
+    packet_attributor: Option<&PacketAttributor>,
 ) -> EndReason {
     loop {
         if stop.is_stopped() {
@@ -964,6 +983,11 @@ fn acquire(
             //
             // No lock. Section 11.6, and slice S10.
             packet.attribution = attributor.resolve(key, packet.ts);
+        }
+        if packet.attribution.is_none() {
+            if let Some(attest) = packet_attributor {
+                packet.attribution = attest(&packet);
+            }
         }
         match packet.attribution_state() {
             AttributionState::Resolved => {
@@ -2328,6 +2352,35 @@ mod tests {
             "never attempted is not attempted and failed"
         );
         assert!(!report.stats.lost_anything());
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn packet_attestation_fills_only_socket_misses_and_preserves_accounting() {
+        let log = log();
+        let source = StubSource::new(vec![frame(1, 40001), frame(2, 45000), unparseable(3)]);
+        let mut p = pipeline(Box::new(source), 64);
+        p.set_packet_attributor(Arc::new(|packet| {
+            (packet.flow == Some(flow_key(45000)))
+                .then(|| Attribution::new(72, "target.exe", Fidelity::DirectRoute))
+        }));
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        let held = log.lock().expect("the log mutex is never poisoned");
+        assert_eq!(
+            held.written[0].attribution.as_ref().unwrap().fidelity,
+            Fidelity::Live
+        );
+        assert_eq!(
+            held.written[1].attribution.as_ref().unwrap().fidelity,
+            Fidelity::DirectRoute
+        );
+        assert!(held.written[2].attribution.is_none());
+        drop(held);
+        assert_eq!(report.stats.packets_captured, 3);
+        assert_eq!(report.stats.packets_attributed, 2);
+        assert_eq!(report.stats.packets_unattributed, 0);
         assert_conserved(&report, &log, 0);
     }
 
