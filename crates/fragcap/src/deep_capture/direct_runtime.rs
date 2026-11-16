@@ -3511,7 +3511,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
-    fn disposable_proxy_refusal_reinjects_selected_first_packet() {
+    fn disposable_proxy_connect_error_reinjects_selected_first_packet() {
         let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
             .expect("WINDIVERT_VERIFIED_ROOT is required");
         let origin = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3541,7 +3541,9 @@ mod tests {
         finish_client(child);
         let stats = runtime.stop().unwrap();
         server.join().unwrap();
-        assert!(stats.proxy_refused > 0);
+        // A refused local TCP connect is an OS I/O failure, not a SOCKS reply
+        // from a running proxy. The original packet still returns to Windows.
+        assert_eq!(stats.proxy_refused, 0);
         assert_eq!(stats.packets.consumed, 0);
         assert_eq!(stats.packets.lost, 0);
         assert!(stats.packets.reinjected > 0);
@@ -4159,10 +4161,15 @@ mod tests {
         release_client(&mut child);
         finish_client(child);
         let stats = runtime.stop().unwrap();
+        eprintln!("S211 classified route stats: {stats:?}");
         assert!(stats.packets.consumed > 0);
         assert_eq!(stats.packets.lost, 0);
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(3));
+        eprintln!(
+            "S211 classified proxy protocol: {:?}",
+            report.observation.protocol
+        );
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(
             report.observation.protocol.http1_exchanges_completed,
