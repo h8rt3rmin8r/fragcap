@@ -41,7 +41,7 @@ fn helper_step<T>(
             error: io::Error::new(io::ErrorKind::TimedOut, "SOCKS helper deadline elapsed"),
         });
     }
-    stream
+    let value = stream
         .set_read_timeout(Some(remaining))
         .and_then(|_| stream.set_write_timeout(Some(remaining)))
         .and_then(|_| action(stream))
@@ -49,7 +49,63 @@ fn helper_step<T>(
             stage,
             elapsed_ms: started.elapsed().as_millis() as u64,
             error,
-        })
+        })?;
+    if Instant::now() >= deadline {
+        return Err(HelperFailure {
+            stage,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: io::Error::new(io::ErrorKind::TimedOut, "SOCKS helper deadline elapsed"),
+        });
+    }
+    Ok(value)
+}
+
+fn read_exact_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SOCKS helper deadline elapsed",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(count) => bytes = &mut bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_all_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SOCKS helper deadline elapsed",
+            ));
+        }
+        stream.set_write_timeout(Some(remaining))?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(count) => bytes = &bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -261,15 +317,11 @@ where
         authenticate_socks5_staged(proxy, password, timeout, on_connected, started, deadline)?;
     let request = socks5_request(1, original);
     helper_step(&mut stream, started, deadline, "connect-write", |stream| {
-        stream.write_all(&request)
+        write_all_deadline(stream, &request, deadline)
     })?;
-    helper_step(
-        &mut stream,
-        started,
-        deadline,
-        "connect-reply",
-        read_socks5_reply,
-    )?;
+    helper_step(&mut stream, started, deadline, "connect-reply", |stream| {
+        read_socks5_reply_deadline(stream, deadline)
+    })?;
     Ok(stream)
 }
 
@@ -326,11 +378,11 @@ where
     )?;
 
     helper_step(&mut stream, started, deadline, "method-write", |stream| {
-        stream.write_all(&[5, 1, 2])
+        write_all_deadline(stream, &[5, 1, 2], deadline)
     })?;
     let mut method = [0; 2];
     helper_step(&mut stream, started, deadline, "method-reply", |stream| {
-        stream.read_exact(&mut method)
+        read_exact_deadline(stream, &mut method, deadline)
     })?;
     if method != [5, 2] {
         return Err(HelperFailure {
@@ -348,11 +400,11 @@ where
     authentication.push(password.len() as u8);
     authentication.extend_from_slice(password);
     helper_step(&mut stream, started, deadline, "auth-write", |stream| {
-        stream.write_all(&authentication)
+        write_all_deadline(stream, &authentication, deadline)
     })?;
     let mut authenticated = [0; 2];
     helper_step(&mut stream, started, deadline, "auth-reply", |stream| {
-        stream.read_exact(&mut authenticated)
+        read_exact_deadline(stream, &mut authenticated, deadline)
     })?;
     if authenticated != [1, 0] {
         return Err(HelperFailure {
@@ -381,8 +433,18 @@ pub(super) fn socks5_request(command: u8, original: SocketAddr) -> Vec<u8> {
 }
 
 pub(super) fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<SocketAddr> {
+    read_socks5_reply_with(|bytes| stream.read_exact(bytes))
+}
+
+fn read_socks5_reply_deadline(stream: &mut TcpStream, deadline: Instant) -> io::Result<SocketAddr> {
+    read_socks5_reply_with(|bytes| read_exact_deadline(stream, bytes, deadline))
+}
+
+fn read_socks5_reply_with(
+    mut read_exact: impl FnMut(&mut [u8]) -> io::Result<()>,
+) -> io::Result<SocketAddr> {
     let mut reply = [0; 4];
-    stream.read_exact(&mut reply)?;
+    read_exact(&mut reply)?;
     if reply[0] != 5 || reply[1] != 0 || reply[2] != 0 {
         return Err(refused("native proxy refused original destination"));
     }
@@ -392,7 +454,7 @@ pub(super) fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<SocketAddr
         _ => return Err(refused("native proxy returned invalid address family")),
     };
     let mut address = [0; 18];
-    stream.read_exact(&mut address[..remaining])?;
+    read_exact(&mut address[..remaining])?;
     let port = u16::from_be_bytes([address[remaining - 2], address[remaining - 1]]);
     let ip = match reply[3] {
         1 => std::net::IpAddr::V4(std::net::Ipv4Addr::new(
@@ -428,10 +490,13 @@ mod tests {
         fn exchange(
             reply: Option<u8>,
             delay: Duration,
+            fragment_delay: Duration,
             budget: Duration,
         ) -> Result<u64, HelperFailure> {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let proxy = listener.local_addr().unwrap();
+            let proof = format!("s211-{:?}", std::time::SystemTime::now()).into_bytes();
+            let server_proof = proof.clone();
             let server = thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -450,21 +515,31 @@ mod tests {
                 stream.read_exact(&mut length).unwrap();
                 let mut password = vec![0; length[0] as usize];
                 stream.read_exact(&mut password).unwrap();
-                assert_eq!(password, b"test-password");
+                assert_eq!(password, server_proof);
                 stream.write_all(&[1, 0]).unwrap();
                 let mut request = [0; 10];
                 stream.read_exact(&mut request).unwrap();
                 assert_eq!(&request[..4], &[5, 1, 0, 1]);
                 thread::sleep(delay);
                 if let Some(code) = reply {
-                    let _ = stream.write_all(&[5, code, 0, 1, 127, 0, 0, 1, 0, 80]);
+                    let bytes = [5, code, 0, 1, 127, 0, 0, 1, 0, 80];
+                    if fragment_delay.is_zero() {
+                        let _ = stream.write_all(&bytes);
+                    } else {
+                        for byte in bytes {
+                            if stream.write_all(&[byte]).is_err() {
+                                break;
+                            }
+                            thread::sleep(fragment_delay);
+                        }
+                    }
                 }
             });
             let started = std::time::Instant::now();
             let result = connect_authenticated_socks5_staged(
                 proxy,
                 "127.0.0.1:80".parse().unwrap(),
-                b"test-password",
+                &proof,
                 budget,
                 |_| Ok(()),
             )
@@ -478,6 +553,7 @@ mod tests {
                 exchange(
                     Some(0),
                     Duration::from_millis(delayed_ms),
+                    Duration::ZERO,
                     Duration::from_millis(300)
                 )
                 .unwrap()
@@ -487,20 +563,39 @@ mod tests {
         let refused = exchange(
             Some(5),
             Duration::from_millis(80),
+            Duration::ZERO,
             Duration::from_millis(250),
         )
         .unwrap_err();
         assert_eq!(refused.stage, "connect-reply");
         assert_eq!(refused.error.kind(), io::ErrorKind::PermissionDenied);
         assert!(refused.elapsed_ms >= 60);
-        let timeout =
-            exchange(None, Duration::from_millis(200), Duration::from_millis(120)).unwrap_err();
+        let timeout = exchange(
+            None,
+            Duration::from_millis(200),
+            Duration::ZERO,
+            Duration::from_millis(120),
+        )
+        .unwrap_err();
         assert_eq!(timeout.stage, "connect-reply");
         assert!(matches!(
             timeout.error.kind(),
             io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
         ));
         assert!(timeout.elapsed_ms >= 100);
+        let fragmented = exchange(
+            Some(0),
+            Duration::from_millis(10),
+            Duration::from_millis(30),
+            Duration::from_millis(120),
+        )
+        .unwrap_err();
+        assert_eq!(fragmented.stage, "connect-reply");
+        assert!(matches!(
+            fragmented.error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(fragmented.elapsed_ms <= 180);
     }
 
     #[test]

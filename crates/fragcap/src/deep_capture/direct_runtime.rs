@@ -1350,7 +1350,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         }
                         continue;
                     }
-                    if active.len().saturating_add(active_udp.len()) >= max_flows {
+                    if active
+                        .len()
+                        .saturating_add(active_udp.len())
+                        .saturating_add(pending_tcp.len())
+                        >= max_flows
+                        || (flow.tuple.transport == Proto::Tcp
+                            && pending_tcp.len() >= MAX_PENDING_HELPERS)
+                    {
+                        stats.record_bypass("direct-flow-capacity");
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
                     }
@@ -1662,14 +1670,6 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .map_err(|error| {
                             io::Error::other(format!("issue route receipt: {error:?}"))
                         })?;
-                    if pending_tcp.len() >= MAX_PENDING_HELPERS {
-                        receipts.retire(receipt).map_err(|error| {
-                            io::Error::other(format!("retire saturated helper receipt: {error:?}"))
-                        })?;
-                        stats.record_bypass("pending-helper-capacity");
-                        reinject(&handle, &stats, &packet, &address)?;
-                        continue;
-                    }
                     let (result_sender, result_receiver) = mpsc::sync_channel(1);
                     let task_context = context.clone();
                     let task_flow = flow.clone();
