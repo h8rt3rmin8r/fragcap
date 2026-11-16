@@ -12,13 +12,38 @@ use fragcap::targets::{
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn pcapng_packet_blocks(path: &Path) -> usize {
+    let bytes = std::fs::read(path).expect("native pcapng exists");
+    let mut offset = 0;
+    let mut packets = 0;
+    while offset < bytes.len() {
+        assert!(bytes.len() - offset >= 12, "truncated pcapng block");
+        let kind = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let length = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        assert!(length >= 12 && length & 3 == 0);
+        assert!(length <= bytes.len() - offset, "pcapng block beyond file");
+        assert_eq!(
+            u32::from_le_bytes(
+                bytes[offset + length - 4..offset + length]
+                    .try_into()
+                    .unwrap()
+            ) as usize,
+            length,
+            "pcapng block length trailer"
+        );
+        packets += usize::from(kind == 6);
+        offset += length;
+    }
+    packets
+}
 
 fn native_command(binary: &PathBuf) -> Command {
     use std::os::windows::process::CommandExt;
@@ -255,6 +280,7 @@ fn local_peer_protocol_completes_without_driver() {
 #[test]
 #[ignore = "requires an elevated package binary, cold controlled client, and finite peer"]
 fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
+    let refusal = std::env::var_os("FRAGCAP_S211_REFUSAL").is_some();
     let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"));
     let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("cold client"));
     let mut local_peer = std::env::var("FRAGCAP_S211_BIND_IP")
@@ -338,22 +364,26 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         Ok(elapsed)
     });
 
+    let mut capture_args = vec![
+        "--json".to_owned(),
+        "deep-capture".to_owned(),
+        handle.to_owned(),
+        "--launch".to_owned(),
+        "--direct-route".to_owned(),
+    ];
+    if !refusal {
+        capture_args.extend(["--proxy-allow-destination".to_owned(), peer.to_string()]);
+    }
+    capture_args.extend([
+        "--authorize-stdin".to_owned(),
+        "--duration".to_owned(),
+        "8s".to_owned(),
+        "--wait".to_owned(),
+        "30s".to_owned(),
+    ]);
     let mut child = SessionChild(
         native_command(&binary)
-            .args([
-                "--json",
-                "deep-capture",
-                handle,
-                "--launch",
-                "--direct-route",
-                "--proxy-allow-destination",
-                &peer.to_string(),
-                "--authorize-stdin",
-                "--duration",
-                "8s",
-                "--wait",
-                "30s",
-            ])
+            .args(&capture_args)
             .env("S205_CONTROLLED_PEER", peer.to_string())
             .env("S205_CONTROLLED_GATE", &gate_signal)
             .stdin(Stdio::piped())
@@ -438,17 +468,40 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     } else {
         assert_eq!(report["route"]["state"], "complete");
         assert_eq!(report["route"]["dropped_events"], 0);
-        assert_eq!(report["route"]["bidirectional_flows"], 1);
-        assert_eq!(report["flows"][0]["process_generation_join"], "exact");
-        assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
-        assert_eq!(
-            report["flows"][0]["client_to_upstream_bytes"],
-            (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
-        );
-        assert_eq!(
-            report["flows"][0]["upstream_to_client_bytes"],
-            b"runtime-origin-reply".len() as u64
-        );
+        if refusal {
+            assert_eq!(report["route"]["bidirectional_flows"], 0);
+            assert!(
+                pcapng_packet_blocks(&bundle.join("capture.fcapng")) > 0,
+                "Npcap did not retain a reinjected original packet"
+            );
+            let compatibility: Value =
+                serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap())
+                    .unwrap();
+            assert!(
+                compatibility["observations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|observation| {
+                        observation["direct_route"]["receipt_state"] == "unconsumed"
+                            && observation["direct_route"]["original_packet_state"]
+                                == "observed-owned"
+                    }),
+                "refused selected packet was not retained with exact owner: {compatibility:#?}"
+            );
+        } else {
+            assert_eq!(report["route"]["bidirectional_flows"], 1);
+            assert_eq!(report["flows"][0]["process_generation_join"], "exact");
+            assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
+            assert_eq!(
+                report["flows"][0]["client_to_upstream_bytes"],
+                (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
+            );
+            assert_eq!(
+                report["flows"][0]["upstream_to_client_bytes"],
+                b"runtime-origin-reply".len() as u64
+            );
+        }
         let limit = std::cmp::max(
             Duration::from_millis(50),
             baseline.iter().copied().max().unwrap().saturating_mul(4),
@@ -460,7 +513,8 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     }
     assert!(bundle.join("capture.fcapng").is_file());
     eprintln!(
-        "S205 package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
+        "S211 mode={} package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
+        if refusal { "refusal" } else { "transfer" },
         binary.display(),
         peer,
         bundle.display(),

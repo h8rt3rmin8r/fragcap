@@ -386,15 +386,17 @@ fn run() -> io::Result<()> {
         )?;
         return Ok(());
     }
-    if mode != "run" {
+    if mode != "run" && mode != "run-refusal" {
         return Err(io::Error::other("unknown mode"));
     }
     let mut failed = false;
-    for attempt in 1..=3 {
+    let attempts = if mode == "run-refusal" { 1 } else { 3 };
+    for attempt in 1..=attempts {
         let attempt_log = output.with_extension(format!("attempt-{attempt}.log"));
         let bind_ip_arg = std::ffi::OsString::from(bind_ip.to_string());
         let job = job::Job::new()?;
-        let mut worker = Command::new(env::current_exe()?)
+        let mut worker_command = Command::new(env::current_exe()?);
+        worker_command
             .args([
                 std::ffi::OsStr::new("worker"),
                 test.as_os_str(),
@@ -406,8 +408,13 @@ fn run() -> io::Result<()> {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+            .creation_flags(CREATE_NO_WINDOW);
+        if mode == "run-refusal" {
+            worker_command.env("FRAGCAP_S211_REFUSAL", "1");
+        } else {
+            worker_command.env_remove("FRAGCAP_S211_REFUSAL");
+        }
+        let mut worker = worker_command.spawn()?;
         if let Err(error) = job.assign(&worker) {
             worker.kill()?;
             worker.wait()?;
