@@ -32,6 +32,7 @@ mod review_record;
 mod skills;
 mod spec;
 mod supply_chain;
+mod test_cleanup;
 mod threat_model;
 mod windows_integration;
 mod wrappers;
@@ -54,6 +55,8 @@ cargo xtask <command>
   neutral    Build fragcap-core for a target with no capture backend
   msrv       Build at the declared minimum supported toolchain
   ci         Run the full local check set in order
+  test-clean Run cargo test in an exact owned temp root and fail on residue
+  test-clean-inspect Read an exact interrupted test root without deleting it
   docs       Documentation site: docs (dev), docs build, docs check
   publish    Registry publication in dependency order (--execute to publish)
   release-guard Verify release workflow and supplied registry protection (not approval)
@@ -461,6 +464,15 @@ fn main() -> ExitCode {
             }
         }
 
+        "test-clean" => ExitCode::from(test_cleanup::run(
+            &std::env::args().skip(2).collect::<Vec<_>>(),
+        )),
+
+        "test-clean-inspect" => {
+            let arguments = std::env::args().skip(2).collect::<Vec<_>>();
+            ExitCode::from(test_cleanup::inspect(&arguments))
+        }
+
         "ci" => {
             let steps: &[(&str, &[&str])] = &[
                 ("fmt", &["fmt", "--all", "--", "--check"]),
@@ -479,7 +491,17 @@ fn main() -> ExitCode {
             ];
             for (name, args) in steps {
                 println!("ci: running {name}");
-                if !cargo(args) {
+                let passed = if *name == "test" {
+                    test_cleanup::run(
+                        &args
+                            .iter()
+                            .map(|arg| (*arg).to_string())
+                            .collect::<Vec<_>>(),
+                    ) == 0
+                } else {
+                    cargo(args)
+                };
+                if !passed {
                     eprintln!("ci: {name} failed");
                     return ExitCode::from(1);
                 }

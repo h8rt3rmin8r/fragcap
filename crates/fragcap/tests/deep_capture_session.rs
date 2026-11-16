@@ -7,10 +7,45 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tempfile::{Builder, TempDir};
 
 use fragcap::deep_capture::*;
 
 type Ledger = Rc<RefCell<Vec<String>>>;
+
+thread_local! {
+    static TEST_ARTIFACTS: RefCell<Option<Vec<TempDir>>> = const { RefCell::new(None) };
+}
+
+fn with_test_artifacts<T>(body: impl FnOnce() -> T) -> T {
+    TEST_ARTIFACTS.with(|slot| {
+        assert!(slot.borrow().is_none(), "nested test artifact scope");
+        *slot.borrow_mut() = Some(Vec::new());
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    let roots = TEST_ARTIFACTS.with(|slot| slot.borrow_mut().take().expect("test artifact scope"));
+    let mut failures = Vec::new();
+    for root in roots {
+        let path = root.path().to_path_buf();
+        if let Err(error) = root.close() {
+            failures.push(format!("{}: {error}", path.display()));
+        } else if path.exists() {
+            failures.push(format!("{}: still exists after close", path.display()));
+        }
+    }
+    if !failures.is_empty() {
+        let detail = failures.join("; ");
+        if result.is_err() {
+            eprintln!("test artifact cleanup also failed: {detail}");
+        } else {
+            panic!("test artifact cleanup failed: {detail}");
+        }
+    }
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
 
 struct Targets(Ledger);
 impl TargetResolver for Targets {
@@ -1181,22 +1216,34 @@ fn test_route() -> ProxyRoute {
 }
 
 fn config() -> SessionConfig {
-    static NEXT_BUNDLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let bundle_id = NEXT_BUNDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let run_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("test clock follows the Unix epoch")
-        .as_nanos();
+    let root = Builder::new()
+        .prefix("fragcap-deep-capture-session-")
+        .tempdir()
+        .expect("create unique test artifact root");
+    let canonical = root.path().canonicalize().expect("canonical test root");
+    std::fs::write(
+        root.path().join("test-owner.txt"),
+        format!(
+            "owner_pid={}\ncanonical_root={}\n",
+            std::process::id(),
+            canonical.display()
+        ),
+    )
+    .expect("write exact test owner marker");
+    let bundle = root.path().join("bundle");
+    TEST_ARTIFACTS.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .expect("config requires a test artifact scope")
+            .push(root);
+    });
     SessionConfig {
         target: "controlled-target".into(),
         launch_case: Some(LaunchCase::Controlled),
         mode: SessionMode::TlsCalibration,
         calibration_protocol: Some(fragcap::targets::CompatibilityProtocol::Https),
         controlled: true,
-        bundle: std::env::temp_dir().join(format!(
-            "fragcap-deep-capture-session-{}-{run_id}-{bundle_id}",
-            std::process::id()
-        )),
+        bundle,
         trust_ca: true,
         har: true,
         key_log: false,
@@ -1210,7 +1257,40 @@ fn config() -> SessionConfig {
 }
 
 #[test]
+fn owned_bundle_scope_closes_after_success_and_assertion_panic() {
+    let successful = with_test_artifacts(|| {
+        let bundle = config().bundle;
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("journal.jsonl"), b"controlled\n").unwrap();
+        assert!(bundle.join("journal.jsonl").exists());
+        bundle
+    });
+    assert!(!successful.exists(), "owned bundle remained after success");
+
+    let mut failed = None;
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_test_artifacts(|| {
+            let bundle = config().bundle;
+            std::fs::create_dir_all(&bundle).unwrap();
+            failed = Some(bundle);
+            panic!("controlled assertion failure");
+        });
+    }));
+    assert!(panic.is_err(), "original assertion failure was lost");
+    assert!(
+        !failed.unwrap().exists(),
+        "owned bundle remained after panic"
+    );
+}
+
+#[test]
 fn explicit_long_observation_and_launch_refuse_only_above_reviewed_ceilings() {
+    with_test_artifacts(
+        explicit_long_observation_and_launch_refuse_only_above_reviewed_ceilings_impl,
+    );
+}
+
+fn explicit_long_observation_and_launch_refuse_only_above_reviewed_ceilings_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let mut request = config();
@@ -1267,6 +1347,10 @@ fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
 
 #[test]
 fn malformed_bypass_refuses_before_listener_selection() {
+    with_test_artifacts(malformed_bypass_refuses_before_listener_selection_impl);
+}
+
+fn malformed_bypass_refuses_before_listener_selection_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let mut invalid = config();
@@ -1278,6 +1362,10 @@ fn malformed_bypass_refuses_before_listener_selection() {
 
 #[test]
 fn controlled_consumer_runs_complete_lifecycle_without_cli() {
+    with_test_artifacts(controlled_consumer_runs_complete_lifecycle_without_cli_impl);
+}
+
+fn controlled_consumer_runs_complete_lifecycle_without_cli_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let observed_timing = Rc::new(RefCell::new(Vec::new()));
@@ -1356,6 +1444,10 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
 
 #[test]
 fn phase_timing_preserves_subsecond_elapsed_and_remaining() {
+    with_test_artifacts(phase_timing_preserves_subsecond_elapsed_and_remaining_impl);
+}
+
+fn phase_timing_preserves_subsecond_elapsed_and_remaining_impl() {
     let phase = PhaseTiming::ended(
         "acquisition",
         Duration::from_secs(2),
@@ -1371,6 +1463,12 @@ fn phase_timing_preserves_subsecond_elapsed_and_remaining() {
 
 #[test]
 fn capture_phase_measurements_survive_late_no_client_and_interrupted_outcomes() {
+    with_test_artifacts(
+        capture_phase_measurements_survive_late_no_client_and_interrupted_outcomes_impl,
+    );
+}
+
+fn capture_phase_measurements_survive_late_no_client_and_interrupted_outcomes_impl() {
     for (failed, interrupted, acquisition, observation) in [
         (
             false,
@@ -1456,6 +1554,12 @@ fn capture_phase_measurements_survive_late_no_client_and_interrupted_outcomes() 
 
 #[test]
 fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
+    with_test_artifacts(
+        surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure_impl,
+    );
+}
+
+fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.capture = Box::new(FailingCapture(ledger.clone(), true, "capture-failed"));
@@ -1489,6 +1593,12 @@ fn surviving_route_owner_is_reported_before_proxy_stop_after_capture_failure() {
 
 #[test]
 fn unresolved_route_owner_retains_installation_trust_without_a_session_trust_obligation() {
+    with_test_artifacts(
+        unresolved_route_owner_retains_installation_trust_without_a_session_trust_obligation_impl,
+    );
+}
+
+fn unresolved_route_owner_retains_installation_trust_without_a_session_trust_obligation_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.trust = Box::new(InstallationTrust(ledger.clone()));
@@ -1515,6 +1625,10 @@ fn unresolved_route_owner_retains_installation_trust_without_a_session_trust_obl
 
 #[test]
 fn cancellation_before_authorization_starts_no_effect() {
+    with_test_artifacts(cancellation_before_authorization_starts_no_effect_impl);
+}
+
+fn cancellation_before_authorization_starts_no_effect_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
@@ -1532,6 +1646,10 @@ fn cancellation_before_authorization_starts_no_effect() {
 
 #[test]
 fn cancellation_from_plan_event_prevents_artifact_and_proxy_effects() {
+    with_test_artifacts(cancellation_from_plan_event_prevents_artifact_and_proxy_effects_impl);
+}
+
+fn cancellation_from_plan_event_prevents_artifact_and_proxy_effects_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1552,6 +1670,10 @@ fn cancellation_from_plan_event_prevents_artifact_and_proxy_effects() {
 
 #[test]
 fn cancellation_after_effect_acquisition_runs_exact_cleanup() {
+    with_test_artifacts(cancellation_after_effect_acquisition_runs_exact_cleanup_impl);
+}
+
+fn cancellation_after_effect_acquisition_runs_exact_cleanup_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1574,6 +1696,10 @@ fn cancellation_after_effect_acquisition_runs_exact_cleanup() {
 
 #[test]
 fn cancellation_requested_by_capture_is_observed_after_its_return() {
+    with_test_artifacts(cancellation_requested_by_capture_is_observed_after_its_return_impl);
+}
+
+fn cancellation_requested_by_capture_is_observed_after_its_return_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1592,6 +1718,10 @@ fn cancellation_requested_by_capture_is_observed_after_its_return() {
 
 #[test]
 fn cancellation_before_proxy_invocation_settles_pending_obligations() {
+    with_test_artifacts(cancellation_before_proxy_invocation_settles_pending_obligations_impl);
+}
+
+fn cancellation_before_proxy_invocation_settles_pending_obligations_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1622,6 +1752,10 @@ fn cancellation_before_proxy_invocation_settles_pending_obligations() {
 
 #[test]
 fn cancellation_before_capture_invocation_settles_pending_obligation() {
+    with_test_artifacts(cancellation_before_capture_invocation_settles_pending_obligation_impl);
+}
+
+fn cancellation_before_capture_invocation_settles_pending_obligation_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1654,6 +1788,10 @@ fn cancellation_before_capture_invocation_settles_pending_obligation() {
 
 #[test]
 fn cancellation_from_final_artifact_adapter_is_in_terminal_truth() {
+    with_test_artifacts(cancellation_from_final_artifact_adapter_is_in_terminal_truth_impl);
+}
+
+fn cancellation_from_final_artifact_adapter_is_in_terminal_truth_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let cancellation = CancellationToken::new();
     let mut environment = adapters(&ledger);
@@ -1689,6 +1827,10 @@ fn prepared_artifact_requests() -> ArtifactRequests {
 
 #[test]
 fn refused_preflight_has_no_external_effects() {
+    with_test_artifacts(refused_preflight_has_no_external_effects_impl);
+}
+
+fn refused_preflight_has_no_external_effects_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let mut invalid = config();
@@ -1700,6 +1842,10 @@ fn refused_preflight_has_no_external_effects() {
 
 #[test]
 fn stale_authorization_has_no_external_effects() {
+    with_test_artifacts(stale_authorization_has_no_external_effects_impl);
+}
+
+fn stale_authorization_has_no_external_effects_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
@@ -1714,6 +1860,10 @@ fn stale_authorization_has_no_external_effects() {
 
 #[test]
 fn invalid_transition_does_not_call_an_adapter() {
+    with_test_artifacts(invalid_transition_does_not_call_an_adapter_impl);
+}
+
+fn invalid_transition_does_not_call_an_adapter_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
@@ -1727,6 +1877,10 @@ fn invalid_transition_does_not_call_an_adapter() {
 
 #[test]
 fn event_delivery_failure_does_not_skip_cleanup_or_erase_evidence() {
+    with_test_artifacts(event_delivery_failure_does_not_skip_cleanup_or_erase_evidence_impl);
+}
+
+fn event_delivery_failure_does_not_skip_cleanup_or_erase_evidence_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.events = Box::new(FailingEvents(ledger.clone()));
@@ -1746,6 +1900,10 @@ fn event_delivery_failure_does_not_skip_cleanup_or_erase_evidence() {
 
 #[test]
 fn proxy_start_failure_still_returns_a_typed_terminal_report() {
+    with_test_artifacts(proxy_start_failure_still_returns_a_typed_terminal_report_impl);
+}
+
+fn proxy_start_failure_still_returns_a_typed_terminal_report_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(FailingProxy(ledger.clone()));
@@ -1767,6 +1925,10 @@ fn proxy_start_failure_still_returns_a_typed_terminal_report() {
 
 #[test]
 fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned() {
+    with_test_artifacts(a_late_success_is_a_failure_and_its_resource_is_still_cleaned_impl);
+}
+
+fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
@@ -1802,6 +1964,10 @@ fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned() {
 
 #[test]
 fn complete_proxy_drain_uses_shutdown_budget_after_capture_window_closes() {
+    with_test_artifacts(complete_proxy_drain_uses_shutdown_budget_after_capture_window_closes_impl);
+}
+
+fn complete_proxy_drain_uses_shutdown_budget_after_capture_window_closes_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let elapsed = Rc::new(RefCell::new(Duration::ZERO));
     let proxy_budget = Rc::new(RefCell::new(None));
@@ -1824,6 +1990,10 @@ fn complete_proxy_drain_uses_shutdown_budget_after_capture_window_closes() {
 
 #[test]
 fn incomplete_proxy_drain_fails_specifically_and_cleanup_continues() {
+    with_test_artifacts(incomplete_proxy_drain_fails_specifically_and_cleanup_continues_impl);
+}
+
+fn incomplete_proxy_drain_fails_specifically_and_cleanup_continues_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(IncompleteDrainProxy(ledger.clone()));
@@ -1844,6 +2014,10 @@ fn incomplete_proxy_drain_fails_specifically_and_cleanup_continues() {
 
 #[test]
 fn failed_proxy_drain_fails_specifically_and_cleanup_continues() {
+    with_test_artifacts(failed_proxy_drain_fails_specifically_and_cleanup_continues_impl);
+}
+
+fn failed_proxy_drain_fails_specifically_and_cleanup_continues_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(FailingDrainProxy(ledger.clone()));
@@ -1864,6 +2038,10 @@ fn failed_proxy_drain_fails_specifically_and_cleanup_continues() {
 
 #[test]
 fn capture_return_after_observation_deadline_fails_and_cleanup_continues() {
+    with_test_artifacts(capture_return_after_observation_deadline_fails_and_cleanup_continues_impl);
+}
+
+fn capture_return_after_observation_deadline_fails_and_cleanup_continues_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let elapsed = Rc::new(RefCell::new(Duration::ZERO));
     let mut environment = adapters(&ledger);
@@ -1888,6 +2066,10 @@ fn capture_return_after_observation_deadline_fails_and_cleanup_continues() {
 
 #[test]
 fn stop_return_after_shutdown_deadline_fails_and_cleanup_continues() {
+    with_test_artifacts(stop_return_after_shutdown_deadline_fails_and_cleanup_continues_impl);
+}
+
+fn stop_return_after_shutdown_deadline_fails_and_cleanup_continues_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let elapsed = Rc::new(RefCell::new(Duration::ZERO));
     let mut environment = adapters(&ledger);
@@ -1912,6 +2094,12 @@ fn stop_return_after_shutdown_deadline_fails_and_cleanup_continues() {
 
 #[test]
 fn dropping_a_started_session_stops_and_cleans_every_acquired_resource_once() {
+    with_test_artifacts(
+        dropping_a_started_session_stops_and_cleans_every_acquired_resource_once_impl,
+    );
+}
+
+fn dropping_a_started_session_stops_and_cleans_every_acquired_resource_once_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
@@ -2010,6 +2198,12 @@ impl ProxyLease for LateObservationProxyRun {
 
 #[test]
 fn owner_release_records_are_retained_but_never_authorize_prior_calibration() {
+    with_test_artifacts(
+        owner_release_records_are_retained_but_never_authorize_prior_calibration_impl,
+    );
+}
+
+fn owner_release_records_are_retained_but_never_authorize_prior_calibration_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(LateObservationProxy(ledger.clone()));
@@ -2146,6 +2340,12 @@ impl ProxyLease for DeferredDiagnosticsRun {
 
 #[test]
 fn final_cleanup_replaces_unavailable_stop_population_without_calibration_success() {
+    with_test_artifacts(
+        final_cleanup_replaces_unavailable_stop_population_without_calibration_success_impl,
+    );
+}
+
+fn final_cleanup_replaces_unavailable_stop_population_without_calibration_success_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.proxy = Box::new(DeferredDiagnosticsProxy);
@@ -2170,6 +2370,10 @@ fn final_cleanup_replaces_unavailable_stop_population_without_calibration_succes
 
 #[test]
 fn trust_failure_still_cleans_the_proxy() {
+    with_test_artifacts(trust_failure_still_cleans_the_proxy_impl);
+}
+
+fn trust_failure_still_cleans_the_proxy_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.trust = Box::new(FailingTrust(ledger.clone()));
@@ -2193,6 +2397,10 @@ fn trust_failure_still_cleans_the_proxy() {
 
 #[test]
 fn launch_failure_still_cleans_trust_and_proxy() {
+    with_test_artifacts(launch_failure_still_cleans_trust_and_proxy_impl);
+}
+
+fn launch_failure_still_cleans_trust_and_proxy_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.launch = Box::new(FailingLaunch(ledger.clone()));
@@ -2208,6 +2416,10 @@ fn launch_failure_still_cleans_trust_and_proxy() {
 
 #[test]
 fn route_failure_still_cleans_trust_and_proxy_without_launching() {
+    with_test_artifacts(route_failure_still_cleans_trust_and_proxy_without_launching_impl);
+}
+
+fn route_failure_still_cleans_trust_and_proxy_without_launching_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.routing = Box::new(FailingRouting(ledger.clone()));
@@ -2228,6 +2440,10 @@ fn route_failure_still_cleans_trust_and_proxy_without_launching() {
 
 #[test]
 fn capture_failure_still_stops_and_finalizes() {
+    with_test_artifacts(capture_failure_still_stops_and_finalizes_impl);
+}
+
+fn capture_failure_still_stops_and_finalizes_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.capture = Box::new(FailingCapture(ledger.clone(), false, "capture-failed"));
@@ -2246,6 +2462,10 @@ fn capture_failure_still_stops_and_finalizes() {
 
 #[test]
 fn acquisition_timeout_keeps_its_reason_and_runs_final_cleanup() {
+    with_test_artifacts(acquisition_timeout_keeps_its_reason_and_runs_final_cleanup_impl);
+}
+
+fn acquisition_timeout_keeps_its_reason_and_runs_final_cleanup_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.capture = Box::new(FailingCapture(ledger.clone(), false, "acquisitiontimeout"));
@@ -2265,6 +2485,10 @@ fn acquisition_timeout_keeps_its_reason_and_runs_final_cleanup() {
 
 #[test]
 fn fact_failure_is_partial_and_does_not_skip_cleanup() {
+    with_test_artifacts(fact_failure_is_partial_and_does_not_skip_cleanup_impl);
+}
+
+fn fact_failure_is_partial_and_does_not_skip_cleanup_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.facts = Box::new(FailingFacts(ledger.clone()));
@@ -2280,6 +2504,10 @@ fn fact_failure_is_partial_and_does_not_skip_cleanup() {
 
 #[test]
 fn artifact_failure_is_lossless_and_never_complete() {
+    with_test_artifacts(artifact_failure_is_lossless_and_never_complete_impl);
+}
+
+fn artifact_failure_is_lossless_and_never_complete_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.artifacts = Box::new(FailingArtifacts(ledger.clone()));
@@ -2299,6 +2527,10 @@ fn artifact_failure_is_lossless_and_never_complete() {
 
 #[test]
 fn cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization() {
+    with_test_artifacts(cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization_impl);
+}
+
+fn cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.trust = Box::new(FailingCleanupTrust(ledger.clone()));
@@ -2313,6 +2545,10 @@ fn cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization() {
 
 #[test]
 fn capture_interrupt_reaches_the_typed_terminal_outcome() {
+    with_test_artifacts(capture_interrupt_reaches_the_typed_terminal_outcome_impl);
+}
+
+fn capture_interrupt_reaches_the_typed_terminal_outcome_impl() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     environment.capture = Box::new(InterruptedCapture(ledger.clone()));
@@ -2322,6 +2558,10 @@ fn capture_interrupt_reaches_the_typed_terminal_outcome() {
 
 #[test]
 fn generated_failure_matrix_exercises_production_authorities() {
+    with_test_artifacts(generated_failure_matrix_exercises_production_authorities_impl);
+}
+
+fn generated_failure_matrix_exercises_production_authorities_impl() {
     let registry: serde_json::Value = serde_json::from_str(include_str!(
         "../../../docs/security/deep-capture-failures.v1.json"
     ))

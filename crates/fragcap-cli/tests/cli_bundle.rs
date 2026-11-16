@@ -266,75 +266,79 @@ fn collection_preview_never_offers_apply_for_missing_or_unowned_bundle() {
 
 #[test]
 fn exact_retained_preview_offers_only_its_authorized_collection() {
-    let root = tempfile::tempdir().unwrap();
-    let bundle = root.path().join("completed");
-    fragcap::deep_capture::prepare_bundle(&bundle).unwrap();
-    let mut journal =
-        fragcap::deep_capture::ResourceJournal::create(&bundle, "s178-fixture", "plan").unwrap();
-    journal.finish().unwrap();
-    drop(journal);
-    std::fs::write(bundle.join("capture.fcapng"), b"synthetic packet bytes\n").unwrap();
-    std::fs::write(
+    common::with_test_environment(|environment| {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("completed");
+        fragcap::deep_capture::prepare_bundle(&bundle).unwrap();
+        let mut journal =
+            fragcap::deep_capture::ResourceJournal::create(&bundle, "s178-fixture", "plan")
+                .unwrap();
+        journal.finish().unwrap();
+        drop(journal);
+        std::fs::write(bundle.join("capture.fcapng"), b"synthetic packet bytes\n").unwrap();
+        std::fs::write(
         bundle.join("manifest.json"),
         br#"{"manifest_version":1,"session_id":"s178-fixture","state":"complete","artifacts":[{"path":"capture.fcapng","sensitivity":"ordinary"}]}"#,
     )
     .unwrap();
-    let path = bundle.to_string_lossy();
+        let path = bundle.to_string_lossy();
 
-    let (code, ordinary, err) = run(&["bundle", "collect", "--bundle", &path]);
-    assert_eq!(code, 0, "{err}");
-    assert!(!ordinary.contains("Apply reviewed proposal:"), "{ordinary}");
-    assert!(bundle.join("capture.fcapng").exists());
-    std::fs::create_dir_all(std::env::var_os("FRAGCAP_SESSION_DIR").unwrap()).unwrap();
-
-    let (code, human, err) = run(&["bundle", "collect", "--bundle", &path, "--include-retained"]);
-    assert_eq!(code, 0, "{err}");
-    if cfg!(windows) {
-        assert!(human.contains("Apply reviewed proposal:"), "{human}");
-        assert!(human.contains("--include-retained"), "{human}");
-    } else {
-        assert!(!human.contains("Apply reviewed proposal:"), "{human}");
-        assert!(
-            human.contains("Collection applies only on Windows"),
-            "{human}"
-        );
-    }
-    let (code, json, err) = run(&[
-        "--json",
-        "bundle",
-        "collect",
-        "--bundle",
-        &path,
-        "--include-retained",
-    ]);
-    assert_eq!(code, 0, "{err}");
-    let preview: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(preview["complete"], true, "{json}");
-    assert_eq!(preview["eligible_sessions"], 1, "{json}");
-    let id = preview["proposal_id"].as_str().unwrap();
-    if !cfg!(windows) {
+        let (code, ordinary, err) = environment.run(&["bundle", "collect", "--bundle", &path]);
+        assert_eq!(code, 0, "{err}");
+        assert!(!ordinary.contains("Apply reviewed proposal:"), "{ordinary}");
         assert!(bundle.join("capture.fcapng").exists());
-        return;
-    }
-    assert!(human.contains(id), "{human}");
-    let (code, applied, err) = run(&[
-        "--json",
-        "bundle",
-        "collect",
-        "--bundle",
-        &path,
-        "--include-retained",
-        "--authorize",
-        id,
-    ]);
-    assert_eq!(code, 0, "{applied} {err}");
-    let result: serde_json::Value = serde_json::from_str(&applied).unwrap();
-    assert_eq!(result["complete"], true, "{applied}");
-    assert!(!bundle.join("capture.fcapng").exists());
-    assert!(
-        bundle.exists(),
-        "routine collection preserves its container"
-    );
+        std::fs::create_dir_all(environment.session_dir()).unwrap();
+
+        let (code, human, err) =
+            environment.run(&["bundle", "collect", "--bundle", &path, "--include-retained"]);
+        assert_eq!(code, 0, "{err}");
+        if cfg!(windows) {
+            assert!(human.contains("Apply reviewed proposal:"), "{human}");
+            assert!(human.contains("--include-retained"), "{human}");
+        } else {
+            assert!(!human.contains("Apply reviewed proposal:"), "{human}");
+            assert!(
+                human.contains("Collection applies only on Windows"),
+                "{human}"
+            );
+        }
+        let (code, json, err) = environment.run(&[
+            "--json",
+            "bundle",
+            "collect",
+            "--bundle",
+            &path,
+            "--include-retained",
+        ]);
+        assert_eq!(code, 0, "{err}");
+        let preview: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(preview["complete"], true, "{json}");
+        assert_eq!(preview["eligible_sessions"], 1, "{json}");
+        let id = preview["proposal_id"].as_str().unwrap();
+        if !cfg!(windows) {
+            assert!(bundle.join("capture.fcapng").exists());
+            return;
+        }
+        assert!(human.contains(id), "{human}");
+        let (code, applied, err) = environment.run(&[
+            "--json",
+            "bundle",
+            "collect",
+            "--bundle",
+            &path,
+            "--include-retained",
+            "--authorize",
+            id,
+        ]);
+        assert_eq!(code, 0, "{applied} {err}");
+        let result: serde_json::Value = serde_json::from_str(&applied).unwrap();
+        assert_eq!(result["complete"], true, "{applied}");
+        assert!(!bundle.join("capture.fcapng").exists());
+        assert!(
+            bundle.exists(),
+            "routine collection preserves its container"
+        );
+    });
 }
 
 #[test]

@@ -12,6 +12,7 @@ authors.workspace      = true
 [dependencies]
 serde_json.workspace = true
 ring.workspace       = true
+tempfile.workspace   = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
