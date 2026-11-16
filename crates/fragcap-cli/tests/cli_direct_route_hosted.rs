@@ -470,10 +470,6 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         assert_eq!(report["route"]["dropped_events"], 0);
         if refusal {
             assert_eq!(report["route"]["bidirectional_flows"], 0);
-            assert!(
-                pcapng_packet_blocks(&bundle.join("capture.fcapng")) > 0,
-                "Npcap did not retain a reinjected original packet"
-            );
             let compatibility: Value =
                 serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap())
                     .unwrap();
@@ -484,10 +480,16 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                     .iter()
                     .any(|observation| {
                         observation["direct_route"]["receipt_state"] == "unconsumed"
+                            && observation["direct_route"]["selected_packet_disposition"]
+                                == "reinjected"
                             && observation["direct_route"]["original_packet_state"]
                                 == "observed-owned"
                     }),
                 "refused selected packet was not retained with exact owner: {compatibility:#?}"
+            );
+            assert!(
+                pcapng_packet_blocks(&bundle.join("capture.fcapng")) > 0,
+                "Npcap did not retain a reinjected original packet"
             );
         } else {
             assert_eq!(report["route"]["bidirectional_flows"], 1);

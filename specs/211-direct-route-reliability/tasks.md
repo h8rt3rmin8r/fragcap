@@ -13,7 +13,7 @@
 
 - [x] T003 Add failing 60-100 ms success, refusal, true timeout, and stage/error diagnostic tests.
 - [x] T004 Move TCP helper SOCKS admission off packet worker with bounded exact pending state, packet accounting, and cancellation.
-- [x] T005 Add protected typed helper outcome and verify no false refusal, watchdog release, sentinel loss, or duplicate route.
+- [ ] T005 Add protected typed helper outcome and verify no false refusal, watchdog release, sentinel loss, or duplicate route. Controlled source rows pass; the separate-device physical run delayed one unrelated sentinel by about one second, so the wider continuity claim remains open.
 
 ## Phase 3: Physical correlation acceptance
 

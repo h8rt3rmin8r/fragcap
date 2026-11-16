@@ -6,7 +6,7 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Read, Write},
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     os::windows::{io::AsRawHandle, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -193,6 +193,7 @@ fn run_worker(
     client: &Path,
     bind_ip: IpAddr,
     log: &Path,
+    external_peer: Option<SocketAddr>,
 ) -> io::Result<()> {
     let mut go = [0];
     io::stdin().read_exact(&mut go)?;
@@ -200,7 +201,8 @@ fn run_worker(
         return Err(io::Error::other("job assignment gate was not released"));
     }
     let stderr = File::create(log)?;
-    let mut child = Command::new(test)
+    let mut command = Command::new(test);
+    command
         .args([
             TEST,
             "--exact",
@@ -210,12 +212,20 @@ fn run_worker(
         ])
         .env("FRAGCAP_S205_BINARY", binary)
         .env("FRAGCAP_S205_CLIENT", client)
-        .env("FRAGCAP_S211_BIND_IP", bind_ip.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr))
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+        .creation_flags(CREATE_NO_WINDOW);
+    if let Some(peer) = external_peer {
+        command
+            .env_remove("FRAGCAP_S211_BIND_IP")
+            .env("FRAGCAP_S205_PEER", peer.to_string());
+    } else {
+        command
+            .env("FRAGCAP_S211_BIND_IP", bind_ip.to_string())
+            .env_remove("FRAGCAP_S205_PEER");
+    }
+    let mut child = command.spawn()?;
     fs::write(log.with_extension("pid"), child.id().to_string())?;
     if child.wait()?.success() {
         Ok(())
@@ -277,7 +287,15 @@ fn run() -> io::Result<()> {
         args.next()
             .ok_or_else(|| io::Error::other("missing output"))?,
     );
-    if args.next().is_some() || bind_ip.is_loopback() {
+    let external_peer: Option<SocketAddr> = args
+        .next()
+        .map(|value| value.to_string_lossy().parse())
+        .transpose()
+        .map_err(|_| io::Error::other("invalid external peer"))?;
+    if args.next().is_some()
+        || bind_ip.is_loopback()
+        || external_peer.is_some_and(|peer| peer.ip().is_loopback())
+    {
         return Err(io::Error::other("extra argument or loopback bind IP"));
     }
     for path in [&test, &binary, &client] {
@@ -374,8 +392,11 @@ fn run() -> io::Result<()> {
         fs::write(&output, "S211 job and descendant termination verified\n")?;
         return Ok(());
     }
-    if mode == "worker" {
-        return run_worker(&test, &binary, &client, bind_ip, &output);
+    if mode == "worker" || mode == "worker-external" {
+        if (mode == "worker-external") != external_peer.is_some() {
+            return Err(io::Error::other("external worker peer mismatch"));
+        }
+        return run_worker(&test, &binary, &client, bind_ip, &output, external_peer);
     }
     assert_target_absent(&binary)?;
     let mut summary = File::create(&output)?;
@@ -386,19 +407,35 @@ fn run() -> io::Result<()> {
         )?;
         return Ok(());
     }
-    if mode != "run" && mode != "run-refusal" {
+    if mode != "run" && mode != "run-refusal" && mode != "run-all" && mode != "run-all-external" {
         return Err(io::Error::other("unknown mode"));
     }
+    if (mode == "run-all-external") != external_peer.is_some() {
+        return Err(io::Error::other("external runner peer mismatch"));
+    }
     let mut failed = false;
-    let attempts = if mode == "run-refusal" { 1 } else { 3 };
+    let attempts = if mode == "run-refusal" {
+        1
+    } else if mode == "run-all" || mode == "run-all-external" {
+        4
+    } else {
+        3
+    };
     for attempt in 1..=attempts {
+        let refusal = mode == "run-refusal"
+            || (mode == "run-all" && attempt == 4)
+            || (mode == "run-all-external" && attempt == 1);
         let attempt_log = output.with_extension(format!("attempt-{attempt}.log"));
         let bind_ip_arg = std::ffi::OsString::from(bind_ip.to_string());
         let job = job::Job::new()?;
         let mut worker_command = Command::new(env::current_exe()?);
         worker_command
             .args([
-                std::ffi::OsStr::new("worker"),
+                std::ffi::OsStr::new(if mode == "run-all-external" {
+                    "worker-external"
+                } else {
+                    "worker"
+                }),
                 test.as_os_str(),
                 binary.as_os_str(),
                 client.as_os_str(),
@@ -409,7 +446,10 @@ fn run() -> io::Result<()> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW);
-        if mode == "run-refusal" {
+        if let Some(peer) = external_peer {
+            worker_command.arg(peer.to_string());
+        }
+        if refusal {
             worker_command.env("FRAGCAP_S211_REFUSAL", "1");
         } else {
             worker_command.env_remove("FRAGCAP_S211_REFUSAL");
@@ -435,7 +475,8 @@ fn run() -> io::Result<()> {
                 worker.wait()?;
                 writeln!(
                     summary,
-                    "attempt {attempt}: timed out; contained descendants terminated"
+                    "attempt {attempt} ({}): timed out; contained descendants terminated",
+                    if refusal { "refusal" } else { "transfer" }
                 )?;
                 failed = true;
                 break None;
@@ -447,19 +488,21 @@ fn run() -> io::Result<()> {
         if !status.is_some_and(|status| status.success()) {
             writeln!(
                 summary,
-                "attempt {attempt}: failed; log={}",
+                "attempt {attempt} ({}): failed; log={}",
+                if refusal { "refusal" } else { "transfer" },
                 attempt_log.display()
             )?;
             failed = true;
         } else {
             writeln!(
                 summary,
-                "attempt {attempt}: passed; log={}",
+                "attempt {attempt} ({}): passed; log={}",
+                if refusal { "refusal" } else { "transfer" },
                 attempt_log.display()
             )?;
         }
         summary.flush()?;
-        if failed {
+        if failed && mode != "run-all-external" {
             break;
         }
     }

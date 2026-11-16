@@ -346,6 +346,7 @@ struct DirectHelperOwner {
 pub(crate) struct DirectRouteProof {
     pub receipt_consumed: bool,
     pub selected_packet_consumed: bool,
+    pub selected_packet_reinjected: bool,
     pub selected_packet_lost: bool,
     pub proxy_connected: bool,
     pub reply_sent: bool,
@@ -364,6 +365,8 @@ impl DirectRouteProof {
     fn confirms_reachability(&self, transport: Proto) -> bool {
         self.receipt_consumed
             && self.selected_packet_consumed
+            && !self.selected_packet_reinjected
+            && !self.selected_packet_lost
             && self.proxy_connected
             && self.reply_sent
             && !self.reply_failed
@@ -597,6 +600,7 @@ impl NativeObservationContext {
         let route_state = match proof.as_ref() {
             Some(value) if value.confirms_reachability(flow.tuple.transport) => "transferred",
             Some(value) if value.selected_packet_lost => "selected-packet-lost",
+            Some(value) if value.selected_packet_reinjected => "selected-packet-reinjected",
             Some(value) if value.selected_packet_consumed => "delivery-unproven",
             _ => "selected-disposition-unavailable",
         };
@@ -669,6 +673,7 @@ impl NativeObservationContext {
             selected_packet_disposition: match proof.as_ref() {
                 Some(value) if value.selected_packet_consumed => "consumed",
                 Some(value) if value.selected_packet_lost => "lost",
+                Some(value) if value.selected_packet_reinjected => "reinjected",
                 _ => "unavailable",
             },
             route_state,
@@ -1310,8 +1315,17 @@ mod direct_helper_tests {
         assert_eq!(failed.route_state, "selected-packet-lost");
         {
             let mut proof = proof.lock().unwrap();
-            proof.receipt_consumed = true;
             proof.selected_packet_lost = false;
+            proof.selected_packet_reinjected = true;
+        }
+        let reinjected = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(reinjected.receipt_state, "unconsumed");
+        assert_eq!(reinjected.selected_packet_disposition, "reinjected");
+        assert_eq!(reinjected.route_state, "selected-packet-reinjected");
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
+            proof.selected_packet_reinjected = false;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;

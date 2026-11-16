@@ -109,13 +109,16 @@ fn selected_packet_disposition_round_trips_and_rejects_tampering() {
         RouteEventKind::SelectedPacketDisposition {
             disposition: "consumed",
         },
+        RouteEventKind::SelectedPacketDisposition {
+            disposition: "reinjected",
+        },
     ]
     .into_iter()
     .enumerate()
     {
         assert_eq!(
             sink.record(RouteEvent {
-                flow_id: 1,
+                flow_id: if index == 2 { 2 } else { 1 },
                 at_ns: index as u64 + 1,
                 clock_error_ns: None,
                 kind,
@@ -128,8 +131,17 @@ fn selected_packet_disposition_round_trips_and_rejects_tampering() {
     assert!(prefix.complete());
     assert_eq!(prefix.events[0].kind, "receipt-consumed");
     assert_eq!(prefix.events[1].fields["disposition"], "consumed");
+    assert_eq!(prefix.events[2].fields["disposition"], "reinjected");
+    assert_eq!(prefix.events[1].fields["evidence_version"], 2);
+    assert_eq!(prefix.events[2].fields["evidence_version"], 3);
 
     let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen("\"evidence_version\":3", "\"evidence_version\":2", 1),
+    )
+    .unwrap();
+    assert!(read_route_prefix(&path).is_err());
     std::fs::write(
         &path,
         text.replacen(

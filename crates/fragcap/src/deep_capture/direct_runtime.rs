@@ -743,6 +743,37 @@ fn lose_pending_first_packet(
     Ok(())
 }
 
+fn reinject_selected_first_packet(
+    handle: &Handle,
+    stats: &SharedStats,
+    packet: &[u8],
+    address: &Address,
+    proof: &Arc<Mutex<DirectRouteProof>>,
+    route_events: Option<&RouteEventSink>,
+    flow_id: u64,
+) -> io::Result<()> {
+    let result = reinject(handle, stats, packet, address);
+    let disposition = if result.is_ok() {
+        proof
+            .lock()
+            .expect("direct proof lock")
+            .selected_packet_reinjected = true;
+        "reinjected"
+    } else {
+        proof
+            .lock()
+            .expect("direct proof lock")
+            .selected_packet_lost = true;
+        "lost"
+    };
+    record_route(
+        route_events,
+        flow_id,
+        RouteEventKind::SelectedPacketDisposition { disposition },
+    );
+    result
+}
+
 struct ActiveUdp {
     association: DirectUdpAssociation,
     address: Address,
@@ -1886,10 +1917,26 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     issued_receipts.retain(|issued| *issued != receipt);
                     selected.lock().expect("selected route lock").remove(&tuple);
                     if !mark_refused_flow(&refused, tuple, flow.endpoint_id) {
-                        reinject(&handle, &stats, &packet, &address)?;
+                        reinject_selected_first_packet(
+                            &handle,
+                            &stats,
+                            &packet,
+                            &address,
+                            &proof,
+                            route_events.as_ref(),
+                            flow_id,
+                        )?;
                         return Err(io::Error::other("failed helper ledger full"));
                     }
-                    reinject(&handle, &stats, &packet, &address)?;
+                    reinject_selected_first_packet(
+                        &handle,
+                        &stats,
+                        &packet,
+                        &address,
+                        &proof,
+                        route_events.as_ref(),
+                        flow_id,
+                    )?;
                     for (held, held_address) in extra {
                         reinject(&handle, &stats, &held, &held_address)?;
                     }

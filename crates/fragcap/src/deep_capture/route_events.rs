@@ -130,7 +130,7 @@ impl RouteEventKind {
             Self::ReceiptConsumed => ("receipt-consumed", json!({"evidence_version": 2})),
             Self::SelectedPacketDisposition { disposition } => (
                 "selected-packet-disposition",
-                json!({"evidence_version": 2, "disposition": disposition}),
+                json!({"evidence_version": if disposition == "reinjected" { 3 } else { 2 }, "disposition": disposition}),
             ),
             Self::ProxyConnected {
                 helper_local,
@@ -195,7 +195,7 @@ impl RouteEventKind {
                     && !process_instance_id.is_empty()
             }
             Self::SelectedPacketDisposition { disposition } => {
-                matches!(*disposition, "consumed" | "lost")
+                matches!(*disposition, "consumed" | "reinjected" | "lost")
             }
             Self::HelperOutcome {
                 stage,
@@ -451,11 +451,16 @@ pub fn read_route_prefix(path: &Path) -> io::Result<RoutePrefix> {
                 let body = fields.get("fields").ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "route event missing body")
                 })?;
-                if matches!(kind, "receipt-consumed" | "selected-packet-disposition")
-                    && (body["evidence_version"] != 2
-                        || (kind == "selected-packet-disposition"
-                            && !matches!(body["disposition"].as_str(), Some("consumed" | "lost"))))
-                {
+                let valid_selected_evidence = match kind {
+                    "receipt-consumed" => body["evidence_version"] == 2,
+                    "selected-packet-disposition" => match body["disposition"].as_str() {
+                        Some("consumed" | "lost") => body["evidence_version"] == 2,
+                        Some("reinjected") => body["evidence_version"] == 3,
+                        _ => false,
+                    },
+                    _ => true,
+                };
+                if !valid_selected_evidence {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "route event has invalid selected packet evidence",
