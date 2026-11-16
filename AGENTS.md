@@ -1113,7 +1113,7 @@ The gate set, all of which `cargo xtask ci` runs in order:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace --locked
+cargo run -p xtask -- test-clean --workspace --locked
 cargo xtask lint          # repository conventions, CONVENTIONS.md
 cargo xtask deps          # dependency direction, specification section 8.3
 cargo xtask license       # per-crate license text for registry publication
@@ -1125,6 +1125,8 @@ the runner may not have: `cargo xtask neutral` (constitution P-2) and
 
 The documentation linter and the shell wrapper compliance checkers arrive with
 the slices that own them.
+
+Automated, package-certification, controlled application, and installed-product tests own their exact temporary files, downloads, helpers, and child outputs and close them on success, assertion failure, and timeout. The `test-clean` command prints its effective canonical temporary root, runs Cargo tests under that root, and fails when any newly owned child remains. An assertion result and cleanup result are separate facts. If the command reports residue, use `cargo run -p xtask -- test-clean-inspect <EXACT-ROOT>` for read-only inventory; verify the owner marker, inactive processes, and native recovery obligations before any manual removal. Never delete by a shared prefix or treat an interrupted run as clean. Use supported product cleanup for eligible native bundles after evidence is consumed. Record unresolved paths in the handoff, including any redirected physical location.
 
 **Claims require evidence.** Do not report a slice complete, a test passing, or
 a defect fixed without having run the command and read its output. If tests

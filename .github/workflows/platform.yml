@@ -71,8 +71,8 @@ jobs:
       # see crates/fragcap-attr/Cargo.toml.
       - name: Build and test the socket table backend
         run: |
-          cargo test -p fragcap-attr --features socket-table --locked
-          cargo test -p fragcap-attr --features socket-table --locked -- --ignored
+          cargo run --package xtask -- test-clean -p fragcap-attr --features socket-table --locked
+          cargo run --package xtask -- test-clean -p fragcap-attr --features socket-table --locked -- --ignored
 
       - name: Acquire the npcap SDK
         shell: pwsh
@@ -135,7 +135,7 @@ jobs:
 
       - name: Tier 2 process tests
         if: steps.elevated.outputs.elevated == 'true'
-        run: cargo test -p fragcap-attr --features etw --locked -- --ignored
+        run: cargo run --package xtask -- test-clean -p fragcap-attr --features etw --locked -- --ignored
 
       - name: Look for an installed capture driver
         id: driver
@@ -156,11 +156,11 @@ jobs:
         if: steps.driver.outputs.present == 'true'
         # The feature is `live`, not `platform-tests`. It gates a capability
         # rather than a test suite; see slice S09 plan decision D-2.
-        run: cargo test --workspace --features fragcap-capture/live --locked
+        run: cargo run --package xtask -- test-clean --workspace --features fragcap-capture/live --locked
 
       - name: Tests without the capture driver
         if: steps.driver.outputs.present != 'true'
         # Everything that does not need a driver, on Windows, with the software
         # development kit present. Proves the workspace is healthy here even
         # though live capture was not exercised.
-        run: cargo test --workspace --locked
+        run: cargo run --package xtask -- test-clean --workspace --locked

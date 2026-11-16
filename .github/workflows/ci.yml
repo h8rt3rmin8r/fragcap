@@ -62,7 +62,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo run --package xtask -- test-clean --workspace --locked
 
       - name: Native HTTP and TLS conformance evidence
         run: cargo run --package xtask -- conformance

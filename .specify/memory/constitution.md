@@ -1,4 +1,13 @@
 <!--
+Sync Impact Report (3.1.0, 2026-11-16)
+- Version change: 3.0.0 -> 3.1.0 (MINOR: adds verified cleanup to repository-controlled tests).
+- Added section: Verified Test Cleanup.
+- Added rule: automated and controlled tests must own exact temporary outputs, attempt fallible cleanup after success and failure, verify absence, and report residual or interrupted ownership separately from assertion results. Unknown native evidence remains preserved pending exact recovery review.
+- Reason: #605 and #606 identified passing tests that left test-specific files and directories behind. The S208 aggregate runner made two additional CLI harness leaks visible during its first full workspace run.
+- Templates: existing Spec-Kit templates already read the constitution and need no change.
+- Runtime guidance: AGENTS.md, CONTRIBUTING.md, native review handoff, master specification section 24.3, and S208 contracts reconcile in this amendment.
+- Follow-up: S208 closes only after hosted gates and exact-root inventory pass; installed-product field evidence remains a separate authority.
+
 Sync Impact Report (3.0.0, 2026-11-10)
 - Version change: 2.0.0 -> 3.0.0 (MAJOR: P-1 redefines the target-only packet-interception boundary for direct Deep Capture routing).
 - Amended sections: P-1. No Covert Target Instrumentation; Governance amendment procedure.
@@ -527,6 +536,12 @@ Before deleting or relocating older material, distinguish native captures and bu
 
 An installed-test handoff MUST name the effective canonical target-store, session-registry, and native bundle locations, actual retained artifact names, cleanup performed, and material that could not be removed. Nominal `%APPDATA%` and `%LOCALAPPDATA%` values alone are insufficient when a packaged host redirects writes into its `LocalCache` tree. If an exact effective location cannot be proven, mark that part of default-path acceptance unverified rather than guessing. Public issues omit private target identity and traffic. Reviewers MUST reject a custom-path run as proof of default placement, retention, or cleanup, while keeping its separately observed behavior available as appropriately scoped evidence.
 
+## Verified Test Cleanup
+
+Automated, package-certification, controlled application, and installed-product tests MUST give their test-specific files, directories, downloads, helper outputs, and child outputs exact ownership at their effective canonical locations. The test owner MUST attempt fallible cleanup after successful assertions, failed assertions, and timeouts, verify absence, and report any residual path and cleanup error. A passing assertion with residual output is a failed test gate. An assertion failure with successful cleanup remains the original test failure; cleanup must not obscure it. An interrupted test with unverified cleanup remains unresolved and must retain enough exact owner evidence for read-only reconciliation.
+
+An aggregate runner MAY provide an additional isolated temporary root and refuse a clean result when new owned residue remains. It MUST NOT delete a path from a naming prefix, guess at an effective redirected location, or remove another run's files. A later cleanup requires the exact canonical owner record, inactive process ownership, and settled native recovery obligations. Eligible test-created native bundles and state use the supported product cleanup operation after evidence is consumed. Unclear ownership, unresolved native bundles, manifests, journals, recipient access, and the only evidence of an unresolved session are preserved and reported. The installed-product default-path rule above remains distinct from synthetic test isolation.
+
 ## Governance
 
 This constitution supersedes all other practices. Where it conflicts with a
@@ -552,4 +567,4 @@ in particular is never reinterpreted; a slice that appears to need a denylisted
 technique, or an invisible Deep Capture action, is a slice that has been scoped
 wrong.
 
-**Version**: 3.0.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-10
+**Version**: 3.1.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-11-16

@@ -62,14 +62,14 @@ jobs:
           if ($manifest.schema_version -ne 1) { throw 'Unknown direct route matrix version' }
           $rows = @($manifest.required_rows | Where-Object tier -eq 'windows-driver')
           if ($rows.Count -eq 0) { throw 'No required Windows direct route rows' }
-          $listed = & cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --list 2>&1
+          $listed = & cargo run --package xtask -- test-clean --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --list 2>&1
           if ($LASTEXITCODE -ne 0) { throw 'Cannot list disposable direct route probes' }
           $names = @([regex]::Matches(($listed -join "`n"), '(?m)^\S+::(disposable_\w+): test$') | ForEach-Object { $_.Groups[1].Value })
           if ($names.Count -eq 0) { throw 'No disposable direct route probes found' }
           foreach ($row in $rows) {
             if (-not $row.probe -or $row.probe -cnotin $names) { throw "Unmapped direct route row: $($row.id)" }
           }
-          $result = & cargo test --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1 2>&1
+          $result = & cargo run --package xtask -- test-clean --locked -p fragcap --features direct-route disposable_ --lib -- --ignored --nocapture --test-threads=1 2>&1
           $result | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { throw 'Disposable direct route probe failed' }
           if (-not [regex]::IsMatch(($result -join "`n"), 'S201 candidate timing: receipt_ns=\d+, socket_event_published_ns=Some\(\d+\), process_proof_observed_ns=Some\(\d+\), decision_ns=\d+, held_ns=\d+, outcome=selected')) { throw 'Managed chain omitted the complete selected-candidate timing timeline' }
@@ -78,7 +78,7 @@ jobs:
           Write-Host "Direct route matrix: $($rows.Count) Windows rows mapped to $($names.Count) passing probes; zero skipped"
           $chainProbe = 'deep_capture::direct_runtime::tests::disposable_cold_platform_publisher_final_chain'
           for ($attempt = 1; $attempt -le 5; $attempt++) {
-            $repeat = & cargo test --locked -p fragcap --features direct-route $chainProbe --lib -- --ignored --exact --nocapture --test-threads=1 2>&1
+            $repeat = & cargo run --package xtask -- test-clean --locked -p fragcap --features direct-route $chainProbe --lib -- --ignored --exact --nocapture --test-threads=1 2>&1
             $repeat | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0 -or -not [regex]::IsMatch(($repeat -join "`n"), 'test result: ok\. 1 passed; 0 failed; 0 ignored;')) {
               throw "Managed direct-route chain failed on repeat $attempt of 5"
@@ -115,7 +115,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:FRAGCAP_WINDOWS_BINARY = (Resolve-Path 'target\windows-integration\stage\fragcap.exe').Path
           $env:FRAGCAP_WINDOWS_SCRATCH = (Join-Path (Resolve-Path 'target\windows-integration').Path 'direct-cli')
-          cargo test --locked -p fragcap-cli --features direct-route --test cli_direct_route_hosted staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up -- --ignored --exact --nocapture
+          cargo run --package xtask -- test-clean --locked -p fragcap-cli --features direct-route --test cli_direct_route_hosted staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up -- --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Public composite direct-route journey failed' }
 
       - name: Run complete hosted matrix

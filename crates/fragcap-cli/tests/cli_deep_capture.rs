@@ -285,32 +285,35 @@ fn interactive_affirmative_terminated_by_eof_is_refused_without_effects() {
 #[test]
 fn authorization_plan_write_failure_never_reads_approval_or_starts_effects() {
     let _guard = controlled_environment().lock().unwrap();
-    let _ = run(&["--version"]);
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    let bundle = dir.path().join("bundle");
-    seed_target(&local, false);
-    let mut authorization = CountingAuthorization::default();
-    let mut out = Vec::new();
-    let mut err = RejectWritesFlushOk;
-    let exit = fragcap_cli::run_with_authorization(
-        common::argv(&[
-            "deep-capture",
-            "sample-target",
-            "--launch",
-            "--controlled-target",
-            "--local-db",
-            local.to_str().unwrap(),
-            "--bundle",
-            bundle.to_str().unwrap(),
-        ]),
-        &mut authorization,
-        &mut out,
-        &mut err,
-    );
-    assert_eq!(exit.code(), 2);
-    assert_eq!(authorization.reads, 0);
-    assert!(!bundle.exists());
+    common::with_test_environment(|environment| {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.db");
+        let bundle = dir.path().join("bundle");
+        seed_target(&local, false);
+        let mut authorization = CountingAuthorization::default();
+        let mut out = Vec::new();
+        let mut err = RejectWritesFlushOk;
+        let exit = environment.with_cli_context(|| {
+            fragcap_cli::run_with_authorization(
+                common::argv(&[
+                    "deep-capture",
+                    "sample-target",
+                    "--launch",
+                    "--controlled-target",
+                    "--local-db",
+                    local.to_str().unwrap(),
+                    "--bundle",
+                    bundle.to_str().unwrap(),
+                ]),
+                &mut authorization,
+                &mut out,
+                &mut err,
+            )
+        });
+        assert_eq!(exit.code(), 2);
+        assert_eq!(authorization.reads, 0);
+        assert!(!bundle.exists());
+    });
 }
 
 #[test]

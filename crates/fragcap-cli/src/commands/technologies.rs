@@ -180,19 +180,19 @@ mod tests {
     use fragcap::targets::seed_bundled;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use tempfile::{Builder, TempDir};
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "fragcap-cli-technologies-{}-{}-{}",
-            std::process::id(),
-            tag,
-            n
-        ));
-        fs::create_dir_all(&dir).expect("create temp dir");
-        dir
+    fn temp_dir(tag: &str) -> TempDir {
+        Builder::new()
+            .prefix(&format!("fragcap-cli-technologies-{tag}-"))
+            .tempdir()
+            .expect("create unique technology fixture")
+    }
+
+    fn close(dir: TempDir) {
+        let path = dir.path().to_path_buf();
+        dir.close().expect("remove technology fixture");
+        assert!(!path.exists(), "technology fixture remained after close");
     }
 
     fn write(dir: &Path, rel: &str) {
@@ -223,15 +223,15 @@ mod tests {
         use fragcap::profile::signature::MARKER_SCAN_MAX_CANDIDATES;
 
         let dir = temp_dir("truncated");
-        let catalog = seeded_catalog(&dir);
+        let catalog = seeded_catalog(dir.path());
         let pe = fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text"]);
         let extra = 4;
         for i in 0..(MARKER_SCAN_MAX_CANDIDATES + extra) {
-            write_bytes(&dir, &format!("game-{i:04}.exe"), &pe);
+            write_bytes(dir.path(), &format!("game-{i:04}.exe"), &pe);
         }
 
         let args = TechnologiesArgs {
-            path: dir.clone(),
+            path: dir.path().to_path_buf(),
             catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
@@ -252,33 +252,34 @@ mod tests {
             "and it says how many were dropped: {text}"
         );
         assert!(
-            text.contains(&dir.display().to_string()),
+            text.contains(&dir.path().display().to_string()),
             "and it names the scanned root: {text}"
         );
         assert!(
             text.contains("technology detection for this root may be incomplete"),
             "and it says what that means to the operator: {text}"
         );
+        close(dir);
     }
 
     #[test]
     fn it_reports_detected_technologies_as_neutral_evidence() {
         let dir = temp_dir("report");
-        let catalog = seeded_catalog(&dir);
-        write(&dir, "UnityPlayer.dll");
-        write(&dir, "EasyAntiCheat/EasyAntiCheat_x64.dll");
+        let catalog = seeded_catalog(dir.path());
+        write(dir.path(), "UnityPlayer.dll");
+        write(dir.path(), "EasyAntiCheat/EasyAntiCheat_x64.dll");
         // Since slice S065 the DRM signal is the wrapper's own `.bind` PE section,
         // not the presence of the Steamworks SDK library beside it. Both are written
         // here so the test still covers a DRM finding rendering in the DRM category,
         // and still shows that the library alone would not have produced one.
-        write(&dir, "steam_api64.dll");
+        write(dir.path(), "steam_api64.dll");
         write_bytes(
-            &dir,
+            dir.path(),
             "Game.exe",
             &fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text", ".bind"]),
         );
         let args = TechnologiesArgs {
-            path: dir.clone(),
+            path: dir.path().to_path_buf(),
             catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
@@ -306,16 +307,16 @@ mod tests {
                 "no gating wording ({banned}): {text}"
             );
         }
-        let _ = fs::remove_dir_all(&dir);
+        close(dir);
     }
 
     #[test]
     fn an_empty_install_reports_no_technologies_not_an_error() {
         let dir = temp_dir("empty");
-        let catalog = seeded_catalog(&dir);
-        write(&dir, "readme.txt");
+        let catalog = seeded_catalog(dir.path());
+        write(dir.path(), "readme.txt");
         let args = TechnologiesArgs {
-            path: dir.clone(),
+            path: dir.path().to_path_buf(),
             catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
@@ -323,23 +324,20 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert_eq!(exit, Exit::SUCCESS);
         assert!(text.contains("no technologies detected"), "{text}");
-        let _ = fs::remove_dir_all(&dir);
+        close(dir);
     }
 
     #[test]
     fn an_unreadable_target_directory_is_a_failure() {
         let dir = temp_dir("absent-cat");
-        let catalog = seeded_catalog(&dir);
-        let missing = std::env::temp_dir().join(format!(
-            "fragcap-cli-technologies-absent-{}",
-            std::process::id()
-        ));
+        let catalog = seeded_catalog(dir.path());
+        let missing = dir.path().join("absent");
         let args = TechnologiesArgs {
             path: missing,
             catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
         assert!(run(&args, &mut out).is_err(), "an absent directory fails");
-        let _ = fs::remove_dir_all(&dir);
+        close(dir);
     }
 }

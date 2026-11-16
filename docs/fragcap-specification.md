@@ -4500,6 +4500,8 @@ The docs workflow explicitly fetches locked Rust dependencies before executing t
 
 S147 used `cargo xtask guided-calibration-acceptance` to validate issue #380 against thirteen controlled criteria. S207 retires the guided command and that command-specific registry and CI gate. Ordinary Deep Capture, direct routing, protocol classification, and historical store readback remain covered by the applicable unit, integration, and Windows package tests. Controlled evidence does not claim real-game compatibility.
 
+S208 makes cleanup part of repository test acceptance. The `test-clean` runner gives one invocation a unique effective canonical temporary root, directs child temporary output there, inventories only that exact root, and succeeds only when Cargo tests pass and the root is absent after fallible close. Fixture owners separately close unique Deep Capture bundles, CLI stores and session directories, skills test output, and technology test trees after success or assertion failure. A residual, cleanup error, or interrupted owner remains a distinct failed or unresolved result with exact path evidence; read-only `test-clean-inspect` does not authorize deletion. CI, platform, and Windows integration test steps use the runner. This synthetic test isolation does not establish installed-product default storage, field compatibility, or native recovery completion.
+
 The pipeline tests run on runners with no capture driver installed and
 no game present, which is the property section 25 exists to guarantee.
 

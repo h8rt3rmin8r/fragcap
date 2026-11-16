@@ -736,11 +736,15 @@ mod tests {
 
     #[test]
     fn a_lock_without_a_skills_object_is_not_readable() {
-        let dir = std::env::temp_dir().join("fragcap-xtask-skills-test");
-        let _ = fs::create_dir_all(&dir);
-        fs::write(dir.join(LOCK_FILE), "{\"version\": 1}").expect("write");
-        let err = read_lock(&dir).expect_err("must refuse");
+        let dir = tempfile::Builder::new()
+            .prefix("fragcap-xtask-skills-test-")
+            .tempdir()
+            .expect("create unique skills fixture");
+        let path = dir.path().to_path_buf();
+        fs::write(path.join(LOCK_FILE), "{\"version\": 1}").expect("write");
+        let err = read_lock(&path).expect_err("must refuse");
         assert!(err.to_string().contains("skills"), "{err}");
-        let _ = fs::remove_file(dir.join(LOCK_FILE));
+        dir.close().expect("remove owned skills fixture");
+        assert!(!path.exists(), "skills fixture remained after close");
     }
 }
