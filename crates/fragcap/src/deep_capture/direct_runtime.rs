@@ -22,11 +22,13 @@ use fragcap_core::{
 use zeroize::Zeroizing;
 
 use super::{
-    direct_bridge::{connect_authenticated_socks5_with_hook, DirectBridgeError, DirectTcpBridge},
+    direct_bridge::{
+        connect_authenticated_socks5_staged, DirectBridgeError, DirectTcpBridge, HelperFailure,
+    },
     direct_observer::{DirectSocketObserver, SocketObserverStats},
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
-        DirectSocketEvent, DirectTuple, PacketDisposition, RouteReceiptId,
+        DirectSocketEvent, DirectTuple, OriginalFlow, PacketDisposition, RouteReceiptId,
     },
     direct_stack::StackError,
     direct_udp::{build_udp_reply, DirectUdpAssociation},
@@ -45,12 +47,15 @@ const CANDIDATE_WAIT_NS: u64 = 100_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const EVENT_HISTORY_NS: i64 = 300_000_000;
 const REFUSED_FLOWS: usize = 4096;
+const MAX_PENDING_HELPERS: usize = 16;
+const MAX_PENDING_PACKETS: usize = 8;
 // Selection and subsequent client packets are outbound. Returned selected
 // bytes enter through the synthetic-reply path, so diverting unrelated
 // inbound traffic only adds work and latency to every other connection.
 const PACKET_FILTER: &str = "outbound and (tcp or udp)";
 const WORKER_STALL_THRESHOLD_MS: u64 = 90;
-const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
+const UDP_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
+const TCP_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const ACK_CLOSE_GRACE: Duration = Duration::from_secs(1);
 const MAX_ACK_WITNESSES: usize = 4096;
 
@@ -672,6 +677,51 @@ struct ActiveTcp {
     proof: Arc<Mutex<DirectRouteProof>>,
 }
 
+struct PendingTcp {
+    flow: OriginalFlow,
+    packet: Vec<u8>,
+    address: Address,
+    response_address: Address,
+    receipt: RouteReceiptId,
+    flow_id: u64,
+    proof: Arc<Mutex<DirectRouteProof>>,
+    result: Receiver<Result<(std::net::TcpStream, u64), HelperFailure>>,
+    worker: JoinHandle<()>,
+    extra: Vec<(Vec<u8>, Address)>,
+}
+
+fn helper_failure_outcome(stage: &str, kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "timeout",
+        io::ErrorKind::PermissionDenied
+            if matches!(stage, "method-reply" | "auth-reply" | "connect-reply") =>
+        {
+            "refused"
+        }
+        _ => "io-error",
+    }
+}
+
+fn hold_pending_packet(
+    pending: &mut PendingTcp,
+    packet: Vec<u8>,
+    address: Address,
+    stats: &SharedStats,
+) -> io::Result<()> {
+    if pending.packet == packet || pending.extra.iter().any(|(held, _)| *held == packet) {
+        // The first SYN is still held. A retransmission has no new payload to
+        // deliver and must not start a second helper or escape to the origin.
+        return packet_finished(stats, PacketDisposition::Consumed);
+    }
+    if pending.extra.len() < MAX_PENDING_PACKETS {
+        pending.extra.push((packet, address));
+    } else {
+        stats.record_bypass("pending-packet-capacity-lost");
+        packet_finished(stats, PacketDisposition::Lost)?;
+    }
+    Ok(())
+}
+
 struct ActiveUdp {
     association: DirectUdpAssociation,
     address: Address,
@@ -805,10 +855,34 @@ fn forward_active_packet(
                 },
             );
             packet_finished(stats, PacketDisposition::Lost)?;
+            let mut proof = flow.proof.lock().expect("direct proof lock");
+            if !proof.selected_packet_consumed {
+                proof.selected_packet_lost = true;
+                record_route(
+                    route_events,
+                    flow.flow_id,
+                    RouteEventKind::SelectedPacketDisposition {
+                        disposition: "lost",
+                    },
+                );
+            }
             return Err(io::Error::other(format!("selected TCP bridge: {error}")));
         }
     };
     packet_finished(stats, PacketDisposition::Consumed)?;
+    {
+        let mut proof = flow.proof.lock().expect("direct proof lock");
+        if !proof.selected_packet_consumed {
+            proof.selected_packet_consumed = true;
+            record_route(
+                route_events,
+                flow.flow_id,
+                RouteEventKind::SelectedPacketDisposition {
+                    disposition: "consumed",
+                },
+            );
+        }
+    }
     if raw_transport_head(packet).is_ok_and(|head| head.tcp_ack) {
         let returned_data_acknowledged = {
             let mut proof = flow.proof.lock().expect("direct proof lock");
@@ -895,6 +969,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     #[cfg(test)]
     let mut process_proof_observed_ns = None::<u64>;
     let mut active = BTreeMap::<DirectTuple, ActiveTcp>::new();
+    let mut pending_tcp = BTreeMap::<DirectTuple, PendingTcp>::new();
     let mut active_udp = BTreeMap::<DirectTuple, ActiveUdp>::new();
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
     let mut issued_receipts = Vec::<RouteReceiptId>::new();
@@ -947,6 +1022,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 }
             }
             Ok(WorkPacket::Selected(tuple, packet, address)) => {
+                if let Some(pending) = pending_tcp.get_mut(&tuple) {
+                    hold_pending_packet(pending, packet, address, &stats)?;
+                    continue;
+                }
                 if !forward_active_packet(
                     tuple,
                     &packet,
@@ -966,6 +1045,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let mut helper_panicked = false;
                 for decision in candidates.drain() {
                     if let CandidateDecision::PassThrough {
                         reason,
@@ -978,6 +1058,28 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         reinject(&handle, &stats, &packet, &address)?;
                     }
                 }
+                for (_, pending) in pending_tcp {
+                    let PendingTcp {
+                        packet: _,
+                        extra,
+                        flow_id,
+                        worker,
+                        ..
+                    } = pending;
+                    packet_finished(&stats, PacketDisposition::Lost)?;
+                    for _ in extra {
+                        packet_finished(&stats, PacketDisposition::Lost)?;
+                    }
+                    record_route(
+                        route_events.as_ref(),
+                        flow_id,
+                        RouteEventKind::Terminal {
+                            reason: "runtime-stopped-pending-helper",
+                        },
+                    );
+                    helper_panicked |= worker.join().is_err();
+                }
+                connecting.store(false, Ordering::Release);
                 for receipt in issued_receipts {
                     receipts.retire(receipt).map_err(|error| {
                         io::Error::other(format!("retire route receipt: {error:?}"))
@@ -1001,7 +1103,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         },
                     );
                 }
-                return Ok(());
+                return if helper_panicked {
+                    Err(io::Error::other(
+                        "direct helper task panicked during shutdown",
+                    ))
+                } else {
+                    Ok(())
+                };
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -1205,6 +1313,14 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
                     }
+                    if let Some(pending) = pending_tcp.get_mut(&flow.tuple) {
+                        if pending.flow.endpoint_id == flow.endpoint_id {
+                            hold_pending_packet(pending, packet, address, &stats)?;
+                        } else {
+                            reinject(&handle, &stats, &packet, &address)?;
+                        }
+                        continue;
+                    }
                     let active_endpoint = if flow.tuple.transport == Proto::Udp {
                         active_udp
                             .get(&flow.tuple)
@@ -1317,7 +1433,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             proxy,
                             flow.tuple.remote,
                             password.as_bytes(),
-                            PROXY_CONNECT_TIMEOUT,
+                            UDP_PROXY_CONNECT_TIMEOUT,
                             |stream| {
                                 receipts
                                     .consume(receipt, &session_id, flow.tuple, helper_id, now)
@@ -1546,210 +1662,326 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .map_err(|error| {
                             io::Error::other(format!("issue route receipt: {error:?}"))
                         })?;
-                    connecting.store(true, Ordering::Release);
-                    let helper = connect_authenticated_socks5_with_hook(
-                        proxy,
-                        flow.tuple.remote,
-                        password.as_bytes(),
-                        PROXY_CONNECT_TIMEOUT,
-                        |stream| {
-                            receipts
-                                .consume(receipt, &session_id, flow.tuple, helper_id, now)
-                                .map_err(|error| {
-                                    io::Error::other(format!("consume route receipt: {error:?}"))
-                                })?;
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::ReceiptConsumed,
-                            );
-                            context
-                                .register_direct_helper(
-                                    "tcp",
-                                    stream.local_addr()?,
-                                    stream.peer_addr()?,
-                                    flow.clone(),
-                                    helper_open_earliest,
-                                    unix_now_ns()?,
-                                )
-                                .map_err(io::Error::other)
-                        },
-                    );
-                    connecting.store(false, Ordering::Release);
-                    let helper = match helper {
-                        Ok(helper) => helper,
-                        Err(_) => {
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::ProxyRefused {
-                                    reason: "socks5-connect-failed",
+                    if pending_tcp.len() >= MAX_PENDING_HELPERS {
+                        receipts.retire(receipt).map_err(|error| {
+                            io::Error::other(format!("retire saturated helper receipt: {error:?}"))
+                        })?;
+                        stats.record_bypass("pending-helper-capacity");
+                        reinject(&handle, &stats, &packet, &address)?;
+                        continue;
+                    }
+                    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+                    let task_context = context.clone();
+                    let task_flow = flow.clone();
+                    let task_password = password.clone();
+                    let worker = match thread::Builder::new()
+                        .name("fragcap-direct-helper".into())
+                        .spawn(move || {
+                            let began = Instant::now();
+                            let outcome = connect_authenticated_socks5_staged(
+                                proxy,
+                                task_flow.tuple.remote,
+                                task_password.as_bytes(),
+                                TCP_PROXY_CONNECT_TIMEOUT,
+                                |stream| {
+                                    task_context
+                                        .register_direct_helper(
+                                            "tcp",
+                                            stream.local_addr()?,
+                                            stream.peer_addr()?,
+                                            task_flow.clone(),
+                                            helper_open_earliest,
+                                            unix_now_ns()?,
+                                        )
+                                        .map_err(io::Error::other)
                                 },
-                            );
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::Terminal {
-                                    reason: "proxy-refused",
-                                },
-                            );
-                            receipts.retire(receipt).map_err(|error| {
-                                io::Error::other(format!("retire refused route receipt: {error:?}"))
+                            )
+                            .map(|stream| (stream, began.elapsed().as_millis() as u64));
+                            let _ = result_sender.send(outcome);
+                        }) {
+                        Ok(worker) => worker,
+                        Err(error) => {
+                            receipts.retire(receipt).map_err(|receipt_error| {
+                                io::Error::other(format!(
+                                    "retire unstarted helper receipt: {receipt_error:?}"
+                                ))
                             })?;
-                            stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
-                            if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
-                                reinject(&handle, &stats, &packet, &address)?;
-                                return Err(io::Error::other("refused route ledger full"));
-                            }
                             reinject(&handle, &stats, &packet, &address)?;
-                            continue;
+                            return Err(error);
                         }
                     };
-                    let helper_tuple = DirectTuple {
-                        transport: Proto::Tcp,
-                        local: helper.local_addr()?,
-                        remote: helper.peer_addr()?,
-                    };
-                    proof.lock().expect("direct proof lock").proxy_connected = true;
-                    record_route(
-                        route_events.as_ref(),
-                        helper_id,
-                        RouteEventKind::ProxyConnected {
-                            helper_local: helper_tuple.local,
-                            proxy_local: helper_tuple.remote,
-                        },
-                    );
-                    excluded
-                        .lock()
-                        .expect("helper route lock")
-                        .insert(helper_tuple);
                     issued_receipts.push(receipt);
-                    let mut bridge =
-                        DirectTcpBridge::new(flow.tuple, helper).map_err(io::Error::other)?;
                     selected
                         .lock()
                         .expect("selected route lock")
                         .insert(flow.tuple, flow.endpoint_id);
-                    let replies = match bridge.ingest_diverted(
-                        &packet,
-                        address.ip_checksum_valid(),
-                        address.tcp_checksum_valid(),
-                        address.outbound(),
-                        started.elapsed().as_millis() as i64,
-                    ) {
-                        Ok(replies) => replies,
-                        Err(error) => {
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::Terminal {
-                                    reason: bridge_failure_reason(&error),
-                                },
-                            );
-                            packet_finished(&stats, PacketDisposition::Lost)?;
-                            proof
-                                .lock()
-                                .expect("direct proof lock")
-                                .selected_packet_lost = true;
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::SelectedPacketDisposition {
-                                    disposition: "lost",
-                                },
-                            );
-                            return Err(io::Error::other(format!(
-                                "first selected TCP packet: {error}"
-                            )));
-                        }
-                    };
-                    packet_finished(&stats, PacketDisposition::Consumed)?;
-                    proof
-                        .lock()
-                        .expect("direct proof lock")
-                        .selected_packet_consumed = true;
+                    pending_tcp.insert(
+                        flow.tuple,
+                        PendingTcp {
+                            flow,
+                            packet,
+                            address,
+                            response_address,
+                            receipt,
+                            flow_id: helper_id,
+                            proof,
+                            result: result_receiver,
+                            worker,
+                            extra: Vec::new(),
+                        },
+                    );
+                    connecting.store(true, Ordering::Release);
+                }
+            }
+        }
+        let ready: Vec<_> = pending_tcp
+            .iter()
+            .filter_map(|(tuple, pending)| match pending.result.try_recv() {
+                Ok(outcome) => Some((*tuple, outcome)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some((
+                    *tuple,
+                    Err(HelperFailure {
+                        stage: "complete",
+                        elapsed_ms: 0,
+                        error: io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "helper task ended without outcome",
+                        ),
+                    }),
+                )),
+            })
+            .collect();
+        for (tuple, outcome) in ready {
+            let pending = pending_tcp.remove(&tuple).expect("ready helper exists");
+            connecting.store(!pending_tcp.is_empty(), Ordering::Release);
+            let outcome = if pending.worker.join().is_err() {
+                Err(HelperFailure {
+                    stage: "complete",
+                    elapsed_ms: 0,
+                    error: io::Error::new(io::ErrorKind::BrokenPipe, "direct helper task panicked"),
+                })
+            } else {
+                outcome
+            };
+            let PendingTcp {
+                flow,
+                packet,
+                address,
+                response_address,
+                receipt,
+                flow_id,
+                proof,
+                extra,
+                ..
+            } = pending;
+            if observer
+                .lock()
+                .expect("socket observer lock")
+                .current_owner_endpoint_id(tuple)
+                != Some(flow.endpoint_id)
+            {
+                match &outcome {
+                    Ok((_, elapsed_ms)) => record_route(
+                        route_events.as_ref(),
+                        flow_id,
+                        RouteEventKind::HelperOutcome {
+                            stage: "complete",
+                            elapsed_ms: *elapsed_ms,
+                            outcome: "success",
+                            error_kind: None,
+                        },
+                    ),
+                    Err(failure) => record_route(
+                        route_events.as_ref(),
+                        flow_id,
+                        RouteEventKind::HelperOutcome {
+                            stage: failure.stage,
+                            elapsed_ms: failure.elapsed_ms,
+                            outcome: helper_failure_outcome(failure.stage, failure.error.kind()),
+                            error_kind: Some(format!("{:?}", failure.error.kind())),
+                        },
+                    ),
+                }
+                record_route(
+                    route_events.as_ref(),
+                    flow_id,
+                    RouteEventKind::Terminal {
+                        reason: "pending-helper-owner-changed",
+                    },
+                );
+                receipts.retire(receipt).map_err(|error| {
+                    io::Error::other(format!("retire stale helper receipt: {error:?}"))
+                })?;
+                issued_receipts.retain(|issued| *issued != receipt);
+                selected.lock().expect("selected route lock").remove(&tuple);
+                packet_finished(&stats, PacketDisposition::Lost)?;
+                for _ in extra {
+                    packet_finished(&stats, PacketDisposition::Lost)?;
+                }
+                continue;
+            }
+            let (helper, elapsed_ms) = match outcome {
+                Ok(value) => value,
+                Err(failure) => {
+                    let kind = failure.error.kind();
+                    let outcome = helper_failure_outcome(failure.stage, kind);
                     record_route(
                         route_events.as_ref(),
-                        helper_id,
-                        RouteEventKind::SelectedPacketDisposition {
-                            disposition: "consumed",
+                        flow_id,
+                        RouteEventKind::HelperOutcome {
+                            stage: failure.stage,
+                            elapsed_ms: failure.elapsed_ms,
+                            outcome,
+                            error_kind: Some(format!("{kind:?}")),
                         },
                     );
-                    active.insert(
-                        flow.tuple,
-                        ActiveTcp {
-                            bridge,
-                            address: response_address,
-                            endpoint_id: flow.endpoint_id,
-                            receipt,
-                            helper: helper_tuple,
-                            flow_id: helper_id,
-                            last_transfer: (0, 0),
-                            proof: Arc::clone(&proof),
-                        },
-                    );
-                    {
-                        let mut witnesses = ack_witnesses.lock().expect("ACK witness lock");
-                        witnesses.retain(|_, witness| {
-                            witness
-                                .closed_at
-                                .is_none_or(|closed_at| closed_at.elapsed() <= ACK_CLOSE_GRACE)
-                        });
-                        if witnesses.len() >= MAX_ACK_WITNESSES
-                            && !witnesses.contains_key(&flow.tuple)
-                        {
-                            if let Some((old_tuple, old_flow_id)) = witnesses
-                                .iter()
-                                .filter_map(|(tuple, witness)| {
-                                    witness
-                                        .closed_at
-                                        .map(|closed_at| (*tuple, witness.flow_id, closed_at))
-                                })
-                                .min_by_key(|(_, _, closed_at)| *closed_at)
-                                .map(|(tuple, flow_id, _)| (tuple, flow_id))
-                            {
-                                witnesses.remove(&old_tuple);
-                                record_route(
-                                    route_events.as_ref(),
-                                    old_flow_id,
-                                    RouteEventKind::Terminal {
-                                        reason: "ack-witness-capacity",
-                                    },
-                                );
-                            }
-                        }
-                        if witnesses.len() < MAX_ACK_WITNESSES
-                            || witnesses.contains_key(&flow.tuple)
-                        {
-                            witnesses.insert(
-                                flow.tuple,
-                                AckWitness {
-                                    endpoint_id: flow.endpoint_id,
-                                    flow_id: helper_id,
-                                    proof: Arc::clone(&proof),
-                                    closed_at: None,
-                                },
-                            );
-                        } else {
-                            record_route(
-                                route_events.as_ref(),
-                                helper_id,
-                                RouteEventKind::Terminal {
-                                    reason: "ack-witness-capacity",
-                                },
-                            );
-                        }
+                    if outcome == "refused" {
+                        record_route(
+                            route_events.as_ref(),
+                            flow_id,
+                            RouteEventKind::ProxyRefused {
+                                reason: "socks5-connect-refused",
+                            },
+                        );
+                        stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
                     }
-                    inject_replies(
-                        &handle,
-                        &stats,
-                        replies,
-                        response_address,
+                    record_route(
                         route_events.as_ref(),
-                        helper_id,
-                        Some(&proof),
-                    )?;
+                        flow_id,
+                        RouteEventKind::Terminal {
+                            reason: match outcome {
+                                "timeout" => "helper-timeout",
+                                "refused" => "proxy-refused",
+                                _ => "helper-io-failed",
+                            },
+                        },
+                    );
+                    receipts.retire(receipt).map_err(|error| {
+                        io::Error::other(format!("retire failed helper receipt: {error:?}"))
+                    })?;
+                    issued_receipts.retain(|issued| *issued != receipt);
+                    selected.lock().expect("selected route lock").remove(&tuple);
+                    if !mark_refused_flow(&refused, tuple, flow.endpoint_id) {
+                        reinject(&handle, &stats, &packet, &address)?;
+                        return Err(io::Error::other("failed helper ledger full"));
+                    }
+                    reinject(&handle, &stats, &packet, &address)?;
+                    for (held, held_address) in extra {
+                        reinject(&handle, &stats, &held, &held_address)?;
+                    }
+                    continue;
                 }
+            };
+            record_route(
+                route_events.as_ref(),
+                flow_id,
+                RouteEventKind::HelperOutcome {
+                    stage: "complete",
+                    elapsed_ms,
+                    outcome: "success",
+                    error_kind: None,
+                },
+            );
+            receipts
+                .consume(
+                    receipt,
+                    &session_id,
+                    tuple,
+                    flow_id,
+                    started.elapsed().as_nanos() as u64,
+                )
+                .map_err(|error| io::Error::other(format!("consume route receipt: {error:?}")))?;
+            record_route(
+                route_events.as_ref(),
+                flow_id,
+                RouteEventKind::ReceiptConsumed,
+            );
+            let helper_tuple = DirectTuple {
+                transport: Proto::Tcp,
+                local: helper.local_addr()?,
+                remote: helper.peer_addr()?,
+            };
+            proof.lock().expect("direct proof lock").proxy_connected = true;
+            record_route(
+                route_events.as_ref(),
+                flow_id,
+                RouteEventKind::ProxyConnected {
+                    helper_local: helper_tuple.local,
+                    proxy_local: helper_tuple.remote,
+                },
+            );
+            excluded
+                .lock()
+                .expect("helper route lock")
+                .insert(helper_tuple);
+            let bridge = DirectTcpBridge::new(tuple, helper).map_err(io::Error::other)?;
+            active.insert(
+                tuple,
+                ActiveTcp {
+                    bridge,
+                    address: response_address,
+                    endpoint_id: flow.endpoint_id,
+                    receipt,
+                    helper: helper_tuple,
+                    flow_id,
+                    last_transfer: (0, 0),
+                    proof: Arc::clone(&proof),
+                },
+            );
+            {
+                let mut witnesses = ack_witnesses.lock().expect("ACK witness lock");
+                if witnesses.len() < MAX_ACK_WITNESSES || witnesses.contains_key(&tuple) {
+                    witnesses.insert(
+                        tuple,
+                        AckWitness {
+                            endpoint_id: flow.endpoint_id,
+                            flow_id,
+                            proof,
+                            closed_at: None,
+                        },
+                    );
+                } else {
+                    record_route(
+                        route_events.as_ref(),
+                        flow_id,
+                        RouteEventKind::Terminal {
+                            reason: "ack-witness-capacity",
+                        },
+                    );
+                }
+            }
+            forward_active_packet(
+                tuple,
+                &packet,
+                address,
+                ActiveFlows {
+                    tcp: &mut active,
+                    udp: &mut active_udp,
+                },
+                &handle,
+                &stats,
+                ForwardEvidence {
+                    started,
+                    route_events: route_events.as_ref(),
+                },
+            )?;
+            for (held, held_address) in extra {
+                forward_active_packet(
+                    tuple,
+                    &held,
+                    held_address,
+                    ActiveFlows {
+                        tcp: &mut active,
+                        udp: &mut active_udp,
+                    },
+                    &handle,
+                    &stats,
+                    ForwardEvidence {
+                        started,
+                        route_events: route_events.as_ref(),
+                    },
+                )?;
             }
         }
         for flow in active.values_mut() {
@@ -3313,6 +3545,150 @@ mod tests {
         assert_eq!(stats.packets.consumed, 0);
         assert_eq!(stats.packets.lost, 0);
         assert!(stats.packets.reinjected > 0);
+    }
+
+    #[test]
+    #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
+    fn disposable_delayed_socks_helper_keeps_packet_worker_live() {
+        struct OwnedClient(Option<Child>);
+        impl Drop for OwnedClient {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.0.take() {
+                    if child.try_wait().is_ok_and(|status| status.is_none()) {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                }
+            }
+        }
+        struct OwnedRoutePath(std::path::PathBuf);
+        impl Drop for OwnedRoutePath {
+            fn drop(&mut self) {
+                if self.0.exists() {
+                    if let Err(error) = std::fs::remove_file(&self.0) {
+                        eprintln!("S211 route fixture cleanup failed: {error}");
+                    }
+                }
+            }
+        }
+        let root = std::env::var_os("WINDIVERT_VERIFIED_ROOT")
+            .expect("WINDIVERT_VERIFIED_ROOT is required");
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = origin.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            assert_eq!(body, b"runtime-client-request");
+            stream.write_all(b"runtime-origin-reply").unwrap();
+        });
+        let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sentinel_address = sentinel.local_addr().unwrap();
+        let sentinel_server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = sentinel.accept().unwrap();
+                let mut request = [0; 8];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(&request, b"sentinel");
+                stream.write_all(b"sentinel").unwrap();
+            }
+        });
+        let exchange_sentinel = || {
+            let started = Instant::now();
+            let mut stream = TcpStream::connect(sentinel_address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(b"sentinel").unwrap();
+            let mut response = [0; 8];
+            stream.read_exact(&mut response).unwrap();
+            assert_eq!(&response, b"sentinel");
+            started.elapsed()
+        };
+        let baseline = exchange_sentinel();
+
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let proxy_server = thread::spawn(move || {
+            let (mut stream, _) = proxy.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut method = [0; 3];
+            stream.read_exact(&mut method).unwrap();
+            assert_eq!(method, [5, 1, 2]);
+            stream.write_all(&[5, 2]).unwrap();
+            let mut auth = [0; 2];
+            stream.read_exact(&mut auth).unwrap();
+            let mut identity = vec![0; auth[1] as usize];
+            stream.read_exact(&mut identity).unwrap();
+            let mut password_length = [0; 1];
+            stream.read_exact(&mut password_length).unwrap();
+            let mut password = vec![0; password_length[0] as usize];
+            stream.read_exact(&mut password).unwrap();
+            assert_eq!(password, b"s211-test-capability");
+            stream.write_all(&[1, 0]).unwrap();
+            let mut request = [0; 10];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request[..4], &[5, 1, 0, 1]);
+            waiting_tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(80));
+            let mut upstream = TcpStream::connect(original).unwrap();
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .unwrap();
+            let mut body = Vec::new();
+            stream.read_to_end(&mut body).unwrap();
+            upstream.write_all(&body).unwrap();
+            upstream.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut reply = Vec::new();
+            upstream.read_to_end(&mut reply).unwrap();
+            stream.write_all(&reply).unwrap();
+        });
+
+        let mut child = OwnedClient(Some(spawn_client("tcp", original)));
+        let context = client_context(child.0.as_ref().unwrap().id());
+        let route_path = OwnedRoutePath(std::env::temp_dir().join(format!(
+            "s211-delayed-helper-{}-{}.jsonl",
+            std::process::id(),
+            unix_now_ns().unwrap()
+        )));
+        let mut runtime = DirectPacketRuntime::start_with_artifact(
+            Path::new(&root),
+            context,
+            "s211-delayed-helper".into(),
+            proxy_address,
+            Zeroizing::new("s211-test-capability".to_string()),
+            4,
+            Some(&route_path.0),
+        )
+        .unwrap();
+        release_client(child.0.as_mut().unwrap());
+        waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let active = exchange_sentinel();
+        assert!(active <= Duration::from_millis(50).max(baseline * 4));
+        finish_client(child.0.take().unwrap());
+        let stats = runtime.stop().unwrap();
+        proxy_server.join().unwrap();
+        server.join().unwrap();
+        sentinel_server.join().unwrap();
+        assert!(!stats.watchdog_released);
+        assert_eq!(stats.proxy_refused, 0);
+        assert_eq!(stats.packets.lost, 0);
+        assert!(stats.packets.consumed > 0);
+        let route = super::super::route_events::read_route_prefix(&route_path.0).unwrap();
+        assert!(route.complete());
+        let helper = route
+            .events
+            .iter()
+            .find(|event| event.kind == "helper-outcome")
+            .expect("helper outcome");
+        assert_eq!(helper.fields["outcome"], "success");
+        assert_eq!(helper.fields["stage"], "complete");
+        assert!(helper.fields["elapsed_ms"].as_u64().unwrap() >= 60);
+        std::fs::remove_file(&route_path.0).unwrap();
+        assert!(!route_path.0.exists());
     }
 
     #[test]

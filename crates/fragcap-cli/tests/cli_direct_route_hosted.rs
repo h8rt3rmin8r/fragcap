@@ -11,7 +11,7 @@ use fragcap::targets::{
 };
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,16 +105,175 @@ fn unrelated_sentinel(peer: SocketAddr) -> std::io::Result<Duration> {
     Ok(start.elapsed())
 }
 
+struct LocalPeer {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<std::io::Result<(usize, usize)>>>,
+}
+
+impl LocalPeer {
+    fn start(ip: std::net::IpAddr) -> std::io::Result<Self> {
+        if ip.is_loopback() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "controlled non-loopback IP required",
+            ));
+        }
+        let listener = TcpListener::bind(SocketAddr::new(ip, 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            let mut handlers = Vec::new();
+            while handlers.len() < 10 && !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => handlers.push(std::thread::spawn(move || {
+                        stream.set_nonblocking(false)?;
+                        stream.set_read_timeout(Some(Duration::from_secs(35)))?;
+                        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                        let mut first = [0; 16];
+                        std::io::Read::read_exact(&mut stream, &mut first)?;
+                        if &first == b"sentinel-request" {
+                            stream.write_all(b"sentinel-reply")?;
+                            return Ok::<_, std::io::Error>(false);
+                        }
+                        let mut remainder = [0; 6];
+                        std::io::Read::read_exact(&mut stream, &mut remainder)?;
+                        if [&first[..], &remainder[..]].concat() != b"runtime-client-request" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "unknown controlled request",
+                            ));
+                        }
+                        stream.write_all(b"runtime-origin-reply")?;
+                        let mut finish = [0; 21];
+                        std::io::Read::read_exact(&mut stream, &mut finish)?;
+                        if &finish != b"runtime-client-finish" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "controlled client did not finish",
+                            ));
+                        }
+                        Ok(true)
+                    })),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let mut selected = 0;
+            let mut sentinels = 0;
+            for handler in handlers {
+                if handler
+                    .join()
+                    .map_err(|_| std::io::Error::other("controlled peer panicked"))??
+                {
+                    selected += 1;
+                } else {
+                    sentinels += 1;
+                }
+            }
+            Ok((selected, sentinels))
+        });
+        Ok(Self {
+            address,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        let counts = self
+            .worker
+            .take()
+            .expect("peer worker exists")
+            .join()
+            .map_err(|_| std::io::Error::other("controlled peer panicked"))??;
+        if counts != (1, 9) {
+            return Err(std::io::Error::other(format!(
+                "controlled peer counts: {counts:?}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LocalPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            if let Err(error) = worker
+                .join()
+                .map_err(|_| std::io::Error::other("controlled peer panicked"))
+                .and_then(|result| result.map(|_| ()))
+            {
+                eprintln!("S211 controlled peer cleanup failed: {error}");
+            }
+        }
+    }
+}
+
 #[test]
-#[ignore = "requires an elevated package binary, cold controlled client, and finite external peer"]
+#[ignore = "requires a local non-loopback bind IP; tests only the disposable peer"]
+fn local_peer_protocol_completes_without_driver() {
+    let ip = std::env::var("FRAGCAP_S211_BIND_IP")
+        .expect("controlled bind IP")
+        .parse()
+        .expect("IP literal");
+    let mut peer = LocalPeer::start(ip).expect("start local peer");
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("baseline sentinel");
+    }
+    let mut selected = TcpStream::connect(peer.address).expect("selected connection");
+    selected
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    selected.write_all(b"runtime-client-request").unwrap();
+    let mut reply = [0; 20];
+    std::io::Read::read_exact(&mut selected, &mut reply).unwrap();
+    assert_eq!(&reply, b"runtime-origin-reply");
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("active sentinel");
+    }
+    selected.write_all(b"runtime-client-finish").unwrap();
+    selected.shutdown(Shutdown::Write).unwrap();
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut selected, &mut tail).unwrap();
+    assert!(tail.is_empty());
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("post sentinel");
+    }
+    peer.finish().expect("exact peer exchange counts");
+}
+
+#[test]
+#[ignore = "requires an elevated package binary, cold controlled client, and finite peer"]
 fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"));
     let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("cold client"));
-    let peer: SocketAddr = std::env::var("FRAGCAP_S205_PEER")
-        .expect("external peer")
-        .parse()
-        .expect("IP:port");
-    assert!(!peer.ip().is_loopback(), "the peer must be external");
+    let mut local_peer = std::env::var("FRAGCAP_S211_BIND_IP")
+        .ok()
+        .map(|ip| LocalPeer::start(ip.parse().expect("controlled bind IP")))
+        .transpose()
+        .expect("controlled non-loopback peer");
+    let peer: SocketAddr = if let Some(peer) = &local_peer {
+        peer.address
+    } else {
+        std::env::var("FRAGCAP_S205_PEER")
+            .expect("external peer")
+            .parse()
+            .expect("IP:port")
+    };
+    assert!(
+        !peer.ip().is_loopback(),
+        "the peer IP must not be a loopback literal"
+    );
     let binary = binary.canonicalize().expect("package binary exists");
     let client = client.canonicalize().expect("controlled client exists");
     let baseline = (0..3)
@@ -315,6 +474,10 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     registration_guard
         .remove()
         .expect("remove controlled target");
+    if let Some(peer) = local_peer.as_mut() {
+        peer.finish()
+            .expect("controlled peer completed exact exchanges");
+    }
 }
 
 #[test]

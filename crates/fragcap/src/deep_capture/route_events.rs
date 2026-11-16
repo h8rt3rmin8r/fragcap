@@ -39,6 +39,12 @@ pub enum RouteEventKind {
         tcp_checksum_valid: bool,
     },
     ProxyAttempt,
+    HelperOutcome {
+        stage: &'static str,
+        elapsed_ms: u64,
+        outcome: &'static str,
+        error_kind: Option<String>,
+    },
     ReceiptConsumed,
     SelectedPacketDisposition {
         disposition: &'static str,
@@ -112,6 +118,15 @@ impl RouteEventKind {
                     "tcp_checksum_valid": tcp_checksum_valid}),
             ),
             Self::ProxyAttempt => ("proxy-attempt", json!({})),
+            Self::HelperOutcome {
+                stage,
+                elapsed_ms,
+                outcome,
+                error_kind,
+            } => (
+                "helper-outcome",
+                json!({"stage": stage, "elapsed_ms": elapsed_ms, "outcome": outcome, "error_kind": error_kind}),
+            ),
             Self::ReceiptConsumed => ("receipt-consumed", json!({"evidence_version": 2})),
             Self::SelectedPacketDisposition { disposition } => (
                 "selected-packet-disposition",
@@ -181,6 +196,27 @@ impl RouteEventKind {
             }
             Self::SelectedPacketDisposition { disposition } => {
                 matches!(*disposition, "consumed" | "lost")
+            }
+            Self::HelperOutcome {
+                stage,
+                outcome,
+                error_kind,
+                ..
+            } => {
+                matches!(
+                    *stage,
+                    "scope"
+                        | "proxy-connect"
+                        | "helper-register"
+                        | "method-write"
+                        | "method-reply"
+                        | "auth-write"
+                        | "auth-reply"
+                        | "connect-write"
+                        | "connect-reply"
+                        | "complete"
+                ) && matches!(*outcome, "success" | "refused" | "timeout" | "io-error")
+                    && error_kind.as_ref().is_none_or(|kind| kind.len() <= 64)
             }
             _ => true,
         }

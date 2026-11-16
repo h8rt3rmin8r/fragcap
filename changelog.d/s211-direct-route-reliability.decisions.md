@@ -1,0 +1,4 @@
+<!-- spec-impact: 17, 26, 27 -->
+2026-11-16: Move selected TCP helper SOCKS admission to finite off-worker tasks instead of raising the 50 ms read bound on the packet worker. A 500 ms TCP handshake deadline covers controlled 60-100 ms upstream stages while the 90 ms packet-worker watchdog still measures processing progress. UDP keeps its separate 50 ms bound. Keep pending packets under exact tuple and endpoint ownership, account for duplicates and overflow, and record the actual helper failure stage and kind in the protected route stream.
+
+2026-11-16: Retain #594's packaged physical original-present and original-absent Npcap gate as a distinct acceptance condition. A source fixture or previously observed original-absent installed bundle cannot establish the missing physical original-present row or a new candidate's artifact agreement.

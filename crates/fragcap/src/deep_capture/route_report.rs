@@ -30,6 +30,10 @@ struct FlowSummary {
     proxy_attempted: bool,
     proxy_connected: bool,
     proxy_refused: bool,
+    helper_stage: Option<String>,
+    helper_elapsed_ms: Option<u64>,
+    helper_outcome: Option<String>,
+    helper_error_kind: Option<String>,
     reply_generated: bool,
     reply_sent: bool,
     reply_failed: bool,
@@ -313,6 +317,12 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
                         event.fields["first_packet_clock_error_ns"].as_u64();
                 }
                 "proxy-attempt" => flow.proxy_attempted = true,
+                "helper-outcome" => {
+                    flow.helper_stage = event.fields["stage"].as_str().map(str::to_owned);
+                    flow.helper_elapsed_ms = event.fields["elapsed_ms"].as_u64();
+                    flow.helper_outcome = event.fields["outcome"].as_str().map(str::to_owned);
+                    flow.helper_error_kind = event.fields["error_kind"].as_str().map(str::to_owned);
+                }
                 "proxy-connected" => {
                     flow.proxy_connected = true;
                     flow.helper_pair = event.fields["helper_local"]
@@ -393,7 +403,11 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             "first_packet_clock_error_ns": flow.first_packet_clock_error_ns,
             "last_route_event_at_ns": flow.last_route_event_at_ns,
             "last_route_event_clock_error_ns": flow.route_clock_error_ns,
-            "status": if bidirectional { "bidirectional-transfer-observed" } else if client_response && flow.protocol.as_deref() == Some("udp") { "client-datagram-response-observed-no-bidirectional-data" } else if client_response { "client-handshake-observed-no-bidirectional-data" } else if flow.proxy_refused { "proxy-refused" } else if flow.reply_failed { "reply-injection-failed" } else if flow.proxy_connected && flow.client_to_upstream == 0 && flow.upstream_to_client == 0 { "upstream-connected-zero-byte" } else if flow.proxy_connected { "proxy-connected-without-client-reachability-proof" } else if flow.proxy_attempted { "proxy-attempt-without-connection" } else { "selected-only" },
+            "status": if bidirectional { "bidirectional-transfer-observed" } else if client_response && flow.protocol.as_deref() == Some("udp") { "client-datagram-response-observed-no-bidirectional-data" } else if client_response { "client-handshake-observed-no-bidirectional-data" } else if flow.proxy_refused { "proxy-refused" } else if flow.helper_outcome.as_deref() == Some("timeout") { "helper-timeout" } else if flow.helper_outcome.as_deref() == Some("io-error") { "helper-io-failed" } else if flow.reply_failed { "reply-injection-failed" } else if flow.proxy_connected && flow.client_to_upstream == 0 && flow.upstream_to_client == 0 { "upstream-connected-zero-byte" } else if flow.proxy_connected { "proxy-connected-without-client-reachability-proof" } else if flow.proxy_attempted { "proxy-attempt-without-connection" } else { "selected-only" },
+            "helper_stage": flow.helper_stage,
+            "helper_elapsed_ms": flow.helper_elapsed_ms,
+            "helper_outcome": flow.helper_outcome,
+            "helper_error_kind": flow.helper_error_kind,
             "proxy_connected": flow.proxy_connected,
             "client_ack_observed": flow.client_ack,
             "returned_data_acknowledged": flow.returned_data_acknowledged,
