@@ -643,7 +643,7 @@ impl NativeObservationContext {
                     Some(owner)
                         if owner.pid == flow.pid
                             && owner.process.as_ref() == flow.process_image
-                            && owner.role.as_deref() == Some("client") =>
+                            && owner.role.as_deref() == Some(flow.process_role.as_str()) =>
                     {
                         "observed-owned"
                     }
@@ -854,7 +854,7 @@ impl NativeObservationContext {
                 && observation.attribution.as_ref().is_some_and(|owner| {
                     owner.pid == flow.pid
                         && owner.process.as_ref() == flow.process_image
-                        && owner.role.as_deref() == Some("client")
+                        && owner.role.as_deref() == Some(flow.process_role.as_str())
                 })
         });
         let competing_owner = summary.observations.iter().any(|observation| {
@@ -1110,6 +1110,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
+            process_role: "client".into(),
             first_packet_digest: Some([7; 32]),
         };
         let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
@@ -1254,6 +1255,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
+            process_role: "client".into(),
             first_packet_digest: Some([7; 32]),
         };
         context
@@ -1503,6 +1505,77 @@ mod direct_helper_tests {
         context.set_direct_route_active(true);
         assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
         context.set_direct_route_active(false);
+    }
+
+    #[test]
+    fn direct_root_target_packet_role_matches_while_proxy_reports_client() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:32001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:32002".parse().unwrap();
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "127.0.0.1:32003".parse().unwrap(),
+                remote: "127.0.0.1:32004".parse().unwrap(),
+            },
+            first_packet_at_ns: 120,
+            first_packet_clock_error_ns: 2,
+            endpoint_id: 9,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some([7; 32]),
+        };
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        let window = ApplicationConnectionWindow {
+            descriptor: ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: helper,
+                proxy_local: proxy,
+            },
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let proof = context.direct_proof_for(&flow).unwrap();
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
+            proof.selected_packet_consumed = true;
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_to_upstream = 1;
+            proof.upstream_to_client = 1;
+            proof.client_ack = true;
+            proof.returned_data_acknowledged = true;
+        }
+        context.flow_registry.observe_packet_at(
+            FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
+            Timestamp::from_nanos(121),
+            Some(
+                &fragcap_core::Attribution::new(42, "target.exe", Fidelity::Live)
+                    .with_role("target"),
+            ),
+            Some(0x02),
+            Some([7; 32]),
+        );
+        assert_eq!(
+            context
+                .direct_reconciliation_window(&window)
+                .unwrap()
+                .original_packet_state,
+            "observed-owned"
+        );
+        assert_eq!(
+            context.connection_owner(&window).role.as_deref(),
+            Some("client")
+        );
+        let correlation = context.correlate_proxy_window(&window);
+        assert_eq!(correlation.3.as_deref(), Some("client"));
+        assert_eq!(correlation.7, CorrelationState::Matched);
     }
 }
 

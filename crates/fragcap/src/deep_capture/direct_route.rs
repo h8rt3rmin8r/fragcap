@@ -102,6 +102,7 @@ pub struct OriginalFlow {
     pub pid: u32,
     pub process_instance_id: String,
     pub process_image: String,
+    pub process_role: String,
     pub first_packet_digest: Option<[u8; 32]>,
 }
 
@@ -188,6 +189,12 @@ pub fn select_direct_flow(
         pid: event.pid,
         process_instance_id,
         process_image,
+        process_role: if direct_root_target {
+            "target"
+        } else {
+            "client"
+        }
+        .into(),
         first_packet_digest: packet.packet_digest,
     })
 }
@@ -252,6 +259,12 @@ fn managed_direct_root_flow(
         pid: event.pid,
         process_instance_id: format!("process-{}-{created}", event.pid),
         process_image: image,
+        process_role: if evidence.direct_alternate_used {
+            "client"
+        } else {
+            "target"
+        }
+        .into(),
         first_packet_digest: packet.packet_digest,
     })
 }
@@ -832,6 +845,18 @@ mod tests {
     }
 
     #[test]
+    fn direct_root_selection_carries_target_role() {
+        let mut direct = evidence();
+        direct.launch_pid = Some(12);
+        direct.shutdown_scope = vec![std::path::PathBuf::from("client.exe")];
+        direct.stage_transitions[0].role = "target".into();
+        assert!(matches!(
+            select_direct_flow(&direct, &[event(12, 40000)], packet(40000)),
+            DirectAdmission::Selected(OriginalFlow { process_role, .. }) if process_role == "target"
+        ));
+    }
+
+    #[test]
     fn proven_helper_packet_passes_without_process_evidence_or_wait() {
         let mut buffer = CandidateBuffer::new(1, 128, 100_000_000).unwrap();
         buffer
@@ -965,8 +990,9 @@ mod tests {
             DirectAdmission::Selected(OriginalFlow {
                 endpoint_id: 100,
                 pid: 12,
+                process_role,
                 ..
-            })
+            }) if process_role == "client"
         ));
         assert!(matches!(
             select_direct_flow(&evidence(), &[old, close], first),
