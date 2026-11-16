@@ -40,6 +40,8 @@
 
 **Alternatives considered**: A shared fixed directory leaks and collides. Per-call roots would break the deliberate multi-call state tests. Serializing the entire workspace is unnecessary when the affected in-process binary can lock its own environment.
 
+The first hosted Ubuntu run found a specialized authorization-output test that called the CLI library directly after an ordinary helper call. It had depended on the old helper leaving scratch variables set for the entire process. With per-call restoration, that direct invocation reached an earlier Linux refusal and poisoned the controlled-test lock. The specialized call now enters the same owned environment through an explicit context method; no process-wide scratch setting is retained after it returns.
+
 ## D6. Other output producers and evidence boundary
 
 | Producer | Effective location and owner | S208 disposition |

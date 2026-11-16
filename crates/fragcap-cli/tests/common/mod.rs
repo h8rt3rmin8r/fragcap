@@ -88,6 +88,12 @@ impl TestEnvironment {
         list: &[&str],
         authorization: &mut dyn fragcap_cli::DeepCaptureAuthorizationInput,
     ) -> (u8, String, String) {
+        self.with_cli_context(|| run_unlocked(list, authorization))
+    }
+
+    /// Bind the owned stores for a specialized in-process CLI call that supplies
+    /// its own output writers. The process environment is restored on panic.
+    pub fn with_cli_context<T>(&self, body: impl FnOnce() -> T) -> T {
         let _guard = CLI_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -100,9 +106,7 @@ impl TestEnvironment {
         std::env::set_var(keys[0], &self.catalog_db);
         std::env::set_var(keys[1], &self.local_db);
         std::env::set_var(keys[2], &self.session_dir);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_unlocked(list, authorization)
-        }));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
         for (key, value) in keys.into_iter().zip(previous) {
             match value {
                 Some(value) => std::env::set_var(key, value),
