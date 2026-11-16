@@ -157,6 +157,10 @@ pub struct CapturedPacket {
     pub flow_id: Option<FlowId>,
     /// Populated by header parsing in slice S03.
     pub direction: Option<Direction>,
+    /// Observed TCP flags, when the captured header retained that byte.
+    pub tcp_flags: Option<u8>,
+    /// Digest of the complete network datagram, excluding link-layer framing.
+    pub packet_digest: Option<[u8; 32]>,
     /// Populated by the socket table attributor in slice S10.
     pub attribution: Option<Attribution>,
 }
@@ -177,6 +181,8 @@ impl CapturedPacket {
             flow: None,
             flow_id: None,
             direction: None,
+            tcp_flags: None,
+            packet_digest: None,
             attribution: None,
         }
     }

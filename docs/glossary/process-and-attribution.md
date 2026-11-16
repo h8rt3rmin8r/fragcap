@@ -196,6 +196,18 @@ original exits.
 **See also:** [Process tree](process-and-attribution.md#process-tree),
 [Synthetic process identifier](process-and-attribution.md#synthetic-process-identifier)
 
+## Post-exit packet tail
+
+A captured TCP RST, or a continuous ACK/FIN packet, observed shortly after the
+socket owner's process exited. Fragcap binds it to that process generation only
+when the exact socket creation instant falls within one observed lifetime, the
+image and event history agree, no PID reuse conflicts, and the lag is at most
+100 ms. ACK/FIN also requires an earlier same-flow packet without intervening
+owner conflict or packet-history loss. The process exit time stays unchanged.
+
+**See also:** [PID recycling](process-and-attribution.md#pid-recycling),
+[Attribution](process-and-attribution.md#attribution)
+
 ## Synthetic process identifier
 
 The session-local identity fragcap assigns to each process it observes, never

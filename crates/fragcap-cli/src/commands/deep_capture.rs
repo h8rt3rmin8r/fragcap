@@ -7,7 +7,7 @@
 //! boundary.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{IsTerminal, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -5665,6 +5665,7 @@ fn application_jsonl(
             "packet_observations_unretained": observation.packet_observations_unretained,
             "correlation_state": observation.correlation_state.as_str(),
             "correlation_reason": observation.correlation_reason,
+            "direct_route": observation.direct_route.as_ref().map(direct_route_json),
             "http": has_http.then(|| json!({
                 "method": observation.method,
                 "url": observation.url,
@@ -5693,6 +5694,45 @@ fn application_jsonl(
     );
     out.push('\n');
     out
+}
+
+fn direct_route_json(value: &deep_capture_api::DirectRouteCorrelation) -> serde_json::Value {
+    json!({
+        "schema_version": value.schema_version,
+        "receipt_state": value.receipt_state,
+        "selected_packet_disposition": value.selected_packet_disposition,
+        "route_state": value.route_state,
+        "original_packet_state": value.original_packet_state,
+        "packet_history_state": value.packet_history_state,
+        "process_instance_id": value.process_instance_id,
+        "original_tuple": value.original_tuple,
+    })
+}
+
+fn direct_route_summary_json(observations: &[Observation]) -> serde_json::Value {
+    let mut routes = BTreeMap::<&str, u64>::new();
+    let mut originals = BTreeMap::<&str, u64>::new();
+    let mut dispositions = BTreeMap::<&str, u64>::new();
+    let mut history = BTreeMap::<&str, u64>::new();
+    for evidence in observations
+        .iter()
+        .filter_map(|item| item.direct_route.as_ref())
+    {
+        *routes.entry(evidence.route_state).or_default() += 1;
+        *originals.entry(evidence.original_packet_state).or_default() += 1;
+        *dispositions
+            .entry(evidence.selected_packet_disposition)
+            .or_default() += 1;
+        *history.entry(evidence.packet_history_state).or_default() += 1;
+    }
+    json!({
+        "schema_version": 2,
+        "records": routes.values().sum::<u64>(),
+        "route_states": routes,
+        "original_packet_states": originals,
+        "selected_packet_dispositions": dispositions,
+        "packet_history_states": history,
+    })
 }
 
 fn classification_json(value: &deep_capture_api::ProtocolClassification) -> serde_json::Value {
@@ -5796,7 +5836,7 @@ fn compatibility_json(
     process_trace: &fragcap::deep_capture::ProcessTraceSummary,
 ) -> Result<String, CliError> {
     serde_json::to_string_pretty(&json!({
-        "correlation_contract_version": 2,
+        "correlation_contract_version": 3,
         "session_id": ctx.session.session_id,
         "target": {
             "id": ctx.session.target.id,
@@ -5818,11 +5858,14 @@ fn compatibility_json(
         },
         "routing_policy": routing_policy_json(&ctx.session.routing),
         "routing_decisions": routing_decisions_json(ctx.observations),
+        "direct_route_correlation": direct_route_summary_json(ctx.observations),
         "process_trace": {
             "finalization": process_trace.finalization,
             "completeness": process_trace.completeness,
             "process_instances": process_trace.process_instances,
             "flow_owner_intervals": process_trace.flow_owner_intervals,
+            "post_exit_reset_tails": process_trace.post_exit_reset_tails,
+            "post_exit_contiguous_tails": process_trace.post_exit_contiguous_tails,
             "limitations": process_trace.limitations,
             "unparseable_events": process_trace.unparseable_events,
             "stage_transitions_unretained": process_trace.stage_transitions_unretained,
@@ -5868,6 +5911,7 @@ fn compatibility_json(
                 "packet_observations_unretained": o.packet_observations_unretained,
                 "correlation_state": o.correlation_state.as_str(),
                 "correlation_reason": o.correlation_reason,
+                "direct_route": o.direct_route.as_ref().map(direct_route_json),
                 "protocol": o.protocol,
                 "inspectability": o.inspectability.as_str(),
                 "classification": classification_json(&o.classification),
@@ -5971,6 +6015,8 @@ fn manifest_json(
         "state": if process_trace.completeness == "complete" && process_trace.unresolved_flow_owners == 0 && process_trace.flow_owner_intervals > 0 { "complete" } else if process_trace.flow_owner_intervals > 0 { "partial" } else { "unavailable" },
         "flow_owner_intervals": process_trace.flow_owner_intervals,
         "unresolved_flow_owners": process_trace.unresolved_flow_owners,
+        "post_exit_reset_tails": process_trace.post_exit_reset_tails,
+        "post_exit_contiguous_tails": process_trace.post_exit_contiguous_tails,
     });
     let mut artifacts = vec![
         application_artifact,
@@ -6261,7 +6307,8 @@ fn manifest_json(
         "artifacts": artifacts,
         "omissions": omissions,
         "correlation": {
-            "contract_version": 2,
+            "contract_version": 3,
+            "direct_route": direct_route_summary_json(ctx.observations),
             "flow_ids": ctx.observations
                 .iter()
                 .filter_map(|observation| observation.flow_id.map(|flow_id| flow_id.to_string()))
@@ -7238,6 +7285,7 @@ mod tests {
             packet_observations_unretained: 0,
             correlation_state: deep_capture_api::CorrelationState::FlowOnly,
             correlation_reason: "test-flow".to_string(),
+            direct_route: None,
             protocol: "https".to_string(),
             inspectability: Inspectability::Full,
             method: Some("GET".to_string()),
@@ -7317,6 +7365,26 @@ mod tests {
         record.packet_observations = 1;
         record.role = Some("launcher".into());
         assert!(!exact_direct_client_receipt(&record));
+    }
+
+    #[test]
+    fn direct_route_summary_preserves_transfer_and_original_packet_absence() {
+        let mut record = observation();
+        record.direct_route = Some(deep_capture_api::DirectRouteCorrelation {
+            schema_version: 2,
+            receipt_state: "consumed",
+            selected_packet_disposition: "consumed",
+            route_state: "transferred",
+            original_packet_state: "unavailable",
+            packet_history_state: "complete",
+            process_instance_id: Some("process-42-100".into()),
+            original_tuple: Some("tcp:192.0.2.1:4->198.51.100.1:5".into()),
+        });
+        let summary = direct_route_summary_json(&[record]);
+        assert_eq!(summary["records"], 1);
+        assert_eq!(summary["route_states"]["transferred"], 1);
+        assert_eq!(summary["original_packet_states"]["unavailable"], 1);
+        assert_eq!(summary["selected_packet_dispositions"]["consumed"], 1);
     }
 
     #[test]
@@ -7578,6 +7646,8 @@ mod tests {
             events_unretained: 1,
             stage_transitions_unretained: 0,
             unresolved_flow_owners: 0,
+            post_exit_reset_tails: 0,
+            post_exit_contiguous_tails: 0,
         };
         let render = |ctx: &BundleContext<'_>| -> Value {
             serde_json::from_str(

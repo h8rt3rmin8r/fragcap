@@ -667,6 +667,7 @@ mod tests {
             packet_observations_unretained: 0,
             correlation_state: CorrelationState::Unavailable,
             correlation_reason: "packet-flow-not-observed".into(),
+            direct_route: None,
             protocol: "http".into(),
             inspectability: Inspectability::Full,
             method: Some("GET".into()),

@@ -293,6 +293,8 @@ pub enum ParseOutcome {
     Parsed {
         flow: FlowKey,
         direction: Option<Direction>,
+        tcp_flags: Option<u8>,
+        packet_digest: Option<[u8; 32]>,
     },
     Rejected(ParseReject),
 }
@@ -308,6 +310,20 @@ impl ParseOutcome {
     pub fn direction(&self) -> Option<Direction> {
         match self {
             ParseOutcome::Parsed { direction, .. } => *direction,
+            ParseOutcome::Rejected(_) => None,
+        }
+    }
+
+    pub fn tcp_flags(&self) -> Option<u8> {
+        match self {
+            ParseOutcome::Parsed { tcp_flags, .. } => *tcp_flags,
+            ParseOutcome::Rejected(_) => None,
+        }
+    }
+
+    pub fn packet_digest(&self) -> Option<[u8; 32]> {
+        match self {
+            ParseOutcome::Parsed { packet_digest, .. } => *packet_digest,
             ParseOutcome::Rejected(_) => None,
         }
     }
@@ -386,6 +402,10 @@ impl HeaderParser {
         let outcome = self.parse(link, &packet.data);
         packet.flow = outcome.flow();
         packet.direction = outcome.direction();
+        packet.tcp_flags = outcome.tcp_flags();
+        packet.packet_digest = (!packet.is_truncated())
+            .then(|| outcome.packet_digest())
+            .flatten();
         outcome
     }
 
@@ -397,7 +417,7 @@ impl HeaderParser {
         let net_bytes = frame.get(offset..).ok_or(ParseReject::ShortHeader)?;
         let net = ip::parse(net_proto, net_bytes)?;
 
-        let ports = match net.fragment {
+        let (ports, tcp_flags) = match net.fragment {
             // Not fragmented, or the initial fragment, which carries the
             // transport header.
             None | Some((_, Role::Initial)) => {
@@ -423,19 +443,28 @@ impl HeaderParser {
                         self.stats.fragment_evicted = self.stats.fragment_evicted.saturating_add(1);
                     }
                 }
-                ports
+                (
+                    ports,
+                    (proto == Proto::Tcp)
+                        .then(|| transport_bytes.get(13).copied())
+                        .flatten(),
+                )
             }
             // A later fragment. Its transport header is in the first one.
-            Some((key, Role::Subsequent)) => self
-                .fragments
-                .lookup(&key)
-                .ok_or(ParseReject::UnmatchedFragment)?,
+            Some((key, Role::Subsequent)) => (
+                self.fragments
+                    .lookup(&key)
+                    .ok_or(ParseReject::UnmatchedFragment)?,
+                None,
+            ),
             // The last fragment. Looking it up also forgets it, so the entry
             // does not outlive the datagram.
-            Some((key, Role::Last)) => self
-                .fragments
-                .take(&key)
-                .ok_or(ParseReject::UnmatchedFragment)?,
+            Some((key, Role::Last)) => (
+                self.fragments
+                    .take(&key)
+                    .ok_or(ParseReject::UnmatchedFragment)?,
+                None,
+            ),
         };
 
         let src = SocketAddr::new(net.src, ports.src_port);
@@ -451,6 +480,20 @@ impl HeaderParser {
         Ok(ParseOutcome::Parsed {
             flow: FlowKey::new(ports.proto, locality.local, locality.remote),
             direction: locality.direction,
+            tcp_flags,
+            packet_digest: {
+                let complete = match net_proto {
+                    link::NetProto::V4 => {
+                        usize::from(u16::from_be_bytes([net_bytes[2], net_bytes[3]]))
+                            <= net_bytes.len()
+                    }
+                    link::NetProto::V6 => {
+                        let payload = usize::from(u16::from_be_bytes([net_bytes[4], net_bytes[5]]));
+                        payload == 0 || 40 + payload <= net_bytes.len()
+                    }
+                };
+                complete.then(|| *blake3::hash(&net_bytes[..net.extent]).as_bytes())
+            },
         })
     }
 }
@@ -865,6 +908,8 @@ mod tests {
                     SocketAddr::new(IpAddr::V4(PEER_V4), 443),
                 ),
                 direction: Some(Direction::Outbound),
+                tcp_flags: Some(0),
+                packet_digest: Some(*blake3::hash(&frame[14..]).as_bytes()),
             }
         );
         assert_eq!(p.stats().rejected(), 0);
@@ -988,6 +1033,8 @@ mod tests {
                     SocketAddr::new(IpAddr::V6(peer), 5055),
                 ),
                 direction: Some(Direction::Outbound),
+                tcp_flags: None,
+                packet_digest: Some(*blake3::hash(&frame[14..]).as_bytes()),
             }
         );
     }
@@ -1606,6 +1653,48 @@ mod tests {
             crate::packet::AttributionState::Unresolved,
             "a key with no attribution is retained and marked, per P-4"
         );
+    }
+
+    #[test]
+    fn packet_identity_excludes_link_padding_and_truncated_snapshots() {
+        let mut tcp = f::tcp(51000, 443);
+        tcp[13] = 0x14;
+        let network = f::ipv4(
+            f::V4 {
+                src: LOCAL_V4,
+                dst: PEER_V4,
+                proto: IPPROTO_TCP,
+                ..f::V4::default()
+            },
+            &tcp,
+        );
+        let mut frame = f::ethernet(ETHERTYPE_IPV4, &network);
+        frame.extend_from_slice(&[0xaa; 12]);
+        let expected = *blake3::hash(&network).as_bytes();
+        let mut complete = CapturedPacket::from_raw(
+            RawPacket::new(
+                Timestamp::from_nanos(1),
+                Payload::from(frame.clone()),
+                frame.len() as u32,
+            ),
+            InterfaceId::default(),
+        );
+        let mut parser = local_parser();
+        parser.apply(LinkType::ETHERNET, &mut complete);
+        assert_eq!(complete.tcp_flags, Some(0x14));
+        assert_eq!(complete.packet_digest, Some(expected));
+
+        let mut truncated = CapturedPacket::from_raw(
+            RawPacket::new(
+                Timestamp::from_nanos(2),
+                Payload::from(frame),
+                complete.orig_len + 1,
+            ),
+            InterfaceId::default(),
+        );
+        parser.apply(LinkType::ETHERNET, &mut truncated);
+        assert_eq!(truncated.tcp_flags, Some(0x14));
+        assert_eq!(truncated.packet_digest, None);
     }
 
     #[test]

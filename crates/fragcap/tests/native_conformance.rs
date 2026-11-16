@@ -474,6 +474,7 @@ fn controlled_observation(protocol: CompatibilityProtocol) -> CompatibilityObser
         packet_observations_unretained: 0,
         correlation_state: CorrelationState::FlowOnly,
         correlation_reason: "controlled loopback witness".to_string(),
+        direct_route: None,
         protocol: label.to_string(),
         inspectability: match inspectability {
             "full" => Inspectability::Full,

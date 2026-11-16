@@ -768,6 +768,7 @@ pub struct CompatibilityObservation {
     pub packet_observations_unretained: u64,
     pub correlation_state: CorrelationState,
     pub correlation_reason: String,
+    pub direct_route: Option<DirectRouteCorrelation>,
     pub protocol: String,
     pub inspectability: Inspectability,
     pub method: Option<String>,
@@ -776,6 +777,19 @@ pub struct CompatibilityObservation {
     pub reason: Option<String>,
     /// Versioned public classification derived from the raw fields above.
     pub classification: ProtocolClassification,
+}
+
+/// Independent route and passive packet facts for one selected direct flow.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectRouteCorrelation {
+    pub schema_version: u32,
+    pub receipt_state: &'static str,
+    pub selected_packet_disposition: &'static str,
+    pub route_state: &'static str,
+    pub original_packet_state: &'static str,
+    pub packet_history_state: &'static str,
+    pub process_instance_id: Option<String>,
+    pub original_tuple: Option<String>,
 }
 
 /// One append-only compatibility fact candidate or result.

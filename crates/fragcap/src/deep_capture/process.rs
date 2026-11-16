@@ -504,6 +504,8 @@ pub struct ProcessTraceSummary {
     pub events_unretained: u64,
     pub stage_transitions_unretained: u64,
     pub unresolved_flow_owners: u64,
+    pub post_exit_reset_tails: u64,
+    pub post_exit_contiguous_tails: u64,
 }
 
 pub struct ProcessTrace {
@@ -571,6 +573,125 @@ fn image_basename(value: &str) -> &str {
 
 fn same_image(left: &str, right: &str) -> bool {
     image_basename(left).eq_ignore_ascii_case(image_basename(right))
+}
+
+const POST_EXIT_TAIL_NS: i64 = 100_000_000;
+
+fn complete_process_events(evidence: &CaptureProcessEvidence) -> bool {
+    evidence.events_unretained == 0
+        && evidence.unparseable_events == 0
+        && !evidence.watcher_ended
+        && evidence
+            .watcher_report
+            .as_ref()
+            .is_some_and(|report| !report.lost_anything())
+}
+
+fn flow_instance_for_packet<'a>(
+    instances: &'a [Instance],
+    evidence: &CaptureProcessEvidence,
+    flow: &FlowSummary,
+    observations: &[fragcap_core::FlowObservation],
+    index: usize,
+) -> (Option<&'a Instance>, &'static str) {
+    let observation = &observations[index];
+    let Some(owner) = observation.attribution.as_ref() else {
+        return (None, "flow-owner-unavailable");
+    };
+    if owner.process.is_empty() {
+        return (None, "socket-owner-image-unavailable");
+    }
+    let at = observation.timestamp;
+    if let Some(instance) = unique_instance_at(instances, owner.pid, at) {
+        if !same_image(&instance.image, &owner.process)
+            || owner
+                .socket_created_at
+                .is_some_and(|created| !instance.covers(created))
+        {
+            return (None, "socket-owner-generation-conflict");
+        }
+        return (Some(instance), "in-lifetime");
+    }
+    if instances
+        .iter()
+        .any(|instance| instance.pid == owner.pid && instance.covers(at))
+    {
+        return (None, "process-generation-ambiguous");
+    }
+    let Some(socket_created) = owner.socket_created_at else {
+        return (None, "socket-creation-unavailable");
+    };
+    if !complete_process_events(evidence) {
+        return (None, "process-event-authority-incomplete");
+    }
+    let mut candidates = instances.iter().filter(|instance| {
+        instance.pid == owner.pid
+            && instance.creation_observed
+            && same_image(&instance.image, &owner.process)
+            && instance.covers(socket_created)
+            && instance.exited.is_some_and(|exited| exited < at)
+    });
+    let Some(instance) = candidates.next() else {
+        return (None, "post-exit-generation-unproved");
+    };
+    if candidates.next().is_some()
+        || instances.iter().any(|other| {
+            other.pid == owner.pid
+                && other.id() != instance.id()
+                && other.created.is_some_and(|created| {
+                    instance
+                        .exited
+                        .is_some_and(|exited| created > exited && created <= at)
+                })
+        })
+    {
+        return (None, "post-exit-generation-conflict");
+    }
+    let exited = instance
+        .exited
+        .expect("tail candidate has an observed exit");
+    if at.nanos_since(exited) > POST_EXIT_TAIL_NS {
+        return (None, "post-exit-tail-out-of-bound");
+    }
+    match observation.tcp_flags {
+        Some(flags) if flags & 0x04 != 0 => (Some(instance), "post-exit-reset-tail"),
+        Some(flags) if flags & 0x11 != 0 => {
+            if flow.unretained_observations > 0
+                || flow.global_unretained_observations > 0
+                || flow.omission_precision_lost
+                || !flow.omissions.is_empty()
+            {
+                return (None, "post-exit-continuity-unproved");
+            }
+            let earlier = observations[..index].iter().rev().find(|prior| {
+                prior.timestamp >= socket_created
+                    && prior.timestamp <= exited
+                    && prior.attribution.as_ref().is_some_and(|previous| {
+                        previous.pid == owner.pid
+                            && previous.socket_created_at == Some(socket_created)
+                            && same_image(&previous.process, &owner.process)
+                    })
+            });
+            if earlier.is_none() {
+                return (None, "post-exit-continuity-unproved");
+            }
+            let prior_time = earlier.expect("prior packet was found").timestamp;
+            if observations.iter().any(|candidate| {
+                candidate.timestamp > prior_time
+                    && candidate.timestamp < at
+                    && candidate.attribution.as_ref().is_some_and(|other| {
+                        other.pid != owner.pid
+                            || other.socket_created_at != Some(socket_created)
+                            || !same_image(&other.process, &owner.process)
+                    })
+            }) {
+                return (None, "post-exit-continuity-conflict");
+            }
+            (Some(instance), "post-exit-contiguous-tail")
+        }
+        Some(_) => (None, "post-exit-nonclosing-packet"),
+        None => (None, "post-exit-flags-unavailable"),
+    }
 }
 
 fn push_record(output: &mut String, records: &mut u64, mut value: Value, sequence: u64) {
@@ -747,7 +868,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         &mut output,
         &mut records,
         json!({
-            "type": "process-trace.header", "schema_version": 1, "session_id": input.session_id,
+            "type": "process-trace.header", "schema_version": 2, "session_id": input.session_id,
             "target_id": input.target_id, "target_handle": input.target_handle,
             "launch_case": input.launch_case, "event_limit": evidence.event_limit,
             "snapshot_authority": if evidence.startup_snapshot.is_empty() { "unavailable" } else { "query-only" },
@@ -859,6 +980,8 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
 
     let mut flow_owner_intervals = 0_u64;
     let mut unresolved_flow_owners = 0_u64;
+    let mut post_exit_reset_tails = 0_u64;
+    let mut post_exit_contiguous_tails = 0_u64;
     for flow in input.flows {
         let mut observations = flow.observations.clone();
         observations.sort_by_key(|observation| {
@@ -879,6 +1002,9 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                     .and_then(|owner| owner.stage.as_ref().map(|stage| stage.as_str().to_string())),
             )
         });
+        let resolutions = (0..observations.len())
+            .map(|index| flow_instance_for_packet(&instances, evidence, flow, &observations, index))
+            .collect::<Vec<_>>();
         let mut cursor = 0;
         while cursor < observations.len() {
             let observation = &observations[cursor];
@@ -888,25 +1014,27 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 cursor += 1;
                 continue;
             };
-            let instance = instance_at(&instances, attribution.pid, observation.timestamp);
+            let (instance, basis) = resolutions[cursor];
             let instance_id = instance.map(Instance::id);
+            match basis {
+                "post-exit-reset-tail" => post_exit_reset_tails += 1,
+                "post-exit-contiguous-tail" => post_exit_contiguous_tails += 1,
+                _ => {}
+            }
             if instance.is_none() {
                 unresolved_flow_owners += 1;
-                *limitations
-                    .entry("process-instance-unavailable")
-                    .or_default() += 1;
+                *limitations.entry(basis).or_default() += 1;
             }
             let mut end = observation.timestamp;
             let mut next = cursor + 1;
             while next < observations.len() {
                 let candidate = &observations[next];
-                let candidate_instance = candidate
-                    .attribution
-                    .as_ref()
-                    .and_then(|owner| instance_at(&instances, owner.pid, candidate.timestamp))
-                    .map(Instance::id);
+                let (candidate_instance, candidate_basis) = resolutions[next];
+                let candidate_instance = candidate_instance.map(Instance::id);
                 if candidate.attribution.as_ref() != Some(attribution)
                     || candidate_instance != instance_id
+                    || candidate_basis != basis
+                    || candidate.tcp_flags != observation.tcp_flags
                 {
                     break;
                 }
@@ -924,7 +1052,10 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                     "to_nanos": end.as_nanos(), "pid": attribution.pid,
                     "process_instance_id": instance_id, "process": attribution.process.as_ref(),
                     "role": attribution.role.as_deref(), "stage": attribution.stage.as_ref().map(|stage| stage.as_str()),
-                    "fidelity": format!("{:?}", attribution.fidelity).to_ascii_lowercase()
+                    "fidelity": format!("{:?}", attribution.fidelity).to_ascii_lowercase(),
+                    "socket_created_at_nanos": attribution.socket_created_at.map(Timestamp::as_nanos),
+                    "tcp_flags": observation.tcp_flags, "tail_basis": basis,
+                    "process_exited_at_nanos": instance.and_then(|item| item.exited).map(Timestamp::as_nanos)
                 }),
             ));
             flow_owner_intervals += 1;
@@ -1051,12 +1182,14 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         events_unretained: evidence.events_unretained,
         stage_transitions_unretained: evidence.stage_transitions_unretained,
         unresolved_flow_owners,
+        post_exit_reset_tails,
+        post_exit_contiguous_tails,
     };
     push_record(
         &mut output,
         &mut records,
         json!({
-            "type": "process-trace.trailer", "schema_version": 1, "session_id": input.session_id,
+            "type": "process-trace.trailer", "schema_version": 2, "session_id": input.session_id,
             "records": summary.records, "process_instances": summary.process_instances,
             "flow_owner_intervals": summary.flow_owner_intervals, "limitations": summary.limitations,
             "events_lost": summary.events_lost, "buffers_lost": summary.buffers_lost,
@@ -1064,6 +1197,8 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             "rundown_ignored": summary.rundown_ignored, "events_unretained": summary.events_unretained,
             "stage_transitions_unretained": summary.stage_transitions_unretained,
             "unresolved_flow_owners": summary.unresolved_flow_owners,
+            "post_exit_reset_tails": summary.post_exit_reset_tails,
+            "post_exit_contiguous_tails": summary.post_exit_contiguous_tails,
             "terminal_state": evidence.terminal_state, "stop_reason": evidence.stop_reason,
             "completeness": summary.completeness, "finalization": summary.finalization
         }),
@@ -1085,6 +1220,10 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
     if records.first()?["type"] != "process-trace.header" {
         return None;
     }
+    let version = records.first()?["schema_version"].as_u64()?;
+    if !matches!(version, 1 | 2) {
+        return None;
+    }
     let last = records.last()?;
     if last["type"] != "process-trace.trailer" || last["finalization"] != "complete" {
         return None;
@@ -1095,6 +1234,65 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
         .count();
     if trailer_count != 1 {
         return None;
+    }
+    if last["schema_version"].as_u64()? != version {
+        return None;
+    }
+    if version == 2 {
+        if last["records"].as_u64()? != records.len() as u64
+            || records
+                .iter()
+                .enumerate()
+                .any(|(index, record)| record["sequence"].as_u64() != Some(index as u64))
+        {
+            return None;
+        }
+        let intervals = records
+            .iter()
+            .filter(|record| record["type"] == "socket-owner.interval")
+            .collect::<Vec<_>>();
+        if intervals.len() as u64 != last["flow_owner_intervals"].as_u64()? {
+            return None;
+        }
+        for interval in &intervals {
+            let basis = interval["tail_basis"].as_str()?;
+            if interval["tcp_flags"].is_null()
+                && interval["socket_created_at_nanos"].is_null()
+                && basis != "in-lifetime"
+                && !basis.ends_with("-unavailable")
+            {
+                return None;
+            }
+            if matches!(basis, "post-exit-reset-tail" | "post-exit-contiguous-tail") {
+                let flags = interval["tcp_flags"].as_u64()?;
+                let exit = interval["process_exited_at_nanos"].as_i64()?;
+                let first = interval["from_nanos"].as_i64()?;
+                let last_packet = interval["to_nanos"].as_i64()?;
+                let created = interval["socket_created_at_nanos"].as_i64()?;
+                if interval["process_instance_id"].as_str().is_none()
+                    || created > exit
+                    || exit >= first
+                    || last_packet.saturating_sub(exit) > POST_EXIT_TAIL_NS
+                    || (basis == "post-exit-reset-tail" && flags & 0x04 == 0)
+                    || (basis == "post-exit-contiguous-tail" && flags & 0x11 == 0)
+                {
+                    return None;
+                }
+            }
+        }
+        let reset_tails = intervals
+            .iter()
+            .filter(|row| row["tail_basis"] == "post-exit-reset-tail")
+            .count() as u64;
+        let contiguous_tails = intervals
+            .iter()
+            .filter(|row| row["tail_basis"] == "post-exit-contiguous-tail")
+            .count() as u64;
+        if reset_tails != last["post_exit_reset_tails"].as_u64()?
+            || contiguous_tails != last["post_exit_contiguous_tails"].as_u64()?
+        {
+            return None;
+        }
     }
     Some(ProcessTraceSummary {
         finalization: "complete",
@@ -1116,6 +1314,16 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
         events_unretained: last["events_unretained"].as_u64()?,
         stage_transitions_unretained: last["stage_transitions_unretained"].as_u64()?,
         unresolved_flow_owners: last["unresolved_flow_owners"].as_u64()?,
+        post_exit_reset_tails: if version == 2 {
+            last["post_exit_reset_tails"].as_u64()?
+        } else {
+            0
+        },
+        post_exit_contiguous_tails: if version == 2 {
+            last["post_exit_contiguous_tails"].as_u64()?
+        } else {
+            0
+        },
     })
 }
 
@@ -1618,10 +1826,14 @@ mod tests {
                 FlowObservation {
                     timestamp: Timestamp::from_nanos(20),
                     attribution: Some(owner.clone()),
+                    tcp_flags: None,
+                    packet_digest: None,
                 },
                 FlowObservation {
                     timestamp: Timestamp::from_nanos(30),
                     attribution: Some(owner),
+                    tcp_flags: None,
+                    packet_digest: None,
                 },
             ],
             unretained_observations: 0,
@@ -1647,6 +1859,156 @@ mod tests {
             .unwrap();
         assert_eq!(interval["from_nanos"], 20);
         assert_eq!(interval["to_nanos"], 30);
+    }
+
+    fn tail_trace(
+        flags: u8,
+        prior: bool,
+        owner: Attribution,
+        evidence: CaptureProcessEvidence,
+    ) -> ProcessTrace {
+        tail_trace_at(flags, prior, owner, evidence, 108_000_000)
+    }
+
+    fn tail_trace_at(
+        flags: u8,
+        prior: bool,
+        owner: Attribution,
+        evidence: CaptureProcessEvidence,
+        packet_at_ns: i64,
+    ) -> ProcessTrace {
+        let mut observations = Vec::new();
+        if prior {
+            observations.push(FlowObservation {
+                timestamp: Timestamp::from_nanos(90_000_000),
+                attribution: Some(owner.clone()),
+                tcp_flags: Some(0x10),
+                packet_digest: None,
+            });
+        }
+        observations.push(FlowObservation {
+            timestamp: Timestamp::from_nanos(packet_at_ns),
+            attribution: Some(owner),
+            tcp_flags: Some(flags),
+            packet_digest: None,
+        });
+        let flow = FlowSummary {
+            id: FlowId::new(1).unwrap(),
+            observations,
+            unretained_observations: 0,
+            global_unretained_observations: 0,
+            omissions: Vec::new(),
+            omission_precision_lost: false,
+        };
+        build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[flow],
+            globally_unretained_flow_observations: 0,
+        })
+    }
+
+    fn tail_evidence() -> CaptureProcessEvidence {
+        CaptureProcessEvidence {
+            launch_pid: Some(7),
+            launch_at: Some(Timestamp::from_nanos(10)),
+            watcher_report: Some(WatcherReport::default()),
+            events: vec![
+                ProcessEvent::started(7, 0, "client.exe", "client", Timestamp::from_nanos(10)),
+                ProcessEvent::Exited {
+                    pid: 7,
+                    at: Timestamp::from_nanos(100_000_000),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn tail_interval(trace: &ProcessTrace) -> Value {
+        trace
+            .jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .rfind(|row| row["type"] == "socket-owner.interval")
+            .unwrap()
+    }
+
+    #[test]
+    fn post_exit_reset_and_contiguous_ack_bind_only_proven_generation() {
+        let owner = Attribution::new(7, "client.exe", Fidelity::Retained)
+            .with_socket_created_at(Timestamp::from_nanos(15));
+        let reset = tail_trace(0x14, false, owner.clone(), tail_evidence());
+        let reset_interval = tail_interval(&reset);
+        assert_eq!(reset_interval["process_instance_id"], "process-7-10");
+        assert_eq!(reset_interval["tail_basis"], "post-exit-reset-tail");
+        assert_eq!(reset_interval["socket_created_at_nanos"], 15);
+        assert_eq!(reset_interval["tcp_flags"], 0x14);
+        assert_eq!(reset_interval["process_exited_at_nanos"], 100_000_000);
+
+        let ack = tail_trace(0x10, true, owner.clone(), tail_evidence());
+        assert_eq!(
+            tail_interval(&ack)["tail_basis"],
+            "post-exit-contiguous-tail"
+        );
+        let fin = tail_trace(0x11, true, owner.clone(), tail_evidence());
+        assert_eq!(
+            tail_interval(&fin)["tail_basis"],
+            "post-exit-contiguous-tail"
+        );
+        let no_prior = tail_trace(0x10, false, owner, tail_evidence());
+        assert!(tail_interval(&no_prior)["process_instance_id"].is_null());
+        assert!(no_prior.jsonl.contains("post-exit-continuity-unproved"));
+    }
+
+    #[test]
+    fn post_exit_tail_rejects_missing_creation_image_reuse_and_event_loss() {
+        let owner = Attribution::new(7, "client.exe", Fidelity::Retained)
+            .with_socket_created_at(Timestamp::from_nanos(15));
+        let missing_creation = tail_trace(
+            0x14,
+            false,
+            Attribution::new(7, "client.exe", Fidelity::Retained),
+            tail_evidence(),
+        );
+        assert!(tail_interval(&missing_creation)["process_instance_id"].is_null());
+        let empty_image = tail_trace(
+            0x14,
+            false,
+            Attribution::new(7, "", Fidelity::Retained)
+                .with_socket_created_at(Timestamp::from_nanos(15)),
+            tail_evidence(),
+        );
+        assert!(tail_interval(&empty_image)["process_instance_id"].is_null());
+        let mut reused = tail_evidence();
+        reused.events.push(ProcessEvent::started(
+            7,
+            0,
+            "client.exe",
+            "client",
+            Timestamp::from_nanos(105_000_000),
+        ));
+        assert!(
+            tail_interval(&tail_trace(0x14, false, owner.clone(), reused))["process_instance_id"]
+                .is_null()
+        );
+        let mut lost = tail_evidence();
+        lost.events_unretained = 1;
+        assert!(tail_interval(&tail_trace(0x14, false, owner.clone(), lost))
+            ["process_instance_id"]
+            .is_null());
+        let late = tail_trace_at(0x14, false, owner.clone(), tail_evidence(), 200_000_001);
+        assert_eq!(
+            tail_interval(&late)["tail_basis"],
+            "post-exit-tail-out-of-bound"
+        );
+        let nonclosing = tail_trace(0x02, false, owner, tail_evidence());
+        assert_eq!(
+            tail_interval(&nonclosing)["tail_basis"],
+            "post-exit-nonclosing-packet"
+        );
     }
 
     #[test]

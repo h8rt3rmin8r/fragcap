@@ -701,6 +701,7 @@ mod launch_case_tests {
             packet_observations_unretained: 0,
             correlation_state: super::super::CorrelationState::Matched,
             correlation_reason: "exact-flow-and-owner".into(),
+            direct_route: None,
             protocol: "http".into(),
             inspectability: Inspectability::MetadataOnly,
             method: Some("GET".into()),

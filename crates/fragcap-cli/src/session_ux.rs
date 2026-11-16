@@ -900,9 +900,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("manifest.json");
         std::fs::write(&manifest_path, json!({"manifest_version":2,"state":"partial","artifacts":[{"role":"process-trace","completeness":"partial"}]}).to_string()).unwrap();
-        let trailer = json!({"type":"process-trace.trailer","finalization":"complete","completeness":"partial","records":4,"process_instances":2,"flow_owner_intervals":0,"limitations":3437,"events_lost":0,"unparseable_events":0,"buffers_lost":0,"rundown_ignored":0,"events_unretained":0,"stage_transitions_unretained":0,"unresolved_flow_owners":0});
+        let trailer = json!({"type":"process-trace.trailer","schema_version":1,"finalization":"complete","completeness":"partial","records":4,"process_instances":2,"flow_owner_intervals":0,"limitations":3437,"events_lost":0,"unparseable_events":0,"buffers_lost":0,"rundown_ignored":0,"events_unretained":0,"stage_transitions_unretained":0,"unresolved_flow_owners":0});
         let trace_path = dir.path().join("process-trace.jsonl");
-        std::fs::write(&trace_path, format!("{}\n{}\n{}\n{}\n", json!({"type":"process-trace.header"}), json!({"type":"process-trace.limitation","reason":"packet-evidence-unretained","count":3435}), json!({"type":"process-trace.limitation","reason":"process-exit-unobserved","count":2}), trailer)).unwrap();
+        std::fs::write(&trace_path, format!("{}\n{}\n{}\n{}\n", json!({"type":"process-trace.header","schema_version":1}), json!({"type":"process-trace.limitation","reason":"packet-evidence-unretained","count":3435}), json!({"type":"process-trace.limitation","reason":"process-exit-unobserved","count":2}), trailer)).unwrap();
         let artifacts = [
             ArtifactResult {
                 role: "manifest".into(),

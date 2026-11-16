@@ -219,6 +219,7 @@ impl Address {
             at_unix_ns,
             clock_error_ns,
             initial: true,
+            packet_digest: *blake3::hash(bytes).as_bytes(),
         })
     }
 

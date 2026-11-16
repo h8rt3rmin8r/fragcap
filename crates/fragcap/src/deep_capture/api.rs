@@ -55,12 +55,12 @@ pub use super::{
     ClassificationReason, ClassificationSummary, CleanupResult, CleanupStatus, ClientIdentity,
     CompatibilityFact, CompatibilityFactCandidate, CompatibilityObservation,
     CompatibilityRepository, CorrelationState, Deadlines, DeepCapture, DeepCaptureEvent,
-    DeepCaptureSession, DeferredCalibrationProtocol, DetectionState, EndpointAllocator,
-    EventDeliveryFailure, EventSink, EvidenceWindow, EvidenceWindows, ExactGameDecider,
-    FactWriteResult, FactWriteStatus, HarProjection, IdentifierSource, Inspectability,
-    InspectabilityState, InspectionAction, InspectionDecision, InspectionReason, InspectionScope,
-    InvalidClassification, InvalidTransition, LaunchAdapter, LaunchCase, LaunchLease,
-    LauncherProxyExposure, LifecycleState, LifecycleTransition, LoopbackEndpoint,
+    DeepCaptureSession, DeferredCalibrationProtocol, DetectionState, DirectRouteCorrelation,
+    EndpointAllocator, EventDeliveryFailure, EventSink, EvidenceWindow, EvidenceWindows,
+    ExactGameDecider, FactWriteResult, FactWriteStatus, HarProjection, IdentifierSource,
+    Inspectability, InspectabilityState, InspectionAction, InspectionDecision, InspectionReason,
+    InspectionScope, InvalidClassification, InvalidTransition, LaunchAdapter, LaunchCase,
+    LaunchLease, LauncherProxyExposure, LifecycleState, LifecycleTransition, LoopbackEndpoint,
     ManifestOmissionReason, NativeCertificateStore, NativeListenerReservation,
     NativeObservationContext, NativeProxyAdapter, NativeProxyLimits, ObservationDrain,
     ObservationDrainStatus, Operation, PhaseObservationDrain, PhaseQualifiedObservation,
@@ -78,9 +78,9 @@ pub use super::{
 };
 
 /// Major version of the curated stability contract in this module.
-pub const DEEP_CAPTURE_API_VERSION: u32 = 1;
+pub const DEEP_CAPTURE_API_VERSION: u32 = 2;
 
-/// Exact sorted inventory of the version-one contract.
+/// Exact sorted inventory of the version-two contract.
 pub const STABLE_API_EXPORTS: &[&str] = &[
     "AdapterSet",
     "AdapterSetBuildError",
@@ -145,6 +145,7 @@ pub const STABLE_API_EXPORTS: &[&str] = &[
     "DeepCaptureSession",
     "DeferredCalibrationProtocol",
     "DetectionState",
+    "DirectRouteCorrelation",
     "EndpointAllocator",
     "EventDeliveryFailure",
     "EventSink",

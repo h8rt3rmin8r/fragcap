@@ -21,9 +21,9 @@ use serde_json::json;
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
-fn version_one_inventory_is_curated_and_sorted() {
-    assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 169);
+fn version_two_inventory_is_curated_and_sorted() {
+    assert_eq!(DEEP_CAPTURE_API_VERSION, 2);
+    assert_eq!(STABLE_API_EXPORTS.len(), 170);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
@@ -206,7 +206,7 @@ fn cli_product_contract_does_not_bypass_the_stable_module() {
 }
 
 #[test]
-fn version_one_plain_struct_literals_remain_source_compatible() {
+fn version_two_plain_struct_literals_remain_source_compatible() {
     use fragcap::deep_capture::api::*;
     let observation = CompatibilityObservation {
         flow_id: None,
@@ -222,6 +222,7 @@ fn version_one_plain_struct_literals_remain_source_compatible() {
         packet_observations_unretained: 0,
         correlation_state: CorrelationState::Unavailable,
         correlation_reason: "not-observed".into(),
+        direct_route: None,
         protocol: "http".into(),
         inspectability: Inspectability::Full,
         method: Some("GET".into()),

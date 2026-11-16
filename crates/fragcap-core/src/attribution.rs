@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use crate::Timestamp;
+
 /// Identifies a stage in a launcher chain.
 ///
 /// A profile in slice S05 names the stages of a title's launch, and slice S12
@@ -86,6 +88,8 @@ pub struct Attribution {
     pub stage: Option<StageId>,
     /// How this attribution was obtained.
     pub fidelity: Fidelity,
+    /// Socket creation instant reported by the owning table row, when available.
+    pub socket_created_at: Option<Timestamp>,
 }
 
 impl Attribution {
@@ -104,6 +108,7 @@ impl Attribution {
             role: None,
             stage: None,
             fidelity,
+            socket_created_at: None,
         }
     }
 
@@ -114,6 +119,11 @@ impl Attribution {
 
     pub fn with_stage(mut self, stage: StageId) -> Self {
         self.stage = Some(stage);
+        self
+    }
+
+    pub fn with_socket_created_at(mut self, at: Timestamp) -> Self {
+        self.socket_created_at = Some(at);
         self
     }
 }

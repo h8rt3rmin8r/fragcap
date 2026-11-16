@@ -90,6 +90,7 @@ pub struct DirectPacketHead {
     pub at_unix_ns: i64,
     pub clock_error_ns: u64,
     pub initial: bool,
+    pub packet_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -101,6 +102,7 @@ pub struct OriginalFlow {
     pub pid: u32,
     pub process_instance_id: String,
     pub process_image: String,
+    pub first_packet_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,6 +188,7 @@ pub fn select_direct_flow(
         pid: event.pid,
         process_instance_id,
         process_image,
+        first_packet_digest: packet.packet_digest,
     })
 }
 
@@ -249,6 +252,7 @@ fn managed_direct_root_flow(
         pid: event.pid,
         process_instance_id: format!("process-{}-{created}", event.pid),
         process_image: image,
+        first_packet_digest: packet.packet_digest,
     })
 }
 
@@ -741,6 +745,7 @@ mod tests {
             at_unix_ns: 1300,
             clock_error_ns: 1,
             initial: true,
+            packet_digest: [7; 32],
         }
     }
 

@@ -55,6 +55,9 @@ fn watchdog_interval(disconnect_timeout: Duration) -> Duration {
 }
 
 /// A message to a consumer's writer thread.
+/// Keep packet data inline: boxing every packet would add one allocation per
+/// consumer on the capture hot path just to shrink the rare Finish variant.
+#[allow(clippy::large_enum_variant)]
 enum ToConsumer {
     /// One packet to write.
     Packet(CapturedPacket),

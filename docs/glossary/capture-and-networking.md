@@ -177,9 +177,8 @@ Deep Capture serves authorized game-development and research workflows
 where application-layer traffic needs to be inspectable. It may route the target
 through a [local inspection proxy](capture-and-networking.md#local-inspection-proxy) and may produce proxy-owned analyzer artifacts,
 but it does not inject code, install hooks, read target memory, modify
-installed game files, or read target memory for TLS keys. S199 packages an
-official signed direct-route component for later explicitly scoped use; current
-source does not yet divert final-client connections.
+installed game files, or read target memory for TLS keys. Its signed direct
+route can divert connections from the exact managed final-game generation.
 
 {: .matters }
 > Deep Capture is a product mode, not a permission slip. Its implementation is
@@ -192,6 +191,17 @@ source does not yet divert final-client connections.
 [Session bundle](file-and-wire-formats.md#session-bundle),
 [Technique denylist](anti-cheat-and-security.md#technique-denylist)
 
+## Original packet identity
+
+A BLAKE3 digest of the complete IP datagram selected by the direct route. A
+complete passive packet with the same datagram bytes can corroborate that the
+original appeared in packet capture. Ethernet framing and padding are excluded;
+a truncated snapshot has no usable identity. Later packets with the same
+5-tuple do not establish observation of the selected original.
+
+**See also:** [Flow](capture-and-networking.md#flow),
+[Attribution](process-and-attribution.md#attribution)
+
 ## Compatibility calibration
 
 An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, one target-scoped routing strategy, one loopback address family, one effective inspection scope and middleware-handling policy, and either routing or one exact native protocol family.
@@ -202,7 +212,7 @@ A calibration proposal is a deterministic read-only projection that identifies a
 
 The `fragcap calibrate` front door resolves one existing target and takes one query-only process image snapshot. Its immutable workflow records requested and effective scope, handling policy, and separately selected retry and packet-only fallback authority. A declared launch-chain failure can create at most one fresh exact-game successor after cleanup and target authority are revalidated. A declared packet-only fallback retains eligible passive observations under their actual window and does not create positive inspection evidence.
 
-For current Deep Capture planning, `auto` resolves to launch-chain application inspection for direct and launcher-mediated targets. Explicit `game` selects game-only application inspection while retaining the managed packet scope. A direct-route calibration fact requires exact final-client route and client transfer evidence; an upstream connection or passive packet absence alone does not establish reachability.
+S207 retired the public calibration command and its prerequisite for ordinary Deep Capture. Current `auto` resolves to exact-game inspection and direct routing; explicit launch-chain scope is an advanced choice. Old calibration rows remain readable as historical facts. A positive direct-route result requires actual client transfer and does not require passive capture of the consumed original packet.
 
 {: .matters }
 > Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.

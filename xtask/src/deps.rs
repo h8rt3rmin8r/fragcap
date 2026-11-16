@@ -107,7 +107,11 @@ pub fn parse_deps(manifest: &str) -> BTreeSet<String> {
 ///   no I/O. Admitted by slice S02 decision D-1 because a payload is cloned
 ///   into a bounded ring and fanned out to several sinks, and copying it per
 ///   sink is the hot path of the program.
-const CORE_ALLOWED_DEPS: &[&str] = &["bytes"];
+/// - `blake3`: fixed-size identity of a complete network datagram, admitted by
+///   S210. Its workspace declaration disables default features and introduces
+///   no platform or I/O surface into core. The exact same digest is computed
+///   by the direct-route facade before the original packet is consumed.
+const CORE_ALLOWED_DEPS: &[&str] = &["bytes", "blake3"];
 
 /// Assert that `fragcap-core` depends on nothing outside `CORE_ALLOWED_DEPS`.
 ///

@@ -14,3 +14,4 @@ readme                 = "README.md"
 
 [dependencies]
 bytes.workspace = true
+blake3.workspace = true
