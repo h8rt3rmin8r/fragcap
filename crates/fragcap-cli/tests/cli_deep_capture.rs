@@ -21,11 +21,11 @@ use fragcap::targets::{
 };
 
 #[test]
-fn auto_inspection_help_matches_resolved_launch_chain_default() {
+fn auto_inspection_help_matches_exact_game_default() {
     let (code, help, error) = run(&["deep-capture", "--help"]);
     assert_eq!(code, 0, "{error}");
     assert!(
-        help.contains("Auto selects launch-chain inspection for every managed launch."),
+        help.contains("Auto selects the exact final game."),
         "{help}"
     );
     assert!(
@@ -195,12 +195,6 @@ fn structured_mismatch_emits_one_terminal_refusal_before_effects() {
             "sample-target",
             "--launch",
             "--authorize-stdin",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -233,12 +227,6 @@ fn interactive_decline_is_successful_and_effect_free() {
             "deep-capture",
             "sample-target",
             "--launch",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--duration",
             "500ms",
             "--wait",
@@ -281,12 +269,6 @@ fn interactive_affirmative_terminated_by_eof_is_refused_without_effects() {
             "deep-capture",
             "sample-target",
             "--launch",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -316,12 +298,6 @@ fn authorization_plan_write_failure_never_reads_approval_or_starts_effects() {
             "deep-capture",
             "sample-target",
             "--launch",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -353,12 +329,6 @@ fn exact_approval_refuses_target_authority_drift_before_effects() {
             "sample-target",
             "--launch",
             "--authorize-stdin",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -388,11 +358,8 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--no-payload",
         "--authorize-stdin",
         "--restart-warm",
-        "--calibrate",
-        "--launch-case",
-        "--calibration-protocol",
-        "--har",
-        "--key-log",
+        "--inspect-scope",
+        "--launcher-proxy",
         "--client-certificate",
         "--client-private-key",
         "--proxy-bypass",
@@ -403,82 +370,12 @@ fn deep_capture_help_exposes_the_operator_contract() {
         );
     }
     assert!(!out.contains("--controlled-target"));
+    assert!(!out.contains("--calibrate"));
+    assert!(!out.contains("--launch-case"));
+    assert!(!out.contains("--calibration-protocol"));
     assert!(!out.contains("--proxy-backend"));
     assert!(!out.contains("--trust-ca"));
     assert!(!out.contains("--yes"));
-}
-
-#[test]
-fn warm_restart_cannot_be_combined_with_calibration() {
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--restart-warm",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
-    ]);
-    assert_eq!(code, 2);
-    assert!(
-        err.contains("cannot be used with"),
-        "conflict refusal: {err}"
-    );
-}
-
-#[test]
-fn calibration_arguments_are_paired() {
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-    ]);
-    assert_eq!(code, 2);
-    assert!(err.contains("--launch-case"), "pairing refusal: {err}");
-
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--launch-case",
-        "direct-exe-warm",
-    ]);
-    assert_eq!(code, 2);
-    assert!(err.contains("--calibrate"), "pairing refusal: {err}");
-}
-
-#[test]
-fn calibration_phase_requires_an_exact_compatible_protocol() {
-    for (phase, protocol, expected) in [
-        (
-            "reachability",
-            "https",
-            "requires --calibration-protocol routing",
-        ),
-        ("tls", "routing", "requires one concrete protocol"),
-    ] {
-        let (code, _out, err) = run(&[
-            "deep-capture",
-            "sample-target",
-            "--launch",
-            "--calibrate",
-            phase,
-            "--calibration-protocol",
-            protocol,
-            "--launch-case",
-            "direct-exe-cold",
-            "--authorize-stdin",
-        ]);
-        assert_eq!(code, 2);
-        assert!(err.contains(expected), "phase refusal: {err}");
-    }
 }
 
 #[test]
@@ -500,195 +397,6 @@ fn client_identity_arguments_are_paired() {
 }
 
 #[test]
-fn controlled_calibration_runs_reachability_then_tls() {
-    let _environment = controlled_environment().lock().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    let target_id = seed_target(&local, false);
-    std::env::set_var(
-        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
-        env!("CARGO_BIN_EXE_fragcap"),
-    );
-
-    let reachability_bundle = dir.path().join("reachability");
-    let (code, out, reachability_events) = run(&[
-        "--json",
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
-        "--duration",
-        "5s",
-        "--wait",
-        "7s",
-        "--authorize-stdin",
-        "--proxy-bypass",
-        ".example.invalid,192.0.2.0/24",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        reachability_bundle.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0, "reachability events:\n{reachability_events}");
-    assert!(
-        reachability_events.lines().count() <= 40 && reachability_events.len() <= 256 * 1024,
-        "controlled smoke emitted {} lines and {} bytes",
-        reachability_events.lines().count(),
-        reachability_events.len()
-    );
-    assert!(out.is_empty());
-    assert!(reachability_events.contains("deep_capture.authorization_plan"));
-    let routing_plan: serde_json::Value = reachability_events
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .find(|event: &serde_json::Value| event["event"] == "deep_capture.routing_plan")
-        .unwrap();
-    assert_eq!(routing_plan["policy_version"], 1);
-    assert_eq!(
-        routing_plan["operator_rules"],
-        serde_json::json!([".example.invalid", "192.0.2.0/24"])
-    );
-    assert_eq!(routing_plan["fallback"], "none");
-    assert!(reachability_events.contains("\"status\":\"reached-client\""));
-    assert!(!reachability_events.contains("deep_capture.trust"));
-    let plan: serde_json::Value = reachability_events
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .find(|event: &serde_json::Value| event["event"] == "deep_capture.authorization_plan")
-        .unwrap();
-    assert_eq!(plan["plan"]["deadlines_milliseconds"]["launch"], 7_000);
-    assert_eq!(plan["plan"]["deadlines_milliseconds"]["observation"], 5_000);
-    assert_eq!(
-        plan["plan"]["proxy"]["routing_scope"],
-        "managed child environment only"
-    );
-    assert_eq!(plan["plan"]["proxy"]["address_family"], "ipv4");
-    assert_eq!(plan["plan"]["facts"]["possible_protocol"], "routing");
-    assert_eq!(plan["plan"]["proxy"]["backend"], "fragcap-native");
-    assert_eq!(
-        plan["plan"]["proxy"]["backend_version"],
-        env!("CARGO_PKG_VERSION")
-    );
-    assert_eq!(
-        plan["plan"]["versions"]["fragcap"],
-        env!("CARGO_PKG_VERSION")
-    );
-    assert_eq!(
-        plan["plan"]["trust"]["action"],
-        "verify installation CA; no TLS inspection"
-    );
-    let phase_events = reachability_events
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .filter(|event| event["event"] == "deep_capture.calibration_phase")
-        .collect::<Vec<_>>();
-    assert_eq!(phase_events.len(), 2);
-    for event in phase_events {
-        assert_eq!(event["target"], "sample-target");
-        assert_eq!(event["launch_case"], "direct-exe-warm");
-        assert_eq!(event["proxy_backend"], "fragcap-native");
-        assert_eq!(event["proxy_backend_version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(event["routing_strategy"], "child-environment");
-        assert_eq!(event["address_family"], "ipv4");
-        assert_eq!(event["protocol"], "routing");
-        assert_eq!(event["fragcap_version"], env!("CARGO_PKG_VERSION"));
-        assert!(event["target_version"].is_null());
-    }
-    let reachability_manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(reachability_bundle.join("manifest.json")).unwrap())
-            .unwrap();
-    assert_eq!(reachability_manifest["trust"]["state"], "not-requested");
-    assert_eq!(
-        reachability_manifest["proxy"]["routing_policy"]["operator_rules"],
-        serde_json::json!([".example.invalid", "192.0.2.0/24"])
-    );
-    assert_eq!(
-        reachability_manifest["proxy"]["routing_decisions"]["bypass_proxy_loss"],
-        0
-    );
-    assert!(reachability_manifest["proxy"]["routing_decisions"]["bypassed"].is_null());
-    assert_eq!(
-        reachability_manifest["proxy"]["routing_decisions"]["bypassed_state"],
-        "unavailable-without-localized-packet-destination"
-    );
-    let compatibility: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(reachability_bundle.join("compatibility.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        compatibility["calibration"]["deadlines_seconds"]["launch"],
-        7
-    );
-    assert_eq!(
-        compatibility["calibration"]["deadlines_seconds"]["observation"],
-        5
-    );
-    assert_eq!(compatibility["routing_strategy"], "child-environment");
-    assert_eq!(compatibility["address_family"], "ipv4");
-    assert_eq!(compatibility["protocol"], "routing");
-    assert_eq!(
-        compatibility["routing_policy"]["operator_rules"],
-        serde_json::json!([".example.invalid", "192.0.2.0/24"])
-    );
-    assert_eq!(compatibility["routing_decisions"]["bypass_proxy_loss"], 0);
-    assert!(compatibility["routing_decisions"]["bypassed"].is_null());
-
-    let store = Store::open(&local).unwrap();
-    let facts = store.compatibility_facts_for_target(target_id).unwrap();
-    assert!(facts.iter().any(|fact| {
-        fact.key == CompatibilityFactKey::ProxyRouting && fact.value == "reached-client"
-    }));
-    assert!(facts.iter().all(|fact| {
-        fact.routing_strategy == Some(CompatibilityRoutingStrategy::ChildEnvironment)
-            && fact.address_family == Some(CompatibilityAddressFamily::Ipv4)
-            && fact.protocol.is_some()
-    }));
-    assert!(facts.iter().any(|fact| {
-        fact.key == CompatibilityFactKey::ProxyPropagation && fact.value == "confirmed"
-    }));
-    assert!(!facts
-        .iter()
-        .any(|fact| fact.key == CompatibilityFactKey::TlsTrustBehavior));
-    drop(store);
-
-    let tls_bundle = dir.path().join("tls");
-    let (code, _out, tls_events) = run(&[
-        "--json",
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "tls",
-        "--calibration-protocol",
-        "https",
-        "--launch-case",
-        "direct-exe-warm",
-        "--authorize-stdin",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        tls_bundle.to_str().unwrap(),
-    ]);
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
-    assert_eq!(code, 0, "TLS events:\n{tls_events}");
-    assert!(tls_events.contains("deep_capture.trust"));
-    assert!(tls_events.contains("\"status\":\"local-ca-accepted\""));
-
-    let store = Store::open(&local).unwrap();
-    let facts = store.compatibility_facts_for_target(target_id).unwrap();
-    assert!(facts.iter().any(|fact| {
-        fact.key == CompatibilityFactKey::TlsTrustBehavior && fact.value == "accepts-local-ca"
-    }));
-}
-
-#[test]
 fn controlled_slow_launcher_routes_before_and_after_client_creation() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -706,12 +414,6 @@ fn controlled_slow_launcher_routes_before_and_after_client_creation() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
         "--duration",
         "5s",
         "--wait",
@@ -751,12 +453,6 @@ fn malformed_proxy_bypass_refuses_before_session_effects() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
         "--authorize-stdin",
         "--proxy-bypass",
         "*",
@@ -768,65 +464,6 @@ fn malformed_proxy_bypass_refuses_before_session_effects() {
     ]);
     assert_eq!(code, 2);
     assert!(err.contains("complete-bypass wildcard"), "refusal: {err}");
-    assert!(!bundle.exists());
-}
-
-#[test]
-fn reachability_calibration_rejects_trust_and_tls_outputs_before_mutation() {
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    let bundle = dir.path().join("bundle");
-    seed_target(&local, false);
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
-        "--har",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 2);
-    assert!(err.contains("does not change trust"), "refusal: {err}");
-    assert!(!bundle.exists());
-}
-
-#[test]
-fn tls_calibration_requires_current_same_case_routing_before_mutation() {
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    seed_target(&local, false);
-    let bundle = dir.path().join("bundle");
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "tls",
-        "--calibration-protocol",
-        "https",
-        "--launch-case",
-        "direct-exe-warm",
-        "--authorize-stdin",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 2);
-    assert!(
-        err.contains("run reachability calibration first"),
-        "refusal: {err}"
-    );
     assert!(!bundle.exists());
 }
 
@@ -858,37 +495,7 @@ fn legacy_authorization_flags_are_rejected() {
 }
 
 #[test]
-#[cfg(windows)]
-fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup() {
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    let bundle = dir.path().join("bundle");
-    seed_target(&local, false);
-    let target_id = 75_000;
-    let target_id_arg = target_id.to_string();
-
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "--id",
-        &target_id_arg,
-        "--launch",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--proxy-family",
-        "ipv6",
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 1);
-    assert!(
-        err.contains("installation CA") && err.contains("fragcap ca repair"),
-        "the refusal names missing installation trust before effects: {err}"
-    );
-    assert!(!bundle.exists());
-}
-
-#[test]
-#[cfg(windows)]
+#[cfg(all(windows, feature = "direct-route"))]
 fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -1705,47 +1312,6 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
 }
 
 #[test]
-fn partial_calibration_persists_the_same_failed_terminal_outcome_it_emits() {
-    let _environment = controlled_environment().lock().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    seed_target(&local, true);
-    let bundle = dir.path().join("bundle");
-    std::env::set_var(
-        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
-        env!("CARGO_BIN_EXE_fragcap"),
-    );
-    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
-
-    let (code, _out, events) = run(&[
-        "--json",
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "tls",
-        "--calibration-protocol",
-        "https",
-        "--launch-case",
-        "direct-exe-warm",
-        "--authorize-stdin",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
-
-    assert_eq!(code, 1, "events:\n{events}");
-    assert!(events.contains("\"status\":\"failed\""));
-    let compatibility: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap()).unwrap();
-    assert_eq!(compatibility["calibration"]["outcome"], "failed");
-}
-
-#[test]
 fn declared_game_scope_successor_reuses_the_predecessor_authorization_once() {
     let _environment = controlled_environment().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -1767,12 +1333,6 @@ fn declared_game_scope_successor_reuses_the_predecessor_authorization_once() {
             "sample-target",
             "--launch",
             "--authorize-stdin",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--inspect-scope",
             "launch-chain",
             "--retry-game-scope",
@@ -1825,12 +1385,6 @@ fn completed_session_without_inspection_still_uses_declared_scope_recovery() {
             "sample-target",
             "--launch",
             "--authorize-stdin",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-warm",
             "--inspect-scope",
             "launch-chain",
             "--retry-game-scope",
@@ -1858,84 +1412,4 @@ fn completed_session_without_inspection_still_uses_declared_scope_recovery() {
     );
     assert!(bundle.join("manifest.json").is_file());
     assert!(successor_bundle.join("manifest.json").is_file());
-}
-
-#[test]
-fn failed_calibration_human_report_names_evidence_once_before_artifacts() {
-    let _environment = controlled_environment().lock().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    seed_target(&local, true);
-    let bundle = dir.path().join("human-failure");
-    std::env::set_var(
-        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
-        env!("CARGO_BIN_EXE_fragcap"),
-    );
-    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "tls",
-        "--calibration-protocol",
-        "https",
-        "--launch-case",
-        "direct-exe-warm",
-        "--authorize-stdin",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
-    assert_eq!(code, 1, "diagnostics:\n{err}");
-    let words = err.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(words.contains("Earliest boundary: unavailable"));
-    assert!(words.contains("Target packets retained: unavailable"));
-    assert!(words.contains("Connections accepted: 2"));
-    assert!(words.contains("Fact writes: appended="));
-    assert!(!err.contains("Owned resource cleanup result received"));
-    assert!(err.find("Observed case evidence").unwrap() < err.find("Captured evidence").unwrap());
-}
-
-#[test]
-fn complete_but_unreached_calibration_reports_inconclusive_human_outcome() {
-    let _environment = controlled_environment().lock().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let local = dir.path().join("local.db");
-    seed_target(&local, true);
-    let bundle = dir.path().join("unreached");
-    std::env::set_var(
-        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
-        env!("CARGO_BIN_EXE_fragcap"),
-    );
-    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS", "1");
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--calibrate",
-        "reachability",
-        "--calibration-protocol",
-        "routing",
-        "--launch-case",
-        "direct-exe-warm",
-        "--authorize-stdin",
-        "--controlled-target",
-        "--local-db",
-        local.to_str().unwrap(),
-        "--bundle",
-        bundle.to_str().unwrap(),
-    ]);
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_SKIP_REQUESTS");
-    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
-    assert_eq!(code, 0, "diagnostics:\n{err}");
-    let words = err.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(words.contains("Attempt result: inconclusive"), "{err}");
-    assert!(err.contains("Observed case evidence"), "{err}");
-    assert!(words.contains("Connections accepted: 0"), "{err}");
-    assert!(words.contains("Session finalization: complete"), "{err}");
 }

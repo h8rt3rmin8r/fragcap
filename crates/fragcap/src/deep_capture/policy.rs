@@ -3,8 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::targets::{
-    latest_applicable_fact, CompatibilityCase, CompatibilityFact, CompatibilityFactKey,
-    CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityCase, CompatibilityFact, CompatibilityFactKey, CompatibilityProtocol,
 };
 
 use super::{
@@ -13,40 +12,16 @@ use super::{
     InspectabilityState, LaunchCase, PreflightRefusal, SessionMode, TrafficFamily,
 };
 
-/// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
+/// Validate current launch feasibility without treating historical observations
+/// as permission to begin a new, separately authorized capture.
 pub fn validate_compatibility_prerequisites(
-    mode: SessionMode,
+    _mode: SessionMode,
     controlled: bool,
-    facts: &[CompatibilityFact],
+    _facts: &[CompatibilityFact],
     launch_case: LaunchCase,
-    current: &CompatibilityCase,
+    _current: &CompatibilityCase,
 ) -> Result<(), PreflightRefusal> {
-    if !controlled && mode != SessionMode::Capture {
-        require_supported_launch_case(launch_case)?;
-    }
-    if mode == SessionMode::ReachabilityCalibration {
-        return Ok(());
-    }
-    if controlled && mode == SessionMode::Capture {
-        return Ok(());
-    }
-    let Some(stored_case) = stored_launch_case(launch_case) else {
-        return Err(PreflightRefusal::new(
-            "launch-case",
-            "the controlled launch case requires the controlled adapter set",
-        ));
-    };
-    let routes = latest_applicable_fact(facts, CompatibilityFactKey::ProxyRouting, current);
-    if routes.is_none_or(|fact| fact.value != "reached-client") {
-        return Err(PreflightRefusal::new(
-            "routing-prerequisite",
-            format!(
-                "Deep Capture requires current compatibility facts proving scoped proxy routing reaches the final client for launch case {}; run reachability calibration first",
-                stored_case.as_str()
-            ),
-        ));
-    }
-    if mode == SessionMode::TlsCalibration {
+    if controlled {
         return Ok(());
     }
     require_supported_launch_case(launch_case)
@@ -76,27 +51,11 @@ fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), Prefligh
         _ => Err(PreflightRefusal::new(
             "launch-case",
             format!(
-                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches whose compatibility facts prove client routing",
+                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches",
                 launch_case.as_str()
             ),
         )),
     }
-}
-
-fn stored_launch_case(value: LaunchCase) -> Option<CompatibilityLaunchCase> {
-    Some(match value {
-        LaunchCase::SteamProtocolWarm => CompatibilityLaunchCase::SteamProtocolWarm,
-        LaunchCase::SteamProtocolCold => CompatibilityLaunchCase::SteamProtocolCold,
-        LaunchCase::DirectExeWarm => CompatibilityLaunchCase::DirectExeWarm,
-        LaunchCase::DirectExeCold => CompatibilityLaunchCase::DirectExeCold,
-        LaunchCase::PublisherLauncher => CompatibilityLaunchCase::PublisherLauncher,
-        LaunchCase::PublisherLauncherWarm => CompatibilityLaunchCase::PublisherLauncherWarm,
-        LaunchCase::PublisherLauncherGameStartCleanWarm => {
-            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
-        }
-        LaunchCase::PublisherLauncherCold => CompatibilityLaunchCase::PublisherLauncherCold,
-        LaunchCase::Controlled => return None,
-    })
 }
 
 /// Select append-only compatibility facts from direct observations.
@@ -667,6 +626,7 @@ mod launch_case_tests {
         DetectionState, Inspectability, InspectabilityState, ProtocolClassification, TrafficFamily,
     };
     use super::*;
+    use fragcap_targets::CompatibilityLaunchCase;
 
     fn correlated_client_observation() -> CompatibilityObservation {
         CompatibilityObservation {
@@ -696,6 +656,39 @@ mod launch_case_tests {
                 None,
             )
             .unwrap(),
+        }
+    }
+
+    #[test]
+    fn ordinary_first_capture_does_not_need_prior_routing_fact() {
+        let case = CompatibilityCase {
+            launch_case: CompatibilityLaunchCase::DirectExeCold,
+            proxy_backend: "native".into(),
+            proxy_backend_version: "test".into(),
+            routing_strategy: crate::targets::CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
+            address_family: crate::targets::CompatibilityAddressFamily::Ipv4,
+            protocol: CompatibilityProtocol::Routing,
+            fragcap_version: "test".into(),
+            target_version: None,
+            requested_scope: crate::targets::CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: crate::targets::CompatibilityInspectionScope::ExactGame,
+            middleware_handling: crate::targets::CompatibilityMiddlewareHandling::BlindRelay,
+            inspection_policy_id: "exact-game-v2".into(),
+        };
+        for launch_case in [
+            LaunchCase::SteamProtocolCold,
+            LaunchCase::DirectExeCold,
+            LaunchCase::PublisherLauncherCold,
+        ] {
+            assert!(validate_compatibility_prerequisites(
+                SessionMode::Capture,
+                false,
+                &[],
+                launch_case,
+                &case,
+            )
+            .is_ok());
         }
     }
 

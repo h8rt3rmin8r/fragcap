@@ -212,6 +212,7 @@ impl CompatibilityLaunchCase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CompatibilityRoutingStrategy {
     ChildEnvironment,
+    DirectSocket,
     CommandArguments,
     TargetConfiguration,
     HttpProxy,
@@ -224,6 +225,8 @@ pub enum CompatibilityRoutingStrategy {
 pub enum CompatibilityRouteIdentity {
     ChildEnvironmentV1,
     ChildEnvironmentDirectSocketV1,
+    DirectSocketV1,
+    SocksOnlyDirectSocketV1,
 }
 
 impl CompatibilityRouteIdentity {
@@ -231,6 +234,8 @@ impl CompatibilityRouteIdentity {
         match self {
             Self::ChildEnvironmentV1 => "child-environment-v1",
             Self::ChildEnvironmentDirectSocketV1 => "child-environment+direct-socket-v1",
+            Self::DirectSocketV1 => "direct-socket-v1",
+            Self::SocksOnlyDirectSocketV1 => "socks-only+direct-socket-v1",
         }
     }
 
@@ -238,6 +243,8 @@ impl CompatibilityRouteIdentity {
         match value {
             "child-environment-v1" => Ok(Self::ChildEnvironmentV1),
             "child-environment+direct-socket-v1" => Ok(Self::ChildEnvironmentDirectSocketV1),
+            "direct-socket-v1" => Ok(Self::DirectSocketV1),
+            "socks-only+direct-socket-v1" => Ok(Self::SocksOnlyDirectSocketV1),
             other => Err(TargetsError::Model(format!(
                 "unknown compatibility route identity {other:?}"
             ))),
@@ -249,6 +256,7 @@ impl CompatibilityRoutingStrategy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ChildEnvironment => "child-environment",
+            Self::DirectSocket => "direct-socket",
             Self::CommandArguments => "command-arguments",
             Self::TargetConfiguration => "target-configuration",
             Self::HttpProxy => "http-proxy",
@@ -260,6 +268,7 @@ impl CompatibilityRoutingStrategy {
     pub fn parse(value: &str) -> Result<Self, TargetsError> {
         match value {
             "child-environment" => Ok(Self::ChildEnvironment),
+            "direct-socket" => Ok(Self::DirectSocket),
             "command-arguments" => Ok(Self::CommandArguments),
             "target-configuration" => Ok(Self::TargetConfiguration),
             "http-proxy" => Ok(Self::HttpProxy),
@@ -972,6 +981,7 @@ mod tests {
     fn calibration_case_tokens_round_trip_closed_sets() {
         for strategy in [
             CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityRoutingStrategy::DirectSocket,
             CompatibilityRoutingStrategy::CommandArguments,
             CompatibilityRoutingStrategy::TargetConfiguration,
             CompatibilityRoutingStrategy::HttpProxy,

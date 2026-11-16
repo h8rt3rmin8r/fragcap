@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -50,7 +50,7 @@ use crate::args::Direction;
 use crate::cli::{
     CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
     DeepCaptureCalibrationProtocolArg, DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg,
-    InspectionScopeArg, OfflineArgs, ScopeArg,
+    InspectionScopeArg, LauncherProxyArg, OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -109,6 +109,7 @@ fn compatibility_address_family(value: DeepCaptureProxyFamilyArg) -> Compatibili
     }
 }
 
+#[cfg(test)]
 pub(crate) fn current_compatibility_case(
     launch_case: CompatibilityLaunchCase,
     family: DeepCaptureProxyFamilyArg,
@@ -156,10 +157,65 @@ fn requested_compatibility_case(
     args: &DeepCaptureArgs,
     mut case: CompatibilityCase,
 ) -> CompatibilityCase {
-    if args.direct_route {
-        case.route_identity = CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1;
-    }
+    case.route_identity = planned_route_identity(args);
+    case.routing_strategy = planned_compatibility_strategy(args);
     case
+}
+
+fn planned_compatibility_strategy(args: &DeepCaptureArgs) -> CompatibilityRoutingStrategy {
+    if launcher_exposure(args) == deep_capture_api::LauncherProxyExposure::Native
+        && effective_direct_route(args)
+    {
+        CompatibilityRoutingStrategy::DirectSocket
+    } else {
+        CompatibilityRoutingStrategy::ChildEnvironment
+    }
+}
+
+fn compatibility_strategy_for_route(
+    route: &deep_capture_api::RoutingPlan,
+) -> CompatibilityRoutingStrategy {
+    if route.effects.is_empty() && route.direct_socket.is_some() {
+        CompatibilityRoutingStrategy::DirectSocket
+    } else {
+        CompatibilityRoutingStrategy::ChildEnvironment
+    }
+}
+
+fn effective_direct_route(args: &DeepCaptureArgs) -> bool {
+    args.direct_route || (!args.controlled_target && args.calibrate.is_none())
+}
+
+fn launcher_exposure(args: &DeepCaptureArgs) -> deep_capture_api::LauncherProxyExposure {
+    match args.launcher_proxy {
+        Some(LauncherProxyArg::Native) => deep_capture_api::LauncherProxyExposure::Native,
+        Some(LauncherProxyArg::SocksOnly) => deep_capture_api::LauncherProxyExposure::SocksOnly,
+        Some(LauncherProxyArg::HttpAndSocks) => {
+            deep_capture_api::LauncherProxyExposure::HttpAndSocks
+        }
+        None if args.inspect_scope == InspectionScopeArg::LaunchChain => {
+            deep_capture_api::LauncherProxyExposure::SocksOnly
+        }
+        None if args.controlled_target && !effective_direct_route(args) => {
+            deep_capture_api::LauncherProxyExposure::HttpAndSocks
+        }
+        None => deep_capture_api::LauncherProxyExposure::Native,
+    }
+}
+
+fn planned_route_identity(args: &DeepCaptureArgs) -> CompatibilityRouteIdentity {
+    match (launcher_exposure(args), effective_direct_route(args)) {
+        (deep_capture_api::LauncherProxyExposure::Native, true) => {
+            CompatibilityRouteIdentity::DirectSocketV1
+        }
+        (deep_capture_api::LauncherProxyExposure::SocksOnly, true) => {
+            CompatibilityRouteIdentity::SocksOnlyDirectSocketV1
+        }
+        (deep_capture_api::LauncherProxyExposure::HttpAndSocks, true) => {
+            CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+        }
+        (_, false) => CompatibilityRouteIdentity::ChildEnvironmentV1,
+    }
 }
 
 fn direct_route_component_directory() -> Result<PathBuf, CliError> {
@@ -177,7 +233,7 @@ fn selected_routing_adapter(
     observations: deep_capture_api::NativeObservationContext,
     bundle: &Path,
 ) -> Result<Box<dyn deep_capture_api::RoutingAdapter>, CliError> {
-    if args.direct_route {
+    if effective_direct_route(args) {
         #[cfg(all(windows, feature = "direct-route"))]
         {
             return Ok(Box::new(
@@ -233,7 +289,7 @@ pub(crate) fn resolve_cli_inspection_scope(
             (CompatibilityInspectionScope::LaunchChain, "explicit")
         }
         CompatibilityRequestedInspectionScope::Auto => {
-            (CompatibilityInspectionScope::LaunchChain, "default")
+            (CompatibilityInspectionScope::ExactGame, "default")
         }
     };
     ResolvedCliInspectionScope {
@@ -347,6 +403,15 @@ struct AuthorizationPlan {
     canonical_json: String,
     target_authority: AuthorizationTargetAuthority,
     authority_expires: SystemTime,
+    route_selection: Option<AuthorizedRouteSelection>,
+}
+
+#[derive(Clone, Debug)]
+struct AuthorizedRouteSelection {
+    exposure: deep_capture_api::LauncherProxyExposure,
+    direct_socket: bool,
+    bypass_inputs: Vec<String>,
+    target_id: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -370,7 +435,43 @@ impl AuthorizationPlan {
             canonical_json,
             target_authority,
             authority_expires,
+            route_selection: None,
         }
+    }
+
+    fn with_route_selection(mut self, selection: AuthorizedRouteSelection) -> Self {
+        self.route_selection = Some(selection);
+        self
+    }
+
+    fn validate_prepared_route(
+        &self,
+        plan: &deep_capture_api::SessionPlan,
+    ) -> Result<(), CliError> {
+        let selection = self.route_selection.as_ref().ok_or_else(|| {
+            CliError::usage(
+                "the authorization plan omitted its route selection; no effects were applied",
+            )
+        })?;
+        if plan.target.id != selection.target_id {
+            return Err(CliError::usage(
+                "the prepared route target differs from authorization; no effects were applied",
+            ));
+        }
+        let expected = deep_capture_api::RoutingPlan::selected(
+            plan.endpoint,
+            &selection.bypass_inputs,
+            &plan.target,
+            selection.exposure,
+            selection.direct_socket,
+        )
+        .map_err(cli_error_from_library_refusal)?;
+        if plan.routing != expected {
+            return Err(CliError::usage(
+                "the prepared route effects differ from authorization; no effects were applied",
+            ));
+        }
+        Ok(())
     }
 
     fn emit(&self, emitter: &mut Emitter) -> Result<(), CliError> {
@@ -1006,17 +1107,6 @@ fn run_warm_restart(
     Ok(Some(context))
 }
 
-/// Apply the existing bounded operator-owned warm-to-cold workflow without
-/// starting a Deep Capture session. The guided calibration command calls this
-/// only after its proposal reports an exact warm launch case.
-pub(crate) fn prepare_warm_restart(
-    args: &DeepCaptureArgs,
-    store: &Store,
-    emitter: &mut Emitter,
-) -> Result<(), CliError> {
-    run_warm_restart(args, store, emitter).map(|_| ())
-}
-
 struct LibraryTargetAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     store: Rc<RefCell<Store>>,
@@ -1476,6 +1566,19 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                         error,
                     )
                 })?;
+            prepared
+                .without_launch_environment(route.removed_environment())
+                .map_err(|error| {
+                    library_stage_failure(
+                        deep_capture_api::Stage::Launch,
+                        "launch-route-environment-removal",
+                        error,
+                    )
+                })?;
+            prepared.retain_managed_packet_roles(
+                (self.args.inspect_scope != InspectionScopeArg::LaunchChain)
+                    .then(|| vec!["client".to_string()]),
+            );
             let duration = bound_real_capture_duration(
                 &capture_args,
                 budget.remaining().saturating_sub(adapter_started.elapsed()),
@@ -1750,9 +1853,12 @@ impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
         let candidate_owner = fact
             .final_owner_index
             .and_then(|index| observations.get(index));
-        let direct_positive = self.route_identity
-            == CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
-            && key == CompatibilityFactKey::ProxyRouting
+        let direct_positive = matches!(
+            self.route_identity,
+            CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
+                | CompatibilityRouteIdentity::DirectSocketV1
+                | CompatibilityRouteIdentity::SocksOnlyDirectSocketV1
+        ) && key == CompatibilityFactKey::ProxyRouting
             && fact.value == "reached-client";
         let direct_owner = direct_positive
             .then(|| {
@@ -2355,9 +2461,7 @@ impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 self.runtime.borrow_mut().diagnostics = Some((**diagnostics).clone());
                 emitter.event(&Event::DeepCaptureDiagnostics {
                     session_id: session_id.clone(),
-                    diagnostics: crate::commands::calibrate::assessment::diagnostics_json(
-                        diagnostics,
-                    ),
+                    diagnostics: crate::commands::assessment::diagnostics_json(diagnostics),
                 });
             }
             deep_capture_api::DeepCaptureEvent::PhaseTiming { timing, .. } => {
@@ -2681,26 +2785,27 @@ fn build_authorization_plan(
     let endpoint =
         deep_capture_api::LoopbackEndpoint::new(loopback_bind_address(args.proxy_family))
             .map_err(cli_error_from_library_refusal)?;
-    let routing = deep_capture_api::RoutingPlan::child_environment(endpoint, &args.proxy_bypass)
-        .map_err(cli_error_from_library_refusal)?;
-    let routing = if args.direct_route {
+    let prepared_target = deep_capture_api::PreparedTarget {
+        id: target_authority
+            .row_id
+            .ok_or_else(|| CliError::usage("Deep Capture requires an exact stored target row"))?,
+        handle: target_authority.handle.clone(),
+        launch_case: library_launch_case(target_authority.launch_case),
+    };
+    if effective_direct_route(args) {
         let directory = direct_route_component_directory()?;
         fragcap::deep_capture::verify_windivert_component(&directory).map_err(|detail| {
             CliError::usage(format!("direct route component unavailable: {detail}"))
         })?;
-        let prepared_target = deep_capture_api::PreparedTarget {
-            id: target_authority.row_id.ok_or_else(|| {
-                CliError::usage("direct route requires an exact stored target row")
-            })?,
-            handle: target_authority.handle.clone(),
-            launch_case: library_launch_case(target_authority.launch_case),
-        };
-        routing
-            .with_direct_socket(&prepared_target)
-            .map_err(cli_error_from_library_refusal)?
-    } else {
-        routing
-    };
+    }
+    let routing = deep_capture_api::RoutingPlan::selected(
+        endpoint,
+        &args.proxy_bypass,
+        &prepared_target,
+        launcher_exposure(args),
+        effective_direct_route(args),
+    )
+    .map_err(cli_error_from_library_refusal)?;
     let direct_component = routing.direct_socket.as_ref().map(|component| {
         json!({
             "target_id": component.target_id,
@@ -2746,6 +2851,24 @@ fn build_authorization_plan(
         .iter()
         .map(|effect| effect.destination.clone())
         .collect::<Vec<_>>();
+    let environment_effects = routing
+        .effects
+        .iter()
+        .map(|effect| {
+            json!({
+                "name": effect.destination,
+                "action": if matches!(effect.value, deep_capture_api::RouteValueSource::Remove) { "remove" } else { "set" },
+                "source": match effect.value {
+                    deep_capture_api::RouteValueSource::SessionProxyUrl => "session-http-proxy-url",
+                    deep_capture_api::RouteValueSource::SessionSocks5hUrl => "session-socks-url",
+                    deep_capture_api::RouteValueSource::SessionProxyAuthorization => "session-authorization",
+                    deep_capture_api::RouteValueSource::Literal(_) => "declared-literal",
+                    deep_capture_api::RouteValueSource::Remove => "inherited-environment",
+                    _ => "unknown",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
     let trust = if mode == deep_capture_api::SessionMode::ReachabilityCalibration {
         json!({
             "action": "verify installation CA; no TLS inspection",
@@ -2789,7 +2912,7 @@ fn build_authorization_plan(
             "max_bytes": args.max_bytes,
             "max_packets": args.max_packets,
             "payload_retention": !args.no_payload,
-            "scope": "exact session-created launch chain, including proven intermediate and helper generations",
+            "scope": target_authority.inspection_scope.effective.as_str(),
             "window": "launch inception through verified route-owner release or finite release deadline",
             "pending_packet_bytes_ceiling": 33_553_920_u64,
         },
@@ -2850,6 +2973,7 @@ fn build_authorization_plan(
             "backend_version": env!("CARGO_PKG_VERSION"),
             "dns_policy": "match requested authority before resolution and check every answer",
             "environment_variables": environment_variables,
+            "environment_effects": environment_effects,
             "inspection": {
                 "requested_scope": target_authority.inspection_scope.requested.as_str(),
                 "effective_scope": target_authority.inspection_scope.effective.as_str(),
@@ -2866,8 +2990,8 @@ fn build_authorization_plan(
             "listener": "exact loopback address; concrete ephemeral port selected after authorization",
             "normalized_bypass_rules": operator_rules,
             "exact_upstream_grants": exact_upstream_grants,
-            "routing_scope": if args.direct_route { "managed child environment and exact final-client direct socket" } else { "managed child environment only" },
-            "route_identity": if args.direct_route { CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1.as_str() } else { CompatibilityRouteIdentity::ChildEnvironmentV1.as_str() },
+            "routing_scope": launcher_exposure(args).as_str(),
+            "route_identity": planned_route_identity(args).as_str(),
             "direct_socket": direct_component,
             "system_proxy_change": false,
         },
@@ -2891,7 +3015,13 @@ fn build_authorization_plan(
         canonical,
         target_authority,
         authority_created + authority.lifetime(),
-    ))
+    )
+    .with_route_selection(AuthorizedRouteSelection {
+        exposure: launcher_exposure(args),
+        direct_socket: effective_direct_route(args),
+        bypass_inputs: args.proxy_bypass.clone(),
+        target_id: prepared_target.id,
+    }))
 }
 
 fn validate_authorization_target(
@@ -3137,11 +3267,9 @@ fn passive_fallback_evidence_is_usable(
 }
 
 pub(crate) struct RunOutcome {
-    pub observations: Vec<deep_capture_api::CompatibilityObservation>,
     pub observation_windows: Vec<deep_capture_api::EvidenceWindow>,
     pub disposition: RunDisposition,
     pub terminal_error: Option<CliError>,
-    pub assessment: Option<crate::commands::calibrate::assessment::AttemptAssessment>,
     pub retained_target_packets: Option<u64>,
     pub inspection_scope: ResolvedCliInspectionScope,
     pub authorization_plan_id: String,
@@ -3209,14 +3337,19 @@ pub(crate) fn run_with_outcome(
     emitter: &mut Emitter,
     inherited_authorization: Option<&InheritedRetryAuthorization>,
 ) -> Result<RunOutcome, CliError> {
-    if args.direct_route && !cfg!(all(windows, feature = "direct-route")) {
-        return Err(CliError::usage(
-            "direct route requires a Windows build with the direct-route feature",
-        ));
-    }
     if !args.launch {
         return Err(CliError::usage(
-            "Deep Capture requires --launch: fragcap must start the selected game so only that launch receives its proxy settings",
+            "Deep Capture requires --launch: fragcap must start the selected game to bind its exact process generation and route",
+        ));
+    }
+    if args.inspect_scope != InspectionScopeArg::LaunchChain
+        && matches!(
+            args.launcher_proxy,
+            Some(LauncherProxyArg::SocksOnly | LauncherProxyArg::HttpAndSocks)
+        )
+    {
+        return Err(CliError::usage(
+            "launcher proxy exposure requires explicit --inspect-scope launch-chain",
         ));
     }
     if args.legacy_trust_ca || args.legacy_yes {
@@ -3264,6 +3397,11 @@ pub(crate) fn run_with_outcome(
     if !args.authorize_stdin && !authorization.is_terminal() {
         return Err(CliError::usage(
             "Deep Capture requires an interactive terminal or --authorize-stdin",
+        ));
+    }
+    if effective_direct_route(args) && !cfg!(all(windows, feature = "direct-route")) {
+        return Err(CliError::usage(
+            "direct route requires a Windows build with the direct-route feature",
         ));
     }
     let mode = match calibration {
@@ -3372,11 +3510,9 @@ pub(crate) fn run_with_outcome(
             AuthorizationDecision::Declined => {
                 emitter.progress("Deep Capture declined; no effects were applied");
                 return Ok(RunOutcome {
-                    observations: Vec::new(),
                     observation_windows: Vec::new(),
                     disposition: RunDisposition::Declined,
                     terminal_error: None,
-                    assessment: None,
                     retained_target_packets: None,
                     inspection_scope: resolved_inspection_scope,
                     authorization_plan_id: authorization_plan.id.clone(),
@@ -3388,10 +3524,8 @@ pub(crate) fn run_with_outcome(
             }
             AuthorizationDecision::Interrupted => {
                 return Ok(RunOutcome {
-                    observations: Vec::new(),
                     observation_windows: Vec::new(),
                     disposition: RunDisposition::Interrupted,
-                    assessment: None,
                     retained_target_packets: None,
                     inspection_scope: resolved_inspection_scope,
                     authorization_plan_id: authorization_plan.id.clone(),
@@ -3476,6 +3610,8 @@ pub(crate) fn run_with_outcome(
         key_log: args.key_log,
         client_identity: args.client_certificate.is_some(),
         proxy_bypass: args.proxy_bypass.clone(),
+        launcher_exposure: launcher_exposure(args),
+        direct_socket: effective_direct_route(args),
         sensitive_retention: selected_retention(args),
         deadlines: deep_capture_api::Deadlines {
             launch: deadlines.launch,
@@ -3539,11 +3675,12 @@ pub(crate) fn run_with_outcome(
             if let Some(identity) = client_identity {
                 proxy = proxy.with_client_identity(identity);
             }
-            if authorization_plan
-                .target_authority
-                .inspection_scope
-                .effective
-                == CompatibilityInspectionScope::ExactGame
+            if !args.controlled_target
+                && authorization_plan
+                    .target_authority
+                    .inspection_scope
+                    .effective
+                    == CompatibilityInspectionScope::ExactGame
             {
                 let decider = deep_capture_api::ExactGameDecider::new(
                     observation_context.clone(),
@@ -3588,11 +3725,7 @@ pub(crate) fn run_with_outcome(
             controlled: args.controlled_target,
             family: args.proxy_family,
             inspection_scope: authorization_plan.target_authority.inspection_scope,
-            route_identity: if args.direct_route {
-                CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
-            } else {
-                CompatibilityRouteIdentity::ChildEnvironmentV1
-            },
+            route_identity: planned_route_identity(args),
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
             recipient: Rc::clone(&recipient),
@@ -3619,11 +3752,7 @@ pub(crate) fn run_with_outcome(
             progress: session_ux::SessionProgress::default(),
         }),
     };
-    let preflight = if args.direct_route {
-        deep_capture_api::DeepCapture::preflight_direct_socket(config, &mut adapters)
-    } else {
-        deep_capture_api::DeepCapture::preflight(config, &mut adapters)
-    };
+    let preflight = deep_capture_api::DeepCapture::preflight(config, &mut adapters);
     let prepared = match preflight {
         Ok(prepared) => prepared,
         Err(refusal) => {
@@ -3640,6 +3769,8 @@ pub(crate) fn run_with_outcome(
             return Err(cli_error_from_library_refusal(refusal));
         }
     };
+
+    authorization_plan.validate_prepared_route(prepared.plan())?;
 
     let routing = &prepared.plan().routing;
     let bypass = routing
@@ -3661,14 +3792,35 @@ pub(crate) fn run_with_outcome(
         infrastructure: bypass.infrastructure(),
         environment_variables,
     });
+    let environment_summary = if routing.effects.is_empty() {
+        "none (managed launcher uses its native environment)".to_string()
+    } else {
+        routing
+            .effects
+            .iter()
+            .map(|effect| {
+                format!(
+                    "{}:{}",
+                    effect.destination,
+                    if matches!(effect.value, deep_capture_api::RouteValueSource::Remove) {
+                        "remove"
+                    } else {
+                        "set"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     emitter.borrow_mut().required_human(&format!(
-        "Deep Capture routing plan\n  proxy bypass rules: {}\n  session infrastructure: {}\n  environment: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY and lowercase equivalents are plan-owned\n  DNS policy: requested name before resolution; every proxied answer checked on every attempt\n  fallback: none\n",
+        "Deep Capture routing plan\n  proxy bypass rules: {}\n  session infrastructure: {}\n  managed environment: {}\n  DNS policy: requested name before resolution; every proxied answer checked on every attempt\n  fallback: none\n",
         if operator_rules.is_empty() {
             "none".to_string()
         } else {
             operator_rules.join(", ")
         },
         bypass.infrastructure(),
+        environment_summary,
     ));
 
     if let Some(restart) = &restart {
@@ -3719,18 +3871,17 @@ pub(crate) fn run_with_outcome(
         .run_to_completion(authorization);
     let assessment = calibration.map(|phase| {
         let runtime = runtime.borrow();
-        let mut assessment =
-            crate::commands::calibrate::assessment::AttemptAssessment::from_report(
-                &report,
-                phase,
-                args.calibration_protocol
-                    .map(calibration_protocol)
-                    .expect("calibration protocol validated"),
-                runtime.process_evidence.as_ref(),
-                runtime.retained_target_packets,
-                runtime.diagnostics.as_ref(),
-            )
-            .with_phase_timing(&runtime.phase_timing);
+        let mut assessment = crate::commands::assessment::AttemptAssessment::from_report(
+            &report,
+            phase,
+            args.calibration_protocol
+                .map(calibration_protocol)
+                .expect("calibration protocol validated"),
+            runtime.process_evidence.as_ref(),
+            runtime.retained_target_packets,
+            runtime.diagnostics.as_ref(),
+        )
+        .with_phase_timing(&runtime.phase_timing);
         assessment.process_completeness =
             session_ux::artifact_process_completeness(&report.artifacts);
         let mut value = assessment.json();
@@ -3831,11 +3982,9 @@ pub(crate) fn run_with_outcome(
     }
     if report.is_complete() {
         Ok(RunOutcome {
-            observations: report.snapshot.observations,
             observation_windows,
             disposition: RunDisposition::Completed,
             terminal_error: None,
-            assessment,
             retained_target_packets,
             inspection_scope: resolved_inspection_scope,
             authorization_plan_id: authorization_plan.id.clone(),
@@ -3858,11 +4007,9 @@ pub(crate) fn run_with_outcome(
             .map(|failure| failure.detail.clone())
             .unwrap_or_else(|| "Deep Capture completed with partial results".to_string());
         Ok(RunOutcome {
-            observations: report.snapshot.observations,
             observation_windows,
             disposition,
             terminal_error: Some(CliError::failure(detail)),
-            assessment,
             retained_target_packets,
             inspection_scope: resolved_inspection_scope,
             authorization_plan_id: authorization_plan.id.clone(),
@@ -4657,6 +4804,9 @@ fn run_controlled_target_harness(
     for (name, value) in route.environment() {
         command.env(name, value);
     }
+    for name in route.removed_environment() {
+        command.env_remove(name);
+    }
     command
         .env(
             "FRAGCAP_NATIVE_PROXY_ENDPOINT",
@@ -4671,7 +4821,7 @@ fn run_controlled_target_harness(
         .env("FRAGCAP_CONTROLLED_CA_DER", encode_hex(proxy.ca_der()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     if calibration == Some(CalibrationPhase::Reachability) {
         command.env("FRAGCAP_CONTROLLED_REQUEST_LIMIT", "1");
     }
@@ -4706,8 +4856,12 @@ fn run_controlled_target_harness(
     if status.success() {
         Ok(process_id)
     } else {
+        let mut detail = String::new();
+        if let Some(stderr) = child.stderr.take() {
+            let _ = stderr.take(4096).read_to_string(&mut detail);
+        }
         Err(CliError::failure(format!(
-            "controlled target exited with status {status}"
+            "controlled target exited with status {status}: {detail}"
         )))
     }
 }
@@ -5273,10 +5427,23 @@ fn routing_policy_json(plan: &deep_capture_api::RoutingPlan) -> serde_json::Valu
 }
 
 fn route_identity_for_plan(plan: &deep_capture_api::RoutingPlan) -> CompatibilityRouteIdentity {
-    if plan.direct_socket.is_some() {
-        CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1
-    } else {
-        CompatibilityRouteIdentity::ChildEnvironmentV1
+    let socks = plan.effects.iter().any(|effect| {
+        matches!(
+            effect.value,
+            deep_capture_api::RouteValueSource::SessionSocks5hUrl
+        )
+    });
+    let http = plan.effects.iter().any(|effect| {
+        matches!(
+            effect.value,
+            deep_capture_api::RouteValueSource::SessionProxyUrl
+        )
+    });
+    match (plan.direct_socket.is_some(), socks, http) {
+        (true, false, false) => CompatibilityRouteIdentity::DirectSocketV1,
+        (true, true, false) => CompatibilityRouteIdentity::SocksOnlyDirectSocketV1,
+        (true, true, true) => CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1,
+        _ => CompatibilityRouteIdentity::ChildEnvironmentV1,
     }
 }
 
@@ -5325,7 +5492,7 @@ fn compatibility_json(
         "launch_case": ctx.session.launch_case.as_str(),
         "proxy_backend": ctx.session.backend.name,
         "proxy_backend_version": ctx.session.backend.version,
-        "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+        "routing_strategy": compatibility_strategy_for_route(&ctx.session.routing).as_str(),
         "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
         "address_family": ctx.session.address_family.as_str(),
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
@@ -5356,7 +5523,7 @@ fn compatibility_json(
             } else {
                 "none"
             },
-            "proxy_mode": "launch-scoped-env",
+            "proxy_mode": ctx.session.routing.strategy.as_str(),
             "system_proxy_change": false,
             "published": false,
             "deadlines_seconds": {
@@ -5370,7 +5537,7 @@ fn compatibility_json(
         "fact_writes": ctx.fact_writes.iter().map(|write| json!({
             "key": write.key,
             "value": write.value,
-            "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            "routing_strategy": compatibility_strategy_for_route(&ctx.session.routing).as_str(),
             "address_family": ctx.session.address_family.as_str(),
             "protocol": write.protocol,
             "status": write.status,
@@ -5745,7 +5912,7 @@ fn manifest_json(
         "proxy": {
             "backend": ctx.session.backend.name,
             "version": ctx.session.backend.version,
-            "mode": "launch-scoped-env",
+            "mode": ctx.session.routing.strategy.as_str(),
             "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
             "listen_addr": ctx.session.listen_addr,
             "listen_port": ctx.session.listen_port,
@@ -5767,11 +5934,11 @@ fn manifest_json(
         },
         "launch": {
             "case": ctx.session.launch_case.as_str(),
-            "scoped_proxy": true,
+            "scoped_proxy": !ctx.session.routing.effects.is_empty(),
         },
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
-            "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            "routing_strategy": compatibility_strategy_for_route(&ctx.session.routing).as_str(),
             "route_identity": route_identity_for_plan(&ctx.session.routing).as_str(),
             "address_family": ctx.session.address_family.as_str(),
             "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
@@ -5997,7 +6164,13 @@ fn insert_fact(
     fact.proxy_backend = Some(ctx.backend.name.clone());
     fact.proxy_backend_version = Some(ctx.backend.version.clone());
     fact.proxy_mode = Some(ctx.route_identity.as_str().to_string());
-    fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+    fact.routing_strategy = Some(
+        if ctx.route_identity == CompatibilityRouteIdentity::DirectSocketV1 {
+            CompatibilityRoutingStrategy::DirectSocket
+        } else {
+            CompatibilityRoutingStrategy::ChildEnvironment
+        },
+    );
     fact.route_identity = Some(ctx.route_identity);
     fact.address_family = Some(ctx.address_family);
     fact.protocol = Some(ctx.protocol);
@@ -6124,12 +6297,8 @@ mod tests {
             "deep-capture",
             "target",
             "--launch",
-            "--calibrate",
-            "reachability",
-            "--launch-case",
-            "direct-exe-cold",
-            "--calibration-protocol",
-            "https",
+            "--duration",
+            "60s",
         ])
         .unwrap()
         .command
@@ -6516,6 +6685,81 @@ mod tests {
     }
 
     #[test]
+    fn authorized_route_refuses_effect_drift_but_accepts_late_listener_port() {
+        use deep_capture_api::{
+            ArtifactRequests, BackendDescriptor, Deadlines, LaunchCase, LauncherProxyExposure,
+            LoopbackEndpoint, PlanId, PreparedTarget, RoutingPlan, SensitiveRetention, SessionMode,
+            SessionPlan,
+        };
+
+        let target = PreparedTarget {
+            id: 7,
+            handle: "target".into(),
+            launch_case: LaunchCase::DirectExeCold,
+        };
+        let endpoint = LoopbackEndpoint::new("127.0.0.1:40123".parse().unwrap()).unwrap();
+        let route =
+            RoutingPlan::selected(endpoint, &[], &target, LauncherProxyExposure::Native, true)
+                .unwrap();
+        let mut prepared = SessionPlan {
+            id: PlanId::new("prepared"),
+            session_id: "session".into(),
+            target,
+            mode: SessionMode::Capture,
+            calibration_protocol: None,
+            controlled: false,
+            proxy_backend: BackendDescriptor {
+                name: "native".into(),
+                version: "1".into(),
+            },
+            endpoint,
+            bundle: PathBuf::from("bundle"),
+            routing: route,
+            trust_ca: true,
+            client_identity: false,
+            artifacts: ArtifactRequests {
+                har: false,
+                key_log: false,
+                sensitive_retention: SensitiveRetention::Retain,
+            },
+            deadlines: Deadlines::default(),
+        };
+        let authorization = AuthorizationPlan::new(
+            json!({"proxy":{"launcher_exposure":"native","direct_socket":true}}),
+            authorization_target(),
+            UNIX_EPOCH + Duration::from_secs(60),
+        )
+        .with_route_selection(AuthorizedRouteSelection {
+            exposure: LauncherProxyExposure::Native,
+            direct_socket: true,
+            bypass_inputs: Vec::new(),
+            target_id: 7,
+        });
+        assert!(authorization.validate_prepared_route(&prepared).is_ok());
+        prepared.routing = RoutingPlan::selected(
+            endpoint,
+            &[],
+            &prepared.target,
+            LauncherProxyExposure::HttpAndSocks,
+            true,
+        )
+        .unwrap();
+        assert!(authorization.validate_prepared_route(&prepared).is_err());
+        prepared.endpoint = LoopbackEndpoint::new("127.0.0.1:40234".parse().unwrap()).unwrap();
+        prepared.routing = RoutingPlan::selected(
+            prepared.endpoint,
+            &[],
+            &prepared.target,
+            LauncherProxyExposure::Native,
+            true,
+        )
+        .unwrap();
+        assert!(authorization.validate_prepared_route(&prepared).is_ok());
+        prepared.target.id = 8;
+        assert!(authorization.validate_prepared_route(&prepared).is_err());
+    }
+
+    #[test]
     fn publisher_process_inventory_keeps_cold_and_warm_states_distinct() {
         assert_eq!(
             classify_publisher_processes(&[false, false, false]),
@@ -6621,14 +6865,38 @@ mod tests {
     }
 
     #[test]
-    fn auto_inspection_scope_is_launch_chain_for_every_launch_case() {
+    fn auto_inspection_scope_is_exact_game_for_every_launch_case() {
         let resolved = resolve_cli_inspection_scope(InspectionScopeArg::Auto);
-        assert_eq!(
-            resolved.effective,
-            CompatibilityInspectionScope::LaunchChain
-        );
+        assert_eq!(resolved.effective, CompatibilityInspectionScope::ExactGame);
         assert_eq!(resolved.recommendation_source, "default");
-        assert_eq!(resolved.policy_id, "launch-chain-v2");
+        assert_eq!(resolved.policy_id, "exact-game-v2");
+    }
+
+    #[test]
+    fn launch_chain_defaults_to_socks_only_launcher_exposure() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Some(Command::DeepCapture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--inspect-scope",
+            "launch-chain",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Deep Capture");
+        };
+        assert_eq!(
+            launcher_exposure(&args),
+            deep_capture_api::LauncherProxyExposure::SocksOnly
+        );
+        assert_eq!(
+            planned_route_identity(&args),
+            CompatibilityRouteIdentity::SocksOnlyDirectSocketV1
+        );
     }
 
     #[test]
@@ -6754,7 +7022,7 @@ mod tests {
                 &mut adapter,
                 &target,
                 &fact,
-                &[record],
+                &[record.clone()],
                 &[deep_capture_api::EvidenceWindow::Observation],
             ),
             deep_capture_api::FactWriteStatus::Appended
@@ -6771,6 +7039,48 @@ mod tests {
         assert_eq!(
             facts[0].evidence_source,
             CompatibilityEvidenceSource::ObservedRun
+        );
+
+        for route in [
+            CompatibilityRouteIdentity::DirectSocketV1,
+            CompatibilityRouteIdentity::SocksOnlyDirectSocketV1,
+        ] {
+            adapter.route_identity = route;
+            record.attribution = Some("child-environment".into());
+            assert!(matches!(
+                deep_capture_api::CompatibilityRepository::append(
+                    &mut adapter,
+                    &target,
+                    &fact,
+                    &[record.clone()],
+                    &[deep_capture_api::EvidenceWindow::Observation],
+                ),
+                deep_capture_api::FactWriteStatus::Skipped { .. }
+            ));
+            record.attribution = Some("direct-route-receipt".into());
+            assert_eq!(
+                deep_capture_api::CompatibilityRepository::append(
+                    &mut adapter,
+                    &target,
+                    &fact,
+                    &[record.clone()],
+                    &[deep_capture_api::EvidenceWindow::Observation],
+                ),
+                deep_capture_api::FactWriteStatus::Appended
+            );
+        }
+        let facts = store
+            .borrow()
+            .compatibility_facts_for_target(target_id)
+            .unwrap();
+        assert_eq!(facts.len(), 3);
+        assert_eq!(
+            facts[1].route_identity,
+            Some(CompatibilityRouteIdentity::DirectSocketV1)
+        );
+        assert_eq!(
+            facts[2].route_identity,
+            Some(CompatibilityRouteIdentity::SocksOnlyDirectSocketV1)
         );
     }
 
@@ -7072,12 +7382,6 @@ mod tests {
             "deep-capture",
             "target",
             "--launch",
-            "--calibrate",
-            "reachability",
-            "--launch-case",
-            "direct-exe-cold",
-            "--calibration-protocol",
-            "routing",
             "--duration",
             "2m",
             "--wait",
@@ -7341,7 +7645,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_preflight_requires_the_exact_current_launch_case() {
+    fn ordinary_preflight_uses_current_launch_feasibility_not_historical_facts() {
         let selected = CompatibilityLaunchCase::SteamProtocolCold;
         let current = current_compatibility_case(
             selected,
@@ -7350,7 +7654,7 @@ mod tests {
         );
         let validate = |facts: &[CompatibilityFact]| {
             deep_capture_api::validate_compatibility_prerequisites(
-                deep_capture_api::SessionMode::TlsCalibration,
+                deep_capture_api::SessionMode::Capture,
                 false,
                 facts,
                 library_launch_case(selected),
@@ -7362,8 +7666,9 @@ mod tests {
             CompatibilityLaunchCase::DirectExeCold,
             false
         ),)
-        .is_err());
-        assert!(validate(&routing_facts(selected, true)).is_err());
+        .is_ok());
+        assert!(validate(&routing_facts(selected, true)).is_ok());
+        assert!(validate(&[]).is_ok());
 
         let mut superseded = routing_facts(selected, false);
         let mut latest = CompatibilityFact::new(
@@ -7387,7 +7692,15 @@ mod tests {
         latest.middleware_handling = Some(CompatibilityMiddlewareHandling::Inspected);
         latest.inspection_policy_id = Some("launch-chain-v2".to_string());
         superseded.push(latest);
-        assert!(validate(&superseded).is_err());
+        assert!(validate(&superseded).is_ok());
+        assert!(deep_capture_api::validate_compatibility_prerequisites(
+            deep_capture_api::SessionMode::Capture,
+            false,
+            &superseded,
+            deep_capture_api::LaunchCase::SteamProtocolWarm,
+            &current,
+        )
+        .is_err());
     }
 
     #[test]

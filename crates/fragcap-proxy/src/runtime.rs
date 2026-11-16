@@ -1005,7 +1005,15 @@ async fn connection_task(
             {
                 Ok(stream) => stream,
                 Err(error) => {
-                    trace_fail(&trace, "client-tls", &error);
+                    trace_fail(
+                        &trace,
+                        if error.code == "client-closed-before-tls" {
+                            "client-tunnel-handoff"
+                        } else {
+                            "client-tls"
+                        },
+                        &error,
+                    );
                     return ConnectionOutcome::Failed(HttpRun {
                         observations: vec![
                             connect_accepted.clone(),
@@ -2518,6 +2526,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .generic_streams_plain
         .saturating_add(source.generic_streams_plain);
+    observation.protocol.generic_streams_unknown = observation
+        .protocol
+        .generic_streams_unknown
+        .saturating_add(source.generic_streams_unknown);
     observation.protocol.generic_streams_tls_opaque = observation
         .protocol
         .generic_streams_tls_opaque
@@ -2738,6 +2750,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .socks_tcp_opaque
         .saturating_add(source.socks_tcp_opaque);
+    observation.protocol.socks_tcp_undetermined = observation
+        .protocol
+        .socks_tcp_undetermined
+        .saturating_add(source.socks_tcp_undetermined);
     observation.protocol.socks_client_bytes = observation
         .protocol
         .socks_client_bytes

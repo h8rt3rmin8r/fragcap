@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::compatibility::{
     CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
@@ -254,6 +254,14 @@ impl Store {
             tx.pragma_update(None, "user_version", 15i64)?;
             tx.commit()?;
             version = 15;
+        }
+
+        if version == 15 {
+            let tx = conn.transaction()?;
+            migrate_15_to_16(&tx)?;
+            tx.pragma_update(None, "user_version", 16i64)?;
+            tx.commit()?;
+            version = 16;
         }
 
         if version != SCHEMA_VERSION {
@@ -1829,6 +1837,56 @@ impl Store {
     }
 }
 
+fn migrate_15_to_16(tx: &Transaction<'_>) -> Result<(), TargetsError> {
+    // Reuse the installed table definition so every historical CHECK and column
+    // survives the rebuild. Only the two closed route vocabularies are widened.
+    let old: String = tx.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deep_capture_facts'",
+        [],
+        |row| row.get(0),
+    )?;
+    const NAME: &str = "CREATE TABLE deep_capture_facts";
+    const STRATEGY: &str = "'child-environment', 'command-arguments'";
+    const ROUTE: &str = "'child-environment+direct-socket-v1'";
+    // Some older migration fixtures carry a newer fact-table definition while
+    // exercising the older workflow steps. Their table already needs no rebuild.
+    if old
+        .matches("'child-environment', 'direct-socket', 'command-arguments'")
+        .count()
+        == 1
+        && old.matches("'socks-only+direct-socket-v1'").count() == 1
+    {
+        return Ok(());
+    }
+    if !old.starts_with(NAME)
+        || old.matches(STRATEGY).count() != 1
+        || old.matches(ROUTE).count() != 1
+    {
+        return Err(TargetsError::Model(
+            "schema v15 compatibility fact shape does not match the reviewed migration".into(),
+        ));
+    }
+    let widened = old
+        .replacen(NAME, "CREATE TABLE deep_capture_facts_v16", 1)
+        .replacen(
+            STRATEGY,
+            "'child-environment', 'direct-socket', 'command-arguments'",
+            1,
+        )
+        .replacen(
+            ROUTE,
+            "'child-environment+direct-socket-v1', 'direct-socket-v1', 'socks-only+direct-socket-v1'",
+            1,
+        );
+    tx.execute_batch(&widened)?;
+    tx.execute_batch(
+        "INSERT INTO deep_capture_facts_v16 SELECT * FROM deep_capture_facts;
+         DROP TABLE deep_capture_facts;
+         ALTER TABLE deep_capture_facts_v16 RENAME TO deep_capture_facts;",
+    )?;
+    Ok(())
+}
+
 /// Serialize a carried-whole JSON value to its stored text.
 fn json_text(v: &serde_json::Value) -> String {
     v.to_string()
@@ -3350,6 +3408,75 @@ mod tests {
             .compatibility_facts_for_target(target_id)
             .expect("facts")
             .is_empty());
+    }
+
+    #[test]
+    fn v15_fact_rows_survive_direct_route_vocabulary_migration() {
+        let legacy = DDL
+            .replace(
+                "'child-environment', 'direct-socket', 'command-arguments'",
+                "'child-environment', 'command-arguments'",
+            )
+            .replace(
+                "'child-environment+direct-socket-v1',\n                        'direct-socket-v1', 'socks-only+direct-socket-v1'",
+                "'child-environment+direct-socket-v1'",
+            );
+        assert_ne!(legacy, DDL);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&legacy).unwrap();
+        conn.pragma_update(None, "user_version", 15i64).unwrap();
+        conn.execute(
+            "INSERT INTO targets (stable_id, handle, name, classification,
+             classification_source, fidelity)
+             VALUES (75, 'legacy-game', 'Legacy Game', 'game', 'user', 'authored')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO deep_capture_facts
+             (target_id, fact_key, fact_value, evidence_source, routing_strategy, route_identity)
+             VALUES (1, 'proxy-routing', 'reached-client', 'observed-run',
+                     'child-environment', 'child-environment+direct-socket-v1')",
+            [],
+        )
+        .unwrap();
+        let mut store = Store::from_connection(conn).unwrap();
+        let old = store.compatibility_facts_for_target(1).unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(
+            old[0].route_identity,
+            Some(CompatibilityRouteIdentity::ChildEnvironmentDirectSocketV1)
+        );
+        let mut direct = CompatibilityFact::new(
+            1,
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .unwrap();
+        direct.routing_strategy = Some(CompatibilityRoutingStrategy::DirectSocket);
+        direct.route_identity = Some(CompatibilityRouteIdentity::DirectSocketV1);
+        store.insert_compatibility_fact(&direct).unwrap();
+        direct.route_identity = Some(CompatibilityRouteIdentity::SocksOnlyDirectSocketV1);
+        direct.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        store.insert_compatibility_fact(&direct).unwrap();
+        let facts = store.compatibility_facts_for_target(1).unwrap();
+        assert_eq!(facts.len(), 3);
+        assert_eq!(
+            facts[1].routing_strategy,
+            Some(CompatibilityRoutingStrategy::DirectSocket)
+        );
+        assert_eq!(
+            facts[2].route_identity,
+            Some(CompatibilityRouteIdentity::SocksOnlyDirectSocketV1)
+        );
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]

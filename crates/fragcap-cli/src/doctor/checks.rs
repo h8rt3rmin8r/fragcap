@@ -492,12 +492,12 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
         (true, Some(_), Some(true)) => Check::ok(
             DEEP_CAPTURE,
             "inspection scope",
-            "launch-chain inspection and exact-game inspection with blind middleware relay are available; target-specific readiness still requires an exact current calibration case",
+            "exact-game inspection is the ordinary scope; explicit launch-chain inspection is available when selected, and current target behavior is measured during capture",
         ),
         (true, _, _) => Check::warn(
             DEEP_CAPTURE,
             "inspection scope",
-            "launch-chain inspection is available, but exact-game owner evidence is incomplete; run target calibration after restoring socket-table and tracing readiness",
+            "exact-game owner evidence is incomplete; restore socket-table and tracing readiness before Deep Capture",
         ),
         (false, _, _) => Check::skip(
             DEEP_CAPTURE,

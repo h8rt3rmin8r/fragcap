@@ -89,9 +89,14 @@
 //! Version 15 (slice S201) adds one exact route composition/version dimension.
 //! Existing child-environment facts retain that known identity; all other legacy
 //! facts remain unqualified. Workflows retain the historical environment route.
+//!
+//! Version 16 (slice S207) admits exact direct-socket and SOCKS-only composite
+//! route identities in compatibility facts. Existing rows retain their values.
+//! The fact table is rebuilt transactionally because SQLite cannot widen an
+//! existing column CHECK constraint with ALTER TABLE.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -225,11 +230,12 @@ CREATE TABLE deep_capture_facts (
     proxy_backend_version TEXT,
     proxy_mode       TEXT CHECK (proxy_mode IS NULL OR length(proxy_mode) > 0),
     routing_strategy TEXT CHECK (routing_strategy IS NULL OR routing_strategy IN
-                       ('child-environment', 'command-arguments',
+                       ('child-environment', 'direct-socket', 'command-arguments',
                         'target-configuration', 'http-proxy', 'socks',
                         'protocol-specific')),
     route_identity   TEXT CHECK (route_identity IS NULL OR route_identity IN
-                       ('child-environment-v1', 'child-environment+direct-socket-v1')),
+                       ('child-environment-v1', 'child-environment+direct-socket-v1',
+                        'direct-socket-v1', 'socks-only+direct-socket-v1')),
     address_family   TEXT CHECK (address_family IS NULL OR address_family IN
                        ('ipv4', 'ipv6')),
     protocol_family  TEXT CHECK (protocol_family IS NULL OR protocol_family IN

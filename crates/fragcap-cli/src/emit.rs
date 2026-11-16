@@ -64,7 +64,6 @@ pub struct Emitter<'w> {
     /// entry passes `SystemTime::now`.
     clock: fn() -> SystemTime,
     captured_events: Option<Vec<String>>,
-    calibration_guidance: Option<serde_json::Value>,
     calibration_attempt: Option<serde_json::Value>,
     /// How many progress lines [`Emitter::progress`] has actually written
     /// (not merely been asked to). A caller (the S069 non-terminal
@@ -90,7 +89,6 @@ impl<'w> Emitter<'w> {
             verbosity,
             clock: SystemTime::now,
             captured_events: None,
-            calibration_guidance: None,
             calibration_attempt: None,
             #[cfg(all(feature = "etw", windows))]
             progress_written: 0,
@@ -131,20 +129,6 @@ impl<'w> Emitter<'w> {
         self.captured_events.take().unwrap_or_default()
     }
 
-    pub(crate) fn begin_calibration(&mut self) {
-        self.calibration_guidance = None;
-        self.calibration_attempt = None;
-    }
-
-    pub(crate) fn calibration_guidance(&mut self, value: serde_json::Value) {
-        let stored = self
-            .calibration_guidance
-            .get_or_insert_with(|| serde_json::json!({}));
-        if let (Some(stored), Some(incoming)) = (stored.as_object_mut(), value.as_object()) {
-            stored.extend(incoming.clone());
-        }
-    }
-
     pub(crate) fn calibration_attempt(&mut self, value: serde_json::Value) {
         let stored = self
             .calibration_attempt
@@ -152,19 +136,6 @@ impl<'w> Emitter<'w> {
         if let (Some(stored), Some(incoming)) = (stored.as_object_mut(), value.as_object()) {
             stored.extend(incoming.clone());
         }
-    }
-
-    pub(crate) fn begin_calibration_attempt(&mut self, value: serde_json::Value) {
-        self.calibration_attempt = Some(value);
-    }
-
-    pub(crate) fn finish_calibration(
-        &mut self,
-    ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
-        (
-            self.calibration_guidance.take(),
-            self.calibration_attempt.take(),
-        )
     }
 
     /// Whether ordinary human progress is eligible for this output mode.
@@ -335,7 +306,6 @@ mod tests {
                 verbosity,
                 clock: || std::time::UNIX_EPOCH,
                 captured_events: None,
-                calibration_guidance: None,
                 calibration_attempt: None,
                 #[cfg(all(feature = "etw", windows))]
                 progress_written: 0,
@@ -400,7 +370,6 @@ mod tests {
             clock: || std::time::UNIX_EPOCH,
             captured_events: None,
             progress_written: 0,
-            calibration_guidance: None,
             calibration_attempt: None,
         };
         assert_eq!(e.progress_written(), 0);
@@ -416,7 +385,6 @@ mod tests {
             clock: || std::time::UNIX_EPOCH,
             captured_events: None,
             progress_written: 0,
-            calibration_guidance: None,
             calibration_attempt: None,
         };
         suppressed.progress("never written");

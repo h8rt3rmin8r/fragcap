@@ -25,7 +25,7 @@ v0.10.10 makes a deliberate clean break. Its first MSI installation inventories 
 
 ## Upgrade without losing research
 
-Ordinary upgrade and uninstall preserve writable catalogs, local targets, profiles, captures, settings, logs, and Deep Capture bundles. The v0.11.0 release's local-store schema version 15 adds a route identity to facts and guided workflow intent while retaining earlier environment-route evidence. Back up your writable stores and bundles before upgrading; a successful migration does not make old compatibility evidence applicable to a new route or product/backend/target version. Recalibrate the exact intended case when current applicable routing evidence is missing.
+Ordinary upgrade and uninstall preserve writable catalogs, local targets, profiles, captures, settings, logs, and Deep Capture bundles. The v0.11.0 release's local-store schema version 15 added a route identity to facts and guided workflow intent. S207 store version 16 widens the fact route vocabulary for direct-socket and SOCKS-only routes while retaining prior rows. Back up writable stores and bundles before upgrading; migration does not turn historical evidence into proof for a new route or product version. S207 captures measure their own compatibility without a separate calibration command.
 
 Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
 

@@ -52,7 +52,6 @@ Commands:
   Capture:
     capture       Capture a target's traffic (--target or --process)
     deep-capture  Capture plus scoped local proxy inspection
-    calibrate     Measure scoped proxy reachability for a stored target
     replay        Run a capture file back (not yet implemented)
 
   Targets:
@@ -104,7 +103,7 @@ pub struct Cli {
 
     /// Emit machine-readable output instead of human text.
     ///
-    /// Capture, Deep Capture, and calibration emit lifecycle records on standard
+    /// Capture and Deep Capture emit lifecycle records on standard
     /// error; ordinary command results use standard output. Export documents and
     /// extcap protocol output keep their own formats. With `--silent`, the selected
     /// machine stream remains visible.
@@ -141,18 +140,11 @@ pub enum Command {
     Capture(Box<CaptureArgs>),
     /// Capture a stored target through a scoped local inspection proxy.
     ///
-    /// Deep Capture is explicit inspection for known-compatible targets. It
+    /// Deep Capture is explicit inspection for stored targets. It
     /// writes a session bundle containing packet truth, application records,
     /// proxy and process sidecars, compatibility facts, and cleanup status.
     #[command(after_long_help = crate::workflow_help::DEEP_CAPTURE_LONG_HELP)]
     DeepCapture(Box<DeepCaptureArgs>),
-    /// Guide a target through bounded Deep Capture calibration.
-    ///
-    /// Runs each useful reachability or protocol case under a fresh plan and
-    /// separate confirmation. Warm targets receive effect-free guidance unless
-    /// `--restart-warm` is selected explicitly.
-    #[command(after_long_help = crate::workflow_help::CALIBRATE_LONG_HELP)]
-    Calibrate(Box<CalibrateArgs>),
     /// Manage completed Deep Capture bundle evidence.
     Bundle(BundleArgs),
     /// Internal controlled target used by the Deep Capture verification harness.
@@ -506,10 +498,10 @@ pub struct DeepCaptureArgs {
     #[arg(long, help_heading = "Required inputs")]
     pub id: Option<i64>,
 
-    /// Start the selected game so only that launch receives proxy settings.
+    /// Start the selected game through its declared platform or launcher.
     ///
-    /// Supports cold Steam protocol and cold direct-executable launches when
-    /// current same-case compatibility evidence reaches the final client.
+    /// Ordinary sessions inspect the final game and collect compatibility
+    /// evidence during the same run. No prior calibration is required.
     #[arg(long, required = true, help_heading = "Required inputs")]
     pub launch: bool,
 
@@ -540,8 +532,7 @@ pub struct DeepCaptureArgs {
 
     /// Select which managed process roles may receive application inspection.
     ///
-    /// Auto selects launch-chain inspection for every managed launch.
-    /// Select game to inspect only the final game client.
+    /// Auto selects the exact final game. Launch-chain is an explicit advanced scope.
     #[arg(
         long,
         value_enum,
@@ -549,6 +540,10 @@ pub struct DeepCaptureArgs {
         help_heading = "Common options"
     )]
     pub inspect_scope: InspectionScopeArg,
+
+    /// Launcher proxy route for explicit launch-chain inspection.
+    #[arg(long, value_enum, help_heading = "Advanced compatibility")]
+    pub launcher_proxy: Option<LauncherProxyArg>,
 
     /// Add the signed exact final-client direct socket route.
     ///
@@ -565,32 +560,16 @@ pub struct DeepCaptureArgs {
     #[arg(long, help_heading = "Advanced compatibility")]
     pub fallback_capture: bool,
 
-    /// Run one explicit compatibility calibration phase.
-    #[arg(
-        long,
-        value_enum,
-        requires = "launch_case",
-        requires = "calibration_protocol",
-        help_heading = "Advanced compatibility"
-    )]
+    /// Historical internal field; current captures measure compatibility directly.
+    #[arg(skip)]
     pub calibrate: Option<DeepCaptureCalibrationArg>,
 
     /// Exact routing or protocol case whose evidence may be appended.
-    #[arg(
-        long,
-        value_enum,
-        requires = "calibrate",
-        help_heading = "Advanced compatibility"
-    )]
+    #[arg(skip)]
     pub calibration_protocol: Option<DeepCaptureCalibrationProtocolArg>,
 
     /// Declare the launch case whose compatibility is being measured.
-    #[arg(
-        long,
-        value_enum,
-        requires = "calibrate",
-        help_heading = "Advanced compatibility"
-    )]
+    #[arg(skip)]
     pub launch_case: Option<DeepCaptureLaunchCaseArg>,
 
     /// A capture interface, repeatable.
@@ -690,7 +669,6 @@ pub struct DeepCaptureArgs {
     /// Wait for operator-owned normal shutdown, then prepare a new cold launch.
     #[arg(
         long,
-        conflicts_with = "calibrate",
         conflicts_with = "controlled_target",
         help_heading = "Troubleshooting"
     )]
@@ -958,6 +936,13 @@ pub enum InspectionScopeArg {
     #[value(name = "game")]
     Game,
     LaunchChain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LauncherProxyArg {
+    Native,
+    SocksOnly,
+    HttpAndSocks,
 }
 
 /// Exact protocol dimension for one compatibility calibration.
@@ -1608,27 +1593,25 @@ mod tests {
     #[test]
     fn output_recipient_requires_an_exact_explicit_bundle() {
         use clap::Parser;
-        for command in ["deep-capture", "calibrate"] {
-            assert!(super::Cli::try_parse_from([
-                "fragcap",
-                command,
-                "target",
-                "--output-recipient",
-                "S-1-5-21-1-2-3-1001"
-            ])
-            .is_err());
-            let mut argv = vec!["fragcap", command, "target"];
-            if command == "deep-capture" {
-                argv.push("--launch");
-            }
-            argv.extend([
-                "--output-recipient",
-                "S-1-5-21-1-2-3-1001",
-                "--bundle",
-                "C:/output/bundle",
-            ]);
-            assert!(super::Cli::try_parse_from(argv).is_ok());
-        }
+        assert!(super::Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--output-recipient",
+            "S-1-5-21-1-2-3-1001"
+        ])
+        .is_err());
+        assert!(super::Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--output-recipient",
+            "S-1-5-21-1-2-3-1001",
+            "--bundle",
+            "C:/output/bundle",
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -1743,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_scope_and_fallback_contract_is_shared_and_resume_immutable() {
+    fn inspection_scope_and_fallback_contract_parses_for_deep_capture() {
         let deep = Cli::try_parse_from([
             "fragcap",
             "deep-capture",
@@ -1760,34 +1743,6 @@ mod tests {
         };
         assert_eq!(deep.inspect_scope, InspectionScopeArg::Game);
         assert!(deep.retry_game_scope && deep.fallback_capture);
-
-        let guided = Cli::try_parse_from([
-            "fragcap",
-            "calibrate",
-            "target",
-            "--inspect-scope",
-            "launch-chain",
-            "--retry-game-scope",
-            "--fallback-capture",
-        ])
-        .expect("calibration scope parses");
-        let Some(Command::Calibrate(guided)) = guided.command else {
-            panic!("calibrate command");
-        };
-        assert_eq!(guided.inspect_scope, Some(InspectionScopeArg::LaunchChain));
-        assert!(guided.retry_game_scope && guided.fallback_capture);
-
-        for extra in [
-            "--inspect-scope",
-            "--retry-game-scope",
-            "--fallback-capture",
-        ] {
-            let mut argv = vec!["fragcap", "calibrate", "--resume", "7", extra];
-            if extra == "--inspect-scope" {
-                argv.push("game");
-            }
-            assert!(Cli::try_parse_from(argv).is_err());
-        }
     }
 
     #[test]
@@ -1813,7 +1768,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_route_is_explicit_in_deep_capture_and_guided_calibration() {
+    fn explicit_advanced_socks_route_parses_without_calibration() {
         let cli = Cli::try_parse_from([
             "fragcap",
             "deep-capture",
@@ -1828,40 +1783,35 @@ mod tests {
         assert!(args.direct_route);
         let cli = Cli::try_parse_from([
             "fragcap",
-            "calibrate",
+            "deep-capture",
             "target",
-            "--routing-strategy",
-            "child-environment-direct-socket",
+            "--launch",
+            "--inspect-scope",
+            "launch-chain",
+            "--launcher-proxy",
+            "socks-only",
         ])
-        .expect("parse composite calibration route");
-        let Some(Command::Calibrate(args)) = cli.command else {
-            panic!("expected calibration command");
+        .expect("parse advanced SOCKS route");
+        let Some(Command::DeepCapture(args)) = cli.command else {
+            panic!("expected Deep Capture command");
         };
-        assert_eq!(
-            args.routing_strategy,
-            Some(GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)
-        );
+        assert_eq!(args.launcher_proxy, Some(LauncherProxyArg::SocksOnly));
     }
 
     #[test]
-    fn guided_calibration_defaults_are_bounded_and_effect_minimal() {
-        let cli = Cli::try_parse_from(["fragcap", "calibrate", "target"]).expect("parse");
-        let Some(Command::Calibrate(args)) = cli.command else {
-            panic!("expected calibrate command");
-        };
-        assert_eq!(args.selector.as_deref(), Some("target"));
-        assert!(args.bundle.is_none());
-        assert!(args.duration.is_none());
-        assert!(args.wait.is_none());
-        assert!(args.max_packets.is_none());
-        assert!(args.max_bytes.is_none());
-        assert!(args.interface.is_empty());
-        assert!(!args.no_payload);
-        assert!(!args.authorize_stdin);
-        assert!(!args.restart_warm);
-        assert!(args.resume.is_none());
-        assert!(args.pause_for.is_none());
-        assert!(!args.controlled_target);
+    fn calibration_command_and_embedded_flags_are_retired() {
+        assert!(Cli::try_parse_from(["fragcap", "calibrate", "target"]).is_err());
+        for flag in ["--calibrate", "--calibration-protocol", "--launch-case"] {
+            assert!(Cli::try_parse_from([
+                "fragcap",
+                "deep-capture",
+                "target",
+                "--launch",
+                flag,
+                "routing"
+            ])
+            .is_err());
+        }
     }
 
     #[test]
@@ -1886,7 +1836,7 @@ mod tests {
         ])
         .is_ok());
         assert!(
-            Cli::try_parse_from(["fragcap", "calibrate", "target", "--retain-bundle",]).is_ok()
+            Cli::try_parse_from(["fragcap", "calibrate", "target", "--retain-bundle"]).is_err()
         );
     }
 }

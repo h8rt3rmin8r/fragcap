@@ -1,166 +1,117 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! One authority for the embedded Deep Capture journey and its pasteable commands.
+//! Current first-run Deep Capture guidance and pasteable recovery commands.
 
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 
 use crate::{
-    cli::{
-        CalibrateArgs, DeepCaptureArgs, DeepCaptureCalibrationProtocolArg,
-        DeepCaptureProxyFamilyArg, GuidedCalibrationRoutingArg,
-    },
+    cli::{DeepCaptureArgs, DeepCaptureProxyFamilyArg},
     exit::CliError,
 };
 
 pub(crate) const ROOT_LONG_HELP: &str = r#"First Deep Capture session:
-  1. Check the environment:      fragcap doctor
-  2. Find the installed game:    fragcap targets discover
-  3. Inspect or register it:     fragcap targets show "<installed game>"
-                                  fragcap targets add --steam 620
-  4. Measure exact support:      fragcap calibrate "<installed game>"
-  5. Run after calibration:      fragcap deep-capture "<installed game>" --launch
+  1. Check the environment:    fragcap doctor
+  2. Find the installed game:  fragcap targets discover
+  3. Inspect or register it:   fragcap targets show "<installed game>"
+                                fragcap targets add --steam 620
+  4. Capture the game:         fragcap deep-capture "<installed game>" --launch
 
-Deep Capture is explicit, target-scoped proxy inspection. Environment readiness
-does not establish target compatibility; calibration records what this exact
-target and launch actually demonstrated."#;
+One authorized capture measures compatibility while it runs. The default
+routes and retains only the exact final game. Launcher traffic keeps its
+ordinary route. A full launch-chain proxy route is an explicit advanced choice."#;
 
-pub(crate) const DEEP_CAPTURE_LONG_HELP: &str = r#"First successful session:
-  1. fragcap doctor
-  2. fragcap targets discover
-  3. fragcap targets show "<installed game>"
-  4. fragcap calibrate "<installed game>"
-  5. fragcap deep-capture "<installed game>" --launch
+pub(crate) const DEEP_CAPTURE_LONG_HELP: &str = r#"First session:
+  fragcap doctor
+  fragcap targets discover
+  fragcap targets show "<installed game>"
+  fragcap deep-capture "<installed game>" --launch
 
 Steam example:
   fragcap targets add --steam 620
-  fragcap calibrate "Portal 2"
   fragcap deep-capture "Portal 2" --launch
 
 Direct or publisher example:
   fragcap targets scan "C:\Games\My Game"
-  fragcap calibrate "My Game"
   fragcap deep-capture "My Game" --launch
 
-Troubleshooting examples:
-  fragcap calibrate "My Game" --restart-warm
-  fragcap deep-capture "My Game" --launch --bundle "<new empty directory>"
-  fragcap doctor --fix
+Explicit advanced launcher inspection:
+  fragcap deep-capture "My Game" --launch --inspect-scope launch-chain --launcher-proxy socks-only
 
-Output access:
-  For unresolved historical bundle access, use normal Windows permission administration.
-  fragcap deep-capture "My Game" --launch --bundle C:\B --output-recipient SID
+Explicit output recipient:
+  fragcap deep-capture 1 --launch --bundle .\bundle --output-recipient <SID>
 
-Default output belongs to the exact ordinary desktop-session user. Different
-credentials require an explicit bundle and ordinary-recipient authentication.
-Replace SID with the exact intended Windows user SID and C:\B with a new bundle.
-Final recipient access verification is separate from evidence completeness.
+The default selects the exact final game and gives the managed launcher no
+Fragcap proxy variables. The signed direct route requires Administrator and
+the packaged component. Advanced launch-chain inspection changes the
+launcher environment and must be authorized as a distinct plan.
 
-Ordinary Deep Capture requires a stored target, a managed cold launch, and
-current observed compatibility for that exact case. Inspection is not universal
-and does not bypass certificate pinning. Key logs, HAR, and mutual-TLS identity
-inputs can expose plaintext, credentials, or private key material. Recover an
-interrupted prior session with `fragcap doctor --fix`."#;
+Use `fragcap doctor --fix` for an interrupted prior session. A captured
+protocol fact states what this attempt observed; no prior measurement is
+needed. HAR, key logs, and client identities can contain sensitive material.
+The default bundle belongs to the exact ordinary desktop-session user."#;
 
-pub(crate) const CALIBRATE_LONG_HELP: &str = r#"Guided calibration records only directly observed facts for one stored target.
-It begins with reachability, then measures requested or observed protocols under
-a fresh visible plan and separate confirmation for every attempt.
-
-Safe path:
-  fragcap calibrate "<installed game>"
-
-Resume a paused workflow:
-  fragcap calibrate --resume 1
-
-Wait for an operator-managed warm shutdown:
-  fragcap calibrate "My Game" --restart-warm
-
-After current reachability and requested protocol facts are established:
-  fragcap deep-capture "<installed game>" --launch
-
-Structured authorization in PowerShell:
-  Start fragcap with redirected stdin and copy its exact emitted plan identifier
-  into $planId. For the resulting Process object $process, send one LF:
-  $process.StandardInput.Write($planId + [char]10)
-  WriteLine sends CRLF on Windows and is refused as a different plan response.
-
-Use --candidate only with an exact identity printed by the current refusal.
-Launch-case, routing-strategy, proxy-family, and protocol are advanced exact-case
-controls. A request is not compatibility evidence until the target is observed."#;
-
-pub(crate) const DOCTOR_LONG_HELP: &str = r#"Doctor checks whether this process can start live Capture or Deep Capture,
-alongside independent machine prerequisites. Run it elevated for a ready verdict.
-A ready environment does not register a game or establish compatibility.
+pub(crate) const DOCTOR_LONG_HELP: &str = r#"Doctor checks machine readiness for Capture and Deep Capture. A ready
+environment does not register a game or prove its protocol inspectability.
 
 Next commands:
   fragcap targets discover
-  fragcap calibrate "<installed game>"
+  fragcap deep-capture "<installed game>" --launch
 
-Use `fragcap doctor --fix` only for remediations Doctor reports, including exact
-recovery of interrupted Deep Capture sessions.
-
-Healthy retained history is summarized by observed session and resource counts.
-Use `fragcap doctor --history-details` for exact human history or --json for every
-stable resource record. Active, mixed, actionable, and incomplete inventory
-findings remain individually visible. Read-only Doctor never deletes history."#;
+Use `fragcap doctor --fix` for the exact remediations Doctor reports,
+including recovery of interrupted Deep Capture sessions. Read-only Doctor
+never deletes history."#;
 
 pub(crate) const TARGETS_LONG_HELP: &str = r#"Deep Capture target path:
   fragcap targets discover
   fragcap targets add --steam 620
   fragcap targets show "<installed game>"
-  fragcap calibrate "<installed game>"
+  fragcap deep-capture "<installed game>" --launch
 
-Registration identifies one installed target. Calibration separately measures
-whether its exact managed launch and protocols are currently compatible."#;
+Registration identifies the installed target. Capture records its observed
+route and protocol compatibility without a separate measurement step."#;
 
-pub(crate) const TARGETS_DISCOVER_LONG_HELP: &str = r#"Discovery may create or update the local store for volume eligibility. It does not register candidate targets or claim that a candidate is a game or compatible.
-
-Results use source chapters separated by an 80-underscore rule, target headings,
-and aligned child fields. Every distinct technology finding stays under its
-target. Values start four spaces after the longest displayed field key; wrapped
-continuations keep that anchor, and exact long tokens are never truncated.
-Color highlights headings and keys only. Redirected and NO_COLOR output use the
-same hierarchy. --summary prints aggregate counts without private inventory.
+pub(crate) const TARGETS_DISCOVER_LONG_HELP: &str = r#"Discovery may create or update the local store for volume eligibility.
+It does not register candidate targets or claim compatibility. Results keep
+distinct technology findings under their target; --summary prints counts.
 
 Next commands:
   fragcap targets add --steam 620
   fragcap targets show "<installed game>"
-  fragcap calibrate "<installed game>""#;
+  fragcap deep-capture "<installed game>" --launch"#;
 
-pub(crate) const TARGETS_ADD_LONG_HELP: &str = r#"Registering creates or updates one stored target. It does not measure Deep Capture compatibility.
+pub(crate) const TARGETS_ADD_LONG_HELP: &str = r#"Registering creates or updates one stored target.
 
 Steam example:
   fragcap targets add --steam 620
 
 Next commands:
   fragcap targets show "Portal 2"
-  fragcap calibrate "Portal 2""#;
+  fragcap deep-capture "Portal 2" --launch"#;
 
-pub(crate) const TARGETS_SHOW_LONG_HELP: &str = r#"Target detail reports stored launch authority and exact local compatibility facts without aggregating a guessed verdict.
+pub(crate) const TARGETS_SHOW_LONG_HELP: &str = r#"Target detail reports stored launch authority and exact historical
+compatibility facts without using those facts as a capture prerequisite.
 
-Next command when setup is incomplete:
-  fragcap calibrate "<installed game>"
-
-Next command after current compatibility is established:
+Next command:
   fragcap deep-capture "<installed game>" --launch"#;
 
-pub(crate) const BUNDLE_COLLECT_LONG_HELP: &str = r#"A preview changes nothing. Applying its exact reviewed proposal deletes eligible bundle contents while preserving the container. --include-retained explicitly expands deletion to retained or custom evidence selected by --bundle. --purge-empty separately selects eligible exact empty containers.
+pub(crate) const BUNDLE_COLLECT_LONG_HELP: &str = r#"A preview changes nothing. Applying its exact reviewed proposal deletes
+eligible bundle contents while preserving the container. --include-retained
+expands deletion to retained or custom evidence selected by --bundle.
+--purge-empty separately selects eligible exact empty containers."#;
 
-Review the eligible, retained, unresolved, and empty counts before applying. An incomplete or zero-work preview offers no Apply command. A changed proposal must be previewed again."#;
-
-pub(crate) const BUNDLE_CLEANUP_LONG_HELP: &str = r#"This destructive operation removes only sensitive artifacts declared by a completed bundle.
-Review the bundle before passing --yes. If cleanup fails, retain manifest.json,
-cleanup.jsonl, resources.jsonl, and the session-owner record so
-`fragcap doctor --fix` can retry the exact recovery authority.
+pub(crate) const BUNDLE_CLEANUP_LONG_HELP: &str = r#"This operation removes only sensitive artifacts declared by a completed
+bundle. Review the bundle before passing --yes. If cleanup fails, retain
+manifest.json, cleanup.jsonl, resources.jsonl, and the session-owner record
+so `fragcap doctor --fix` can retry exact recovery.
 
 Confirmed cleanup:
   fragcap bundle cleanup <bundle> --yes"#;
 
 pub(crate) const BUNDLE_EXPORT_LONG_HELP: &str = r#"Export creates a separate share copy and never modifies the source bundle.
-The transformation manifest lists every omission. Keep the source protected: it
-may contain plaintext application traffic, credentials, client identities, or a
-TLS key log.
+The transformation manifest lists every omission. The source may contain
+plaintext, credentials, client identities, or a TLS key log.
 
 Share copy:
   fragcap bundle export <bundle> --out <share-copy>"#;
@@ -175,7 +126,6 @@ pub(crate) enum FirstRunRefusal {
     Recovery,
     Bundle,
     Authorization,
-    Calibration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,36 +136,18 @@ pub(crate) enum TargetReference<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkflowVerb {
-    Calibrate,
     DeepCapture,
 }
 
+/// Values needed to reproduce an exact ordinary capture command after refusal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CalibrationCommandContext {
     catalog_db: Option<PathBuf>,
     local_db: Option<PathBuf>,
-    launch_case: Option<String>,
-    routing_strategy: Option<String>,
     proxy_family: Option<String>,
-    protocols: Vec<String>,
 }
 
 impl CalibrationCommandContext {
-    pub(crate) fn for_calibrate(args: &CalibrateArgs, effective_local_db: Option<PathBuf>) -> Self {
-        Self {
-            catalog_db: args.catalog_db.clone(),
-            local_db: effective_local_db.or_else(|| args.local_db.clone()),
-            launch_case: args.launch_case.as_ref().map(value_name),
-            routing_strategy: args.routing_strategy.as_ref().map(value_name),
-            proxy_family: Some(value_name(
-                args.proxy_family
-                    .as_ref()
-                    .unwrap_or(&DeepCaptureProxyFamilyArg::Ipv4),
-            )),
-            protocols: args.protocol.iter().map(value_name).collect(),
-        }
-    }
-
     pub(crate) fn for_deep_capture(
         args: &DeepCaptureArgs,
         effective_local_db: Option<PathBuf>,
@@ -223,32 +155,17 @@ impl CalibrationCommandContext {
         Self {
             catalog_db: args.catalog_db.clone(),
             local_db: effective_local_db.or_else(|| args.local_db.clone()),
-            launch_case: args.launch_case.as_ref().map(value_name),
-            routing_strategy: args
-                .direct_route
-                .then(|| value_name(&GuidedCalibrationRoutingArg::ChildEnvironmentDirectSocket)),
             proxy_family: Some(value_name(&args.proxy_family)),
-            protocols: args
-                .calibration_protocol
-                .iter()
-                .filter(|protocol| **protocol != DeepCaptureCalibrationProtocolArg::Routing)
-                .map(value_name)
-                .collect(),
         }
     }
 
     fn append_to(&self, command: &mut String) {
         append_path_option(command, "--catalog-db", self.catalog_db.as_deref());
         append_path_option(command, "--local-db", self.local_db.as_deref());
-        append_value_option(command, "--launch-case", self.launch_case.as_deref());
-        append_value_option(
-            command,
-            "--routing-strategy",
-            self.routing_strategy.as_deref(),
-        );
-        append_value_option(command, "--proxy-family", self.proxy_family.as_deref());
-        for protocol in &self.protocols {
-            append_value_option(command, "--protocol", Some(protocol));
+        if self.proxy_family.as_deref()
+            != Some(value_name(&DeepCaptureProxyFamilyArg::Ipv4).as_str())
+        {
+            append_value_option(command, "--proxy-family", self.proxy_family.as_deref());
         }
     }
 }
@@ -256,158 +173,28 @@ impl CalibrationCommandContext {
 fn value_name<T: ValueEnum>(value: &T) -> String {
     value
         .to_possible_value()
-        .expect("every CLI value enum variant has a possible value")
+        .expect("CLI value has a name")
         .get_name()
         .to_string()
 }
 
 fn append_path_option(command: &mut String, flag: &str, path: Option<&Path>) {
-    let Some(path) = path.and_then(Path::to_str) else {
-        return;
-    };
-    command.push(' ');
-    command.push_str(flag);
-    command.push(' ');
-    command.push_str(&quote_powershell_argument(path));
+    if let Some(path) = path.and_then(Path::to_str) {
+        command.push(' ');
+        command.push_str(flag);
+        command.push(' ');
+        command.push_str(&quote_powershell_argument(path));
+    }
 }
 
 fn append_value_option(command: &mut String, flag: &str, value: Option<&str>) {
-    let Some(value) = value else {
-        return;
-    };
-    command.push(' ');
-    command.push_str(flag);
-    command.push(' ');
-    command.push_str(value);
+    if let Some(value) = value {
+        command.push(' ');
+        command.push_str(flag);
+        command.push(' ');
+        command.push_str(value);
+    }
 }
-
-#[cfg(test)]
-const FIRST_RUN_REFUSALS: &[FirstRunRefusal] = &[
-    FirstRunRefusal::Environment,
-    FirstRunRefusal::Target,
-    FirstRunRefusal::Launch,
-    FirstRunRefusal::Process,
-    FirstRunRefusal::Compatibility,
-    FirstRunRefusal::Recovery,
-    FirstRunRefusal::Bundle,
-    FirstRunRefusal::Authorization,
-    FirstRunRefusal::Calibration,
-];
-
-#[cfg(test)]
-struct CommandExample {
-    pub(crate) id: &'static str,
-    pub(crate) display: &'static str,
-    pub(crate) argv: &'static [&'static str],
-}
-
-#[cfg(test)]
-const COMMAND_EXAMPLES: &[CommandExample] = &[
-    CommandExample {
-        id: "doctor",
-        display: "fragcap doctor",
-        argv: &["fragcap", "doctor"],
-    },
-    CommandExample {
-        id: "discover",
-        display: "fragcap targets discover",
-        argv: &["fragcap", "targets", "discover"],
-    },
-    CommandExample {
-        id: "steam-register",
-        display: "fragcap targets add --steam 620",
-        argv: &["fragcap", "targets", "add", "--steam", "620"],
-    },
-    CommandExample {
-        id: "direct-scan",
-        display: "fragcap targets scan \"C:\\Games\\My Game\"",
-        argv: &["fragcap", "targets", "scan", "C:\\Games\\My Game"],
-    },
-    CommandExample {
-        id: "show",
-        display: "fragcap targets show \"<installed game>\"",
-        argv: &["fragcap", "targets", "show", "My Game"],
-    },
-    CommandExample {
-        id: "calibrate",
-        display: "fragcap calibrate \"<installed game>\"",
-        argv: &["fragcap", "calibrate", "My Game"],
-    },
-    CommandExample {
-        id: "resume",
-        display: "fragcap calibrate --resume 1",
-        argv: &["fragcap", "calibrate", "--resume", "1"],
-    },
-    CommandExample {
-        id: "deep-capture",
-        display: "fragcap deep-capture \"<installed game>\" --launch",
-        argv: &["fragcap", "deep-capture", "My Game", "--launch"],
-    },
-    CommandExample {
-        id: "show-portal",
-        display: "fragcap targets show \"Portal 2\"",
-        argv: &["fragcap", "targets", "show", "Portal 2"],
-    },
-    CommandExample {
-        id: "calibrate-portal",
-        display: "fragcap calibrate \"Portal 2\"",
-        argv: &["fragcap", "calibrate", "Portal 2"],
-    },
-    CommandExample {
-        id: "deep-capture-portal",
-        display: "fragcap deep-capture \"Portal 2\" --launch",
-        argv: &["fragcap", "deep-capture", "Portal 2", "--launch"],
-    },
-    CommandExample {
-        id: "calibrate-direct",
-        display: "fragcap calibrate \"My Game\"",
-        argv: &["fragcap", "calibrate", "My Game"],
-    },
-    CommandExample {
-        id: "deep-capture-direct",
-        display: "fragcap deep-capture \"My Game\" --launch",
-        argv: &["fragcap", "deep-capture", "My Game", "--launch"],
-    },
-    CommandExample {
-        id: "calibrate-warm",
-        display: "fragcap calibrate \"My Game\" --restart-warm",
-        argv: &["fragcap", "calibrate", "My Game", "--restart-warm"],
-    },
-    CommandExample {
-        id: "deep-capture-new-bundle",
-        display: "fragcap deep-capture \"My Game\" --launch --bundle \"<new empty directory>\"",
-        argv: &[
-            "fragcap",
-            "deep-capture",
-            "My Game",
-            "--launch",
-            "--bundle",
-            "new-bundle",
-        ],
-    },
-    CommandExample {
-        id: "doctor-fix",
-        display: "fragcap doctor --fix",
-        argv: &["fragcap", "doctor", "--fix"],
-    },
-    CommandExample {
-        id: "bundle-cleanup",
-        display: "fragcap bundle cleanup <bundle> --yes",
-        argv: &["fragcap", "bundle", "cleanup", "bundle", "--yes"],
-    },
-    CommandExample {
-        id: "bundle-export",
-        display: "fragcap bundle export <bundle> --out <share-copy>",
-        argv: &[
-            "fragcap",
-            "bundle",
-            "export",
-            "bundle",
-            "--out",
-            "share-copy",
-        ],
-    },
-];
 
 pub(crate) fn quote_powershell_argument(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
@@ -438,22 +225,6 @@ pub(crate) fn target_reference<'a>(
         .or_else(|| id.map(TargetReference::Id))
 }
 
-pub(crate) fn calibration_command(
-    target: TargetReference<'_>,
-    context: Option<&CalibrationCommandContext>,
-) -> String {
-    let mut command = match target {
-        TargetReference::Selector(selector) => {
-            format!("fragcap calibrate {}", quote_powershell_argument(selector))
-        }
-        TargetReference::Id(id) => format!("fragcap calibrate --id {id}"),
-    };
-    if let Some(context) = context {
-        context.append_to(&mut command);
-    }
-    command
-}
-
 pub(crate) fn deep_capture_command(target: TargetReference<'_>) -> String {
     match target {
         TargetReference::Selector(selector) => format!(
@@ -467,43 +238,31 @@ pub(crate) fn deep_capture_command(target: TargetReference<'_>) -> String {
 pub(crate) fn next_command(
     category: FirstRunRefusal,
     target: Option<TargetReference<'_>>,
-    calibration_context: Option<&CalibrationCommandContext>,
+    context: Option<&CalibrationCommandContext>,
 ) -> String {
     match category {
-        FirstRunRefusal::Environment => "fragcap doctor".to_string(),
-        FirstRunRefusal::Target => "fragcap targets discover".to_string(),
-        FirstRunRefusal::Launch | FirstRunRefusal::Compatibility | FirstRunRefusal::Calibration => {
-            target.map_or_else(
-                || "fragcap calibrate \"<installed game>\"".to_string(),
-                |value| calibration_command(value, calibration_context),
-            )
+        FirstRunRefusal::Environment => "fragcap doctor".into(),
+        FirstRunRefusal::Target => "fragcap targets discover".into(),
+        FirstRunRefusal::Recovery => "fragcap doctor --fix".into(),
+        FirstRunRefusal::Launch
+        | FirstRunRefusal::Compatibility
+        | FirstRunRefusal::Process
+        | FirstRunRefusal::Bundle
+        | FirstRunRefusal::Authorization => {
+            let mut command = target.map_or_else(
+                || "fragcap deep-capture \"<installed game>\" --launch".to_string(),
+                deep_capture_command,
+            );
+            if let Some(context) = context {
+                context.append_to(&mut command);
+            }
+            if category == FirstRunRefusal::Process {
+                command.push_str(" --restart-warm");
+            } else if category == FirstRunRefusal::Bundle {
+                command.push_str(" --bundle \"<new empty directory>\"");
+            }
+            command
         }
-        FirstRunRefusal::Process => target.map_or_else(
-            || "fragcap calibrate \"<installed game>\" --restart-warm".to_string(),
-            |value| {
-                format!(
-                    "{} --restart-warm",
-                    calibration_command(value, calibration_context)
-                )
-            },
-        ),
-        FirstRunRefusal::Recovery => "fragcap doctor --fix".to_string(),
-        FirstRunRefusal::Bundle => target.map_or_else(
-            || {
-                "fragcap deep-capture \"<installed game>\" --launch --bundle \"<new empty directory>\""
-                    .to_string()
-            },
-            |value| {
-                format!(
-                    "{} --bundle \"<new empty directory>\"",
-                    deep_capture_command(value)
-                )
-            },
-        ),
-        FirstRunRefusal::Authorization => target.map_or_else(
-            || "fragcap deep-capture \"<installed game>\" --launch".to_string(),
-            deep_capture_command,
-        ),
     }
 }
 
@@ -511,8 +270,6 @@ pub(crate) fn classify_pre_session_refusal(message: &str) -> Option<FirstRunRefu
     let message = message.to_ascii_lowercase();
     if message.contains("recovery") || message.contains("prior deep capture") {
         Some(FirstRunRefusal::Recovery)
-    } else if message.contains("registration") && message.contains("plan") {
-        Some(FirstRunRefusal::Calibration)
     } else if message.contains("compatibility") || message.contains("protocol") {
         Some(FirstRunRefusal::Compatibility)
     } else if message.contains("bundle") {
@@ -540,49 +297,27 @@ pub(crate) fn actionable_error(
     error: CliError,
     target: Option<TargetReference<'_>>,
     fallback: Option<FirstRunRefusal>,
-    verb: WorkflowVerb,
-    calibration_context: Option<&CalibrationCommandContext>,
+    _verb: WorkflowVerb,
+    context: Option<&CalibrationCommandContext>,
 ) -> CliError {
     if error.message().contains("Next command:") || error.message().contains("Next commands:") {
         return error;
     }
     if error.message().contains("selector is ambiguous") {
-        return ambiguous_target_error(error, verb, calibration_context);
+        let commands = error
+            .message()
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<i64>().ok())
+            .map(|id| deep_capture_command(TargetReference::Id(id)))
+            .collect::<Vec<_>>();
+        if !commands.is_empty() {
+            return with_next_command(error, commands.join("\n  "));
+        }
     }
     let Some(category) = classify_pre_session_refusal(error.message()).or(fallback) else {
         return error;
     };
-    with_next_command(error, next_command(category, target, calibration_context))
-}
-
-fn ambiguous_target_error(
-    error: CliError,
-    verb: WorkflowVerb,
-    calibration_context: Option<&CalibrationCommandContext>,
-) -> CliError {
-    let commands: Vec<_> = error
-        .message()
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(1)?.parse::<i64>().ok())
-        .map(|id| match verb {
-            WorkflowVerb::Calibrate => {
-                calibration_command(TargetReference::Id(id), calibration_context)
-            }
-            WorkflowVerb::DeepCapture => format!("fragcap deep-capture --id {id} --launch"),
-        })
-        .collect();
-    if commands.is_empty() {
-        return error;
-    }
-    let message = format!(
-        "{}\nNext commands:\n  Choose one listed target:\n  {}",
-        error.message(),
-        commands.join("\n  ")
-    );
-    match error {
-        CliError::Usage(_) => CliError::usage(message),
-        CliError::Failure(_) => CliError::failure(message),
-    }
+    with_next_command(error, next_command(category, target, context))
 }
 
 pub(crate) fn with_next_command(error: CliError, command: impl AsRef<str>) -> CliError {
@@ -595,218 +330,42 @@ pub(crate) fn with_next_command(error: CliError, command: impl AsRef<str>) -> Cl
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
+    use super::*;
+    use crate::cli::Cli;
     use clap::Parser;
 
-    use super::*;
-    use crate::cli::{Cli, Command};
-
     #[test]
-    fn every_displayed_example_has_a_unique_identity_and_parses() {
-        let mut ids = HashSet::new();
-        let help = [
+    fn current_guidance_has_one_capture_path_and_parses() {
+        for help in [
             ROOT_LONG_HELP,
             DEEP_CAPTURE_LONG_HELP,
-            CALIBRATE_LONG_HELP,
             DOCTOR_LONG_HELP,
             TARGETS_LONG_HELP,
             TARGETS_DISCOVER_LONG_HELP,
             TARGETS_ADD_LONG_HELP,
             TARGETS_SHOW_LONG_HELP,
-            BUNDLE_CLEANUP_LONG_HELP,
-            BUNDLE_EXPORT_LONG_HELP,
-        ]
-        .join("\n");
-        for example in COMMAND_EXAMPLES {
-            assert!(
-                ids.insert(example.id),
-                "duplicate example id {}",
-                example.id
-            );
-            assert!(
-                example.display.starts_with("fragcap "),
-                "displayed example must be a complete command: {}",
-                example.display
-            );
-            Cli::try_parse_from(example.argv)
-                .unwrap_or_else(|error| panic!("{} does not parse: {error}", example.display));
-            assert!(
-                help.contains(example.display),
-                "registered example is not displayed: {}",
-                example.display
-            );
+        ] {
+            assert!(!help.contains("fragcap calibrate"));
         }
+        assert!(Cli::try_parse_from(["fragcap", "deep-capture", "My Game", "--launch"]).is_ok());
+        assert!(Cli::try_parse_from(["fragcap", "calibrate", "My Game"]).is_err());
     }
 
     #[test]
-    fn refusal_inventory_is_closed_and_unique() {
-        assert_eq!(FIRST_RUN_REFUSALS.len(), 9);
-        let registered: HashSet<_> = COMMAND_EXAMPLES
-            .iter()
-            .map(|example| example.display)
-            .collect();
-        for (index, category) in FIRST_RUN_REFUSALS.iter().enumerate() {
-            assert!(
-                !FIRST_RUN_REFUSALS[..index].contains(category),
-                "duplicate refusal category {category:?}"
-            );
-            let command = next_command(*category, Some(TargetReference::Selector("My Game")), None);
-            assert!(
-                registered.contains(command.as_str()),
-                "refusal category {category:?} has an unregistered next command: {command}"
-            );
-            let error = actionable_error(
-                CliError::usage("setup stopped"),
-                Some(TargetReference::Selector("My Game")),
-                Some(*category),
-                WorkflowVerb::Calibrate,
-                None,
-            );
-            assert_eq!(
-                error.message().matches("Next command:").count(),
-                1,
-                "refusal category {category:?} must emit exactly one next command"
-            );
-            assert!(
-                error.message().contains(&command),
-                "refusal category {category:?} emitted a different command: {}",
-                error.message()
-            );
-        }
-    }
-
-    #[test]
-    fn dynamic_target_commands_preserve_one_argument() {
-        assert_eq!(
-            calibration_command(TargetReference::Selector("Pokémon \"Élan\" `$HOME"), None,),
-            "fragcap calibrate \"Pokémon `\"Élan`\" ```$HOME\""
-        );
-        assert_eq!(
-            deep_capture_command(TargetReference::Selector("My Game")),
-            "fragcap deep-capture \"My Game\" --launch"
-        );
-        assert_eq!(
-            calibration_command(TargetReference::Id(123), None),
-            "fragcap calibrate --id 123"
-        );
-        assert_eq!(
-            deep_capture_command(TargetReference::Id(123)),
-            "fragcap deep-capture --id 123 --launch"
-        );
-    }
-
-    #[test]
-    fn ambiguous_target_guidance_preserves_every_durable_choice() {
-        let message = "the selector is ambiguous (2 targets match); select by handle or `--id`:\n  first\t76001\tFirst\n  second\t76002\tSecond";
-        let calibrate = actionable_error(
-            CliError::usage(message),
-            None,
-            None,
-            WorkflowVerb::Calibrate,
-            None,
-        );
-        assert!(calibrate.message().contains("fragcap calibrate --id 76001"));
-        assert!(calibrate.message().contains("fragcap calibrate --id 76002"));
-        let deep_capture = actionable_error(
-            CliError::usage(message),
-            None,
-            None,
-            WorkflowVerb::DeepCapture,
-            None,
-        );
-        assert!(deep_capture
-            .message()
-            .contains("fragcap deep-capture --id 76001 --launch"));
-        assert!(deep_capture
-            .message()
-            .contains("fragcap deep-capture --id 76002 --launch"));
-        Cli::try_parse_from(["fragcap", "calibrate", "--id", "76001"])
-            .expect("first durable choice parses");
-        Cli::try_parse_from(["fragcap", "calibrate", "--id", "76002"])
-            .expect("second durable choice parses");
-        Cli::try_parse_from(["fragcap", "deep-capture", "--id", "76001", "--launch"])
-            .expect("first durable Deep Capture choice parses");
-        Cli::try_parse_from(["fragcap", "deep-capture", "--id", "76002", "--launch"])
-            .expect("second durable Deep Capture choice parses");
-    }
-
-    #[test]
-    fn calibration_guidance_preserves_exact_store_and_case() {
+    fn retry_preserves_exact_store_and_no_calibration_command() {
         let context = CalibrationCommandContext {
-            catalog_db: None,
-            local_db: Some(PathBuf::from(r"C:\Stores\targets one.db")),
-            launch_case: Some("direct-exe-cold".to_string()),
-            routing_strategy: Some("child-environment".to_string()),
-            proxy_family: Some("ipv6".to_string()),
-            protocols: vec!["https".to_string()],
+            local_db: Some(PathBuf::from("C:\\data\\local.db")),
+            proxy_family: Some("ipv6".into()),
+            ..Default::default()
         };
-        let command = calibration_command(TargetReference::Id(75_000), Some(&context));
-        assert_eq!(
-            command,
-            "fragcap calibrate --id 75000 --local-db \"C:\\Stores\\targets one.db\" --launch-case direct-exe-cold --routing-strategy child-environment --proxy-family ipv6 --protocol https"
-        );
-        Cli::try_parse_from([
-            "fragcap",
-            "calibrate",
-            "--id",
-            "75000",
-            "--local-db",
-            r"C:\Stores\targets one.db",
-            "--launch-case",
-            "direct-exe-cold",
-            "--routing-strategy",
-            "child-environment",
-            "--proxy-family",
-            "ipv6",
-            "--protocol",
-            "https",
-        ])
-        .expect("exact-case calibration continuation parses");
-    }
-
-    #[test]
-    fn direct_route_refusal_guidance_preserves_composite_calibration() {
-        let cli = Cli::try_parse_from([
-            "fragcap",
-            "deep-capture",
-            "My Game",
-            "--launch",
-            "--direct-route",
-        ])
-        .unwrap();
-        let Some(Command::DeepCapture(args)) = cli.command else {
-            panic!("Deep Capture command");
-        };
-        let context = CalibrationCommandContext::for_deep_capture(&args, None);
         let command = next_command(
             FirstRunRefusal::Compatibility,
-            Some(TargetReference::Id(75_000)),
+            Some(TargetReference::Selector("My Game")),
             Some(&context),
         );
-        assert!(
-            command.contains("--routing-strategy child-environment-direct-socket"),
-            "{command}"
-        );
-        Cli::try_parse_from(command.split_whitespace()).unwrap();
-    }
-
-    #[test]
-    fn registration_plan_refusal_returns_to_calibration() {
-        let error = actionable_error(
-            CliError::usage(
-                "target registration confirmation did not match the exact current plan identifier; no target was registered",
-            ),
-            Some(TargetReference::Selector("Portal 2")),
-            None,
-            WorkflowVerb::Calibrate,
-            None,
-        );
-        assert!(error
-            .message()
-            .contains("Next command:  fragcap calibrate \"Portal 2\""));
-        assert!(!error.message().contains("fragcap deep-capture"));
-        Cli::try_parse_from(["fragcap", "calibrate", "Portal 2"])
-            .expect("registration retry parses");
+        assert!(command.starts_with("fragcap deep-capture"));
+        assert!(command.contains("--local-db \"C:\\data\\local.db\""));
+        assert!(command.contains("--proxy-family ipv6"));
+        assert!(!command.contains("calibrate"));
     }
 }

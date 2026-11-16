@@ -6,10 +6,10 @@ description: Install published fragcap bytes, record passive packet truth, and e
 Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
 
 <Callout title="Release and completion status">
-These instructions describe guided calibration and native functionality shipped in v0.10.0 and retained by v0.11.1. The current release includes the signed direct route and the latest route, calibration, correlation, and debug-report fixes. The [Native product contract](/docs/reference/native-documentation) records the exact supported boundary. Optional field observations do not decide implementation completion; file an observed failure against the affected active release.
+These instructions describe the S207 source workflow. The published v0.11.1 release used guided calibration; S207 retires that command and makes game-scoped capture the ordinary path. The [Native product contract](/docs/reference/native-documentation) records the published release boundary.
 </Callout>
 
-Capture passively records packets and attributes flows to processes. Deep Capture runs Capture beside an explicit target-scoped local proxy and adds application observations only for traffic reaching that proxy under the required trust and scope conditions. Start with Capture; use guided calibration when you deliberately want to investigate Deep Capture eligibility.
+Capture passively records packets and attributes flows to processes. Deep Capture runs Capture beside an explicit, target-scoped local proxy and adds application observations for eligible traffic reaching that proxy. Start either mode for a stored target; Deep Capture records its own compatibility evidence.
 
 ## Before you begin
 
@@ -66,7 +66,7 @@ fragcap targets
 
 This command discovers installed titles, registers new findings in the effective local store, and lists stored targets. Ready targets precede targets needing setup. A row number is an ephemeral selector for that listing; the handle is stable. Capture readiness, engine detections, and sensitivity coverage do not establish Deep Capture compatibility. Do not substitute a Steam app identifier for a row number in `capture`.
 
-If a target is missing, inspect `fragcap targets add --help` or `fragcap targets scan --help`. Guided calibration can separately propose registration for an exactly resolved installed Steam identifier or display name. Managed stores have defaults; database flags are deliberate overrides, not required boilerplate.
+If a target is missing, inspect `fragcap targets add --help` or `fragcap targets scan --help`. Managed stores have defaults; database flags are deliberate overrides.
 
 ## 4. Run the first Capture
 
@@ -84,76 +84,23 @@ Open `first-capture.fcapng` with an unmodified pcapng-aware analyzer. Process im
 
 This completes the passive first-run path. Continue only for deliberately selected, authorized local inspection.
 
-## 6. Check Deep Capture eligibility
+## 6. Start Deep Capture
 
-Read existing facts without starting anything:
+Select a stored target whose final game executable and managed launch are known:
 
 ```powershell
 fragcap targets show sample-target
+fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-Ordinary Deep Capture needs current applicable `proxy-routing = reached-client` evidence for the exact target/version, supported cold launch, route, loopback family, measurement case, backend/version, and fragcap version. Unknown, stale, conflicting, wrong-case, or launcher-only evidence does not pass. Protocol behavior, propagation, trust acceptance, and inspectability remain separate facts.
+The ordinary S207 path prepares one exact plan, then waits for authorization before effects. It launches through the stored platform or publisher chain, gives those launchers no Fragcap proxy URL, and routes eligible final-game sockets through the direct route. `--inspect-scope auto` resolves to the final game. It requires Administrator and the packaged direct-route component on Windows. No prior positive calibration fact is required; each capture records routing, protocol, process, loss, and cleanup evidence.
 
-For missing or incomplete evidence, start guided calibration:
+If the target is missing or has no reliable final-client declaration, use `fragcap targets add --help`, `fragcap targets scan --help`, or `fragcap targets show` to inspect and author it. A title or launch hint alone does not prove which executable is the game. If a stored Steam root moved, `fragcap targets relocate --steam <APP_ID>` supplies an exact relocation plan.
 
-```powershell
-fragcap calibrate sample-target
-```
+Explicit `--inspect-scope launch-chain` broadens inspection to managed launch roles. It uses authenticated SOCKS for launcher network traffic by default. `--launcher-proxy http-and-socks` deliberately exposes both proxy protocols. Keep the resulting launcher evidence separate from final-game evidence. A failed run remains a recorded attempt with its own bundle; it does not block a later capture because of an absent positive calibration fact.
 
-The source default `--inspect-scope auto` selects launch-chain inspection for
-every managed launch topology. The complete plan shows the requested and
-effective scope before any effect. Choose `--inspect-scope game` explicitly
-when only game application content should be inspected; middleware then uses
-authenticated blind relay. Both choices retain exact launch-chain packet
-evidence through route-owner release.
-
-If a stored Steam target was moved to another library, check its stored root
-with `fragcap targets show sample-target` before calibrating. In v0.10.9,
-`fragcap targets relocate --steam 620` prints the exact old and new
-roots and a `plan_id`. Review them, then repeat the command with
-`--plan-id <the printed value>` to update that one stored target. Its handle,
-stable identity, and authored launch roles remain; historical Deep Capture
-facts become stale, so measure again. Relocation refuses an unavailable old
-volume, a still-present old root, duplicate installs, a changed launch hint, or
-a missing authored executable. v0.10.8 does not have this command; use the
-documentation matching the version you actually installed.
-
-Registration, executable setup or candidate selection, and every later effectful attempt have separate complete plans and confirmations. Requested protocols are measurement intent, not proof. The workflow measures reachability first when needed, then proposes useful concrete cases from fresh observations. Failure, decline, limitation, interruption, or partial result stops later effects and checkpoints coverage.
-
-Calibration observes running process images before substantive setup work. For a
-selection whose Steam topology is established by a stored anchor or exact app id,
-an already running Steam client is reported before broad discovery or
-recursive executable scans, setup prompts, tracing, new workflow writes or
-session effects. Close Steam normally and repeat calibration, or explicitly use
-`--restart-warm` for a bounded wait while you close the declared applications.
-This warm preflight and close-and-retry wait never control a process; the
-separate cold, session-created shutdown contract is described below. Direct
-and publisher targets remain usable when unrelated Steam is running. Resume
-status/pause history retains its own
-meaning, and launch preparation rechecks current processes after early preflight.
-A display name alone does not establish Steam topology. Names shared across
-sources retain their candidate ambiguity; choosing a direct candidate remains
-available when Steam is running. After resolving a named Steam candidate,
-calibration applies the guard before registration confirmation, recursive client
-setup or workflow/session effects. A synthetic exact-identity warm-Steam
-regression has a one-second refusal budget with a
-five-second fail-if-called downstream discovery adapter; this controlled budget
-does not promise arbitrary Windows scheduling or disk performance.
-
-If the stored Steam target has no client, `calibrate` first labels the appinfo executable as a **Steam launch hint**. It can ask permission to start the selected title from a cold Steam launch and observe which descendant owns network connections. Start the game normally when prompted. One observed socket owner becomes a proposed client under a separate exact setup plan; it is not yet captured traffic or proxy reachability. No owner, several owners, or incomplete observation leaves the target unchanged. If you already know the final client executable, use `fragcap calibrate sample-target --client-executable sample.exe` to declare it explicitly without a socket question. This declaration is labeled as your choice, not a measurement. After saving a client, close the title and Steam normally, then rerun `fragcap calibrate sample-target` for a fresh cold reachability session.
-
-During reachability, approving the complete Deep Capture plan starts the scoped proxy, passive Capture, and managed launch. A written bundle is evidence of the attempt, not evidence that the game client was acquired or reached the proxy. Read the calibration diagnosis for the earliest known failed stage, retained target packets, accepted proxy connections, exact fact writes, and cleanup outcomes. An observed zero is different from unavailable evidence. By default a failed workflow pauses and its `--resume` command does not retry the same exact case. A fresh workflow can include `--retry-game-scope` to authorize one exact-game successor after a failed launch-chain attempt, and `--fallback-capture` to retain eligible packet-only evidence without claiming Deep Capture success. Neither permission can be added on resume.
-
-Use the workflow identity and local-store-bound resume command printed by your run, not the specimen identity below:
-
-```powershell
-fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
-fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
-```
-
-Resume rebuilds current authority and never reuses a prior plan or response. Pauses record operator-owned login, EULA, update, anti-cheat, gameplay, shutdown, or interruption work, not evidence. Cold direct, Steam platform, and declared publisher chains are supported. Warm applications remain yours to close normally; explicit `--restart-warm` observes shutdown and never kills a process. See [compatibility and calibration](/docs/reference/deep-capture-compatibility) for exact limits and advanced measurements.
-
-## 7. Run a known-compatible Deep Capture
+Warm applications remain yours to close normally. `--restart-warm` observes an operator-owned close, then requires a fresh preparation and authorization. Read [Deep Capture compatibility](/docs/reference/deep-capture-compatibility) for route and traffic limits.
+## 7. Review the Deep Capture plan
 
 ```powershell
 fragcap deep-capture sample-target --launch --inspect-scope auto --duration 5m --har

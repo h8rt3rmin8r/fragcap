@@ -237,7 +237,7 @@ fn direct_owner_raw_token_stream_is_relayed_after_finite_classification() {
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
-    assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+    assert_eq!(report.observation.protocol.generic_streams_unknown, 1);
     assert_eq!(report.observation.protocol.requests, 0);
 }
 
@@ -470,10 +470,10 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
         assert!(terminal_ms.saturating_sub(completed_ms) >= 100, "{stage:?}");
     }
     assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
-    assert_eq!(report.observation.protocol.socks_tcp_opaque, 1);
+    assert_eq!(report.observation.protocol.socks_tcp_undetermined, 1);
     assert_eq!(report.observation.protocol.socks_client_bytes, 14);
     assert_eq!(report.observation.protocol.socks_upstream_bytes, 15);
-    assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+    assert_eq!(report.observation.protocol.generic_streams_unknown, 1);
     assert_eq!(
         report.observation.protocol.generic_stream_bytes_observed,
         29
@@ -494,7 +494,7 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
         matches!(
             &event.kind,
             ApplicationEventKind::GenericStreamChunk(chunk)
-                if chunk.provenance == fragcap_proxy::GenericStreamProvenance::TcpPlaintext
+                if chunk.provenance == fragcap_proxy::GenericStreamProvenance::Unknown
                     && chunk.direction == fragcap_proxy::GenericStreamDirection::ClientToUpstream
                     && chunk.bytes.as_ref() == b"opaque request"
         )

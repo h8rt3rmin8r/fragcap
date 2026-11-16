@@ -121,68 +121,19 @@ authorized Deep Capture measurement can add newer evidence. Existing
 launch-specific rows remain available as context rather than being silently
 rewritten.
 
-## Calibrating an unknown target
+## Capturing an unknown target
 
-Start with the guided front door:
-
-```powershell
-fragcap calibrate sample-target
-fragcap calibrate --id 42 --protocol https --inspect-scope auto
-```
-
-Inspection scope is part of the exact case. In current source, `auto` resolves
-before effects to launch-chain inspection for Steam, publisher, and direct
-topology. `game` explicitly selects exact-game inspection with blind middleware
-relay. Packet evidence retains the exact session-created chain under either
-choice. Version 1 and differently scoped facts remain visible but cannot qualify
-the current version 2 case.
-
-Stored resolution takes precedence. On a clean miss, an exact installed Steam application identifier or case-insensitive display name can produce a separately confirmed registration plan. For a Steam target without an authored client, appinfo supplies a launch hint only. Interactive setup can separately confirm a cold Steam launch and observe owned descendants with operating-system socket rows. One complete observed socket owner can be proposed under an exact client-authoring plan; this does not prove packet traffic or proxy reachability. No owner, multiple owners, incomplete observation, or a decline changes no target row. `--client-executable sample.exe` is an explicitly labeled manual declaration when observation is unavailable. Setup ends after the target change; close the title and Steam normally before rerunning calibration for reachability. A content-derived `--candidate` identity selects one current discovery candidate, never a list position. Registration, setup, and each later session require separate fresh authorization; a choice is not consent to traffic inspection.
-
-The workflow proposes reachability first when applicable routing evidence is missing. Fresh eligible final-client observations can propose concrete protocols, but requested `--protocol` values are only measurement intent. Each workflow runs reachability at most once and each concrete protocol at most once, with at most fourteen durable attempt ordinals. A failure, limitation, decline, partial result, interruption, target change, or repeated case checkpoints coverage and stops later effects instead of pretending success.
-
-In v0.10.9, an early packet withheld by Capture's selected
-scope does not automatically invalidate a later, separate proxy connection.
-The later connection still needs retained packet observations in its exact
-time window with one proven final-client owner. A withheld packet inside that
-window remains a refusal (`packet-scope-withheld`); saturated per-flow history
-reports `packet-history-bound-exceeded`, and an acquisition-buffer loss reports
-`capture-buffer-history-incomplete`. An unknown omission or exhausted omission
-history also refuses a positive match. These reasons explain missing evidence;
-they are not a claim that the target accepted TLS or that the route propagated.
-v0.10.8 has the earlier untimed omission behavior.
-
-Resume from the same effective local store using the workflow identity printed by the command:
+Start an ordinary game-scoped capture for a stored target with a declared final game:
 
 ```powershell
-fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
-fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
+fragcap deep-capture sample-target --launch
 ```
 
-The workflow stores an immutable target snapshot and exact-case intent. Resume rebuilds process inventory, fact applicability, proposal, recovery, bundle, plan, and confirmation authority; it never reuses an old plan or response. An in-flight record first becomes an effect-free interruption pause. Login, EULA, update, anti-cheat, gameplay, shutdown, and interruption pauses record operator work, not compatibility proof. Advanced fresh workflows can assert the inferred cold launch case, choose IPv4 or IPv6, and select child-environment routing or the explicit composite direct-socket route; remaining routing strategies refuse before effects. Resume cannot change those dimensions or the candidate.
+S207 no longer requires a separate calibration run or prior positive proxy-routing fact. Preparation resolves the exact stored target, managed launch, game executable, routing strategy, loopback family, output, and cleanup obligations before the complete plan is authorized. The final game uses the direct route; Steam and publisher helpers receive no Fragcap proxy URL. `--inspect-scope auto` selects only the final game. The process chain is still observed for ownership and packet attribution.
 
-If a delegated session fails, the terminal diagnosis names the earliest known stage from retained launch, process, route, fact, and cleanup evidence. An artifact marked written can contain zero retained target packets. A paused failed workflow retains its attempt history, so `--resume` does not automatically retry that failed exact case. A fresh workflow may include `--retry-game-scope` to authorize one new exact-game successor after a failed launch-chain attempt, with a separate attempt bundle and fresh authority. `--fallback-capture` may retain eligible packet-only evidence under its actual window without appending a positive inspection fact. Neither authority can be added on resume. A zero-observation attempt may append a launch-case fact while appending no proxy-routing fact; inspect the exact fact-write report.
+A successful launch or written bundle is not a claim that a flow was inspectable. Review packet attribution, accepted proxy connections, per-flow classification, protocol and TLS outcomes, omitted evidence, and cleanup independently. Unknown and encrypted observations remain unknown or encrypted; they do not become positive plaintext claims. The same evidence is recorded in the first run and later runs.
 
-Ordinary eligibility uses the latest exact applicable routing row for target/version, launch case, route, loopback family, selected measurement, native backend/version, and fragcap version. A historical `current` display label, imported fact, protocol fact, launcher observation, or another workflow cannot substitute for that decision. See the [CLI reference](/docs/reference/cli#calibrate) for full options.
-
-### Reading a calibration result
-
-The S168 contract shipped in v0.10.6 presents authorization, observation, captured evidence, resource cleanup, and one final calibration verdict as separate blocks. The complete canonical plan and exact identifier still govern authorization. Human field anchors use the widest actual label plus four spaces; redirected output is plain, quiet suppresses ordinary guided progress and its final human verdict, silent suppresses terminal evidence, and JSON carries additive `calibration.verdict` decisions instead of prose. Required authorization and actionable cleanup notices retain their established visibility.
-
-The final verdict separates the attempted case from current applicable stored readiness. Its case identity includes target, launch, route, address family, native backend/version, fragcap version, target version when available, and protocol. The greatest durable row ID for each exact applicable measurement key supplies current readiness; older differing values remain history. A later exact negative measurement supersedes an earlier positive one, and a later exact positive measurement supersedes an earlier negative one. A stale or unrelated attempt does not displace an applicable current measurement. Contradictory values at the same greatest durable ID, or absent durable chronology, cannot establish readiness. A satisfied stored routing prerequisite still requires fresh launch preflight, recovery, and authorization. Remaining protocols are explicit. Resume preserves workflow intent and attempt history and obtains a new plan; one supported next command is printed with that purpose.
-
-Connection endings and application exchanges count different populations. For example, a controlled session can report six failed connections, with five protocol failures and one idle timeout, while seven HTTP exchanges completed successfully. The timeout does not erase those exchanges. Separate fields show accepted/completed/failed/forced/live connections, retained failure categories, exchange/stream totals, bounded detail loss, record ownership, and unavailable correlation. Records observed during the observation window and later owner release remain distinguishable. Later records are retained but cannot satisfy the earlier calibration case.
-
-v0.10.9 takes final proxy counters after cleanup and
-application finalization, including when the first stop attempt timed out.
-Earlier unavailable counters stay unavailable until an actual runtime report
-establishes them; a later count does not erase the timeout. The final
-calibration diagnosis uses these last observed counts and keeps the earliest
-known causal failure. v0.10.8 can report a premature zero after a
-stop timeout; inspect its retained application and cleanup records separately.
-
-A finished session can have partial process evidence and readable written artifacts without proving selected-client reachability. The terminal evidence block reports manifest and process-trace completeness and exact available limitation counts independently from session finalization, writes, recipient-context access, fact writes, and cleanup. It prints the bundle root once and relative artifact names, and gives an omission reason instead of claiming an unrequested file exists. The S170 correction published in v0.10.6 verifies ordinary recipient access after writer and lifecycle reconciliation and withholds accessible analyzer-opening guidance when that verification fails. Published v0.10.6 includes this correction.
-
+To author a missing target, use the target commands. An appinfo executable can be a launch hint rather than the final client; confirm the correct game executable before inspecting it. Historical compatibility rows remain readable and can show routing changes over time, but absent or stale rows do not block ordinary capture.
 ### Ordinary desktop access
 
 Same-account administrative capture retains the intended user's exact SID and ordinary access context. Private output grants that recipient, any distinct producer and SYSTEM explicitly, covering inherited files, atomic publication and independently protected sidecars. Administrator-group ownership and a successful elevated read do not establish ordinary access. Readable evidence can still be partial or fail to prove final-client reachability.
@@ -229,41 +180,15 @@ Next action:                     fragcap doctor (inspect loopback acquisition re
 
 This abbreviated synthetic example retains the four-space gap after the longest actual label in each block. Full reports additionally expose the exact case, independent artifact/process/cleanup fields, remaining work, and reason codes.
 
-### Advanced single-phase measurements
+### Advanced launcher route
 
-Compatibility calibration is the supported, explicit path from unknown local evidence toward ordinary Deep Capture eligibility. It keeps the ordinary safety gate intact and measures one declared launch case in two separate runs.
-
-First close the selected target and, for a Steam launch, close Steam. Calibration
-requires a cold target and cannot use the ordinary Deep Capture warm
-close-and-retry option. Managed direct, cold Steam platform, and declared
-publisher-launcher chains are supported. Then measure scoped proxy reachability
-without changing certificate trust. This example uses the Steam launch case:
+Explicit `--inspect-scope launch-chain` inspects managed launch roles as well as the game. The default launcher exposure for that scope is authenticated SOCKS only:
 
 ```powershell
-fragcap deep-capture sample-target --launch --inspect-scope game --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
+fragcap deep-capture sample-target --launch --inspect-scope launch-chain --launcher-proxy socks-only
 ```
 
-For an eligible stored direct target, use `--launch-case direct-exe-cold` instead. Warm Steam and direct-executable targets are refused before side effects.
-
-fragcap displays the exact target and launch authority, phase, loopback and routing policy, process-local CA identity when trust is needed, bundle and sensitive artifacts, finite deadlines, possible fact writes, cleanup obligations, refusal boundaries, and versioned plan identifier before asking once for confirmation. A shorter `--wait` or `--duration` becomes the displayed calibration bound; longer values are capped at the calibration maximum. Shutdown and cleanup enforce the displayed bounds too. JSON and prompt-free automation require `--authorize-stdin`; the caller reads the plan event and returns its exact identifier plus one LF in the same process.
-
-Review the new rows with `fragcap targets show sample-target`. If current evidence for the same launch case says `proxy-routing = reached-client`, a separate TLS phase can measure CA acceptance and inspectability:
-
-```powershell
-fragcap deep-capture sample-target --launch --inspect-scope game --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
-```
-
-Windows may show a separate **Security Warning** when it adds this session's CA
-to the current-user Trusted Root store. Compare the warning's SHA-1 thumbprint
-with `certificate_thumbprint_sha1` in fragcap's displayed plan before deciding.
-The command waits while that Windows prompt is open. Declining the warning
-prevents the TLS measurement; after approval, fragcap must remove only the
-exact trust entry added by this session and report any unresolved cleanup.
-
-Use the same exact cold launch case in both phases.
-
-Routing and environment propagation remain separate facts. Reaching the final client does not prove how the launcher propagated proxy configuration, and fragcap records `proxy-propagation = confirmed` only when a separate non-invasive observation supports it. CA acceptance requires full HTTPS semantics correlated to the final client, so launcher traffic cannot establish the target's trust behavior. Silence remains inconclusive. A phase outcome such as proxy not reached, metadata only, or unsupported protocol is recorded in the local bundle and is not converted into an aggregate compatible or incompatible target verdict.
-
+`--launcher-proxy http-and-socks` also gives launchers HTTP proxy variables. The complete authorization plan identifies the requested route and scope, and execution checks the prepared route before effects. The direct final-game route remains exact. Launcher-origin proxy traffic and final-game traffic have distinct ownership evidence; a CONNECT client that closes before TLS is reported at that handoff, not as an origin or certificate failure.
 ## Publishing compatibility evidence
 
 Public documentation and committed fixtures use placeholders such as

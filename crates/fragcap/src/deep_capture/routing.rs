@@ -20,6 +20,7 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoutingStrategyKind {
     ChildEnvironment,
+    DirectSocket,
     CommandArguments,
     TargetConfiguration,
     HttpProxy,
@@ -31,6 +32,7 @@ impl RoutingStrategyKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ChildEnvironment => "child-environment",
+            Self::DirectSocket => "direct-socket",
             Self::CommandArguments => "command-arguments",
             Self::TargetConfiguration => "target-configuration",
             Self::HttpProxy => "http-proxy",
@@ -55,6 +57,30 @@ pub enum RouteValueSource {
     SessionSocks5hUrl,
     SessionProxyAuthorization,
     Literal(String),
+    /// Remove an inherited proxy variable from the managed root only.
+    Remove,
+}
+
+/// Proxy exposure for the managed launch root, independent of game inspection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LauncherProxyExposure {
+    /// Leave the managed root's ordinary environment unchanged.
+    #[default]
+    Native,
+    /// Supply only the session SOCKS route; clear inherited HTTP proxy URLs.
+    SocksOnly,
+    /// Supply the historical HTTP and SOCKS session routes.
+    HttpAndSocks,
+}
+
+impl LauncherProxyExposure {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::SocksOnly => "socks-only",
+            Self::HttpAndSocks => "http-and-socks",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -426,6 +452,70 @@ impl DirectSocketComponent {
 }
 
 impl RoutingPlan {
+    /// Construct the complete route from one pre-effect selection.
+    pub fn selected(
+        listener: super::LoopbackEndpoint,
+        bypass_inputs: &[String],
+        target: &PreparedTarget,
+        exposure: LauncherProxyExposure,
+        direct_socket: bool,
+    ) -> Result<Self, PreflightRefusal> {
+        let mut plan = match exposure {
+            LauncherProxyExposure::Native => {
+                let bypass = BypassPolicy::parse(listener.address(), bypass_inputs)?;
+                Self {
+                    strategy: RoutingStrategyKind::DirectSocket,
+                    availability: RoutingAvailability::Implemented,
+                    effects: Vec::new(),
+                    verification: "packet-flow-and-socket-owner-evidence".into(),
+                    cleanup: Vec::new(),
+                    bypass: Some(bypass),
+                    direct_socket: None,
+                }
+            }
+            LauncherProxyExposure::SocksOnly => Self::socks_only(listener, bypass_inputs)?,
+            LauncherProxyExposure::HttpAndSocks => {
+                Self::child_environment(listener, bypass_inputs)?
+            }
+        };
+        if direct_socket {
+            plan = plan.with_direct_socket(target)?;
+        }
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    fn socks_only(
+        listener: super::LoopbackEndpoint,
+        bypass_inputs: &[String],
+    ) -> Result<Self, PreflightRefusal> {
+        let bypass = BypassPolicy::parse(listener.address(), bypass_inputs)?;
+        let no_proxy = bypass.environment_value();
+        let effect = |name: &str, value| RouteEffect {
+            destination: name.into(),
+            value,
+            scope: "managed-child-only".into(),
+        };
+        Ok(Self {
+            strategy: RoutingStrategyKind::ChildEnvironment,
+            availability: RoutingAvailability::Implemented,
+            effects: vec![
+                effect("HTTP_PROXY", RouteValueSource::Remove),
+                effect("HTTPS_PROXY", RouteValueSource::Remove),
+                effect("http_proxy", RouteValueSource::Remove),
+                effect("https_proxy", RouteValueSource::Remove),
+                effect("ALL_PROXY", RouteValueSource::SessionSocks5hUrl),
+                effect("all_proxy", RouteValueSource::SessionSocks5hUrl),
+                effect("NO_PROXY", RouteValueSource::Literal(no_proxy.clone())),
+                effect("no_proxy", RouteValueSource::Literal(no_proxy)),
+            ],
+            verification: "packet-flow-and-socket-owner-evidence".into(),
+            cleanup: vec!["child-environment-ends-with-process".into()],
+            bypass: Some(bypass),
+            direct_socket: None,
+        })
+    }
+
     pub fn child_environment(
         listener: super::LoopbackEndpoint,
         bypass_inputs: &[String],
@@ -503,8 +593,11 @@ impl RoutingPlan {
                 ),
             ));
         }
-        if self.effects.is_empty()
+        if (self.effects.is_empty() && self.direct_socket.is_none())
             || self.bypass.is_none()
+            || (self.strategy == RoutingStrategyKind::DirectSocket
+                && (!self.effects.is_empty() || self.direct_socket.is_none()))
+            || (self.strategy == RoutingStrategyKind::ChildEnvironment && self.effects.is_empty())
             || self.effects.iter().any(|effect| {
                 effect.scope != "managed-child-only" || effect.destination.trim().is_empty()
             })
@@ -567,6 +660,7 @@ pub struct RouteVerification {
 pub struct AppliedRoute {
     proxy: ProxyRoute,
     environment: BTreeMap<String, Zeroizing<String>>,
+    removed_environment: Vec<String>,
 }
 
 impl AppliedRoute {
@@ -574,6 +668,7 @@ impl AppliedRoute {
         plan.validate()
             .map_err(|error| StageFailure::new(Stage::Routing, error.code, error.detail))?;
         let mut environment = BTreeMap::new();
+        let mut removed_environment = Vec::new();
         for effect in &plan.effects {
             let value = match &effect.value {
                 RouteValueSource::SessionProxyUrl => proxy.proxy_url().to_string(),
@@ -582,10 +677,18 @@ impl AppliedRoute {
                     proxy.proxy_authorization().to_string()
                 }
                 RouteValueSource::Literal(value) => value.clone(),
+                RouteValueSource::Remove => {
+                    removed_environment.push(effect.destination.clone());
+                    continue;
+                }
             };
             environment.insert(effect.destination.clone(), Zeroizing::new(value));
         }
-        Ok(Self { proxy, environment })
+        Ok(Self {
+            proxy,
+            environment,
+            removed_environment,
+        })
     }
 
     pub fn proxy(&self) -> &ProxyRoute {
@@ -596,6 +699,10 @@ impl AppliedRoute {
         self.environment
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
+    pub fn removed_environment(&self) -> impl Iterator<Item = &str> {
+        self.removed_environment.iter().map(String::as_str)
     }
 }
 
@@ -1069,6 +1176,64 @@ mod tests {
                 .code,
             "direct-route-adapter-unavailable"
         );
+    }
+
+    #[test]
+    fn game_first_route_has_no_launcher_proxy_effects() {
+        let target = PreparedTarget {
+            id: 7,
+            handle: "game".into(),
+            launch_case: LaunchCase::PublisherLauncherCold,
+        };
+        let route = RoutingPlan::selected(
+            endpoint("127.0.0.1:0"),
+            &[],
+            &target,
+            LauncherProxyExposure::Native,
+            true,
+        )
+        .unwrap();
+        assert!(route.effects.is_empty());
+        assert_eq!(route.direct_socket.as_ref().unwrap().target_id, target.id);
+        assert!(RoutingPlan::selected(
+            endpoint("127.0.0.1:0"),
+            &[],
+            &target,
+            LauncherProxyExposure::Native,
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn socks_only_route_removes_http_inheritance_without_an_http_proxy_url() {
+        let target = PreparedTarget {
+            id: 7,
+            handle: "game".into(),
+            launch_case: LaunchCase::PublisherLauncherCold,
+        };
+        let route = RoutingPlan::selected(
+            endpoint("127.0.0.1:0"),
+            &[],
+            &target,
+            LauncherProxyExposure::SocksOnly,
+            true,
+        )
+        .unwrap();
+        assert!(route.effects.iter().all(|effect| {
+            effect.value != RouteValueSource::SessionProxyUrl
+                && effect.value != RouteValueSource::SessionProxyAuthorization
+        }));
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+            assert!(route.effects.iter().any(|effect| {
+                effect.destination == name && effect.value == RouteValueSource::Remove
+            }));
+        }
+        for name in ["ALL_PROXY", "all_proxy"] {
+            assert!(route.effects.iter().any(|effect| {
+                effect.destination == name && effect.value == RouteValueSource::SessionSocks5hUrl
+            }));
+        }
     }
 
     fn session(routing: RoutingPlan) -> SessionPlan {

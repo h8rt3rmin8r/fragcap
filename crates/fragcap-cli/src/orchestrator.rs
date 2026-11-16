@@ -1030,7 +1030,12 @@ fn capture_live(
     let (gate, gate_handle) = if config.shutdown_scope.is_empty() {
         SessionGate::new(&config.session_config(), tee_tx)
     } else {
-        SessionGate::new_managed(&config.session_config(), tee_tx, publisher.clone())
+        SessionGate::new_managed_scoped(
+            &config.session_config(),
+            tee_tx,
+            publisher.clone(),
+            config.retained_packet_roles.clone(),
+        )
     };
     let stamper_reader = components.stamper.clone();
     let (handle, stop, stream_reports, ring_evicted, live) =

@@ -1103,6 +1103,12 @@ impl BindingPublisher {
         bound_at(&self.snapshot(), pid, at).is_some()
     }
 
+    fn contains_role_at(&self, pid: u32, at: Timestamp, roles: &[String]) -> bool {
+        bound_at(&self.snapshot(), pid, at)
+            .and_then(|binding| binding.role.as_deref())
+            .is_some_and(|role| roles.iter().any(|allowed| allowed == role))
+    }
+
     fn wait_for_match(&self, pid: u32, at: Timestamp, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         let (lock, changed) = &*self.revision;
@@ -1352,6 +1358,8 @@ struct GateShared {
     scope: CaptureScope,
     /// Exact managed generations, independent of application inspection scope.
     causal: Option<BindingPublisher>,
+    /// Payload retention can be narrower than the ancestry observed for launch.
+    causal_retained_roles: Option<Vec<String>>,
     /// A short per-PID timeout avoids stalling the writer on every unrelated
     /// packet; a newly published exact binding always takes precedence.
     pending_cooldown: Mutex<HashMap<u32, std::time::Instant>>,
@@ -1405,6 +1413,7 @@ impl GateShared {
             out_of_window_discarded: AtomicU64::new(0),
             scope: config.scope,
             causal: None,
+            causal_retained_roles: None,
             pending_cooldown: Mutex::new(HashMap::new()),
             direction: config.direction,
             allowed_roles: config.allowed_roles.clone(),
@@ -1476,8 +1485,19 @@ impl SessionGate {
         tee: Sender<(u32, Timestamp)>,
         publisher: BindingPublisher,
     ) -> (Self, GateHandle) {
+        Self::new_managed_scoped(config, tee, publisher, None)
+    }
+
+    /// Observe the complete managed ancestry while retaining only selected roles.
+    pub fn new_managed_scoped(
+        config: &SessionConfig,
+        tee: Sender<(u32, Timestamp)>,
+        publisher: BindingPublisher,
+        retained_roles: Option<Vec<String>>,
+    ) -> (Self, GateHandle) {
         let mut state = GateShared::new(config);
         state.causal = Some(publisher);
+        state.causal_retained_roles = retained_roles;
         let shared = Arc::new(state);
         (
             SessionGate {
@@ -1687,16 +1707,28 @@ impl SessionGate {
         // yet; a packet attributed to an unbound process certainly was not. See
         // `GateShared::scope_unresolved_discarded`.
         let in_scope = if let Some(causal) = &shared.causal {
-            packet
-                .attribution
-                .as_ref()
-                .is_some_and(|attribution| causal.contains_at(attribution.pid, packet.ts))
+            packet.attribution.as_ref().is_some_and(|attribution| {
+                match shared.causal_retained_roles.as_deref() {
+                    Some(roles) => causal.contains_role_at(attribution.pid, packet.ts, roles),
+                    None => causal.contains_at(attribution.pid, packet.ts),
+                }
+            })
         } else {
             shared
                 .scope
                 .admits(packet.attribution.as_ref(), shared.allowed_roles.as_deref())
         };
         if !in_scope {
+            if let (Some(causal), Some(_), Some(attribution)) = (
+                shared.causal.as_ref(),
+                shared.causal_retained_roles.as_ref(),
+                packet.attribution.as_ref(),
+            ) {
+                if causal.contains_at(attribution.pid, packet.ts) {
+                    shared.scope_discarded.fetch_add(1, Ordering::Relaxed);
+                    return GateDecision::Reject(GateRejection::OutOfScope);
+                }
+            }
             let mut in_cooldown = false;
             if allow_pending && shared.causal.is_some() {
                 if let Some(attribution) = &packet.attribution {
@@ -2032,6 +2064,118 @@ mod gate_tests {
         assert!(!gate.admit(&unrelated));
         assert_eq!(handle.admitted(), 1);
         assert_eq!(handle.scope_unresolved_discarded(), 2);
+    }
+
+    #[test]
+    fn game_first_managed_gate_retains_only_exact_client_generation() {
+        use fragcap_core::traits::{GateDecision, GateRejection};
+
+        let publisher = BindingPublisher::default();
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed_scoped(
+            &unscoped(),
+            tx,
+            publisher.clone(),
+            Some(vec!["client".into()]),
+        );
+        handle.open_from(Timestamp::from_nanos(10));
+        publisher.publish_exact(vec![
+            RoleBindingInterval {
+                pid: 101,
+                started: Some(Timestamp::from_nanos(10)),
+                exited: None,
+                role: Some("launcher".into()),
+                stage: None,
+            },
+            RoleBindingInterval {
+                pid: 102,
+                started: Some(Timestamp::from_nanos(20)),
+                exited: Some(Timestamp::from_nanos(40)),
+                role: Some("client".into()),
+                stage: None,
+            },
+        ]);
+        let attributed = |pid, at| {
+            let mut value = packet(32, at);
+            value.attribution = Some(Attribution::new(pid, "game.exe", Fidelity::Live));
+            value
+        };
+        assert_eq!(
+            gate.decide(&attributed(101, 25)),
+            GateDecision::Reject(GateRejection::OutOfScope)
+        );
+        assert_eq!(gate.decide(&attributed(102, 25)), GateDecision::Admit);
+        let expired = attributed(102, 40);
+        assert_eq!(gate.decide(&expired), GateDecision::Pending);
+        assert_eq!(
+            gate.finish_pending(&expired, Duration::from_millis(1)),
+            GateDecision::Reject(GateRejection::CausalProofUnavailable)
+        );
+        assert_eq!(handle.scope_discarded(), 1);
+        assert_eq!(handle.admitted(), 1);
+    }
+
+    #[test]
+    fn game_first_gate_excludes_zero_to_three_intermediaries_and_same_name_bystanders() {
+        use fragcap_core::traits::{GateDecision, GateRejection};
+
+        for intermediaries in 0..=3 {
+            let publisher = BindingPublisher::default();
+            let (tx, _rx) = mpsc::channel();
+            let (gate, handle) = SessionGate::new_managed_scoped(
+                &unscoped(),
+                tx,
+                publisher.clone(),
+                Some(vec!["client".into()]),
+            );
+            handle.open_from(Timestamp::from_nanos(10));
+            let mut bindings = (0..intermediaries)
+                .map(|index| RoleBindingInterval {
+                    pid: 200 + index,
+                    started: Some(Timestamp::from_nanos(10)),
+                    exited: None,
+                    role: Some("launcher".into()),
+                    stage: None,
+                })
+                .collect::<Vec<_>>();
+            bindings.push(RoleBindingInterval {
+                pid: 300,
+                started: Some(Timestamp::from_nanos(20)),
+                exited: Some(Timestamp::from_nanos(40)),
+                role: Some("client".into()),
+                stage: None,
+            });
+            bindings.push(RoleBindingInterval {
+                pid: 301,
+                started: Some(Timestamp::from_nanos(40)),
+                exited: None,
+                role: Some("client".into()),
+                stage: None,
+            });
+            publisher.publish_exact(bindings);
+            let attributed = |pid, at| {
+                let mut value = packet(32, at);
+                value.attribution = Some(Attribution::new(pid, "game.exe", Fidelity::Live));
+                value
+            };
+            for index in 0..intermediaries {
+                assert_eq!(
+                    gate.decide(&attributed(200 + index, 25)),
+                    GateDecision::Reject(GateRejection::OutOfScope)
+                );
+            }
+            assert_eq!(gate.decide(&attributed(300, 25)), GateDecision::Admit);
+            assert_eq!(gate.decide(&attributed(301, 45)), GateDecision::Admit);
+            let bystander = attributed(900, 45);
+            assert_eq!(gate.decide(&bystander), GateDecision::Pending);
+            assert_eq!(
+                gate.finish_pending(&bystander, Duration::from_millis(1)),
+                GateDecision::Reject(GateRejection::CausalProofUnavailable)
+            );
+            assert_eq!(handle.admitted(), 2);
+            assert_eq!(handle.scope_discarded(), intermediaries as u64);
+            assert_eq!(handle.scope_unresolved_discarded(), 1);
+        }
     }
 
     #[test]

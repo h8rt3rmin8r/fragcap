@@ -1202,6 +1202,8 @@ fn config() -> SessionConfig {
         key_log: false,
         client_identity: false,
         proxy_bypass: Vec::new(),
+        launcher_exposure: fragcap::deep_capture::api::LauncherProxyExposure::HttpAndSocks,
+        direct_socket: false,
         sensitive_retention: SensitiveRetention::Retain,
         deadlines: Deadlines::default(),
     }

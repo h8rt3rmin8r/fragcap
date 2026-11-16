@@ -3,7 +3,8 @@
 #![cfg(feature = "deep-capture")]
 
 use fragcap::deep_capture::{
-    LoopbackEndpoint, RouteValueSource, RoutingAvailability, RoutingPlan, RoutingStrategyKind,
+    LaunchCase, LauncherProxyExposure, LoopbackEndpoint, PreparedTarget, RouteValueSource,
+    RoutingAvailability, RoutingPlan, RoutingStrategyKind,
 };
 
 fn plan(inputs: &[String]) -> RoutingPlan {
@@ -65,5 +66,52 @@ fn child_routing_uses_distinct_http_and_proxy_resolved_socks_values() {
                 .value,
             RouteValueSource::SessionSocks5hUrl
         );
+    }
+}
+
+#[test]
+fn game_first_route_matrix_keeps_every_launcher_native() {
+    let endpoint = LoopbackEndpoint::new("127.0.0.1:8080".parse().unwrap()).unwrap();
+    for (index, launch_case) in [
+        LaunchCase::DirectExeCold,
+        LaunchCase::SteamProtocolCold,
+        LaunchCase::PublisherLauncherCold,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let target = PreparedTarget {
+            id: (index + 1) as i64,
+            handle: format!("game-{index}"),
+            launch_case,
+        };
+        let ordinary =
+            RoutingPlan::selected(endpoint, &[], &target, LauncherProxyExposure::Native, true)
+                .unwrap();
+        assert!(ordinary.effects.is_empty());
+        assert_eq!(ordinary.strategy, RoutingStrategyKind::DirectSocket);
+        assert_eq!(
+            ordinary.direct_socket.as_ref().unwrap().target_id,
+            target.id
+        );
+        let advanced = RoutingPlan::selected(
+            endpoint,
+            &[],
+            &target,
+            LauncherProxyExposure::SocksOnly,
+            true,
+        )
+        .unwrap();
+        assert_eq!(advanced.direct_socket, ordinary.direct_socket);
+        assert!(advanced.effects.iter().any(|effect| {
+            effect.destination == "HTTP_PROXY" && effect.value == RouteValueSource::Remove
+        }));
+        assert!(advanced.effects.iter().any(|effect| {
+            effect.destination == "ALL_PROXY" && effect.value == RouteValueSource::SessionSocks5hUrl
+        }));
+        assert!(!advanced.effects.iter().any(|effect| {
+            effect.value == RouteValueSource::SessionProxyUrl
+                || effect.value == RouteValueSource::SessionProxyAuthorization
+        }));
     }
 }

@@ -117,6 +117,26 @@ impl PreparedCapture {
         );
         Ok(())
     }
+
+    pub(crate) fn without_launch_environment<I, K>(&mut self, keys: I) -> Result<(), CliError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<std::ffi::OsString>,
+    {
+        let launch = self.config.launch.take().ok_or_else(|| {
+            CliError::usage("the prepared Capture configuration has no managed launch")
+        })?;
+        self.config.launch = Some(
+            launch
+                .without_environment(keys)
+                .map_err(|error| CliError::usage(error.to_string()))?,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn retain_managed_packet_roles(&mut self, roles: Option<Vec<String>>) {
+        self.config.retained_packet_roles = roles;
+    }
 }
 
 fn profile_authority(profile: &fragcap::Profile) -> Value {

@@ -84,8 +84,8 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     assert!(human.contains("Deep Capture:    ready"), "{human}");
     assert!(
         human.contains("Next command:    fragcap targets discover")
-            && human.contains("fragcap calibrate"),
-        "environment readiness must bridge to target setup and calibration: {human}"
+            && human.contains("fragcap deep-capture \"<game>\" --launch"),
+        "environment readiness must bridge to target setup and capture: {human}"
     );
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
