@@ -3108,10 +3108,7 @@ pub fn run(
         && args.retry_game_scope
         && outcome.inspection_scope.effective == CompatibilityInspectionScope::LaunchChain
     {
-        let mut retry_args = args.clone();
-        retry_args.inspect_scope = InspectionScopeArg::Game;
-        retry_args.retry_game_scope = false;
-        retry_args.bundle = game_scope_retry_bundle(args.bundle.as_deref())?;
+        let retry_args = game_scope_retry_args(args)?;
         let predecessor_attempt = outcome.authorization_plan_id.clone();
         let predecessor_bundle = outcome.bundle.clone();
         let retry_outcome = run_with_outcome(
@@ -3203,6 +3200,15 @@ pub fn run(
             Ok(Exit::SUCCESS)
         }
     }
+}
+
+fn game_scope_retry_args(args: &DeepCaptureArgs) -> Result<DeepCaptureArgs, CliError> {
+    let mut retry = args.clone();
+    retry.inspect_scope = InspectionScopeArg::Game;
+    retry.launcher_proxy = None;
+    retry.retry_game_scope = false;
+    retry.bundle = game_scope_retry_bundle(args.bundle.as_deref())?;
+    Ok(retry)
 }
 
 fn game_scope_retry_bundle(base: Option<&Path>) -> Result<Option<PathBuf>, CliError> {
@@ -6390,6 +6396,42 @@ mod tests {
         );
         assert_eq!(game_scope_retry_bundle(None).unwrap(), None);
         assert!(game_scope_retry_bundle(Some(Path::new("/"))).is_err());
+    }
+
+    #[test]
+    fn game_scope_retry_clears_advanced_launcher_exposure() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--launch",
+            "--inspect-scope",
+            "launch-chain",
+            "--launcher-proxy",
+            "socks-only",
+            "--retry-game-scope",
+        ])
+        .unwrap();
+        let Some(Command::DeepCapture(args)) = cli.command else {
+            panic!("expected Deep Capture");
+        };
+        let retry = game_scope_retry_args(&args).unwrap();
+        assert_eq!(retry.inspect_scope, InspectionScopeArg::Game);
+        assert_eq!(retry.launcher_proxy, None);
+        assert_eq!(
+            launcher_exposure(&retry),
+            deep_capture_api::LauncherProxyExposure::Native
+        );
+        assert!(!retry.retry_game_scope);
+        let mut controlled = args;
+        controlled.controlled_target = true;
+        let controlled_retry = game_scope_retry_args(&controlled).unwrap();
+        assert_eq!(
+            launcher_exposure(&controlled_retry),
+            deep_capture_api::LauncherProxyExposure::HttpAndSocks
+        );
     }
 
     use super::*;

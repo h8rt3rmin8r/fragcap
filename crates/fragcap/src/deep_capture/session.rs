@@ -2077,13 +2077,14 @@ fn facts_from_observations(
         SessionMode::ReachabilityCalibration => Some(CalibrationPhase::Reachability),
         SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
     };
-    compatibility_fact_candidates_in_windows(
+    policy::compatibility_fact_candidates_in_windows_with_effects(
         plan.target.launch_case.as_str(),
         observations,
         windows,
         plan.controlled,
         calibration,
         plan.calibration_protocol,
+        &plan.routing.effects,
     )
     .into_iter()
     .map(|candidate| CompatibilityFact {
