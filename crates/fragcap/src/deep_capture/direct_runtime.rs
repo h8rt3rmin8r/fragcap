@@ -3523,7 +3523,15 @@ mod tests {
         let mut reply = [0u8; 64];
         assert!(client.recv(&mut reply).is_err());
         let error = runtime.stop().unwrap_err().to_string();
-        assert!(error.contains("lost: 1"), "{error}");
+        assert!(error.contains("injected WinDivert send failure"), "{error}");
+        let lost = error
+            .split("lost: ")
+            .nth(1)
+            .and_then(|tail| tail.split(',').next())
+            .and_then(|count| count.parse::<u64>().ok())
+            .expect("loss count in direct route cleanup error");
+        assert!(lost >= 1, "{error}");
+        assert!(error.contains("in_flight: 0"), "{error}");
         client.send(b"after-handle-release").unwrap();
         let mut received = [0u8; 64];
         let (length, from) = origin.recv_from(&mut received).unwrap();
