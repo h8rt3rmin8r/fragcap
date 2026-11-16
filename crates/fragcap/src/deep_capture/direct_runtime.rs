@@ -1039,6 +1039,8 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let started = Instant::now();
     let mut candidates = CandidateBuffer::new(PACKET_QUEUE, CANDIDATE_BYTES, CANDIDATE_WAIT_NS)
         .expect("fixed candidate bounds");
+    let mut observed_process_version = 0;
+    let mut cached_process_evidence = None::<super::CaptureProcessEvidence>;
     let mut events = Vec::<DirectSocketEvent>::new();
     #[cfg(test)]
     let mut event_published_ns = BTreeMap::<DirectTuple, u64>::new();
@@ -1056,6 +1058,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         .map_err(|_| io::Error::other("direct route startup was abandoned"))?;
     loop {
         stats.processor_progress();
+        let mut candidate_added = false;
         if last_ack_prune.elapsed() >= ACK_CLOSE_GRACE {
             ack_witnesses
                 .lock()
@@ -1097,6 +1100,8 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .candidate_capacity_bypassed
                         .fetch_add(1, Ordering::Relaxed);
                     reinject(&handle, &stats, &pending.packet, &pending.address)?;
+                } else {
+                    candidate_added = true;
                 }
             }
             Ok(WorkPacket::Selected(tuple, packet, address)) => {
@@ -1275,6 +1280,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 issued_receipts.retain(|issued| *issued != receipt);
             }
         }
+        let socket_evidence_changed = !new_events.is_empty();
         events.extend(new_events);
         let cutoff_unix_ns = i64::try_from(unix_now_ns()?)
             .map_err(|_| io::Error::other("system time outside route event history"))?
@@ -1288,12 +1294,19 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
             ));
         }
         let event_loss = observer.lock().expect("socket observer lock").stats();
+        let process_version = context.direct_process_evidence_version();
+        let process_evidence_changed =
+            candidates.len() != 0 && process_version != observed_process_version;
+        if process_evidence_changed {
+            observed_process_version = process_version;
+            cached_process_evidence = context.direct_process_evidence();
+        }
         let evidence = if event_loss.capacity_lost == 0
             && event_loss.clock_lost == 0
             && !stats.event_history_overflow.load(Ordering::Acquire)
             && candidates.len() != 0
         {
-            context.direct_process_evidence()
+            cached_process_evidence.as_ref()
         } else {
             None
         };
@@ -1301,12 +1314,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         if evidence.is_some() && process_proof_observed_ns.is_none() {
             process_proof_observed_ns = Some(stats.started.elapsed().as_nanos() as u64);
         }
-        let decisions = candidates.resolve(
-            evidence.as_ref(),
-            &events,
-            stats.started.elapsed().as_nanos() as u64,
-            std::process::id(),
-        );
+        let now_ns = stats.started.elapsed().as_nanos() as u64;
+        let decisions = if socket_evidence_changed || process_evidence_changed {
+            candidates.resolve(evidence, &events, now_ns, std::process::id())
+        } else if candidate_added {
+            let mut decisions =
+                candidates.resolve_newest(evidence, &events, now_ns, std::process::id());
+            decisions.extend(candidates.expire_due(now_ns));
+            decisions
+        } else {
+            candidates.expire_due(now_ns)
+        };
         for decision in decisions {
             match decision {
                 CandidateDecision::PassThrough {
@@ -1371,6 +1389,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     // selected this target packet. Only now read its complete
                     // datagram for the passive original-packet join.
                     flow.first_packet_digest = Some(*blake3::hash(&packet).as_bytes());
+                    let selected_digests = fragcap_core::parse::direct_datagram_digests(&packet);
                     #[cfg(test)]
                     if session_id == "s200-managed-chain" {
                         candidate_timeline(
@@ -1459,6 +1478,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         let helper_open_earliest = unix_now_ns()?;
                         helper_id = helper_id.saturating_add(1);
                         let proof = context.direct_proof_for(&flow).map_err(io::Error::other)?;
+                        proof
+                            .lock()
+                            .expect("direct proof lock")
+                            .first_packet_digests = selected_digests;
                         let (if_idx, sub_if_idx) = address.network_interface();
                         record_route(
                             route_events.as_ref(),
@@ -1692,6 +1715,10 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let helper_open_earliest = unix_now_ns()?;
                     helper_id = helper_id.saturating_add(1);
                     let proof = context.direct_proof_for(&flow).map_err(io::Error::other)?;
+                    proof
+                        .lock()
+                        .expect("direct proof lock")
+                        .first_packet_digests = selected_digests;
                     let (if_idx, sub_if_idx) = address.network_interface();
                     record_route(
                         route_events.as_ref(),

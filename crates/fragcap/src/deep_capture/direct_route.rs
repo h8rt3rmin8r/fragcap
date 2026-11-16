@@ -414,12 +414,39 @@ impl<A> CandidateBuffer<A> {
         now_ns: u64,
         helper_pid: u32,
     ) -> Vec<CandidateDecision<A>> {
+        self.resolve_inner(evidence, events, now_ns, helper_pid, false)
+    }
+
+    /// A new packet cannot change any older candidate's proof. Resolve only
+    /// that packet until socket or process evidence changes.
+    pub fn resolve_newest(
+        &mut self,
+        evidence: Option<&CaptureProcessEvidence>,
+        events: &[DirectSocketEvent],
+        now_ns: u64,
+        helper_pid: u32,
+    ) -> Vec<CandidateDecision<A>> {
+        self.resolve_inner(evidence, events, now_ns, helper_pid, true)
+    }
+
+    fn resolve_inner(
+        &mut self,
+        evidence: Option<&CaptureProcessEvidence>,
+        events: &[DirectSocketEvent],
+        now_ns: u64,
+        helper_pid: u32,
+        newest_only: bool,
+    ) -> Vec<CandidateDecision<A>> {
         enum Status {
             Wait,
             Selected(OriginalFlow),
             Pass(&'static str),
         }
-        let count = self.pending.len();
+        let count = if newest_only {
+            usize::from(!self.pending.is_empty())
+        } else {
+            self.pending.len()
+        };
         if count == 0 {
             return Vec::new();
         }
@@ -437,7 +464,12 @@ impl<A> CandidateBuffer<A> {
             None
         };
         for _ in 0..count {
-            let candidate = self.pending.pop_front().expect("fixed pending length");
+            let candidate = if newest_only {
+                self.pending.pop_back()
+            } else {
+                self.pending.pop_front()
+            }
+            .expect("fixed pending length");
             // The worker may receive the socket event and process proof on the
             // same iteration that the deadline becomes due. Resolve that
             // already available proof before deciding that it was absent.
@@ -508,6 +540,28 @@ impl<A> CandidateBuffer<A> {
                 received_ns: candidate.received_ns,
             })
             .collect()
+    }
+
+    /// When neither socket nor process evidence changed, only deadlines can
+    /// change a pending candidate's outcome. Enqueue order is deadline order.
+    pub fn expire_due(&mut self, now_ns: u64) -> Vec<CandidateDecision<A>> {
+        let mut expired = Vec::new();
+        while self
+            .pending
+            .front()
+            .is_some_and(|candidate| now_ns >= candidate.deadline_ns)
+        {
+            let candidate = self.pending.pop_front().expect("due front");
+            self.held_bytes -= candidate.packet.len();
+            expired.push(CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet: candidate.packet,
+                address: candidate.address,
+                #[cfg(all(windows, feature = "direct-route"))]
+                received_ns: candidate.received_ns,
+            });
+        }
+        expired
     }
 
     pub fn len(&self) -> usize {
@@ -824,6 +878,59 @@ mod tests {
                 ..
             } if packet == b"late"
         ));
+    }
+
+    #[test]
+    fn idle_candidate_deadlines_reinject_once_in_enqueue_order() {
+        let mut buffer = CandidateBuffer::new(3, 128, 100).unwrap();
+        assert!(buffer.enqueue(packet(40000), vec![1], 1u32, 0).is_ok());
+        assert!(buffer.enqueue(packet(40001), vec![2], 2u32, 50).is_ok());
+        assert!(buffer.expire_due(99).is_empty());
+        let first = buffer.expire_due(100);
+        assert!(matches!(
+            &first[..],
+            [CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet,
+                address: 1,
+                ..
+            }] if packet == &[1]
+        ));
+        assert_eq!(buffer.len(), 1);
+        assert!(buffer.expire_due(149).is_empty());
+        let second = buffer.expire_due(150);
+        assert!(matches!(
+            &second[..],
+            [CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet,
+                address: 2,
+                ..
+            }] if packet == &[2]
+        ));
+        assert!(buffer.drain().is_empty());
+    }
+
+    #[test]
+    fn new_candidate_only_checks_its_own_proof_and_preserves_older_deadline() {
+        let mut buffer = CandidateBuffer::new(3, 128, 100).unwrap();
+        assert!(buffer.enqueue(packet(40000), vec![1], 1u32, 0).is_ok());
+        assert!(buffer.enqueue(packet(40001), vec![2], 2u32, 50).is_ok());
+        assert!(buffer.resolve_newest(None, &[], 50, 99).is_empty());
+        assert_eq!(buffer.len(), 2);
+        let expired = buffer.expire_due(100);
+        assert!(matches!(
+            &expired[..],
+            [CandidateDecision::PassThrough {
+                packet,
+                address: 1,
+                ..
+            }] if packet == &[1]
+        ));
+        assert_eq!(buffer.len(), 1);
+        assert!(buffer.resolve_newest(None, &[], 149, 99).is_empty());
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.expire_due(150).len(), 1);
     }
 
     #[test]

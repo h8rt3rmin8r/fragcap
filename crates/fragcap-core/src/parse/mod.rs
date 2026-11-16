@@ -299,6 +299,82 @@ pub enum ParseOutcome {
     Rejected(ParseReject),
 }
 
+/// Exact accepted identity plus narrower diagnostic comparisons. Only
+/// `checksum_normalized` may establish cross-capture packet ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectDatagramDigests {
+    pub checksum_normalized: [u8; 32],
+    pub ipv4_id_normalized: [u8; 32],
+    pub transport_only: [u8; 32],
+}
+
+/// Hash a complete, unfragmented network datagram. The accepted comparison
+/// omits only checksum fields that Windows or a NIC may fill at a different
+/// capture layer. The other two digests diagnose an IP-ID or broader IP-header
+/// difference without granting attribution. No raw bytes or digests are logged.
+pub fn direct_datagram_digests(bytes: &[u8]) -> Option<DirectDatagramDigests> {
+    let version = bytes.first()? >> 4;
+    let family = match version {
+        4 => link::NetProto::V4,
+        6 => link::NetProto::V6,
+        _ => return None,
+    };
+    let net = ip::parse(family, bytes).ok()?;
+    if net.fragment.is_some() {
+        return None;
+    }
+    let declared = match family {
+        link::NetProto::V4 => usize::from(u16::from_be_bytes([*bytes.get(2)?, *bytes.get(3)?])),
+        link::NetProto::V6 => 40usize.checked_add(usize::from(u16::from_be_bytes([
+            *bytes.get(4)?,
+            *bytes.get(5)?,
+        ])))?,
+    };
+    if declared == 0
+        || (matches!(family, link::NetProto::V6) && declared == 40)
+        || declared > bytes.len()
+        || net.extent != declared
+    {
+        return None;
+    }
+    let (transport_checksum, minimum_header) = match net.proto {
+        6 => (net.transport_offset.checked_add(16)?, 20usize),
+        17 => (net.transport_offset.checked_add(6)?, 8usize),
+        _ => return None,
+    };
+    if net.transport_offset.checked_add(minimum_header)? > declared {
+        return None;
+    }
+    let mut canonical = bytes[..declared].to_vec();
+    if matches!(family, link::NetProto::V4) {
+        canonical[10..12].fill(0);
+    }
+    canonical[transport_checksum..transport_checksum + 2].fill(0);
+    let checksum_normalized = *blake3::hash(&canonical).as_bytes();
+    let mut transport = blake3::Hasher::new();
+    transport.update(b"fragcap-direct-transport-v1");
+    match family {
+        link::NetProto::V4 => transport.update(&canonical[12..20]),
+        link::NetProto::V6 => transport.update(&canonical[8..40]),
+    };
+    transport.update(&[net.proto]);
+    transport.update(&canonical[net.transport_offset..]);
+    let transport_only = *transport.finalize().as_bytes();
+    if matches!(family, link::NetProto::V4) {
+        canonical[4..6].fill(0);
+    }
+    Some(DirectDatagramDigests {
+        checksum_normalized,
+        ipv4_id_normalized: *blake3::hash(&canonical).as_bytes(),
+        transport_only,
+    })
+}
+
+/// The only checksum-insensitive digest permitted to attest ownership.
+pub fn checksum_normalized_datagram_digest(bytes: &[u8]) -> Option<[u8; 32]> {
+    direct_datagram_digests(bytes).map(|digests| digests.checksum_normalized)
+}
+
 impl ParseOutcome {
     pub fn flow(&self) -> Option<FlowKey> {
         match self {
@@ -406,6 +482,11 @@ impl HeaderParser {
         packet.packet_digest = (!packet.is_truncated())
             .then(|| outcome.packet_digest())
             .flatten();
+        packet.network_offset = outcome.flow().and_then(|_| {
+            link::dispatch(link, &packet.data)
+                .ok()
+                .map(|(_, offset)| offset)
+        });
         outcome
     }
 
@@ -1683,6 +1764,7 @@ mod tests {
         parser.apply(LinkType::ETHERNET, &mut complete);
         assert_eq!(complete.tcp_flags, Some(0x14));
         assert_eq!(complete.packet_digest, Some(expected));
+        assert_eq!(complete.network_offset, Some(14));
 
         let mut truncated = CapturedPacket::from_raw(
             RawPacket::new(
@@ -1695,6 +1777,38 @@ mod tests {
         parser.apply(LinkType::ETHERNET, &mut truncated);
         assert_eq!(truncated.tcp_flags, Some(0x14));
         assert_eq!(truncated.packet_digest, None);
+        assert_eq!(truncated.network_offset, Some(14));
+    }
+
+    #[test]
+    fn direct_packet_identity_ignores_only_capture_layer_checksums() {
+        let mut tcp = f::tcp(51000, 443);
+        tcp[13] = 0x02;
+        let mut original = f::ipv4(f::V4::default(), &tcp);
+        original[10..12].copy_from_slice(&[0x12, 0x34]);
+        original[36..38].copy_from_slice(&[0xab, 0xcd]);
+        let expected = checksum_normalized_datagram_digest(&original).unwrap();
+        let mut offloaded = original.clone();
+        offloaded[10..12].fill(0);
+        offloaded[36..38].fill(0);
+        assert_eq!(
+            checksum_normalized_datagram_digest(&offloaded),
+            Some(expected)
+        );
+        assert_ne!(blake3::hash(&offloaded), blake3::hash(&original));
+
+        for offset in [4, 20, 24, 32] {
+            let mut changed = offloaded.clone();
+            changed[offset] ^= 1;
+            assert_ne!(
+                checksum_normalized_datagram_digest(&changed),
+                Some(expected)
+            );
+        }
+        assert_eq!(checksum_normalized_datagram_digest(&original[..39]), None);
+        let mut fragment = original.clone();
+        fragment[6] |= 0x20;
+        assert_eq!(checksum_normalized_datagram_digest(&fragment), None);
     }
 
     #[test]

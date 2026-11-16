@@ -225,7 +225,7 @@ enforcement.
 | 0.1.133-draft | 2026-11-16 | Codex | S208 requires exact owned test cleanup and residual reporting. Updates sections 24 and 25; installed default paths remain independent. |
 | 0.1.134-draft | 2026-11-16 | Codex | S209 makes stored Steam association authoritative for warm or cold dispatch and retains bounded target-scoped attempt history. Updates sections 16, 17, and 27. |
 | 0.1.135-draft | 2026-11-16 | Codex | S210 separates exact direct-route transfer from passive original-packet presence and binds post-exit process tails only with finite observed proof. Updates sections 11, 13, 17, and 27; physical packet ordering remains open. |
-| 0.1.136-draft | 2026-11-16 | Codex | S211 moves selected TCP helper admission off the packet worker, records stage, elapsed time and actual error kind, and requires packaged WinDivert/Npcap original-packet ordering acceptance. A complete captured datagram may gain `direct-route` attribution only after its full digest, tuple, and time match one selected flow and the managed gate proves the causal process generation; failed joins remain unattributed. Candidate resolution indexes socket events by tuple and records bounded queue and hold timing. Updates sections 13, 17, 26, and 27. |
+| 0.1.136-draft | 2026-11-16 | Codex | S211 moves selected TCP helper admission off the packet worker, records stage, elapsed time and actual error kind, and requires packaged WinDivert/Npcap original-packet ordering acceptance. A complete captured datagram may gain `direct-route` attribution only after its full or checksum-normalized digest, tuple, and time match one selected flow; broader near matches are diagnostic only. The selected route's process-generation and stage proof can admit that exact first packet before the separate ETW causal interval is published, subject to the same capture window, declared role, direction, and volume bounds. Other packets still require ETW causal membership. Candidate resolution indexes socket events by tuple, checks only the new candidate when evidence is unchanged, and records bounded queue and hold timing. Updates sections 10, 13, 17, 26, and 27. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1485,6 +1485,15 @@ acquisition keeps `acquisitiontimeout` as its terminal reason in the composed
 Deep Capture result; packet, proxy, manifest, and cleanup evidence each retain
 their own observed state.
 
+The managed packet gate normally requires the packet's own instant to fall
+inside an ETW-derived causal process interval. A native direct route may
+independently prove one complete selected first packet from its exact process
+generation, selected tuple, and full or checksum-normalized datagram identity.
+That proof may admit the first packet before ETW publishes its interval, while
+the declared role, capture window, direction, and volume bounds still apply.
+Other packets retain the ETW causal requirement. The process query and ETW
+start instants are not substituted for one another.
+
 ### 10.4 Lifecycle Classes
 
 Every stage declares a lifecycle, which governs how fragcap treats
@@ -1968,10 +1977,12 @@ not be attributed, in which case `pid`, `proc`, `role`, and `stage` are
 absent.
 
 `direct-route` indicates that a complete datagram independently acquired by
-the capture source matched one selected direct-route first packet by exact
-network-datagram digest, flow tuple, and bounded capture instant. Selection
+the capture source matched one selected direct-route first packet by full or
+checksum-normalized network-datagram digest, flow tuple, and bounded capture
+instant. Normalization omits only the IPv4 header and TCP/UDP checksum fields
+that capture planes can observe before or after checksum offload. Selection
 already proved the managed process generation, and the packet gate checks that
-generation and role again at the captured instant. This value makes no
+generation and role from the route's selected packet. This value makes no
 socket-table-presence claim. A missing digest, incomplete datagram, conflicting
 match, or failed causal gate cannot produce this attribution.
 

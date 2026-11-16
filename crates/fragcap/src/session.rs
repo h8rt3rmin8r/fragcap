@@ -29,7 +29,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use fragcap_core::attribution::{Attribution, StageId};
+use fragcap_core::attribution::{Attribution, Fidelity, StageId};
 use fragcap_core::error::{AttrError, SourceError};
 use fragcap_core::filter::FilterProgram;
 use fragcap_core::flow::{Direction as PacketDirection, Endpoint, FlowKey};
@@ -1418,6 +1418,9 @@ struct GateShared {
     causal: Option<BindingPublisher>,
     /// Payload retention can be narrower than the ancestry observed for launch.
     causal_retained_roles: Option<Vec<String>>,
+    /// The native route packet attestor may independently prove one exact
+    /// first packet before ETW publishes its corresponding process interval.
+    direct_original_proof: bool,
     /// A short per-PID timeout avoids stalling the writer on every unrelated
     /// packet; a newly published exact binding always takes precedence.
     pending_cooldown: Mutex<HashMap<u32, std::time::Instant>>,
@@ -1472,6 +1475,7 @@ impl GateShared {
             scope: config.scope,
             causal: None,
             causal_retained_roles: None,
+            direct_original_proof: false,
             pending_cooldown: Mutex::new(HashMap::new()),
             direction: config.direction,
             allowed_roles: config.allowed_roles.clone(),
@@ -1553,9 +1557,23 @@ impl SessionGate {
         publisher: BindingPublisher,
         retained_roles: Option<Vec<String>>,
     ) -> (Self, GateHandle) {
+        Self::new_managed_scoped_with_direct_original(config, tee, publisher, retained_roles, false)
+    }
+
+    /// Permit only packets carrying the native route's complete first-packet
+    /// attestation to pass before ETW publishes a matching causal interval.
+    /// The caller must install the native attestor on the packet pipeline.
+    pub fn new_managed_scoped_with_direct_original(
+        config: &SessionConfig,
+        tee: Sender<(u32, Timestamp)>,
+        publisher: BindingPublisher,
+        retained_roles: Option<Vec<String>>,
+        direct_original_proof: bool,
+    ) -> (Self, GateHandle) {
         let mut state = GateShared::new(config);
         state.causal = Some(publisher);
         state.causal_retained_roles = retained_roles;
+        state.direct_original_proof = direct_original_proof;
         let shared = Arc::new(state);
         (
             SessionGate {
@@ -1766,10 +1784,19 @@ impl SessionGate {
         // `GateShared::scope_unresolved_discarded`.
         let in_scope = if let Some(causal) = &shared.causal {
             packet.attribution.as_ref().is_some_and(|attribution| {
-                match shared.causal_retained_roles.as_deref() {
-                    Some(roles) => causal.contains_role_at(attribution.pid, packet.ts, roles),
-                    None => causal.contains_at(attribution.pid, packet.ts),
-                }
+                let route_proved = shared.direct_original_proof
+                    && attribution.fidelity == Fidelity::DirectRoute
+                    && attribution.role.as_deref().is_some_and(|role| {
+                        shared
+                            .causal_retained_roles
+                            .as_ref()
+                            .is_none_or(|roles| roles.iter().any(|allowed| allowed == role))
+                    });
+                route_proved
+                    || match shared.causal_retained_roles.as_deref() {
+                        Some(roles) => causal.contains_role_at(attribution.pid, packet.ts, roles),
+                        None => causal.contains_at(attribution.pid, packet.ts),
+                    }
             })
         } else {
             shared
@@ -2171,6 +2198,38 @@ mod gate_tests {
         );
         assert_eq!(handle.scope_discarded(), 1);
         assert_eq!(handle.admitted(), 1);
+    }
+
+    #[test]
+    fn native_first_packet_proof_admits_before_etw_without_admitting_other_traffic() {
+        let publisher = BindingPublisher::default();
+        let (tx, _rx) = mpsc::channel();
+        let (gate, handle) = SessionGate::new_managed_scoped_with_direct_original(
+            &unscoped(),
+            tx,
+            publisher,
+            Some(vec!["target".into()]),
+            true,
+        );
+        handle.open_from(Timestamp::from_nanos(10));
+        let mut selected = packet(40, 20);
+        selected.attribution =
+            Some(Attribution::new(42, "target.exe", Fidelity::DirectRoute).with_role("target"));
+        assert_eq!(gate.decide(&selected), GateDecision::Admit);
+        let mut wrong_role = selected.clone();
+        wrong_role.attribution =
+            Some(Attribution::new(42, "target.exe", Fidelity::DirectRoute).with_role("launcher"));
+        assert_eq!(gate.decide(&wrong_role), GateDecision::Pending);
+        let mut live_without_etw = selected.clone();
+        live_without_etw.attribution =
+            Some(Attribution::new(42, "target.exe", Fidelity::Live).with_role("target"));
+        assert_eq!(gate.decide(&live_without_etw), GateDecision::Pending);
+        let mut too_early = selected;
+        too_early.ts = Timestamp::from_nanos(9);
+        assert_eq!(
+            gate.decide(&too_early),
+            GateDecision::Reject(GateRejection::Waiting)
+        );
     }
 
     #[test]

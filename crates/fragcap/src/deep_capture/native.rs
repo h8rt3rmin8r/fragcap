@@ -325,6 +325,8 @@ pub struct NativeObservationContext {
     direct_managed_root_pid: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "direct-route"))]
+    process_evidence_version: Arc<AtomicU64>,
+    #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
     #[cfg(all(windows, feature = "direct-route"))]
     direct_proofs:
@@ -346,6 +348,9 @@ struct DirectPacketAttestationCounters {
     digest_mismatch: AtomicU64,
     ambiguous: AtomicU64,
     matched: AtomicU64,
+    checksum_normalized_matched: AtomicU64,
+    ipv4_id_only_match: AtomicU64,
+    transport_only_match: AtomicU64,
 }
 
 /// Aggregate capture-side join outcomes without storing packet bytes or digests.
@@ -358,6 +363,9 @@ pub struct DirectPacketAttestationStats {
     pub digest_mismatch: u64,
     pub ambiguous: u64,
     pub matched: u64,
+    pub checksum_normalized_matched: u64,
+    pub ipv4_id_only_match: u64,
+    pub transport_only_match: u64,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -371,6 +379,7 @@ struct DirectHelperOwner {
 #[cfg(all(windows, feature = "direct-route"))]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DirectRouteProof {
+    pub first_packet_digests: Option<fragcap_core::parse::DirectDatagramDigests>,
     pub receipt_consumed: bool,
     pub selected_packet_consumed: bool,
     pub selected_packet_reinjected: bool,
@@ -479,11 +488,22 @@ impl NativeObservationContext {
                 .extend_from_slice(&evidence.managed_instances[live.managed_instances.len()..]);
         }
         live.managed_instance_limit_reached = evidence.managed_instance_limit_reached;
+        #[cfg(all(windows, feature = "direct-route"))]
+        self.process_evidence_version
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Retain already observed process events for the final connection-instance join.
     pub fn record_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
         *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
+        #[cfg(all(windows, feature = "direct-route"))]
+        self.process_evidence_version
+            .fetch_add(1, Ordering::Release);
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_process_evidence_version(&self) -> u64 {
+        self.process_evidence_version.load(Ordering::Acquire)
     }
 
     /// Read the current retained generation proof for a pending direct SYN.
@@ -552,8 +572,8 @@ impl NativeObservationContext {
     }
 
     /// Resolve only a complete packet independently observed by the capture
-    /// source whose full network-datagram digest, tuple, and capture instant
-    /// match one selected direct-route packet. The route's process generation
+    /// source whose full or checksum-normalized datagram digest, tuple, and
+    /// capture instant match one selected direct-route packet. The route's process generation
     /// was proven at selection; the managed packet gate checks it again at the
     /// packet instant. An ambiguous or partial match remains unattributed.
     #[cfg(all(windows, feature = "direct-route"))]
@@ -567,7 +587,9 @@ impl NativeObservationContext {
         let mut time_seen = false;
         let mut exact = None;
         let mut ambiguous = false;
-        for flow in proofs.keys() {
+        let mut normalized_cache = None;
+        let mut normalized_only = false;
+        for (flow, proof) in proofs.iter() {
             if key != FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote) {
                 continue;
             }
@@ -577,11 +599,39 @@ impl NativeObservationContext {
                 continue;
             }
             time_seen = true;
-            if packet.packet_digest.is_some()
-                && packet.packet_digest == flow.first_packet_digest
-                && exact.replace(flow).is_some()
-            {
-                ambiguous = true;
+            let full =
+                packet.packet_digest.is_some() && packet.packet_digest == flow.first_packet_digest;
+            let digests = *normalized_cache.get_or_insert_with(|| {
+                packet
+                    .network_offset
+                    .and_then(|offset| packet.data.get(offset..))
+                    .and_then(fragcap_core::parse::direct_datagram_digests)
+            });
+            let selected_digests = proof.lock().ok()?.first_packet_digests;
+            let normalized = digests
+                .zip(selected_digests)
+                .is_some_and(|(observed, selected)| {
+                    observed.checksum_normalized == selected.checksum_normalized
+                });
+            if !full && !normalized {
+                if let Some((observed, selected)) = digests.zip(selected_digests) {
+                    if observed.ipv4_id_normalized == selected.ipv4_id_normalized {
+                        self.direct_packet_attestation
+                            .ipv4_id_only_match
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else if observed.transport_only == selected.transport_only {
+                        self.direct_packet_attestation
+                            .transport_only_match
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            if full || normalized {
+                if exact.replace(flow).is_some() {
+                    ambiguous = true;
+                } else {
+                    normalized_only = !full;
+                }
             }
         }
         if !tuple_seen {
@@ -617,6 +667,11 @@ impl NativeObservationContext {
         self.direct_packet_attestation
             .matched
             .fetch_add(1, Ordering::Relaxed);
+        if normalized_only {
+            self.direct_packet_attestation
+                .checksum_normalized_matched
+                .fetch_add(1, Ordering::Relaxed);
+        }
         Some(
             Attribution::new(flow.pid, &flow.process_image, Fidelity::DirectRoute)
                 .with_role(&flow.process_role),
@@ -633,6 +688,11 @@ impl NativeObservationContext {
             digest_mismatch: counters.digest_mismatch.load(Ordering::Relaxed),
             ambiguous: counters.ambiguous.load(Ordering::Relaxed),
             matched: counters.matched.load(Ordering::Relaxed),
+            checksum_normalized_matched: counters
+                .checksum_normalized_matched
+                .load(Ordering::Relaxed),
+            ipv4_id_only_match: counters.ipv4_id_only_match.load(Ordering::Relaxed),
+            transport_only_match: counters.transport_only_match.load(Ordering::Relaxed),
         }
     }
 
@@ -646,6 +706,11 @@ impl NativeObservationContext {
             counters.digest_mismatch.store(0, Ordering::Relaxed);
             counters.ambiguous.store(0, Ordering::Relaxed);
             counters.matched.store(0, Ordering::Relaxed);
+            counters
+                .checksum_normalized_matched
+                .store(0, Ordering::Relaxed);
+            counters.ipv4_id_only_match.store(0, Ordering::Relaxed);
+            counters.transport_only_match.store(0, Ordering::Relaxed);
             self.direct_helpers
                 .lock()
                 .expect("direct helper lock")
@@ -751,8 +816,13 @@ impl NativeObservationContext {
                 if at < window_start || at > window_end {
                     continue;
                 }
-                if flow.first_packet_digest.is_none()
-                    || observation.packet_digest != flow.first_packet_digest
+                let exact_bytes = flow.first_packet_digest.is_some()
+                    && observation.packet_digest == flow.first_packet_digest;
+                let checksum_normalized = observation
+                    .attribution
+                    .as_ref()
+                    .is_some_and(|owner| owner.fidelity == Fidelity::DirectRoute);
+                if (!exact_bytes && !checksum_normalized)
                     || at.abs_diff(flow.first_packet_at_ns) > DIRECT_PACKET_JOIN_SLACK_NS
                 {
                     later_packet = true;
@@ -1773,10 +1843,106 @@ mod direct_helper_tests {
                 digest_mismatch: 1,
                 ambiguous: 1,
                 matched: 1,
+                checksum_normalized_matched: 0,
+                ipv4_id_only_match: 0,
+                transport_only_match: 0,
             }
         );
         context.set_direct_route_active(false);
         assert!(context.attest_direct_original(&packet).is_none());
+    }
+
+    #[test]
+    fn direct_packet_attestation_accepts_checksum_offload_but_not_changed_identity() {
+        let context = NativeObservationContext::default();
+        context.set_direct_route_active(true);
+        let mut original = vec![0u8; 40];
+        original[0] = 0x45;
+        original[2..4].copy_from_slice(&40u16.to_be_bytes());
+        original[4..6].copy_from_slice(&7u16.to_be_bytes());
+        original[9] = 6;
+        original[10..12].copy_from_slice(&0x1234u16.to_be_bytes());
+        original[12..16].copy_from_slice(&[192, 0, 2, 10]);
+        original[16..20].copy_from_slice(&[198, 51, 100, 20]);
+        original[20..22].copy_from_slice(&49152u16.to_be_bytes());
+        original[22..24].copy_from_slice(&443u16.to_be_bytes());
+        original[32] = 0x50;
+        original[33] = 0x02;
+        original[36..38].copy_from_slice(&0x5678u16.to_be_bytes());
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100_000_000,
+            first_packet_clock_error_ns: 1_000,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some(*blake3::hash(&original).as_bytes()),
+        };
+        context
+            .direct_proof_for(&flow)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .first_packet_digests = fragcap_core::parse::direct_datagram_digests(&original);
+        let mut offloaded = original;
+        offloaded[10..12].fill(0);
+        offloaded[36..38].fill(0);
+        let mut frame = vec![0u8; 14];
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        frame.extend_from_slice(&offloaded);
+        let mut packet = CapturedPacket::from_raw(
+            fragcap_core::RawPacket::new(
+                Timestamp::from_nanos(100_000_001),
+                fragcap_core::Payload::from(frame),
+                54,
+            ),
+            fragcap_core::InterfaceId::default(),
+        );
+        packet.flow = Some(FlowKey::new(
+            Proto::Tcp,
+            flow.tuple.local,
+            flow.tuple.remote,
+        ));
+        packet.packet_digest = Some(*blake3::hash(&offloaded).as_bytes());
+        packet.network_offset = Some(14);
+        assert_eq!(context.attest_direct_original(&packet).unwrap().pid, 42);
+        assert_eq!(
+            context
+                .direct_packet_attestation_stats()
+                .checksum_normalized_matched,
+            1
+        );
+        packet.data = {
+            let mut changed = packet.data.to_vec();
+            changed[14 + 4] ^= 1;
+            fragcap_core::Payload::from(changed)
+        };
+        packet.packet_digest = Some(*blake3::hash(&packet.data[14..]).as_bytes());
+        assert!(context.attest_direct_original(&packet).is_none());
+        assert_eq!(
+            context.direct_packet_attestation_stats().ipv4_id_only_match,
+            1
+        );
+        packet.data = {
+            let mut changed = packet.data.to_vec();
+            changed[14 + 4] ^= 1;
+            changed[14 + 8] ^= 1;
+            fragcap_core::Payload::from(changed)
+        };
+        packet.packet_digest = Some(*blake3::hash(&packet.data[14..]).as_bytes());
+        assert!(context.attest_direct_original(&packet).is_none());
+        assert_eq!(
+            context
+                .direct_packet_attestation_stats()
+                .transport_only_match,
+            1
+        );
     }
 }
 
