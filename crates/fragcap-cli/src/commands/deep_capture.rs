@@ -1577,10 +1577,18 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                         error,
                     )
                 })?;
-            prepared.retain_managed_packet_roles(
-                (self.args.inspect_scope != InspectionScopeArg::LaunchChain)
-                    .then(|| vec!["client".to_string()]),
-            );
+            let retained_roles = if self.args.inspect_scope == InspectionScopeArg::LaunchChain {
+                None
+            } else {
+                Some(vec![prepared.terminal_packet_role().ok_or_else(|| {
+                    deep_capture_api::StageFailure::new(
+                        deep_capture_api::Stage::Capture,
+                        "exact-game-terminal-role-unavailable",
+                        "the prepared exact-game profile has no terminal process role",
+                    )
+                })?])
+            };
+            prepared.retain_managed_packet_roles(retained_roles);
             let duration = bound_real_capture_duration(
                 &capture_args,
                 budget.remaining().saturating_sub(adapter_started.elapsed()),

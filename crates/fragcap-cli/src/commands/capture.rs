@@ -138,6 +138,15 @@ impl PreparedCapture {
         self.config.retained_packet_roles = roles;
     }
 
+    /// The validated terminal stage is the actual packet role for exact-game
+    /// retention. A direct executable can be `target`; launcher chains use
+    /// their declared final `client` role.
+    pub(crate) fn terminal_packet_role(&self) -> Option<String> {
+        self.profile
+            .terminal_stage()
+            .map(|stage| stage.role().to_string())
+    }
+
     pub(crate) fn existing_platform_root(&self) -> bool {
         matches!(
             self.config.launch.as_ref(),
@@ -550,6 +559,32 @@ mod authorization_tests {
         );
         let PreparedCapture { config, .. } = prepared;
         assert_eq!(config.duration, Some(Duration::from_secs(55)));
+    }
+
+    #[test]
+    fn exact_game_packet_role_follows_the_validated_terminal_stage() {
+        let Some(Command::Capture(args)) = Cli::try_parse_from([
+            "fragcap",
+            "capture",
+            "--process",
+            "game.exe",
+            "--out",
+            "capture.pcapng",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected Capture");
+        };
+        let mut stderr = Vec::new();
+        let mut emitter = Emitter::new(&mut stderr, Format::Human, Verbosity::Normal);
+        let mut prepared = prepare(&args, &mut emitter).unwrap();
+        assert_eq!(prepared.terminal_packet_role().as_deref(), Some("target"));
+        prepared.profile = fragcap::Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"heuristic-unverified","game":{"id":"game","name":"Game","platform":"steam","app_id":"42"},"stage":[{"role":"platform","lifecycle":"session","terminal":false,"match":{"exe":"steam.exe"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"platform"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(prepared.terminal_packet_role().as_deref(), Some("client"));
     }
 
     #[test]

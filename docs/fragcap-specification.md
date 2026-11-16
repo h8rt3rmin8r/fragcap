@@ -4514,6 +4514,8 @@ S211 gives selected TCP helper admission a finite pending flow and performs the 
 
 The exact selected direct-flow identity also retains its proven process stage role. An authorized direct executable may bind as `target`, whereas a managed launcher chain's final game binds as `client`. Original-packet owner comparison uses that exact stage role. Helper-facing proxy facts continue to normalize the final game as `client` for the exact-game inspection decider. A retained packet is still required for any original-present claim.
 
+Exact-game packet retention takes its role from the prepared profile's validated terminal stage. It cannot assume the string `client`: a direct executable's terminal role is `target`, so filtering for `client` excludes any of its attributed packets that reach the gate. An independent Npcap capture saw the selected tuple, but the native bundle did not retain it; further physical testing must establish whether other exclusions also apply. Launch-chain inspection leaves packet-role retention unrestricted only when the operator selects that wider scope.
+
 The pipeline tests run on runners with no capture driver installed and
 no game present, which is the property section 25 exists to guarantee.
 
