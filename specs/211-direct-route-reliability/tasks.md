@@ -19,7 +19,7 @@
 
 **User story**: Trust original-packet evidence.
 
-- [ ] T006 Prepare exact portable package and controlled external client/peer runner, with no visible console children and fallible cleanup.
+- [x] T006 Prepare exact portable package and controlled external client/peer runner, with no visible console children and fallible cleanup.
 - [ ] T007 Exercise original-present, original-absent, and truncated packet histories plus TCP/UDP negative cases on packaged WinDivert/Npcap.
 - [ ] T008 Reconcile route, compatibility, terminal/result, and manifest from the exact candidate bundle.
 
