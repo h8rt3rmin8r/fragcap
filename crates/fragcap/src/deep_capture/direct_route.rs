@@ -419,23 +419,33 @@ impl<A> CandidateBuffer<A> {
             Selected(OriginalFlow),
             Pass(&'static str),
         }
+        let count = self.pending.len();
+        if count == 0 {
+            return Vec::new();
+        }
         let mut resolved = Vec::new();
         // A candidate must only inspect events for its own tuple. Under busy
         // traffic, scanning the full socket-event history once per held SYN
         // can delay unrelated packets beyond their candidate deadline.
-        let mut by_tuple = BTreeMap::<DirectTuple, Vec<DirectSocketEvent>>::new();
-        for event in events {
-            by_tuple.entry(event.tuple).or_default().push(*event);
-        }
-        let count = self.pending.len();
+        let by_tuple = if count > 1 {
+            let mut index = BTreeMap::<DirectTuple, Vec<DirectSocketEvent>>::new();
+            for event in events {
+                index.entry(event.tuple).or_default().push(*event);
+            }
+            Some(index)
+        } else {
+            None
+        };
         for _ in 0..count {
             let candidate = self.pending.pop_front().expect("fixed pending length");
             // The worker may receive the socket event and process proof on the
             // same iteration that the deadline becomes due. Resolve that
             // already available proof before deciding that it was absent.
-            let matching_events = by_tuple
-                .get(&candidate.head.tuple)
-                .map_or(&[][..], Vec::as_slice);
+            let matching_events = by_tuple.as_ref().map_or(events, |index| {
+                index
+                    .get(&candidate.head.tuple)
+                    .map_or(&[][..], Vec::as_slice)
+            });
             let decision = match exact_socket_event(matching_events, candidate.head) {
                 Ok(event) if event.pid == helper_pid => {
                     Some(DirectAdmission::Bypassed("helper-self-excluded"))
