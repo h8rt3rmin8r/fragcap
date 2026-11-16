@@ -20,7 +20,6 @@ mod docs;
 mod docs_coverage;
 mod failure_matrix;
 mod fuzz;
-mod guided_calibration_acceptance;
 mod license;
 mod lint;
 mod notes;
@@ -63,7 +62,6 @@ cargo xtask <command>
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
   fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
   failure-matrix Validate native Deep Capture failure injection and recovery evidence
-  guided-calibration-acceptance Validate issue #380 controlled executable evidence
   performance Validate the native Deep Capture performance registry and automation [--report <path>]
   windows-integration Validate or run the finite native Windows integration matrix
   threat-model Validate native Deep Capture threats and executable evidence
@@ -317,15 +315,6 @@ fn main() -> ExitCode {
             Ok(_) => ExitCode::from(1),
             Err(error) => {
                 eprintln!("failure-matrix: could not run: {error}");
-                ExitCode::from(2)
-            }
-        },
-
-        "guided-calibration-acceptance" => match guided_calibration_acceptance::run(&root) {
-            Ok(0) => ExitCode::SUCCESS,
-            Ok(_) => ExitCode::from(1),
-            Err(error) => {
-                eprintln!("guided-calibration-acceptance: could not run: {error}");
                 ExitCode::from(2)
             }
         },
@@ -611,18 +600,6 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: spec could not run: {e}");
-                    return ExitCode::from(2);
-                }
-            }
-            println!("ci: running guided-calibration acceptance");
-            match guided_calibration_acceptance::run(&root) {
-                Ok(0) => {}
-                Ok(n) => {
-                    eprintln!("ci: guided-calibration acceptance reported {n} problem(s)");
-                    return ExitCode::from(1);
-                }
-                Err(error) => {
-                    eprintln!("ci: guided-calibration acceptance could not run: {error}");
                     return ExitCode::from(2);
                 }
             }

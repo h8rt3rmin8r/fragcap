@@ -7,7 +7,7 @@
 //! directory, argument vector, and child-scoped environment. Managed launch never
 //! invokes a command shell and retains no process controller after creation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -47,6 +47,7 @@ impl ManagedLaunch {
                 for (key, value) in entries {
                     let key = key.into();
                     validate_environment_key(&key)?;
+                    direct.environment_removals.remove(&key);
                     direct.environment.insert(key, value.into());
                 }
                 Ok(Self::Direct(direct))
@@ -55,8 +56,32 @@ impl ManagedLaunch {
                 for (key, value) in entries {
                     let key = key.into();
                     validate_environment_key(&key)?;
+                    publisher.root.environment_removals.remove(&key);
                     publisher.root.environment.insert(key, value.into());
                 }
+                Ok(Self::Publisher(publisher))
+            }
+        }
+    }
+
+    /// Remove selected inherited variables from the exact managed root.
+    pub fn without_environment<I, K>(self, keys: I) -> Result<Self, LaunchConfigError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<OsString>,
+    {
+        match self {
+            Self::Steam(_) => Err(LaunchConfigError::EnvironmentUnsupported),
+            Self::Platform(mut platform) => {
+                platform.root.remove_environment(keys)?;
+                Ok(Self::Platform(platform))
+            }
+            Self::Direct(mut direct) => {
+                direct.remove_environment(keys)?;
+                Ok(Self::Direct(direct))
+            }
+            Self::Publisher(mut publisher) => {
+                publisher.root.remove_environment(keys)?;
                 Ok(Self::Publisher(publisher))
             }
         }
@@ -287,6 +312,7 @@ impl PlatformClientLaunch {
         for (key, value) in entries {
             let key = key.into();
             validate_environment_key(&key)?;
+            self.root.environment_removals.remove(&key);
             self.root.environment.insert(key, value.into());
         }
         Ok(self)
@@ -304,6 +330,7 @@ impl PlatformClientLaunch {
             working_directory: self.root.working_directory.clone(),
             arguments,
             environment: BTreeMap::new(),
+            environment_removals: BTreeSet::new(),
         };
         dispatch.execute(false).map_err(|error| match error {
             LaunchError::Direct { executable, source } => {
@@ -372,6 +399,7 @@ pub struct DirectExecutableLaunch {
     working_directory: PathBuf,
     arguments: Vec<OsString>,
     environment: BTreeMap<OsString, OsString>,
+    environment_removals: BTreeSet<OsString>,
 }
 
 impl DirectExecutableLaunch {
@@ -403,6 +431,7 @@ impl DirectExecutableLaunch {
             working_directory,
             arguments,
             environment: BTreeMap::new(),
+            environment_removals: BTreeSet::new(),
         })
     }
 
@@ -422,6 +451,24 @@ impl DirectExecutableLaunch {
         &self.environment
     }
 
+    pub fn environment_removals(&self) -> &BTreeSet<OsString> {
+        &self.environment_removals
+    }
+
+    fn remove_environment<I, K>(&mut self, keys: I) -> Result<(), LaunchConfigError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<OsString>,
+    {
+        for key in keys {
+            let key = key.into();
+            validate_environment_key(&key)?;
+            self.environment.remove(&key);
+            self.environment_removals.insert(key);
+        }
+        Ok(())
+    }
+
     fn execute(&self, retain_shutdown_identity: bool) -> Result<LaunchReceipt, LaunchError> {
         let mut command = Command::new(&self.executable);
         #[cfg(windows)]
@@ -434,6 +481,9 @@ impl DirectExecutableLaunch {
             .current_dir(&self.working_directory)
             .args(&self.arguments)
             .envs(&self.environment);
+        for key in &self.environment_removals {
+            command.env_remove(key);
+        }
         let child = command.spawn().map_err(|source| LaunchError::Direct {
             executable: self.executable.clone(),
             source,
@@ -1255,6 +1305,41 @@ mod tests {
         assert_eq!(
             after.environment().get(OsStr::new("HTTP_PROXY")),
             Some(&OsString::from("http://127.0.0.1:43123"))
+        );
+    }
+
+    #[test]
+    fn environment_removal_is_scoped_to_the_managed_root_and_can_be_overridden() {
+        let executable = std::env::current_exe().unwrap();
+        let working_directory = executable.parent().unwrap().to_path_buf();
+        let root = DirectExecutableLaunch::new(executable, working_directory, Vec::new()).unwrap();
+        let removed = ManagedLaunch::Direct(root)
+            .with_environment([("HTTP_PROXY", "http://127.0.0.1:43123")])
+            .unwrap()
+            .without_environment(["HTTP_PROXY", "HTTPS_PROXY"])
+            .unwrap();
+        let ManagedLaunch::Direct(root) = &removed else {
+            panic!("expected direct launch");
+        };
+        assert!(root.environment().get(OsStr::new("HTTP_PROXY")).is_none());
+        assert!(root
+            .environment_removals()
+            .contains(OsStr::new("HTTP_PROXY")));
+        assert!(root
+            .environment_removals()
+            .contains(OsStr::new("HTTPS_PROXY")));
+        let restored = removed
+            .with_environment([("HTTP_PROXY", "http://127.0.0.1:43124")])
+            .unwrap();
+        let ManagedLaunch::Direct(root) = restored else {
+            panic!("expected direct launch");
+        };
+        assert!(!root
+            .environment_removals()
+            .contains(OsStr::new("HTTP_PROXY")));
+        assert_eq!(
+            root.environment().get(OsStr::new("HTTP_PROXY")),
+            Some(&OsString::from("http://127.0.0.1:43124"))
         );
     }
 

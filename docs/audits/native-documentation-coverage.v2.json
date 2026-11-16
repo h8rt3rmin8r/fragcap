@@ -42,7 +42,7 @@
         "1. Install fragcap and its prerequisites",
         "2. Verify the environment",
         "4. Run the first Capture",
-        "7. Run a known-compatible Deep Capture",
+        "7. Review the Deep Capture plan",
         "8. Review the bundle and cleanup"
       ],
       "tests": [
@@ -111,7 +111,7 @@
         "Traffic support",
         "Local target matrix",
         "Evidence and freshness",
-        "Calibrating an unknown target",
+        "Capturing an unknown target",
         "Publishing compatibility evidence"
       ],
       "tests": [

@@ -4063,14 +4063,20 @@ mod tests {
                 assert_eq!(observation.correlation_reason, expected_reason);
                 assert_eq!(observation.role.as_deref(), role);
                 assert_eq!(observation.packet_observations, u64::from(role.is_some()));
-                let facts = super::super::compatibility_fact_candidates_in_windows(
-                    super::super::LaunchCase::SteamProtocolCold.as_str(),
-                    &observations,
-                    &windows,
-                    false,
-                    Some(super::super::CalibrationPhase::Reachability),
-                    None,
-                );
+                let facts =
+                    super::super::policy::compatibility_fact_candidates_in_windows_with_effects(
+                        super::super::LaunchCase::SteamProtocolCold.as_str(),
+                        &observations,
+                        &windows,
+                        false,
+                        Some(super::super::CalibrationPhase::Reachability),
+                        None,
+                        &[super::super::RouteEffect {
+                            destination: "ALL_PROXY".into(),
+                            value: super::super::RouteValueSource::SessionSocks5hUrl,
+                            scope: "managed-child-only".into(),
+                        }],
+                    );
                 for (key, expected) in [
                     (
                         CompatibilityFactKey::ProxyRouting,

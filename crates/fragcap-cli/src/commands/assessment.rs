@@ -403,6 +403,8 @@ fn earliest_boundary(
 }
 
 /// Stored exact-case evidence remains separate from this invocation's process state.
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct StoredCaseAssessment {
     pub(crate) target_id: i64,
@@ -414,6 +416,8 @@ pub(crate) struct StoredCaseAssessment {
     pub(crate) deep_capture_may_proceed: bool,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 impl StoredCaseAssessment {
     pub(crate) fn from_facts(
         target_id: i64,

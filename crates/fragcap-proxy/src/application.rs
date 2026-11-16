@@ -142,6 +142,7 @@ impl GenericStreamDirection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenericStreamProvenance {
+    Unknown,
     TcpPlaintext,
     TlsEncrypted,
     TlsDecrypted,
@@ -150,6 +151,7 @@ pub enum GenericStreamProvenance {
 impl GenericStreamProvenance {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::TcpPlaintext => "tcp-plaintext",
             Self::TlsEncrypted => "tls-encrypted",
             Self::TlsDecrypted => "tls-decrypted",
@@ -242,6 +244,7 @@ pub enum SocksClassification {
     Http,
     Tls,
     OpaqueTcp,
+    Undetermined,
 }
 
 impl SocksClassification {
@@ -250,6 +253,7 @@ impl SocksClassification {
             Self::Http => "http",
             Self::Tls => "tls",
             Self::OpaqueTcp => "tcp-opaque",
+            Self::Undetermined => "undetermined",
         }
     }
 }

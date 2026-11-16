@@ -24,7 +24,6 @@ fn help_lists_the_grouped_command_surface() {
     for command in [
         "capture",
         "deep-capture",
-        "calibrate",
         "replay",
         "targets",
         "technologies",
@@ -40,7 +39,7 @@ fn help_lists_the_grouped_command_surface() {
         );
     }
     // The retired verbs are gone.
-    for gone in ["run ", "tap ", "watch ", "profile "] {
+    for gone in ["run ", "tap ", "watch ", "profile ", "calibrate "] {
         assert!(
             !out.contains(gone),
             "`--help` still lists retired command `{gone}`:\n{out}"
@@ -49,10 +48,13 @@ fn help_lists_the_grouped_command_surface() {
 }
 
 #[test]
-fn calibrate_accepts_only_one_target_input() {
+fn calibrate_is_retired() {
     let (code, _out, err) = run(&["calibrate", "target", "--id", "7"]);
     assert_eq!(code, 2);
-    assert!(err.contains("cannot be used with"), "parser refusal: {err}");
+    assert!(
+        err.contains("unrecognized subcommand 'calibrate'"),
+        "parser refusal: {err}"
+    );
 }
 
 const FOOTER: &str = "Run `fragcap --help` to see all commands.";

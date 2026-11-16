@@ -31,7 +31,7 @@ fragcap doctor --json
 
 Doctor checks without starting Capture, a proxy, a target, or trust changes. Capture and Deep Capture readiness are separate verdicts. Missing elevation, Npcap, required backend features, or usable interfaces can block packet recording without proving that the native proxy is unavailable. Indeterminate means the check could not establish the fact; it is not a green result. Target compatibility is separate from environment readiness.
 
-Plain Doctor runs without Administrator. In the v0.11.1 release it reads the packaged WinDivert component's exact identity and service status without opening the route. A present component does not prove driver-open permission or selected target routing. An explicit `deep-capture --direct-route` session requires Administrator and current composite-route calibration; missing or altered component bytes refuse before effects. Npcap still supplies live packet capture independently. Wireshark and per-user extcap registration are optional; live extcap capture uses the same elevated Capture path.
+Plain Doctor runs without Administrator. In the v0.11.1 release it reads the packaged WinDivert component's exact identity and service status without opening the route. A present component does not prove driver-open permission or selected target routing. S207 ordinary Deep Capture uses the exact final-game direct route and requires Administrator; missing or altered component bytes refuse before effects. Npcap still supplies live packet capture independently. Wireshark and per-user extcap registration are optional; live extcap capture uses the same elevated Capture path.
 
 Since v0.10.6 (S168), Doctor summarizes healthy completed history with distinct observed session and resource counts. The inventory remains bounded and explicitly reports incomplete coverage; a terminal resource does not prove its session has no active owner. Active, mixed, stale, cleanup-failed, unknown, unsupported, and actionable findings remain individually visible. Retained evidence is separate from cleanup residue, and ordinary Doctor never deletes it.
 
@@ -58,7 +58,7 @@ Published builds offer the official Npcap acquisition page after confirmation. O
 
 The corrections shipped in v0.10.6 (S169) address several loopback acquisition gaps: Deep Capture includes its required loopback adapter even with named physical interfaces, recognizes Npcap loopback descriptions, provides the exact listener IP when adapter addresses are absent, and keeps the exact TCP listener in loopback filters during narrowing. The observed stage-bound client can own either canonical TCP endpoint orientation. Competing owners remain unresolved, and the existing acquisition gate and finite history bounds remain active.
 
-If exchanges complete but calibration says missing packet-flow correlation, run `fragcap doctor` to inspect Npcap and loopback readiness. Inspect the retained application correlation reasons and process trace separately. `packet-flow-not-observed` means no matching flow summary; `packet-history-bound-exceeded` means matching evidence was withheld or exceeded its bound; `capture-buffer-history-incomplete` means a global acquisition-buffer gap. A flow outside the connection window, missing owner or conflicting owners has its own reason. Counts describe retained observation-window records and do not include later route-owner release traffic. A readable artifact or successful HTTP response does not prove final-client ownership.
+If a Deep Capture bundle reports missing packet-flow correlation, run `fragcap doctor` to inspect Npcap and loopback readiness. Inspect the retained application correlation reasons and process trace separately. `packet-flow-not-observed` means no matching flow summary; `packet-history-bound-exceeded` means matching evidence was withheld or exceeded its bound; `capture-buffer-history-incomplete` means a global acquisition-buffer gap. A flow outside the connection window, missing owner or conflicting owners has its own reason. Counts describe retained observation-window records and do not include later route-owner release traffic. A readable artifact or successful HTTP response does not prove final-client ownership.
 
 v0.10.9 reports `packet-scope-withheld` for a selected-scope
 packet missing inside the exact proxy connection window and
@@ -70,12 +70,12 @@ bounded omission intervals filled. Global acquisition-buffer loss is still a
 separate refusal. v0.10.8 used a broader
 `packet-history-bound-exceeded` reason.
 
-If calibration says the stored Steam install root differs after a library
+If preparation says the stored Steam install root differs after a library
 move, inspect `targets show` and the platform's current installation. v0.10.9
 offers `targets relocate --steam <app-id>` for a unique,
 reviewable move, followed by an exact `--plan-id` application. A missing old
 volume, two candidate locations, changed executable, or still-present old
-root requires manual investigation; retrying calibration cannot establish a
+root requires manual investigation; retrying capture cannot establish a
 new root. v0.10.8 has no relocation command. Do not remove and
 recreate the authored target merely to bypass a mismatch: that discards its
 stable identity and history.

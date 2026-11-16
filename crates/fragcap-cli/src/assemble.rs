@@ -169,6 +169,8 @@ pub struct EffectiveConfig {
     pub max_bytes: Option<u64>,
     /// The roles to capture, when scoped.
     pub roles: Option<Vec<String>>,
+    /// Retained packet roles for a managed Deep Capture route only.
+    pub retained_packet_roles: Option<Vec<String>>,
     /// What the capture writes out (slice S064).
     pub scope: CaptureScope,
     /// The direction to scope to.
@@ -283,6 +285,7 @@ pub fn effective_config_with_target(
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles,
+        retained_packet_roles: None,
         scope,
         direction: args.direction,
         interfaces: args.interface.clone(),
@@ -393,6 +396,7 @@ pub fn effective_config_for_extcap(
         max_packets: None,
         max_bytes: None,
         roles,
+        retained_packet_roles: None,
         // The extcap path has no `--scope` flag: the analyzer dialog does not
         // offer one, and Wireshark's own display filters are the natural place
         // to widen a view there. It takes the same default as the command line,
@@ -1455,6 +1459,7 @@ mod tests {
             max_packets: None,
             max_bytes: None,
             roles: None,
+            retained_packet_roles: None,
             scope: CaptureScope::All,
             direction: Direction::Both,
             interfaces: vec!["eth0".to_string()],

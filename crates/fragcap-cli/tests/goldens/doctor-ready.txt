@@ -30,11 +30,11 @@ Integration
 
 Deep Capture
   proxy backend                  ok    fragcap-native 0.8.0
-  inspection scope               ok    launch-chain inspection and exact-game
-                                       inspection with blind middleware relay
-                                       are available; target-specific readiness
-                                       still requires an exact current
-                                       calibration case
+  inspection scope               ok    exact-game inspection is the ordinary
+                                       scope; explicit launch-chain inspection
+                                       is available when selected, and current
+                                       target behavior is measured during
+                                       capture
   IPv4 loopback listener         ok    exact ephemeral bind to 127.0.0.1
                                        succeeded
   IPv6 loopback listener         ok    exact ephemeral bind to ::1 succeeded
@@ -52,4 +52,4 @@ Deep Capture:    ready
 Deep Capture setup
   Environment readiness is step one.
   Next command:    fragcap targets discover
-  Then run:        fragcap calibrate "<game>"
+  Then run:        fragcap deep-capture "<game>" --launch

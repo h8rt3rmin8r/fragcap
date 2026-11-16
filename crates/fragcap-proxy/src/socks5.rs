@@ -328,6 +328,7 @@ pub(crate) async fn serve_socks5(
         SocksClassification::Http => accounting.socks_http = 1,
         SocksClassification::Tls => accounting.socks_tls = 1,
         SocksClassification::OpaqueTcp => accounting.socks_tcp_opaque = 1,
+        SocksClassification::Undetermined => accounting.socks_tcp_undetermined = 1,
     }
     emit_connect(
         sink,
@@ -706,14 +707,18 @@ pub(crate) async fn serve_socks5(
     }
     let provenance = match classification {
         SocksClassification::Tls => crate::GenericStreamProvenance::TlsEncrypted,
-        SocksClassification::Http | SocksClassification::OpaqueTcp => {
-            crate::GenericStreamProvenance::TcpPlaintext
+        SocksClassification::Http => crate::GenericStreamProvenance::TcpPlaintext,
+        SocksClassification::OpaqueTcp | SocksClassification::Undetermined => {
+            crate::GenericStreamProvenance::Unknown
         }
     };
     match classification {
         SocksClassification::Tls => accounting.generic_streams_tls_opaque = 1,
-        SocksClassification::Http | SocksClassification::OpaqueTcp => {
+        SocksClassification::Http => {
             accounting.generic_streams_plain = 1;
+        }
+        SocksClassification::OpaqueTcp | SocksClassification::Undetermined => {
+            accounting.generic_streams_unknown = 1;
         }
     }
     let muted_sink: crate::application::SharedEventSink = None;
@@ -2344,7 +2349,7 @@ async fn classify_prefix(
         let deadline = partial_deadline.unwrap_or(initial_deadline);
         let read = match tokio::time::timeout_at(deadline, stream.peek(&mut bytes)).await {
             Ok(Ok(read)) => read,
-            Ok(Err(_)) | Err(_) => return SocksClassification::OpaqueTcp,
+            Ok(Err(_)) | Err(_) => return SocksClassification::Undetermined,
         };
         let prefix = &bytes[..read];
         if crate::http1::prefix_is_http_request(prefix) {
@@ -2367,7 +2372,7 @@ async fn classify_prefix(
             || read == bytes.len()
             || tokio::time::Instant::now() >= partial_deadline.unwrap_or(initial_deadline)
         {
-            return SocksClassification::OpaqueTcp;
+            return SocksClassification::Undetermined;
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
@@ -2545,6 +2550,50 @@ fn failed_with_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn absent_and_partial_prefixes_remain_undetermined() {
+        for prefix in [&b""[..], &b"\x16"[..], &b"\x16\x03"[..]] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            if !prefix.is_empty() {
+                client.write_all(prefix).await.unwrap();
+            }
+            assert_eq!(
+                classify_prefix(&server, Duration::from_millis(5), Duration::from_millis(5),).await,
+                SocksClassification::Undetermined
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn positive_prefixes_remain_specific() {
+        for (prefix, expected) in [
+            (&b"GET / HTTP/1.1\r\n"[..], SocksClassification::Http),
+            (&b"\x16\x03\x03"[..], SocksClassification::Tls),
+            (&b"\x00\x01\x02"[..], SocksClassification::OpaqueTcp),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            client.write_all(prefix).await.unwrap();
+            assert_eq!(
+                classify_prefix(
+                    &server,
+                    Duration::from_millis(25),
+                    Duration::from_millis(25)
+                )
+                .await,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn failed_socks_observation_retains_the_terminal_failure_code() {

@@ -38,7 +38,12 @@ impl fragcap_proxy::InspectionDecider for InspectLaunchChain {
     }
 }
 
-fn refused_client_tls_after_connect(bytes: Option<&[u8]>, code: &str, transport: &str) {
+fn refused_client_tls_after_connect(
+    bytes: Option<&[u8]>,
+    code: &str,
+    transport: &str,
+    boundary: &str,
+) {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = origin.local_addr().unwrap();
     let config = NativeProxyConfig::new(
@@ -94,7 +99,7 @@ fn refused_client_tls_after_connect(bytes: Option<&[u8]>, code: &str, transport:
     let detail = &report.observation.connection_diagnostics[0];
     assert_eq!(detail.connection_id, 1);
     assert_eq!(detail.code, Some(code));
-    assert_eq!(detail.boundary, Some("client-tls"));
+    assert_eq!(detail.boundary, Some(boundary));
     assert_eq!(detail.transport_category, Some(transport));
     assert_eq!(detail.tls_alert, None);
     assert_eq!(
@@ -119,8 +124,13 @@ fn refused_client_tls_after_connect(bytes: Option<&[u8]>, code: &str, transport:
 }
 
 #[test]
-fn launch_chain_connect_eof_is_a_transport_end_without_tls_alert() {
-    refused_client_tls_after_connect(None, "tls-transport-ended", "unexpected-eof");
+fn launch_chain_connect_eof_is_a_pre_tls_client_handoff() {
+    refused_client_tls_after_connect(
+        None,
+        "client-closed-before-tls",
+        "unexpected-eof",
+        "client-tunnel-handoff",
+    );
 }
 
 #[test]
@@ -129,6 +139,7 @@ fn launch_chain_connect_invalid_tls_is_a_malformed_message() {
         Some(b"GET /not-tls HTTP/1.1\r\n\r\n"),
         "tls-invalid-message",
         "invalid-data",
+        "client-tls",
     );
 }
 

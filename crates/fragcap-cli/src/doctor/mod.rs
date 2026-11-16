@@ -653,7 +653,10 @@ impl Report {
                 2,
                 &[
                     ("Next command:".into(), "fragcap targets discover".into()),
-                    ("Then run:".into(), "fragcap calibrate \"<game>\"".into()),
+                    (
+                        "Then run:".into(),
+                        "fragcap deep-capture \"<game>\" --launch".into(),
+                    ),
                 ],
                 width,
             ));

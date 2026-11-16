@@ -47,10 +47,7 @@ Deep Capture starts from one stored target. Its read-only authorization preparat
 ```mermaid
 flowchart TB
   accTitle: Deep Capture session architecture
-  target["Stored target"] --> choice["Ordinary run or calibration"]
-  choice --> calibrate["Reachability, then optional TLS"]
-  calibrate --> plan["Complete plan and exact authorization"]
-  choice --> plan
+  target["Stored target"] --> plan["Game-scoped route and exact authorization"]
   plan --> preflight["Post-authorization resource preflight"]
   preflight -->|refused| stop["No session side effects"]
   preflight -->|eligible| prepare["Prepared session"]
@@ -67,20 +64,19 @@ flowchart TB
   cleanup --> bundle["Manifest-indexed bundle"]
 ```
 
-Ordinary Deep Capture requires current `proxy-routing = reached-client` evidence applicable to the exact target, cold managed launch, routing strategy, loopback family, selected case, backend/version, and product version. Supported topology includes direct executables, cold Steam platform ownership, and declared cold publisher chains. Unknown, stale, conflicting, escaped, ambiguous, or wrong-case authority is refused. Guided `fragcap calibrate` can resolve registration and topology through separately confirmed plans, measure trust-free reachability, and propose concrete protocol attempts only from fresh evidence. Its target-bound checkpoint preserves immutable intent, not a reusable authorization. Warm applications remain operator-owned; explicit close-and-retry observes normal operator shutdown and never stops a process itself. The [compatibility reference](/docs/reference/deep-capture-compatibility) carries the traffic and launch limits.
+S207 ordinary Deep Capture needs exact stored target and managed launch authority, but does not require a prior positive calibration fact. It scopes inspection to the final game and gives Steam and publisher helpers no Fragcap proxy URL. The exact final-game direct route requires its Windows driver and Administrator. Each capture records routing and protocol evidence, including failures and unknowns. Warm applications remain operator-owned; explicit close-and-retry observes normal operator shutdown before a fresh plan. The [compatibility reference](/docs/reference/deep-capture-compatibility) carries the traffic and launch limits.
 
-After preflight, fragcap starts its native loopback proxy, manages any authorized CA trust, opens the ordinary Capture backend, and launches the target with launch-scoped proxy environment. The preflight does not prove that Npcap is available, the process is elevated, or a selected interface can be opened; `fragcap doctor` reports that environment readiness, and a later Capture startup failure is recorded through cleanup and the partial or failed bundle path. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
+After preflight, fragcap starts its native loopback proxy, manages any authorized CA trust, opens the ordinary Capture backend, and launches the target with the authorized game-scoped route. The preflight does not prove that Npcap is available, the process is elevated, or a selected interface can be opened; `fragcap doctor` reports that environment readiness, and a later Capture startup failure is recorded through cleanup and the partial or failed bundle path. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
 
 ## Trust and routing boundaries
 
 | Boundary | Trigger | Scope and owner | Cleanup or refusal |
 | --- | --- | --- | --- |
-| Compatibility | Current applicable routing facts for the exact supported cold managed launch | One selected stored target and exact measurement identity, evaluated by fragcap | Refusal occurs before proxy, trust, launch, or bundle effects |
+| Compatibility | A managed target and prepared exact route | One selected stored target and final-game identity, evaluated by fragcap | Unsupported or ambiguous preparation refuses before proxy, trust, launch, or bundle effects; absent prior facts do not refuse |
 | Authorization | Exact versioned plan identifier | One target launch authority, process-local CA, routing policy, artifact set, deadline set, and cleanup contract | Output failure, decline, incomplete input, mismatch, expiry, or drift leaves session effects absent |
-| Calibration | Exact complete plan for one phase | One selected stored target and declared launch case | Reachability changes no trust; TLS requires prior same-case final-client routing |
 | Proxy | Successful authorization and resource preflight | One fragcap-owned native listener and bounded task set on a loopback port | The listener, tasks, and ephemeral proxy material receive recorded cleanup outcomes |
 | CA trust | The exact trust action inside the authorized plan | The exact fragcap-owned CA in the current user's Root store | fragcap attempts removal and records the exact identity and result |
-| Target routing | Prepared managed launch | Proxy environment for the selected launch session | No system-wide proxy fallback is attempted |
+| Target routing | Prepared managed launch | Exact final-game direct route; optional explicit launcher proxy exposure | No system-wide proxy fallback is attempted |
 
 Interactive execution displays and confirms one complete plan on a complete input line. Structured execution uses `--authorize-stdin` and returns only the exact current plan identifier in the same process. A failed plan write, expired prepared CA, or target change at either revalidation boundary refuses. Before producing a new plan, fragcap inspects prior-session recovery records without mutation and directs pending recovery to `fragcap doctor --fix`; approval for a new session never authorizes cleanup from an older one. Trust is never silently added to the local-machine store or broadened to an unrelated CA. The former Deep Capture `--trust-ca` and `--yes` booleans are rejected migration inputs.
 
@@ -101,7 +97,7 @@ The [session bundle](/docs/glossary/file-and-wire-formats#session-bundle) keeps 
 
 Proxy observations carry session, connection, and where applicable stream identities. Correlation reconciles after collection against timestamped packet-flow ownership. Ambiguous and unavailable matches stay explicit; neither timing similarity nor content similarity invents a process owner. Artifact finalization, completeness, loss, session outcome, cleanup outcome, and traffic inspectability remain separate dimensions.
 
-This is the high-level authority model. The [CLI reference](/docs/reference/cli#deep-capture) defines the command surface, and the [getting-started guide](/docs/getting-started#7-run-a-known-compatible-deep-capture) shows one bounded session and post-run cleanup check.
+This is the high-level authority model. The [CLI reference](/docs/reference/cli#deep-capture) defines the command surface. The getting-started guide shows a [bounded session](/docs/getting-started#6-start-deep-capture) and [bundle and cleanup review](/docs/getting-started#8-review-the-bundle-and-cleanup).
 
 ## External dependency boundaries
 

@@ -190,12 +190,6 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                 "--proxy-allow-destination",
                 &peer.to_string(),
                 "--authorize-stdin",
-                "--calibrate",
-                "reachability",
-                "--calibration-protocol",
-                "routing",
-                "--launch-case",
-                "direct-exe-cold",
                 "--duration",
                 "8s",
                 "--wait",
@@ -289,10 +283,6 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         assert_eq!(report["flows"][0]["process_generation_join"], "exact");
         assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
         assert_eq!(
-            report["compatibility"]["calibration_outcome"],
-            "reached-client"
-        );
-        assert_eq!(
             report["flows"][0]["client_to_upstream_bytes"],
             (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
         );
@@ -367,14 +357,12 @@ fn staged_public_direct_route_authorizes_one_composite_plan_and_cleans_up() {
             "75000",
             "--launch",
             "--direct-route",
+            "--inspect-scope",
+            "launch-chain",
+            "--launcher-proxy",
+            "http-and-socks",
             "--authorize-stdin",
             "--controlled-target",
-            "--calibrate",
-            "reachability",
-            "--calibration-protocol",
-            "routing",
-            "--launch-case",
-            "direct-exe-cold",
             "--local-db",
             local.to_str().unwrap(),
             "--bundle",

@@ -3036,9 +3036,21 @@ mod tests {
         assert_eq!(server.join().unwrap(), (1, 1));
         udp_server.join().unwrap();
         let report = proxy.cleanup(Duration::from_secs(3));
-        assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
+        assert_eq!(
+            report.observation.protocol.socks_connect_succeeded, 1,
+            "managed chain: protocol={:?}, route={stats:?}, owners={bridged:?}",
+            report.observation.protocol
+        );
         assert_eq!(report.observation.protocol.socks_udp_associate_succeeded, 1);
-        assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+        // The test payload has no recognized application protocol, so its
+        // bytes are retained with unknown provenance rather than plaintext.
+        assert_eq!(
+            report.observation.protocol.socks_tcp_opaque
+                + report.observation.protocol.socks_tcp_undetermined,
+            1
+        );
+        assert_eq!(report.observation.protocol.generic_streams_unknown, 1);
+        assert_eq!(report.observation.protocol.generic_streams_plain, 0);
     }
 
     #[test]
@@ -3512,8 +3524,20 @@ mod tests {
                 "route kinds: {route_kinds:?}"
             );
         }
-        assert_eq!(proxy_report.observation.protocol.socks_connect_succeeded, 1);
-        assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 1);
+        assert_eq!(
+            proxy_report.observation.protocol.socks_connect_succeeded,
+            1,
+            "direct route: protocol={:?}, route={stats:?}, owners={:?}",
+            proxy_report.observation.protocol,
+            proof_context.direct_helper_flows_for_test()
+        );
+        assert_eq!(
+            proxy_report.observation.protocol.socks_tcp_opaque
+                + proxy_report.observation.protocol.socks_tcp_undetermined,
+            1
+        );
+        assert_eq!(proxy_report.observation.protocol.generic_streams_unknown, 1);
+        assert_eq!(proxy_report.observation.protocol.generic_streams_plain, 0);
         if writer_retired {
             assert!(proxy_report.observation.protocol.application_events_dropped > 0);
         }

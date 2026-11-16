@@ -1635,6 +1635,7 @@ fn event_json(
                 "outcome": value.outcome.as_str(),
                 "inspectability": match value.provenance {
                     fragcap_proxy::GenericStreamProvenance::TlsEncrypted => "opaque",
+                    fragcap_proxy::GenericStreamProvenance::Unknown => "unknown",
                     fragcap_proxy::GenericStreamProvenance::TcpPlaintext
                     | fragcap_proxy::GenericStreamProvenance::TlsDecrypted => "protocol-unknown",
                 },
@@ -1884,6 +1885,15 @@ fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassif
         ),
         ApplicationEventKind::GenericStreamChunk(value) => {
             let (family, inspectability, reason) = match value.provenance {
+                GenericStreamProvenance::Unknown => {
+                    return ProtocolClassification::new(
+                        TrafficFamily::Unknown,
+                        DetectionState::Unknown,
+                        InspectabilityState::Unavailable,
+                        None,
+                    )
+                    .expect("unknown generic prefix classification is valid");
+                }
                 GenericStreamProvenance::TcpPlaintext => (
                     TrafficFamily::GenericTcp,
                     InspectabilityState::DecryptedUnknown,

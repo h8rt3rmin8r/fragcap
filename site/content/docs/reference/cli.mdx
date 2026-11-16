@@ -4,7 +4,7 @@ description: "The checked fragcap command surface: commands, options, values, de
 ---
 
 <Callout title="Current native path">
-Deep Capture uses the library-owned native proxy for the supported HTTP, streaming, generic TCP/UDP, and QUIC/HTTP/3 paths. Trust effects use native Windows APIs. Guided calibration and the stable library API share its authority boundaries. The [Native product contract](/docs/reference/native-documentation) records the shipped boundary and its explicit non-claims.
+Deep Capture uses the library-owned native proxy for supported HTTP, streaming, generic TCP/UDP, and QUIC/HTTP/3 paths. Trust effects use native Windows APIs. Each capture records its own routing and protocol evidence. The [Native product contract](/docs/reference/native-documentation) records the shipped boundary and its explicit non-claims.
 </Callout>
 
 <Callout title="Before capturing">
@@ -14,7 +14,7 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 
 Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
 
-This page describes the current source command tree, checked by the production parser without dispatch. The published v0.11.1 release includes guided calibration, the composite direct route, current-user storage reporting, exact-game scope selection, blind middleware relay, managed handoff, and causal diagnostics. Historical v0.10.0 retains the hidden completion-only timing option. Installed-product failures return as version-specific issues. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
+This page describes the current source command tree, checked by the production parser without dispatch. S207 makes ordinary Deep Capture game-scoped, uses the exact final-client direct route, and records evidence during capture without a separate calibration step. The published v0.11.1 release used the older guided-calibration workflow. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
 
 In the tables, `open` means the parser accepts a value whose grammar is explained
 in the Meaning column. `none` means clap declares no default; the application may
@@ -33,6 +33,7 @@ Older releases and their preserved changelog pages may refer to command forms th
 | --- | --- |
 | `fragcap run ...` | `fragcap capture ...` |
 | `fragcap tap --process <image> ...` | `fragcap capture --process <image> ...` |
+| `fragcap calibrate <target>` | `fragcap deep-capture <target> --launch` |
 
 Historical pages remain searchable as release records. This page is the source
 of truth for commands accepted by the current binary.
@@ -121,13 +122,14 @@ fragcap capture 1 --sink "tcp://127.0.0.1:9000,format=jsonl,payload=false,queue=
 
 Run Capture with explicit, target-scoped local proxy inspection. Exactly one
 stored-target input is required: positional `SELECTOR`, `--target`, or `--id`.
-The current implementation requires a managed launch, one exact complete-plan
-authorization, and compatible launch facts.
+The current implementation requires a managed launch and one exact complete-plan
+authorization. The ordinary path scopes inspection to the final game and uses
+the exact final-client direct route.
 
 ```powershell
 fragcap deep-capture sample-target --launch --har --key-log
-fragcap deep-capture sample-target --launch --inspect-scope game
-fragcap deep-capture sample-target --launch --direct-route
+fragcap deep-capture sample-target --launch
+fragcap deep-capture sample-target --launch --inspect-scope launch-chain --launcher-proxy socks-only
 ```
 
 | Option | Values | Default | Availability | Meaning |
@@ -136,22 +138,20 @@ fragcap deep-capture sample-target --launch --direct-route
 | `--retain-bundle` | open | `false` | all | Retain generated evidence until explicit cleanup. Otherwise generated history uses 30 days, 20 completed sessions and 2 GiB. Explicit `--bundle` is always retained. |
 | `--output-recipient` | open | none | all | Exact Windows recipient SID. Requires an explicit `--bundle`; an ordinary-account authenticated helper proves a recipient that default desktop resolution cannot establish. |
 | `--authorize-stdin` | open | `false` | all | Select prompt-free authorization. Read the emitted plan, return its exact `plan-v1` identifier plus one LF on standard input in the same process, and keep the event stream open. Required with `--json`. |
-| `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
-| `--calibration-protocol` | `routing`, `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Select the exact case to measure. Reachability requires `routing`; TLS requires one concrete protocol. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
-| `-d`, `--duration` | open | none | all | Set the ordinary observation bound measured from arm; it defaults to `60s` and accepts a positive duration up to `5m`. Unsupported ordinary values are refused before session effects. Calibration has its separate `60s` maximum and displays the effective shorter bound. |
+| `-d`, `--duration` | open | none | all | Set the observation bound measured from arm; it defaults to `60s` and accepts a positive duration up to `5m`. Unsupported values are refused before session effects. |
 | `--har` | open | `false` | all | Write an HTTP-oriented projection when HTTP semantics are observable. |
 | `--id` | open | none | all | Select a stored target by durable identifier. |
-| `--inspect-scope` | `auto`, `game`, `launch-chain` | `auto` | all | Resolve the inspection decision before effects. `auto` selects full launch-chain inspection for every topology; explicit `game` uses blind middleware relay. Packet evidence retains the exact session-created chain in either case. |
-| `--retry-game-scope` | open | `false` | all | Include authority for at most one fresh exact-game successor after a failed launch-chain calibration attempt. The predecessor result and bundle remain unchanged. |
-| `--fallback-capture` | open | `false` | all | Include authority to retain eligible packet-only evidence if inspected calibration fails. This never creates a positive Deep Capture fact. |
+| `--inspect-scope` | `auto`, `game`, `launch-chain` | `auto` | all | Resolve the inspection decision before effects. `auto` selects the final game. `launch-chain` explicitly expands inspection to managed launch roles. |
+| `--launcher-proxy` | `native`, `socks-only`, `http-and-socks` | none | all | `native` gives launchers no Fragcap proxy URL and is the ordinary game-scope behavior. With `--inspect-scope launch-chain`, `socks-only` exposes authenticated SOCKS (the advanced default), while `http-and-socks` also exposes HTTP. |
+| `--retry-game-scope` | open | `false` | all | Permit one separately authorized game-scope successor if an explicit launch-chain attempt fails. |
+| `--fallback-capture` | open | `false` | all | Permit packet-only Capture after an eligible failed inspected attempt; it creates no positive Deep Capture fact. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--key-log` | open | `false` | all | Write a proxy-owned TLS key log at its final bundle path. |
 | `--client-certificate` | open | none | all | Present this explicit operator-owned certificate chain to an upstream requiring mutual TLS. Requires `--client-private-key`. |
 | `--client-private-key` | open | none | all | Use the private key matching `--client-certificate`. The key is never written to session output. |
-| `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
-| `--direct-route` | open | `false` | all | Add the exact signed final-client TCP/UDP route to child environment routing on a Windows build with the direct-route feature. Requires Administrator, packaged WinDivert, and current facts for `child-environment+direct-socket-v1`. |
-| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the case measured by `--calibrate`. Cold Steam, direct executable, and declared publisher-chain launches are supported. Unsupported or warm authority receives a pre-effect refusal. |
+| `--launch` | open | `false` | all | Start the target through its managed launch. Required by the current implementation. |
+| `--direct-route` | open | `false` | all | Explicitly select the exact final-client direct route, which is already the ordinary default. Requires a Windows build with the direct-route feature, Administrator, and packaged WinDivert. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
@@ -160,7 +160,7 @@ fragcap deep-capture sample-target --launch --direct-route
 | `--proxy-allow-destination` | open | none | all | Authorize one exact upstream IP and port in the session plan, including a local peer. Repeat for more endpoints; the proxy listener remains refused. |
 | `--proxy-family` | `ipv4`, `ipv6` | `ipv4` | all | Bind the exact loopback family authorized by this session. No wildcard or automatic family fallback is used. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
-| `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. Conflicts with calibration. |
+| `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. |
 | `--wait` | open | none | all | Set the target acquisition timeout. |
 
 Deep Capture hides and rejects the former `--trust-ca` and `--yes` inputs for one release. The migration error points to the complete interactive plan or `--authorize-stdin`. Other commands retain their separately scoped `--yes` confirmations.
@@ -185,63 +185,6 @@ Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.
 See [Deep Capture compatibility](/docs/reference/deep-capture-compatibility) for
 certificate-pinning, QUIC, and launch limits.
-
-### `calibrate`
-
-Guide one target through a bounded sequence of current Deep Capture reachability and protocol attempts. Stored targets retain precedence. On a clean stored miss, an exact installed Steam application identifier or Unicode-aware case-insensitive display name can produce one complete registration plan. The plan exposes and binds the complete candidate, conserved discovery account and warnings, and effective store before confirmation. Interactive registration defaults to no; structured registration requires the exact emitted `target-registration-v1` identifier through `--authorize-stdin`. Discovery is repeated before the shared single-target registration operation runs. When an exact Steam target has no authored client, appinfo's executable is labeled a launch hint. Interactive setup can confirm a separate cold Steam launch and observe descendant socket owners; a unique complete observation proposes a client under a separate `steam-client-setup-v1` plan. `--client-executable EXE` instead records an explicit operator declaration, including in structured workflows, without claiming observed ownership. No evidence, ambiguity, interruption, or decline changes no target row. The authoring plan revalidates discovery and the full stored row before conditional update. Setup exits after authoring; close the title and Steam normally before a new cold reachability attempt. A non-Steam stored target with two or more client-only launch entries instead requires one stable executable candidate and a separate `stored-client-selection-v1` confirmation before its complete row can be narrowed to one authored client. Steam targets and ordered publisher chains never enter that rewrite path. Registration, topology setup, and every later Deep Capture attempt remain separate authorizations.
-
-For a target with authoritative topology, the command freshly reads the process image inventory and retained compatibility facts before every proposed action. Repeatable `--protocol` values request measurements and do not constitute evidence. `--inspect-scope auto` resolves before effects. Every topology recommends launch-chain inspection; explicit game-only retains blind middleware relay. Explicit `game` and `launch-chain` choices remain exact. Missing route evidence selects reachability first. After each separately authorized session, eligible final-client observations may add concrete candidates, but only a fresh current positive fact for the same scope and handling policy permits the next useful case. One workflow runs reachability at most once and each concrete protocol at most once, for a maximum of fourteen durable attempt ordinals. A decline, invalid input, interruption, failure, partial result, warm transition, limitation, target change, or repeated case stops before later effects and checkpoints current coverage. A warm target starts no session unless `--restart-warm` explicitly selects the existing operator-owned close-and-retry workflow.
-
-Fresh calibration creates a target-bound workflow before its first attempt. Resume it explicitly with `--resume <WORKFLOW_ID>` from the same effective local store. Resume revalidates the complete target snapshot and rebuilds current process, fact, proposal, recovery, bundle, plan, and confirmation authority. It never reuses a prior plan or response. A row left in flight first becomes an effect-free interruption pause. `--pause-for` can record login, EULA, update, anti-cheat, gameplay, shutdown, or interruption work without entering the session executor. A pause records operator intent, not proof or compatibility evidence. Generated commands carry the effective local-store path as one PowerShell-quoted argument. If target discovery, Steam executable metadata, or an eligible stored non-Steam client declaration is ambiguous, `calibration.choice_required` lists stable content-derived candidate identities. Repeat the command with one exact `--candidate`; list positions are never accepted. The selection still passes its separate complete plan and fresh post-confirmation checks.
-
-A failed session prints the earliest known causal stage, observed target packet retention, proxy accept count when the native cleanup report supplies it, exact fact writes, and the workflow pause. Artifact creation is separate from successful acquisition. Without declared fallback authority, `--resume` preserves a failed attempt's history and does not rerun the same exact case. `--retry-game-scope` permits one fresh exact-game successor only after a failed launch-chain attempt, fresh target validation, and reconciled cleanup. `--fallback-capture` may retain eligible packet-only evidence under its actual observation window; it reports effective Capture mode and never supplies positive inspection evidence.
-
-Advanced fresh workflows may assert `--launch-case`, select `--routing-strategy`, and select `--proxy-family`. The values become immutable workflow intent and appear in guidance. A launch assertion must equal the current inferred cold topology, and unimplemented routing strategies remain pre-effect refusals. Resume cannot change candidate or exact-case intent.
-
-```powershell
-fragcap calibrate sample-target
-fragcap calibrate sample-target --client-executable sample.exe
-fragcap calibrate "Sample Target" --candidate candidate-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-fragcap calibrate --id 42 --protocol https
-fragcap calibrate --id 42 --inspect-scope game
-fragcap calibrate --id 42 --inspect-scope launch-chain --retry-game-scope --fallback-capture
-fragcap calibrate --id 42 --launch-case direct-exe-cold --routing-strategy child-environment --proxy-family ipv6
-fragcap calibrate --resume 17 --local-db C:\Users\you\local.db
-fragcap calibrate --resume 17 --pause-for login --local-db C:\Users\you\local.db
-```
-
-| Option | Values | Default | Availability | Meaning |
-| --- | --- | --- | --- | --- |
-| `--authorize-stdin` | open | `false` | all | Read each exact emitted plan identifier from standard input. A discovered target first requires its `target-registration-v1` identifier, an eligible absent Steam client requires its separate `steam-client-setup-v1` identifier, an ambiguous stored non-Steam client requires its `stored-client-selection-v1` identifier, and any later effectful attempt requires its current Deep Capture plan identifier. Conflicts with `--restart-warm`. |
-| `--bundle` | open | none | all | Select the first attempt bundle. Later attempts use deterministic sibling paths containing attempt, phase, and protocol. |
-| `--retain-bundle` | open | `false` | all | Retain every generated attempt until explicit cleanup. Explicit bundle destinations and sibling attempts are always retained. |
-| `--output-recipient` | open | none | all | Exact Windows recipient SID for attempt output. Requires an explicit `--bundle` and the same validated ordinary-context access contract as Deep Capture. |
-| `--candidate` | open | none | all | Fresh workflow only. Select one exact current candidate from a prior ambiguity event. The value must be a `candidate-v1:<digest>` content-derived identity and must be consumed exactly once. |
-| `--client-executable` | open | none | all | Fresh Steam setup only. Supply one Windows `.exe` path to declare the final client explicitly when it is not already authored. This is an operator declaration, not observed socket or proxy evidence. |
-| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
-| `-d`, `--duration` | open | none | all | Bound the selected observation duration. |
-| `--id` | open | none | all | Select a stored target by durable identifier. |
-| `--inspect-scope` | `auto`, `game`, `launch-chain` | none | all | Fresh workflow only. Persist the requested scope and its pre-effect resolution. Omission uses `auto`, selecting launch-chain inspection for every topology. |
-| `--retry-game-scope` | open | `false` | all | Fresh workflow only. Authorize at most one new exact-game attempt after a failed launch-chain attempt. Resume cannot add this authority. |
-| `--fallback-capture` | open | `false` | all | Fresh workflow only. Authorize packet-only retention after an eligible failed inspected attempt. Resume cannot add this authority, and fallback creates no positive inspection fact. |
-| `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
-| `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
-| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Fresh workflow only. Assert the exact current cold launch case. Omission uses the inferred case; a mismatch refuses and never rewrites topology. |
-| `--max-bytes` | open | none | all | Stop the selected attempt after this many captured bytes. |
-| `--max-packets` | open | none | all | Stop the selected attempt after this many captured packets. |
-| `--no-payload` | open | `false` | all | Write packet metadata without payload bytes during the selected attempt. |
-| `--protocol` | `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Request concrete protocol measurements after reachability. Repeat for more than one candidate; each useful case retains a separate authorization plan. |
-| `--pause-for` | `login`, `eula`, `update`, `anti-cheat`, `gameplay`, `shutdown`, `interrupted` | none | all | With `--resume`, atomically record operator-owned work and exit without session effects. |
-| `--proxy-family` | `ipv4`, `ipv6` | none | all | Fresh workflow only. Persist the exact loopback family and use it in every fresh proposal and attempt. Omission selects IPv4. |
-| `--resume` | open | none | all | Resume one positive target-bound workflow identifier from the effective local store. Conflicts with target selectors and `--protocol`. |
-| `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, take a fresh process snapshot, and measure the selected cold launch. Conflicts with `--authorize-stdin`. |
-| `--routing-strategy` | `child-environment`, `child-environment-direct-socket`, `command-arguments`, `target-configuration`, `http-proxy`, `socks`, `protocol-specific` | none | all | Fresh workflow only. Persist the exact routing dimension and route identity. Omission selects child-environment. The composite direct-socket value is available since the v0.11.0 release and requires Administrator and packaged WinDivert. Other values refuse before effects. |
-| `--target` | open | none | all | Explicit target selector. Stored resolution runs first; a clean miss may exactly match an installed title name or Steam application identifier. |
-| `--wait` | open | none | all | Set the target acquisition timeout for an attempt or the bounded client observation. Client observation defaults to 60 seconds. |
-
-`calibrate` registers at most one exactly selected, explicitly confirmed discovery candidate through the shared target operation. Its durable checkpoint stores target identity, candidate intent, coverage projection, bounded ordinal, lifecycle, and pause state only. It stores no authorization, secret, trust state, endpoint, effect obligation, or compatibility claim. A request, an observation, and a current exact compatibility fact remain separate. Ambiguous, invalid, and unavailable proposals report typed limitations before effects and do not invent authority.
-
-Guided calibration implementation acceptance is checked by the versioned thirteen-criterion registry in `integration/guided-calibration-acceptance-v1.json` and the ordinary Linux and Windows CI suites. S147 did not run a real game or demonstrate live compatibility. Optional real-game validation belongs to the operator and may be performed only against an already published release.
 
 ### `replay`
 
@@ -318,7 +261,7 @@ v0.10.8 does not provide this command; v0.10.9 does.
 | `--steam` | open | none | all | Select the stored `steam:<app_id>` target and exact platform discovery. Required for this command. |
 | `--plan-id` | open | none | all | Apply only an unchanged proposal; without it the command previews. |
 | `--steam-root` | open | none | all | Use a specific Steam installation root for discovery. |
-| `--db` | open | none | all | Select the same effective store used by calibration. |
+| `--db` | open | none | all | Select the effective local target store. |
 
 ### `targets list`
 
@@ -360,7 +303,7 @@ Store paths, conserved discovery counts, registration eligibility/reasons and
 coverage warnings remain visible. `--summary` retains aggregate counts without
 private candidate or warning text.
 
-Targeted calibration refreshes only the exact selected Steam app and its install
+Targeted discovery refreshes only the exact selected Steam app and its install
 when its identity is known. Unrelated root coverage warnings remain in broad
 discovery. Relevant access, malformed metadata, ambiguity, missing identity and
 coverage limitations remain visible, with additive structured source, root,

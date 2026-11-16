@@ -104,7 +104,6 @@ const DEEP_CAPTURE_JOURNEY_PAGES: &[&[&str]] = &[
     &["targets", "discover"],
     &["targets", "add"],
     &["targets", "show"],
-    &["calibrate"],
     &["deep-capture"],
     &["bundle", "cleanup"],
     &["bundle", "export"],
@@ -125,7 +124,6 @@ fn deep_capture_journey_has_concise_and_complete_help_pages() {
     let ordered = [
         "fragcap doctor",
         "fragcap targets discover",
-        "fragcap calibrate",
         "fragcap deep-capture",
     ];
     let mut prior = 0;
@@ -142,7 +140,7 @@ fn deep_capture_journey_has_concise_and_complete_help_pages() {
         !short.contains("First Deep Capture session"),
         "short help contains the long tutorial: {short}"
     );
-    for operation in ["doctor", "targets", "calibrate", "deep-capture", "bundle"] {
+    for operation in ["doctor", "targets", "deep-capture", "bundle"] {
         assert!(
             short.contains(operation),
             "root short help omits `{operation}`: {short}"
@@ -173,11 +171,10 @@ fn deep_capture_long_help_orders_controls_and_states_security_boundaries() {
         prior = found + heading.len();
     }
     for boundary in [
-        "observed compatibility",
-        "not universal",
-        "does not bypass certificate pinning",
-        "mutual-TLS identity",
-        "Key logs, HAR",
+        "exact final game",
+        "launcher environment",
+        "fragcap doctor --fix",
+        "HAR, key logs",
     ] {
         assert!(
             help.contains(boundary),
@@ -229,9 +226,9 @@ fn audited_long_help_preserves_meaning_at_supported_narrow_widths() {
         let mut deep_capture = command_at(&["deep-capture"]).term_width(width);
         let help = normalize(&deep_capture.render_long_help().to_string());
         for token in [
-            "observed compatibility",
-            "certificate pinning",
-            "fragcap calibrate",
+            "exact final game",
+            "launcher environment",
+            "fragcap deep-capture",
             "fragcap doctor --fix",
         ] {
             assert!(
@@ -264,7 +261,7 @@ fn deep_capture_help_requires_launch_and_keeps_powershell_examples_copyable() {
         .unwrap();
     assert!(required.contains("--launch"), "{help}");
     assert!(
-        help.contains("only that launch receives proxy settings"),
+        help.contains("Start the selected game through its declared platform or launcher"),
         "{help}"
     );
     let recipient = help
@@ -285,14 +282,11 @@ fn deep_capture_help_requires_launch_and_keeps_powershell_examples_copyable() {
     assert_eq!(code, 2);
     assert!(error.contains("--launch"), "{error}");
 
-    let calibration = render_with(&["calibrate"], "--help");
+    let (code, _, error) = run(&["calibrate", "--help"]);
+    assert_eq!(code, 2);
     assert!(
-        calibration.contains("StandardInput.Write($planId + [char]10)"),
-        "{calibration}"
-    );
-    assert!(
-        calibration.contains("exact emitted plan identifier"),
-        "{calibration}"
+        error.contains("unrecognized subcommand 'calibrate'"),
+        "{error}"
     );
 }
 

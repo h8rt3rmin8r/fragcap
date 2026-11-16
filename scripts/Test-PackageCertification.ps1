@@ -533,12 +533,19 @@ Param(
         Param([string]$Executable, [hashtable]$Environment)
         $help = (Invoke-Fragcap -Executable $Executable -Arguments @('deep-capture', '--help') -Environment $Environment).Stdout
         $normalizedHelp = $help -replace '\s+', ' '
-        foreach ($required in @(
-            'Auto selects launch-chain inspection for every managed launch.',
-            'Select game to inspect only the final game client.',
-            '--direct-route'
-        )) {
+        $historicalReplay = -not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)
+        $requiredHelp = if ($historicalReplay) {
+            @('Auto selects launch-chain inspection for every managed launch.', 'Select game to inspect only the final game client.', '--direct-route')
+        } else {
+            @('Auto selects the exact final game.', '--launcher-proxy', '--direct-route')
+        }
+        foreach ($required in $requiredHelp) {
             if (-not $normalizedHelp.Contains($required)) { throw "packaged Deep Capture help omits $required" }
+        }
+        if (-not $historicalReplay) {
+            foreach ($retired in @('--calibrate', '--calibration-protocol', '--launch-case')) {
+                if ($normalizedHelp.Contains($retired)) { throw "packaged Deep Capture help still exposes $retired" }
+            }
         }
         $bundleHelp = (Invoke-Fragcap -Executable $Executable -Arguments @('bundle', '--help') -Environment $Environment).Stdout
         if (-not $bundleHelp.Contains('debug-report')) { throw 'packaged bundle help omits debug-report' }
@@ -636,7 +643,8 @@ Param(
         try {
             try {
                 $scopeArguments = if ($RequireExactGameInspectionScope) { @('--inspect-scope', 'game') } else { @() }
-                $arguments = @('--json', 'deep-capture', $targetHandle, '--launch') + $scopeArguments + @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle)
+                $legacyArguments = if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) { @() } else { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') }
+                $arguments = @('--json', 'deep-capture', $targetHandle, '--launch') + $scopeArguments + $legacyArguments + @('--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle)
                 $smoke = Invoke-Fragcap -Executable $Executable -Arguments $arguments -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
             } catch {
                 throw "$Surface smoke predicates failed: invocation.failed"
@@ -681,7 +689,7 @@ Param(
         }
         $dataRoot = Join-Path $profile '.fragcap\roaming'
         if (Test-Path -LiteralPath $dataRoot) { throw 'installed slow timing requires an absent default data root' }
-        $environment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = $roaming; LOCALAPPDATA = $local; FRAGCAP_STORAGE_ROOT = $null; FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable; FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS = '50000'; FRAGCAP_CONTROLLED_TARGET_HOLD_MS = '70000'; FRAGCAP_SESSION_DIR = $null; FRAGCAP_CATALOG_DB = $null; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
+        $environment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = $roaming; LOCALAPPDATA = $local; FRAGCAP_STORAGE_ROOT = $null; FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $Executable; FRAGCAP_CONTROLLED_TARGET_CHAIN_DELAY_MS = '50000'; FRAGCAP_CONTROLLED_TARGET_HOLD_MS = '125000'; FRAGCAP_SESSION_DIR = $null; FRAGCAP_CATALOG_DB = $null; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         $targetHandle = 'package_certification'
         [void](Invoke-Fragcap -Executable $Executable -Arguments @('targets', 'add', 'Package Certification', '--anchor', 'package:certification', '--exe', $Executable, '--handle', $targetHandle, '--socket-holder', 'yes') -Environment $environment)
         $expectedDb = Join-Path $dataRoot 'local.db'
@@ -692,8 +700,10 @@ Param(
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $run = Invoke-Fragcap -Executable $Executable -Arguments @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target') -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 180
-            if ($run.ElapsedSeconds -lt 120 -or $run.ElapsedSeconds -gt 165) { throw 'installed slow timing did not retain the two-minute observation span' }
+            $legacyArguments = if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) { @() } else { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') }
+            $arguments = @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game') + $legacyArguments + @('--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target')
+            $run = Invoke-Fragcap -Executable $Executable -Arguments $arguments -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 240
+            if ($run.ElapsedSeconds -lt 168 -or $run.ElapsedSeconds -gt 215) { throw 'installed slow timing did not retain the two-minute post-handoff observation span' }
             $records = @($run.Stderr -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json -Depth 32 -ErrorAction Stop })
             $plan = @($records | Where-Object { $_.event -ceq 'deep_capture.authorization_plan' })
             $terminal = @($records | Where-Object { $_.event -ceq 'deep_capture.complete' })

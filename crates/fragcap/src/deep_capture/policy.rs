@@ -3,50 +3,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::targets::{
-    latest_applicable_fact, CompatibilityCase, CompatibilityFact, CompatibilityFactKey,
-    CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityCase, CompatibilityFact, CompatibilityFactKey, CompatibilityProtocol,
 };
 
 use super::{
     CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
     CompatibilityObservation, CorrelationState, DetectionState, EvidenceWindow,
-    InspectabilityState, LaunchCase, PreflightRefusal, SessionMode, TrafficFamily,
+    InspectabilityState, LaunchCase, PreflightRefusal, RouteEffect, RouteValueSource, SessionMode,
+    TrafficFamily,
 };
 
-/// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
+/// Validate current launch feasibility without treating historical observations
+/// as permission to begin a new, separately authorized capture.
 pub fn validate_compatibility_prerequisites(
-    mode: SessionMode,
+    _mode: SessionMode,
     controlled: bool,
-    facts: &[CompatibilityFact],
+    _facts: &[CompatibilityFact],
     launch_case: LaunchCase,
-    current: &CompatibilityCase,
+    _current: &CompatibilityCase,
 ) -> Result<(), PreflightRefusal> {
-    if !controlled && mode != SessionMode::Capture {
-        require_supported_launch_case(launch_case)?;
-    }
-    if mode == SessionMode::ReachabilityCalibration {
-        return Ok(());
-    }
-    if controlled && mode == SessionMode::Capture {
-        return Ok(());
-    }
-    let Some(stored_case) = stored_launch_case(launch_case) else {
-        return Err(PreflightRefusal::new(
-            "launch-case",
-            "the controlled launch case requires the controlled adapter set",
-        ));
-    };
-    let routes = latest_applicable_fact(facts, CompatibilityFactKey::ProxyRouting, current);
-    if routes.is_none_or(|fact| fact.value != "reached-client") {
-        return Err(PreflightRefusal::new(
-            "routing-prerequisite",
-            format!(
-                "Deep Capture requires current compatibility facts proving scoped proxy routing reaches the final client for launch case {}; run reachability calibration first",
-                stored_case.as_str()
-            ),
-        ));
-    }
-    if mode == SessionMode::TlsCalibration {
+    if controlled {
         return Ok(());
     }
     require_supported_launch_case(launch_case)
@@ -76,27 +52,11 @@ fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), Prefligh
         _ => Err(PreflightRefusal::new(
             "launch-case",
             format!(
-                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches whose compatibility facts prove client routing",
+                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches",
                 launch_case.as_str()
             ),
         )),
     }
-}
-
-fn stored_launch_case(value: LaunchCase) -> Option<CompatibilityLaunchCase> {
-    Some(match value {
-        LaunchCase::SteamProtocolWarm => CompatibilityLaunchCase::SteamProtocolWarm,
-        LaunchCase::SteamProtocolCold => CompatibilityLaunchCase::SteamProtocolCold,
-        LaunchCase::DirectExeWarm => CompatibilityLaunchCase::DirectExeWarm,
-        LaunchCase::DirectExeCold => CompatibilityLaunchCase::DirectExeCold,
-        LaunchCase::PublisherLauncher => CompatibilityLaunchCase::PublisherLauncher,
-        LaunchCase::PublisherLauncherWarm => CompatibilityLaunchCase::PublisherLauncherWarm,
-        LaunchCase::PublisherLauncherGameStartCleanWarm => {
-            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
-        }
-        LaunchCase::PublisherLauncherCold => CompatibilityLaunchCase::PublisherLauncherCold,
-        LaunchCase::Controlled => return None,
-    })
 }
 
 /// Select append-only compatibility facts from direct observations.
@@ -107,13 +67,41 @@ pub fn compatibility_fact_candidates(
     calibration: Option<CalibrationPhase>,
     selected_protocol: Option<CompatibilityProtocol>,
 ) -> Vec<CompatibilityFactCandidate> {
+    compatibility_fact_candidates_with_effects(
+        launch_case,
+        observations,
+        controlled,
+        calibration,
+        selected_protocol,
+        &[],
+    )
+}
+
+fn compatibility_fact_candidates_with_effects(
+    launch_case: &str,
+    observations: &[CompatibilityObservation],
+    controlled: bool,
+    calibration: Option<CalibrationPhase>,
+    selected_protocol: Option<CompatibilityProtocol>,
+    route_effects: &[RouteEffect],
+) -> Vec<CompatibilityFactCandidate> {
     let mut facts = Vec::new();
-    // A cold Steam launch is rooted in the exact platform process fragcap
-    // created with the scoped proxy environment. A correlated final client can
-    // only bind beneath that root, so reaching it proves propagation just as
-    // directly as the controlled harness does. Routing remains the independent
-    // reached-client fact below.
-    let propagation_owned = controlled || launch_case == LaunchCase::SteamProtocolCold.as_str();
+    // Reaching an owned client proves propagation only when this attempt
+    // actually supplied a proxy environment to its launch root.
+    let supplied_proxy_variables = route_effects
+        .iter()
+        .filter(|effect| effect.value != RouteValueSource::Remove)
+        .filter(|effect| {
+            matches!(
+                effect.destination.as_str(),
+                "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY"
+            )
+        })
+        .map(|effect| effect.destination.as_str())
+        .collect::<BTreeSet<_>>();
+    let environment_routed = !supplied_proxy_variables.is_empty();
+    let propagation_owned =
+        environment_routed && (controlled || launch_case == LaunchCase::SteamProtocolCold.as_str());
     let final_owner_index = observations.iter().rposition(|observation| {
         observation
             .role
@@ -157,25 +145,27 @@ pub fn compatibility_fact_candidates(
             phase,
             CompatibilityProtocol::NotApplicable,
         );
-        push(
-            CompatibilityFactKey::ProxyPropagation,
-            if reached_client && propagation_owned {
-                "confirmed"
-            } else if reached_client {
-                "not-tested"
-            } else {
-                "not-confirmed"
-            },
-            phase,
-            CompatibilityProtocol::NotApplicable,
-        );
-        for variable in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+        if environment_routed {
             push(
-                CompatibilityFactKey::ProxyVariableTested,
-                variable,
+                CompatibilityFactKey::ProxyPropagation,
+                if reached_client && propagation_owned {
+                    "confirmed"
+                } else if reached_client {
+                    "not-tested"
+                } else {
+                    "not-confirmed"
+                },
                 phase,
                 CompatibilityProtocol::NotApplicable,
             );
+            for variable in supplied_proxy_variables {
+                push(
+                    CompatibilityFactKey::ProxyVariableTested,
+                    variable,
+                    phase,
+                    CompatibilityProtocol::NotApplicable,
+                );
+            }
         }
     }
     let accepted_protocol = observations.iter().find_map(|observation| {
@@ -371,17 +361,38 @@ pub fn compatibility_fact_candidates_in_windows(
     calibration: Option<CalibrationPhase>,
     selected_protocol: Option<CompatibilityProtocol>,
 ) -> Vec<CompatibilityFactCandidate> {
+    compatibility_fact_candidates_in_windows_with_effects(
+        launch_case,
+        observations,
+        windows,
+        controlled,
+        calibration,
+        selected_protocol,
+        &[],
+    )
+}
+
+pub(super) fn compatibility_fact_candidates_in_windows_with_effects(
+    launch_case: &str,
+    observations: &[CompatibilityObservation],
+    windows: &[EvidenceWindow],
+    controlled: bool,
+    calibration: Option<CalibrationPhase>,
+    selected_protocol: Option<CompatibilityProtocol>,
+    route_effects: &[RouteEffect],
+) -> Vec<CompatibilityFactCandidate> {
     let indices = window_indices(observations, windows);
     let eligible = indices
         .iter()
         .map(|&index| observations[index].clone())
         .collect::<Vec<_>>();
-    let mut facts = compatibility_fact_candidates(
+    let mut facts = compatibility_fact_candidates_with_effects(
         launch_case,
         &eligible,
         controlled,
         calibration,
         selected_protocol,
+        route_effects,
     );
     for fact in &mut facts {
         fact.final_owner_index = fact.final_owner_index.map(|index| indices[index]);
@@ -667,6 +678,7 @@ mod launch_case_tests {
         DetectionState, Inspectability, InspectabilityState, ProtocolClassification, TrafficFamily,
     };
     use super::*;
+    use fragcap_targets::CompatibilityLaunchCase;
 
     fn correlated_client_observation() -> CompatibilityObservation {
         CompatibilityObservation {
@@ -696,6 +708,39 @@ mod launch_case_tests {
                 None,
             )
             .unwrap(),
+        }
+    }
+
+    #[test]
+    fn ordinary_first_capture_does_not_need_prior_routing_fact() {
+        let case = CompatibilityCase {
+            launch_case: CompatibilityLaunchCase::DirectExeCold,
+            proxy_backend: "native".into(),
+            proxy_backend_version: "test".into(),
+            routing_strategy: crate::targets::CompatibilityRoutingStrategy::ChildEnvironment,
+            route_identity: crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1,
+            address_family: crate::targets::CompatibilityAddressFamily::Ipv4,
+            protocol: CompatibilityProtocol::Routing,
+            fragcap_version: "test".into(),
+            target_version: None,
+            requested_scope: crate::targets::CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: crate::targets::CompatibilityInspectionScope::ExactGame,
+            middleware_handling: crate::targets::CompatibilityMiddlewareHandling::BlindRelay,
+            inspection_policy_id: "exact-game-v2".into(),
+        };
+        for launch_case in [
+            LaunchCase::SteamProtocolCold,
+            LaunchCase::DirectExeCold,
+            LaunchCase::PublisherLauncherCold,
+        ] {
+            assert!(validate_compatibility_prerequisites(
+                SessionMode::Capture,
+                false,
+                &[],
+                launch_case,
+                &case,
+            )
+            .is_ok());
         }
     }
 
@@ -1074,14 +1119,66 @@ mod launch_case_tests {
         assert!(require_supported_launch_case(LaunchCase::PublisherLauncherCold).is_ok());
     }
 
+    fn socks_proxy_effect() -> RouteEffect {
+        RouteEffect {
+            destination: "ALL_PROXY".into(),
+            value: RouteValueSource::SessionSocks5hUrl,
+            scope: "managed-child-only".into(),
+        }
+    }
+
+    #[test]
+    fn direct_route_does_not_claim_proxy_environment_propagation() {
+        let facts = compatibility_fact_candidates(
+            LaunchCase::SteamProtocolCold.as_str(),
+            &[correlated_client_observation()],
+            false,
+            None,
+            None,
+        );
+        assert!(facts.iter().any(|fact| {
+            fact.key == CompatibilityFactKey::ProxyRouting && fact.value == "reached-client"
+        }));
+        assert!(!facts.iter().any(|fact| matches!(
+            fact.key,
+            CompatibilityFactKey::ProxyPropagation | CompatibilityFactKey::ProxyVariableTested
+        )));
+    }
+
+    #[test]
+    fn socks_only_route_records_only_supplied_proxy_variables() {
+        let facts = compatibility_fact_candidates_with_effects(
+            LaunchCase::SteamProtocolCold.as_str(),
+            &[correlated_client_observation()],
+            false,
+            None,
+            None,
+            &[
+                RouteEffect {
+                    destination: "HTTP_PROXY".into(),
+                    value: RouteValueSource::Remove,
+                    scope: "managed-child-only".into(),
+                },
+                socks_proxy_effect(),
+            ],
+        );
+        let tested = facts
+            .iter()
+            .filter(|fact| fact.key == CompatibilityFactKey::ProxyVariableTested)
+            .map(|fact| fact.value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tested, ["ALL_PROXY"]);
+    }
+
     #[test]
     fn cold_steam_owned_client_confirms_propagation_without_conflating_routing() {
-        let facts = compatibility_fact_candidates(
+        let facts = compatibility_fact_candidates_with_effects(
             LaunchCase::SteamProtocolCold.as_str(),
             &[correlated_client_observation()],
             false,
             Some(CalibrationPhase::Reachability),
             Some(CompatibilityProtocol::Routing),
+            &[socks_proxy_effect()],
         );
         let value = |key| {
             facts
@@ -1102,12 +1199,13 @@ mod launch_case_tests {
 
     #[test]
     fn unowned_correlated_client_does_not_claim_propagation() {
-        let facts = compatibility_fact_candidates(
+        let facts = compatibility_fact_candidates_with_effects(
             LaunchCase::PublisherLauncherCold.as_str(),
             &[correlated_client_observation()],
             false,
             Some(CalibrationPhase::Reachability),
             Some(CompatibilityProtocol::Routing),
+            &[socks_proxy_effect()],
         );
 
         assert_eq!(

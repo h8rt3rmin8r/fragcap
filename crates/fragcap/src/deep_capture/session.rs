@@ -47,7 +47,8 @@ impl DeepCapture {
         config: SessionConfig,
         adapters: &mut AdapterSet<'_>,
     ) -> Result<PreparedSession, PreflightRefusal> {
-        Self::preflight_with_direct_socket(config, adapters, false)
+        let direct_socket = config.direct_socket;
+        Self::preflight_with_direct_socket(config, adapters, direct_socket)
     }
 
     /// Prepare an explicit signed final-client route for an internal caller.
@@ -80,12 +81,13 @@ impl DeepCapture {
         BypassPolicy::validate_inputs(&config.proxy_bypass)?;
         let endpoint = adapters.endpoints.select()?;
         let capture = adapters.capture.prepare(&config, &target, endpoint)?;
-        let routing = RoutingPlan::child_environment(endpoint, &config.proxy_bypass)?;
-        let routing = if direct_socket {
-            routing.with_direct_socket(&target)?
-        } else {
-            routing
-        };
+        let routing = RoutingPlan::selected(
+            endpoint,
+            &config.proxy_bypass,
+            &target,
+            config.launcher_exposure,
+            direct_socket,
+        )?;
         adapters.routing.prepare(&target, &routing)?;
         let session_id = adapters.identifiers.next_id("session")?;
         let plan_id = PlanId::new(adapters.identifiers.next_id("plan")?);
@@ -2075,13 +2077,14 @@ fn facts_from_observations(
         SessionMode::ReachabilityCalibration => Some(CalibrationPhase::Reachability),
         SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
     };
-    compatibility_fact_candidates_in_windows(
+    policy::compatibility_fact_candidates_in_windows_with_effects(
         plan.target.launch_case.as_str(),
         observations,
         windows,
         plan.controlled,
         calibration,
         plan.calibration_protocol,
+        &plan.routing.effects,
     )
     .into_iter()
     .map(|candidate| CompatibilityFact {

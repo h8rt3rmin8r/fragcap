@@ -31,9 +31,9 @@ impl RequestedInspectionScope {
     /// ownership and uninspected forwarding are available for this plan.
     pub const fn resolve(self, game_only_available: bool) -> Option<ResolvedInspectionScope> {
         let effective = match self {
-            Self::Auto | Self::LaunchChain => InspectionScope::LaunchChain,
-            Self::ExactGame if game_only_available => InspectionScope::ExactGame,
-            Self::ExactGame => return None,
+            Self::LaunchChain => InspectionScope::LaunchChain,
+            Self::Auto | Self::ExactGame if game_only_available => InspectionScope::ExactGame,
+            Self::Auto | Self::ExactGame => return None,
         };
         Some(ResolvedInspectionScope {
             requested: self,
@@ -52,19 +52,13 @@ mod tests {
 
     #[test]
     fn auto_is_frozen_before_effects_and_explicit_game_requires_relay_availability() {
-        assert_eq!(
-            RequestedInspectionScope::Auto
-                .resolve(false)
-                .unwrap()
-                .effective,
-            InspectionScope::LaunchChain
-        );
+        assert_eq!(RequestedInspectionScope::Auto.resolve(false), None);
         assert_eq!(
             RequestedInspectionScope::Auto
                 .resolve(true)
                 .unwrap()
                 .effective,
-            InspectionScope::LaunchChain
+            InspectionScope::ExactGame
         );
         assert!(RequestedInspectionScope::ExactGame.resolve(false).is_none());
         assert_eq!(

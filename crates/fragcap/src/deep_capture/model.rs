@@ -157,6 +157,10 @@ pub struct SessionConfig {
     pub client_identity: bool,
     /// Explicit operator-owned proxy bypass rule inputs.
     pub proxy_bypass: Vec<String>,
+    /// Exact proxy exposure authorized for the managed launch root.
+    pub launcher_exposure: super::LauncherProxyExposure,
+    /// Whether the exact final-game direct component is in the route.
+    pub direct_socket: bool,
     /// Lifecycle policy for sensitive bundle artifacts.
     pub sensitive_retention: SensitiveRetention,
     /// Requested lifecycle deadlines.
@@ -185,6 +189,8 @@ impl SessionConfigBuilder {
                 key_log: false,
                 client_identity: false,
                 proxy_bypass: Vec::new(),
+                launcher_exposure: super::LauncherProxyExposure::Native,
+                direct_socket: true,
                 sensitive_retention: SensitiveRetention::Retain,
                 deadlines: Deadlines::default(),
             },
@@ -233,6 +239,16 @@ impl SessionConfigBuilder {
 
     pub fn proxy_bypass(mut self, value: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.config.proxy_bypass = value.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn launcher_exposure(mut self, value: super::LauncherProxyExposure) -> Self {
+        self.config.launcher_exposure = value;
+        self
+    }
+
+    pub fn direct_socket(mut self, value: bool) -> Self {
+        self.config.direct_socket = value;
         self
     }
 

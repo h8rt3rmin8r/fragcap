@@ -84,11 +84,31 @@ pub(crate) async fn accept_client_tls(
     config: Arc<ServerConfig>,
     limits: &ProtocolLimits,
 ) -> Result<TlsStream<TcpStream>, ProtocolError> {
-    let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let tls = timeout(limits.tls_handshake_timeout, acceptor.accept(stream))
+    let started = Instant::now();
+    let mut first_byte = [0_u8; 1];
+    let seen = timeout(limits.tls_handshake_timeout, stream.peek(&mut first_byte))
         .await
         .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
         .map_err(client_tls_error)?;
+    if seen == 0 {
+        let mut error = ProtocolError::new(
+            "client-closed-before-tls",
+            "client closed after CONNECT success without sending TLS bytes",
+        )
+        .at_boundary("client-tunnel-handoff");
+        error.transport_category = Some("unexpected-eof");
+        return Err(error);
+    }
+    let acceptor = tokio_rustls::TlsAcceptor::from(config);
+    let tls = timeout(
+        limits
+            .tls_handshake_timeout
+            .saturating_sub(started.elapsed()),
+        acceptor.accept(stream),
+    )
+    .await
+    .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
+    .map_err(client_tls_error)?;
     validate_client_tls(tls, authority)
 }
 

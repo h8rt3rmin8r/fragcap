@@ -17,9 +17,9 @@ const HARNESS: &str = "scripts/Test-PackageCertification.ps1";
 const CLEAN_GUEST_HARNESS: &str = "scripts/Test-CleanWindowsStartup.ps1";
 const MAX_CONTRACT_BYTES: u64 = 128 * 1024;
 const MAX_SMOKE_EVENT_BYTES: usize = 256 * 1024;
-// The controlled session now emits a route-owner cleanup result. Keep a finite
-// margin above its observed 33 records without relaxing the byte bound.
-const MAX_SMOKE_EVENT_COUNT: usize = 40;
+// Ordinary capture emits more lifecycle and progress records than the retired
+// calibration smoke. Keep a finite count under the independent byte bound.
+const MAX_SMOKE_EVENT_COUNT: usize = 256;
 
 pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let bytes = fs::read(root.join(CONTRACT))?;
@@ -857,6 +857,12 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
             }
         }
     }
+    if events
+        .iter()
+        .any(|event| event["event"] == "deep_capture.complete")
+    {
+        return summarize_capture_smoke_events(&events, problems);
+    }
     let proxy_events = events
         .iter()
         .enumerate()
@@ -976,6 +982,161 @@ fn summarize_smoke_events(bytes: &[u8]) -> Result<Value, Vec<String>> {
         "protocol": "routing",
         "stage": "complete",
         "status": "reached-client"
+    }))
+}
+
+fn summarize_capture_smoke_events(
+    events: &[Value],
+    mut problems: Vec<String>,
+) -> Result<Value, Vec<String>> {
+    let named = |name: &str| {
+        events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| event["event"] == name)
+            .collect::<Vec<_>>()
+    };
+    let plans = named("deep_capture.authorization_plan");
+    let proxies = named("deep_capture.proxy_started");
+    let launches = named("deep_capture.launch");
+    let applications = named("deep_capture.application");
+    let terminals = named("deep_capture.complete");
+    for (count, expected, diagnostic) in [
+        (plans.len(), 1, "authorization-plan.count"),
+        (proxies.len(), 1, "proxy-start.count"),
+        (launches.len(), 1, "launch.count"),
+        (terminals.len(), 1, "capture-complete.count"),
+    ] {
+        if count != expected {
+            problems.push(diagnostic.into());
+        }
+    }
+    if applications.is_empty() {
+        problems.push("application.count".into());
+    }
+    let plan = (plans.len() == 1).then(|| plans[0]);
+    let proxy = (proxies.len() == 1).then(|| proxies[0]);
+    let launch = (launches.len() == 1).then(|| launches[0]);
+    let terminal = (terminals.len() == 1).then(|| terminals[0]);
+    let address_family = proxy.and_then(|(_, event)| {
+        event["listen_addr"]
+            .as_str()
+            .and_then(|address| address.parse::<std::net::IpAddr>().ok())
+            .filter(std::net::IpAddr::is_loopback)
+            .map(|address| if address.is_ipv4() { "ipv4" } else { "ipv6" })
+    });
+    if let Some((_, event)) = proxy {
+        if event["backend"] != "fragcap-native"
+            || event["version"].as_str().is_none_or(str::is_empty)
+        {
+            problems.push("proxy-start.backend".into());
+        }
+        if address_family.is_none() {
+            problems.push("proxy-start.loopback".into());
+        }
+        if event["listen_port"]
+            .as_u64()
+            .is_none_or(|port| !(1..=65_535).contains(&port))
+        {
+            problems.push("proxy-start.port".into());
+        }
+    }
+    if let Some((_, event)) = plan {
+        let detail = &event["plan"];
+        let inspection = &detail["proxy"]["inspection"];
+        if inspection["requested_scope"] != "exact-game"
+            || inspection["effective_scope"] != "exact-game"
+            || inspection["middleware_handling"] != "blind-relay"
+            || inspection["policy_id"] != "exact-game-v2"
+            || detail["capture"]["scope"] != "exact-game"
+        {
+            problems.push("authorization-plan.inspection".into());
+        }
+        if detail["mode"] != "capture"
+            || detail["target"]["resolved_launch"]["kind"] != "controlled-test-harness"
+            || detail["target"]["launch_case"] != "direct-exe-warm"
+            || detail["proxy"]["routing_scope"] != "http-and-socks"
+            || detail["proxy"]["route_identity"] != "child-environment-v1"
+        {
+            problems.push("authorization-plan.route".into());
+        }
+    }
+    if let Some((_, event)) = launch {
+        if event["launch_case"] != "direct-exe-warm" || event["scoped_proxy"] != true {
+            problems.push("launch.route".into());
+        }
+    }
+    if let Some((_, event)) = terminal {
+        if event["status"] != "complete"
+            || event["cleanup_status"] != "succeeded"
+            || event["inspectable"].as_u64().is_none_or(|count| count == 0)
+        {
+            problems.push("capture-complete.status".into());
+        }
+    }
+    if applications.iter().any(|(_, event)| {
+        event["proxy_connection_id"]
+            .as_str()
+            .is_none_or(str::is_empty)
+            || event["protocol"].as_str().is_none_or(str::is_empty)
+    }) {
+        problems.push("application.invalid".into());
+    }
+    if let (
+        Some((plan_position, plan)),
+        Some((proxy_position, proxy)),
+        Some((launch_position, launch)),
+        Some((terminal_position, terminal)),
+    ) = (plan, proxy, launch, terminal)
+    {
+        let session = proxy["session_id"].as_str().unwrap_or_default();
+        if session.is_empty()
+            || plan["plan"]["session_id"] != session
+            || launch["session_id"] != session
+            || terminal["session_id"] != session
+            || applications
+                .iter()
+                .any(|(_, event)| event["session_id"] != session)
+            || plan["plan"]["proxy"]["backend_version"] != proxy["version"]
+        {
+            problems.push("session.mismatch".into());
+        }
+        if !(plan_position < proxy_position
+            && proxy_position < launch_position
+            && applications
+                .iter()
+                .all(|(position, _)| *position > launch_position && *position < terminal_position))
+        {
+            problems.push("event.order".into());
+        }
+    }
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let (_, proxy) = proxy.expect("one proxy event was validated");
+    Ok(serde_json::json!({
+        "schema_version": 3,
+        "session_id_sha256": sha256(proxy["session_id"].as_str().expect("session id was validated").as_bytes()),
+        "proxy_event": "deep_capture.proxy_started",
+        "proxy_event_count": 1,
+        "proxy_backend": "fragcap-native",
+        "proxy_address_family": address_family.expect("address family was validated"),
+        "proxy_port_valid": true,
+        "requested_inspection_scope": "exact-game",
+        "effective_inspection_scope": "exact-game",
+        "middleware_handling": "blind-relay",
+        "inspection_policy_id": "exact-game-v2",
+        "plan_mode": "capture",
+        "launch_case": "direct-exe-warm",
+        "routing_scope": "http-and-socks",
+        "route_identity": "child-environment-v1",
+        "launch_event": "deep_capture.launch",
+        "application_event": "deep_capture.application",
+        "application_event_count": applications.len(),
+        "terminal_event": "deep_capture.complete",
+        "terminal_event_count": 1,
+        "status": "complete",
+        "cleanup_status": "succeeded"
     }))
 }
 
@@ -1514,6 +1675,10 @@ fn validate_schema_4_smoke(
 }
 
 fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec<String>) {
+    if evidence["schema_version"] == 3 {
+        validate_capture_session_evidence(evidence, surface, problems);
+        return;
+    }
     exact_keys(
         evidence,
         &[
@@ -1604,6 +1769,89 @@ fn validate_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec
         (
             evidence["status"] == "reached-client",
             "session.status.invalid",
+        ),
+    ];
+    for (valid, diagnostic) in checks {
+        if !valid {
+            problems.push(format!("{surface}:{diagnostic}"));
+        }
+    }
+}
+
+fn validate_capture_session_evidence(evidence: &Value, surface: &str, problems: &mut Vec<String>) {
+    exact_keys(
+        evidence,
+        &[
+            "schema_version",
+            "session_id_sha256",
+            "proxy_event",
+            "proxy_event_count",
+            "proxy_backend",
+            "proxy_address_family",
+            "proxy_port_valid",
+            "requested_inspection_scope",
+            "effective_inspection_scope",
+            "middleware_handling",
+            "inspection_policy_id",
+            "plan_mode",
+            "launch_case",
+            "routing_scope",
+            "route_identity",
+            "launch_event",
+            "application_event",
+            "application_event_count",
+            "terminal_event",
+            "terminal_event_count",
+            "status",
+            "cleanup_status",
+        ],
+        "capture session evidence",
+        problems,
+    );
+    let checks = [
+        (
+            is_sha256(evidence["session_id_sha256"].as_str().unwrap_or_default()),
+            "session.identity.invalid",
+        ),
+        (
+            evidence["proxy_event"] == "deep_capture.proxy_started"
+                && evidence["proxy_event_count"] == 1
+                && evidence["proxy_backend"] == "fragcap-native"
+                && evidence["proxy_port_valid"] == true
+                && matches!(
+                    evidence["proxy_address_family"].as_str(),
+                    Some("ipv4" | "ipv6")
+                ),
+            "session.proxy.invalid",
+        ),
+        (
+            evidence["requested_inspection_scope"] == "exact-game"
+                && evidence["effective_inspection_scope"] == "exact-game"
+                && evidence["middleware_handling"] == "blind-relay"
+                && evidence["inspection_policy_id"] == "exact-game-v2",
+            "session.inspection-scope.invalid",
+        ),
+        (
+            evidence["plan_mode"] == "capture"
+                && evidence["launch_case"] == "direct-exe-warm"
+                && evidence["routing_scope"] == "http-and-socks"
+                && evidence["route_identity"] == "child-environment-v1"
+                && evidence["launch_event"] == "deep_capture.launch",
+            "session.route.invalid",
+        ),
+        (
+            evidence["application_event"] == "deep_capture.application"
+                && evidence["application_event_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+            "session.application.invalid",
+        ),
+        (
+            evidence["terminal_event"] == "deep_capture.complete"
+                && evidence["terminal_event_count"] == 1
+                && evidence["status"] == "complete"
+                && evidence["cleanup_status"] == "succeeded",
+            "session.terminal.invalid",
         ),
     ];
     for (valid, diagnostic) in checks {
@@ -1951,6 +2199,58 @@ mod tests {
         ]
     }
 
+    fn capture_smoke_events() -> Vec<Value> {
+        vec![
+            serde_json::json!({
+                "event": "deep_capture.authorization_plan",
+                "plan": {
+                    "session_id": "session-2",
+                    "mode": "capture",
+                    "capture": {"scope": "exact-game"},
+                    "target": {"launch_case": "direct-exe-warm", "resolved_launch": {"kind": "controlled-test-harness"}},
+                    "proxy": {
+                        "backend_version": "0.11.1",
+                        "routing_scope": "http-and-socks",
+                        "route_identity": "child-environment-v1",
+                        "inspection": {
+                            "requested_scope": "exact-game",
+                            "effective_scope": "exact-game",
+                            "middleware_handling": "blind-relay",
+                            "policy_id": "exact-game-v2"
+                        }
+                    }
+                }
+            }),
+            serde_json::json!({
+                "event": "deep_capture.proxy_started",
+                "session_id": "session-2",
+                "backend": "fragcap-native",
+                "version": "0.11.1",
+                "listen_addr": "127.0.0.1",
+                "listen_port": 49152
+            }),
+            serde_json::json!({
+                "event": "deep_capture.launch",
+                "session_id": "session-2",
+                "launch_case": "direct-exe-warm",
+                "scoped_proxy": true
+            }),
+            serde_json::json!({
+                "event": "deep_capture.application",
+                "session_id": "session-2",
+                "proxy_connection_id": "proxy-1",
+                "protocol": "https"
+            }),
+            serde_json::json!({
+                "event": "deep_capture.complete",
+                "session_id": "session-2",
+                "status": "complete",
+                "cleanup_status": "succeeded",
+                "inspectable": 1
+            }),
+        ]
+    }
+
     fn encode_events(events: &[Value]) -> Vec<u8> {
         let mut encoded = events
             .iter()
@@ -2087,6 +2387,57 @@ mod tests {
             .unwrap_err()
             .iter()
             .any(|problem| problem == "events.invalid-or-unbounded"));
+    }
+
+    #[test]
+    fn ordinary_capture_smoke_requires_proxied_application_and_reconciled_terminal() {
+        let valid = capture_smoke_events();
+        let summary = summarize_smoke_events(&encode_events(&valid)).unwrap();
+        assert_eq!(summary["schema_version"], 3);
+        assert_eq!(summary["status"], "complete");
+        assert_eq!(summary["application_event_count"], 1);
+        let mut with_progress = valid.clone();
+        with_progress.splice(
+            2..2,
+            (0..45).map(|_| serde_json::json!({"event": "capture.progress"})),
+        );
+        assert!(summarize_smoke_events(&encode_events(&with_progress)).is_ok());
+        let mut problems = Vec::new();
+        validate_session_evidence(&summary, "portable", &mut problems);
+        assert!(problems.is_empty(), "{problems:?}");
+
+        for (label, expected, mutate) in [
+            ("missing application", "application.count", 0),
+            ("wrong route", "authorization-plan.route", 1),
+            ("wrong session", "session.mismatch", 2),
+            ("wrong plan session", "session.mismatch", 3),
+            ("failed terminal", "capture-complete.status", 4),
+        ] {
+            let mut events = valid.clone();
+            match mutate {
+                0 => {
+                    events.remove(3);
+                }
+                1 => {
+                    events[0]["plan"]["proxy"]["routing_scope"] = Value::String("native".into());
+                }
+                2 => {
+                    events[3]["session_id"] = Value::String("other".into());
+                }
+                3 => {
+                    events[0]["plan"]["session_id"] = Value::String("other".into());
+                }
+                4 => {
+                    events[4]["status"] = Value::String("failed".into());
+                }
+                _ => unreachable!(),
+            }
+            let findings = summarize_smoke_events(&encode_events(&events)).unwrap_err();
+            assert!(
+                findings.iter().any(|finding| finding == expected),
+                "{label}: {findings:?}"
+            );
+        }
     }
 
     #[test]
@@ -2267,6 +2618,17 @@ mod tests {
             .unwrap()
             .is_empty());
         let valid = value.clone();
+        let mut ordinary = valid.clone();
+        let ordinary_evidence = summarize_smoke_events(&encode_events(&capture_smoke_events()))
+            .expect("ordinary smoke summary");
+        ordinary["smokes"][0]["session_evidence"] = ordinary_evidence.clone();
+        ordinary["smokes"][1]["session_evidence"] = ordinary_evidence;
+        ordinary["smokes"][1]["session_evidence"]["session_id_sha256"] =
+            Value::String("e".repeat(64));
+        fs::write(&path, serde_json::to_vec(&ordinary).unwrap()).unwrap();
+        assert!(validate_report(&contract, contract_bytes, &path)
+            .unwrap()
+            .is_empty());
         let historical_smoke = serde_json::json!({"surface": "portable", "executable_sha256": "c".repeat(64), "backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "cleanup": "reconciled", "complete": true});
         let mut historical_installed = historical_smoke.clone();
         historical_installed["surface"] = Value::String("installed".into());
