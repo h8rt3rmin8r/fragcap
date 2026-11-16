@@ -605,7 +605,13 @@ impl NativeObservationContext {
             .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
         let window_end = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
         let mut original_packet_state = "unavailable";
-        let mut packet_history_state = "complete";
+        // Buffer eviction is capture-wide and can erase every observation of
+        // this tuple, leaving no per-flow summary to inspect.
+        let mut packet_history_state = if self.flow_registry.globally_unretained() > 0 {
+            "incomplete"
+        } else {
+            "complete"
+        };
         if let Some(summary) = summary {
             if summary.omission_precision_lost
                 || summary.unretained_observations > 0
@@ -763,6 +769,7 @@ impl NativeObservationContext {
             .unwrap_or("unavailable");
         let key = FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote);
         let Some(summary) = self.flow_registry.summary(&key) else {
+            let global_loss = self.flow_registry.globally_unretained() > 0;
             if route_positive {
                 return Some((
                     None,
@@ -773,7 +780,11 @@ impl NativeObservationContext {
                     0,
                     0,
                     CorrelationState::Matched,
-                    format!("direct-route-client-{proof_kind}-original-packet-unavailable"),
+                    if global_loss {
+                        format!("direct-route-client-{proof_kind}-packet-history-incomplete")
+                    } else {
+                        format!("direct-route-client-{proof_kind}-original-packet-unavailable")
+                    },
                 ));
             }
             return Some((
@@ -1187,6 +1198,30 @@ mod direct_helper_tests {
         assert_eq!(evidence.selected_packet_disposition, "consumed");
         assert_eq!(evidence.route_state, "transferred");
         assert_eq!(evidence.original_packet_state, "unavailable");
+        assert_eq!(evidence.packet_history_state, "complete");
+
+        // A capture-wide eviction can remove the only original packet before
+        // a flow summary exists. Both projections must retain that loss.
+        udp_context.flow_registry.mark_globally_unretained();
+        assert!(udp_context
+            .flow_registry
+            .summary(&FlowKey::new(
+                udp.tuple.transport,
+                udp.tuple.local,
+                udp.tuple.remote
+            ))
+            .is_none());
+        let response = udp_context.correlate_proxy_window(&udp_window);
+        assert_eq!(response.7, CorrelationState::Matched);
+        assert_eq!(
+            response.8,
+            "direct-route-client-transfer-packet-history-incomplete"
+        );
+        let evidence = udp_context
+            .direct_reconciliation_window(&udp_window)
+            .unwrap();
+        assert_eq!(evidence.original_packet_state, "unavailable");
+        assert_eq!(evidence.packet_history_state, "incomplete");
     }
 
     #[test]
