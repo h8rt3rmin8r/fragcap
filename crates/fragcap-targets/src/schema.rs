@@ -94,9 +94,26 @@
 //! route identities in compatibility facts. Existing rows retain their values.
 //! The fact table is rebuilt transactionally because SQLite cannot widen an
 //! existing column CHECK constraint with ALTER TABLE.
+//!
+//! Version 17 (slice S209) adds bounded, target-scoped capture attempt history.
+//! Existing facts and targets remain unchanged. A new history table starts empty.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
+
+/// Additive, private per-attempt history. The payload is parsed and validated
+/// by the product before both write and read; the database owns ordering and
+/// target lifetime, not the shape of observed fields.
+pub const HISTORY_DDL: &str = "\
+CREATE TABLE capture_history (
+    id             INTEGER PRIMARY KEY,
+    target_id      INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    record_version INTEGER NOT NULL CHECK (record_version = 1),
+    recorded_at    INTEGER NOT NULL CHECK (recorded_at >= 0),
+    payload        TEXT NOT NULL CHECK (length(payload) > 0)
+);
+CREATE INDEX capture_history_target_order ON capture_history(target_id, id);
+";
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.

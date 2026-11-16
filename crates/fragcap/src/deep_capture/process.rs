@@ -138,6 +138,11 @@ pub struct CaptureProcessEvidence {
     pub launch_earliest_at: Option<Timestamp>,
     pub launch_at: Option<Timestamp>,
     pub launch_identity: Option<ProcessIdentity>,
+    /// The root was query-verified before dispatch and was not created by this session.
+    pub existing_platform_root: bool,
+    /// The cold associated root failed before creation and the declared direct client was started.
+    pub direct_alternate_used: bool,
+    pub associated_root_failure: Option<String>,
     pub stage_transitions: Vec<StageTransition>,
     pub stage_transitions_unretained: u64,
     pub stage_path_limitations: BTreeMap<&'static str, u64>,
@@ -166,6 +171,9 @@ impl Default for CaptureProcessEvidence {
             launch_earliest_at: None,
             launch_at: None,
             launch_identity: None,
+            existing_platform_root: false,
+            direct_alternate_used: false,
+            associated_root_failure: None,
             stage_transitions: Vec::new(),
             stage_transitions_unretained: 0,
             stage_path_limitations: BTreeMap::new(),
@@ -525,10 +533,15 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 CommandLine::Observed(value) => Some(value.to_string()),
                 CommandLine::Unavailable => None,
             },
-            created: record.started.or(evidence.snapshot_at),
+            created: if evidence.existing_platform_root && Some(record.pid) == evidence.launch_pid {
+                evidence.launch_at
+            } else {
+                record.started.or(evidence.snapshot_at)
+            },
             exited: None,
             snapshot: true,
-            creation_observed: record.started.is_some(),
+            creation_observed: record.started.is_some()
+                || (evidence.existing_platform_root && Some(record.pid) == evidence.launch_pid),
         })
         .collect::<Vec<_>>();
     let mut starts = evidence.events.clone();
@@ -708,6 +721,9 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         &mut records,
         json!({
             "type": "launch.receipt", "session_id": input.session_id, "pid": evidence.launch_pid,
+            "origin": if evidence.existing_platform_root { "query-only-existing-platform" } else { "created-process" },
+            "direct_alternate_used": evidence.direct_alternate_used,
+            "associated_root_failure": evidence.associated_root_failure,
             "process_instance_id": evidence.launch_pid.and_then(|pid| evidence.launch_at.and_then(|at| launch_instance(&instances, pid, at).map(Instance::id))),
             "at_nanos": evidence.launch_at.map(Timestamp::as_nanos)
         }),

@@ -20,7 +20,7 @@ use crate::targets::{entry_windows_launch_entries, TargetEntry};
 pub enum ManagedLaunch {
     /// Existing Steam protocol managed launch.
     Steam(crate::steam::LaunchRequest),
-    /// Exact cold platform root followed by a separately authorized title dispatch.
+    /// Exact platform root followed by a separately authorized title dispatch.
     Platform(PlatformClientLaunch),
     /// Exact direct child-process creation.
     Direct(DirectExecutableLaunch),
@@ -72,10 +72,7 @@ impl ManagedLaunch {
     {
         match self {
             Self::Steam(_) => Err(LaunchConfigError::EnvironmentUnsupported),
-            Self::Platform(mut platform) => {
-                platform.root.remove_environment(keys)?;
-                Ok(Self::Platform(platform))
-            }
+            Self::Platform(platform) => platform.without_environment(keys).map(Self::Platform),
             Self::Direct(mut direct) => {
                 direct.remove_environment(keys)?;
                 Ok(Self::Direct(direct))
@@ -105,11 +102,38 @@ impl ManagedLaunch {
                 Ok(LaunchReceipt {
                     process_id: None,
                     identity: None,
+                    fallback_used: false,
+                    first_failure: None,
                 })
             }
             Self::Direct(direct) => direct.execute(retain_shutdown_identity),
             Self::Publisher(publisher) => publisher.root.execute(retain_shutdown_identity),
-            Self::Platform(platform) => platform.root.execute(retain_shutdown_identity),
+            Self::Platform(platform) => match platform.root_mode {
+                PlatformRootMode::Created => platform.root.execute(retain_shutdown_identity),
+                PlatformRootMode::Existing { pid, created_ns } => {
+                    let identity = crate::managed_shutdown::ProcessIdentity::observe(pid).map_err(
+                        |source| LaunchError::Direct {
+                            executable: platform.root.executable.clone(),
+                            source,
+                        },
+                    )?;
+                    if identity.created_unix_nanos() != created_ns
+                        || !identity
+                            .path
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&platform.root.executable.to_string_lossy())
+                        || identity.exited().unwrap_or(true)
+                    {
+                        return Err(LaunchError::PlatformChanged);
+                    }
+                    Ok(LaunchReceipt {
+                        process_id: Some(pid),
+                        identity: Some(identity),
+                        fallback_used: false,
+                        first_failure: None,
+                    })
+                }
+            },
         }
     }
 }
@@ -236,8 +260,17 @@ impl PlatformDispatch {
 pub struct PlatformClientLaunch {
     platform: String,
     root: DirectExecutableLaunch,
+    root_mode: PlatformRootMode,
+    direct_alternate: Option<Box<DirectExecutableLaunch>>,
     dispatch: PlatformDispatch,
     stages: Vec<PublisherStage>,
+}
+
+/// How the exact associated platform root enters this attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlatformRootMode {
+    Created,
+    Existing { pid: u32, created_ns: i128 },
 }
 
 impl PlatformClientLaunch {
@@ -255,9 +288,76 @@ impl PlatformClientLaunch {
         Ok(Self {
             platform,
             root,
+            root_mode: PlatformRootMode::Created,
+            direct_alternate: None,
             dispatch,
             stages: Vec::new(),
         })
+    }
+
+    /// Retain a query-only identity for an already-running platform process.
+    pub fn with_existing_root(
+        mut self,
+        pid: u32,
+        created_ns: i128,
+    ) -> Result<Self, LaunchConfigError> {
+        if pid == 0 || created_ns < 0 {
+            return Err(LaunchConfigError::InvalidPlatformLaunch(
+                "existing platform identity is invalid".into(),
+            ));
+        }
+        self.root_mode = PlatformRootMode::Existing { pid, created_ns };
+        self.direct_alternate = None;
+        Ok(self)
+    }
+
+    pub fn root_mode(&self) -> PlatformRootMode {
+        self.root_mode
+    }
+
+    /// Authorize one direct client alternate only if the cold platform root
+    /// cannot be created. A successful root creation never selects this path.
+    pub fn with_direct_alternate(mut self) -> Result<Self, LaunchConfigError> {
+        let terminal = self
+            .stages
+            .iter()
+            .filter(|stage| stage.is_terminal())
+            .collect::<Vec<_>>();
+        let [client] = terminal.as_slice() else {
+            return Err(LaunchConfigError::MissingClient);
+        };
+        let executable = client.executable.clone();
+        let directory = executable
+            .parent()
+            .ok_or(LaunchConfigError::MissingClient)?
+            .to_path_buf();
+        self.direct_alternate = Some(Box::new(DirectExecutableLaunch::new(
+            executable,
+            directory,
+            Vec::new(),
+        )?));
+        Ok(self)
+    }
+
+    pub fn direct_alternate(&self) -> Option<&DirectExecutableLaunch> {
+        self.direct_alternate.as_deref()
+    }
+
+    /// Issue the one declared alternate after the caller proves that the
+    /// platform root creation failed before a game dispatch.
+    pub fn execute_direct_alternate(
+        &self,
+        retain_shutdown_identity: bool,
+        first_failure: &str,
+    ) -> Result<LaunchReceipt, LaunchError> {
+        let alternate = self
+            .direct_alternate
+            .as_ref()
+            .ok_or(LaunchError::PlatformChanged)?;
+        let mut receipt = alternate.execute(retain_shutdown_identity)?;
+        receipt.fallback_used = true;
+        receipt.first_failure = Some(first_failure.to_string());
+        Ok(receipt)
     }
 
     /// Freeze exact declared target stages before any platform launch effect.
@@ -310,10 +410,27 @@ impl PlatformClientLaunch {
         V: Into<OsString>,
     {
         for (key, value) in entries {
+            if matches!(self.root_mode, PlatformRootMode::Existing { .. }) {
+                return Err(LaunchConfigError::EnvironmentUnsupported);
+            }
             let key = key.into();
             validate_environment_key(&key)?;
             self.root.environment_removals.remove(&key);
             self.root.environment.insert(key, value.into());
+        }
+        Ok(self)
+    }
+
+    pub fn without_environment<I, K>(mut self, keys: I) -> Result<Self, LaunchConfigError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<OsString>,
+    {
+        for key in keys {
+            if matches!(self.root_mode, PlatformRootMode::Existing { .. }) {
+                return Err(LaunchConfigError::EnvironmentUnsupported);
+            }
+            self.root.remove_environment([key])?;
         }
         Ok(self)
     }
@@ -496,6 +613,8 @@ impl DirectExecutableLaunch {
         Ok(LaunchReceipt {
             process_id: Some(process_id),
             identity,
+            fallback_used: false,
+            first_failure: None,
         })
     }
 }
@@ -842,6 +961,7 @@ impl std::error::Error for LaunchConfigError {}
 #[derive(Debug)]
 pub enum LaunchError {
     Steam(String),
+    PlatformChanged,
     Direct {
         executable: PathBuf,
         source: std::io::Error,
@@ -856,6 +976,9 @@ impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Steam(message) => message.fmt(f),
+            Self::PlatformChanged => {
+                f.write_str("existing platform process changed before dispatch")
+            }
             Self::Direct { executable, source } => {
                 write!(f, "cannot launch {}: {source}", executable.display())
             }
@@ -875,6 +998,8 @@ impl std::error::Error for LaunchError {}
 pub struct LaunchReceipt {
     process_id: Option<u32>,
     identity: Option<crate::managed_shutdown::ProcessIdentity>,
+    fallback_used: bool,
+    first_failure: Option<String>,
 }
 
 impl LaunchReceipt {
@@ -884,6 +1009,14 @@ impl LaunchReceipt {
 
     pub fn identity(&self) -> Option<&crate::managed_shutdown::ProcessIdentity> {
         self.identity.as_ref()
+    }
+
+    pub fn fallback_used(&self) -> bool {
+        self.fallback_used
+    }
+
+    pub fn first_failure(&self) -> Option<&str> {
+        self.first_failure.as_deref()
     }
 }
 
@@ -1242,6 +1375,42 @@ mod tests {
         let paths = shutdown_paths(&entry, &ManagedLaunch::Platform(platform)).unwrap();
         assert_eq!(paths.len(), 4);
         assert_eq!(paths[2], root.join("Helper.exe").canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn platform_plan_names_one_exact_direct_alternate_and_warm_root_has_no_environment() {
+        let root = unique_dir("platform-alternate");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Game.exe"), b"fixture").unwrap();
+        let entry = target(
+            &root,
+            json!([{ "executable": "Game.exe", "role": "client" }]),
+        );
+        let executable = std::env::current_exe().unwrap();
+        let directory = executable.parent().unwrap().to_path_buf();
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(executable, directory, Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_target_stages(&entry)
+        .unwrap()
+        .with_direct_alternate()
+        .unwrap();
+        assert_eq!(
+            platform.direct_alternate().unwrap().executable(),
+            root.join("Game.exe").canonicalize().unwrap()
+        );
+        assert_eq!(platform.stages().last().unwrap().role(), "client");
+        let warm = platform.with_existing_root(42, 1).unwrap();
+        assert!(warm.direct_alternate().is_none());
+        assert!(warm
+            .with_environment([("HTTP_PROXY", "http://127.0.0.1:1")])
+            .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

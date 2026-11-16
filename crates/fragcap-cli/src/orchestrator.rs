@@ -331,6 +331,36 @@ impl Drop for ProcessReleaseWatch {
     }
 }
 
+fn verify_existing_platform_root(
+    platform: &fragcap::managed_launch::PlatformClientLaunch,
+) -> Result<(), CliError> {
+    let fragcap::managed_launch::PlatformRootMode::Existing { pid, created_ns } =
+        platform.root_mode()
+    else {
+        return Ok(());
+    };
+    let identity = fragcap::managed_shutdown::ProcessIdentity::observe(pid)
+        .map_err(|error| CliError::failure(format!("cannot query existing platform: {error}")))?;
+    let current = fragcap::managed_shutdown::ProcessIdentity::current().map_err(|error| {
+        CliError::failure(format!(
+            "cannot verify current account and session: {error}"
+        ))
+    })?;
+    if identity.created_unix_nanos() != created_ns
+        || !identity.same_user_session(&current)
+        || !identity
+            .path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&platform.root().executable().to_string_lossy())
+        || identity.exited().unwrap_or(true)
+    {
+        return Err(CliError::failure(
+            "existing platform identity changed or exited",
+        ));
+    }
+    Ok(())
+}
+
 /// Run a capture to completion and report its outcome.
 ///
 /// The single entry both `capture` and `extcap` reach, once each has resolved or
@@ -359,6 +389,56 @@ pub fn capture(
     let mut session = CaptureSession::new_scoped(profile, session_config, allowed_roles);
     if let Some(fragcap::managed_launch::ManagedLaunch::Platform(platform)) = &config.launch {
         session.require_owned_platform_root(&platform.root().executable().to_string_lossy());
+        if let fragcap::managed_launch::PlatformRootMode::Existing { pid, created_ns } =
+            platform.root_mode()
+        {
+            verify_existing_platform_root(platform)?;
+            let created = i64::try_from(created_ns)
+                .map_err(|_| CliError::failure("existing platform creation time is invalid"))?;
+            session.arm_existing_platform_root(pid, Timestamp::from_nanos(created));
+        }
+        if platform.direct_alternate().is_some()
+            || matches!(
+                platform.root_mode(),
+                fragcap::managed_launch::PlatformRootMode::Existing { .. }
+            )
+        {
+            let current =
+                fragcap::managed_shutdown::ProcessIdentity::current().map_err(|error| {
+                    CliError::failure(format!(
+                        "cannot verify current account and session: {error}"
+                    ))
+                })?;
+            for record in &components.startup_snapshot {
+                if platform.stages().iter().any(|stage| {
+                    stage.is_terminal()
+                        && record
+                            .image
+                            .rsplit(['\\', '/'])
+                            .next()
+                            .is_some_and(|image| {
+                                image.eq_ignore_ascii_case(&stage.image_name().to_string_lossy())
+                            })
+                }) {
+                    if let Ok(candidate) =
+                        fragcap::managed_shutdown::ProcessIdentity::observe(record.pid)
+                    {
+                        if candidate.same_user_session(&current)
+                            && platform.stages().iter().any(|stage| {
+                                stage.is_terminal()
+                                    && candidate
+                                        .path
+                                        .to_string_lossy()
+                                        .eq_ignore_ascii_case(&stage.executable().to_string_lossy())
+                            })
+                            && !candidate.exited().unwrap_or(true)
+                        {
+                            return Err(CliError::failure("final game was already running before the associated platform dispatch"));
+                        }
+                    }
+                }
+            }
+        }
     }
     session.attach(ARMED_AT);
     let mut process_evidence = CaptureProcessEvidence {
@@ -938,6 +1018,48 @@ impl PlatformDispatchGate {
     }
 }
 
+#[cfg(all(feature = "etw", windows))]
+fn dispatch_prepared_platform(
+    config: &EffectiveConfig,
+    session: &mut CaptureSession,
+    emitter: &mut Emitter,
+) {
+    if let Some(fragcap::managed_launch::ManagedLaunch::Platform(platform)) = &config.launch {
+        if let Err(error) = verify_existing_platform_root(platform) {
+            emitter.progress(&format!("platform title dispatch withheld: {error}"));
+            session.on_platform_dispatch_failure();
+            return;
+        }
+        let client_image = platform
+            .stages()
+            .iter()
+            .find(|stage| stage.is_terminal())
+            .map(|stage| stage.image_name().to_string_lossy().into_owned());
+        let current = crate::commands::deep_capture::process_image_snapshot();
+        match (client_image, current) {
+            (Some(client), Ok(images))
+                if images
+                    .iter()
+                    .any(|image| image.eq_ignore_ascii_case(&client)) =>
+            {
+                emitter.progress("platform title dispatch withheld because a game-image process is already running");
+                session.on_platform_dispatch_failure();
+                return;
+            }
+            (Some(_), Ok(_)) => {}
+            _ => {
+                emitter.progress("platform title dispatch withheld because current game process state is unavailable");
+                session.on_platform_dispatch_failure();
+                return;
+            }
+        }
+        if let Err(error) = platform.dispatch_title() {
+            emitter.progress(&format!("platform title dispatch failed: {error}"));
+            session.on_platform_dispatch_failure();
+        }
+    }
+}
+
 /// The live, streaming driver. Distinct from the offline two-phase path because
 /// a live stream has no end the driver can read ahead to.
 ///
@@ -1072,30 +1194,126 @@ fn capture_live(
                 gate_handle.open_from(at);
             }
         }
-        match request.execute_with_shutdown_receipt(!config.shutdown_scope.is_empty()) {
+        let first_attempt =
+            request.execute_with_shutdown_receipt(!config.shutdown_scope.is_empty());
+        let launch_result = match (request, first_attempt) {
+            (fragcap::managed_launch::ManagedLaunch::Platform(platform), Err(first_failure))
+                if matches!(
+                    platform.root_mode(),
+                    fragcap::managed_launch::PlatformRootMode::Created
+                ) && platform.direct_alternate().is_some() =>
+            {
+                let client = platform.direct_alternate().expect("alternate checked");
+                let client_image = client
+                    .executable()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                match crate::commands::deep_capture::process_image_snapshot() {
+                    Ok(images)
+                        if !images
+                            .iter()
+                            .any(|image| image.eq_ignore_ascii_case(&client_image)) =>
+                    {
+                        emitter.progress("cold platform root could not start; issuing the preauthorized direct client alternate");
+                        platform.execute_direct_alternate(
+                            !config.shutdown_scope.is_empty(),
+                            &first_failure.to_string(),
+                        )
+                    }
+                    Ok(_) => {
+                        emitter.progress(
+                            "direct alternate withheld because a game-image process is now present",
+                        );
+                        Err(first_failure)
+                    }
+                    Err(_) => {
+                        emitter.progress("direct alternate withheld because current game process state is unavailable");
+                        Err(first_failure)
+                    }
+                }
+            }
+            (_, result) => result,
+        };
+        match launch_result {
             Ok(receipt) => {
+                let existing_platform = matches!(
+                    request,
+                    fragcap::managed_launch::ManagedLaunch::Platform(platform)
+                        if matches!(platform.root_mode(), fragcap::managed_launch::PlatformRootMode::Existing { .. })
+                );
                 process_evidence.launch_pid = receipt.process_id();
                 process_evidence.launch_identity = receipt.identity().cloned();
-                process_evidence.launch_earliest_at = launch_earliest;
+                process_evidence.existing_platform_root = existing_platform;
+                process_evidence.direct_alternate_used = receipt.fallback_used();
+                process_evidence.associated_root_failure =
+                    receipt.first_failure().map(str::to_string);
+                process_evidence.launch_earliest_at = if existing_platform {
+                    receipt
+                        .identity()
+                        .and_then(|identity| i64::try_from(identity.created_unix_nanos()).ok())
+                        .map(Timestamp::from_nanos)
+                } else {
+                    launch_earliest
+                };
                 let launch_latest = wall_timestamp();
-                process_evidence.launch_at = launch_latest;
+                process_evidence.launch_at = if existing_platform {
+                    process_evidence.launch_earliest_at
+                } else {
+                    launch_latest
+                };
                 // The exact managed-root receipt is available before ETW
                 // publishes the start event. Let the direct route use that
                 // generation proof for a cold client's first SYN.
                 if let Some(context) = &inspection_context {
                     context.record_live_process_evidence(process_evidence);
-                    if matches!(request, fragcap::managed_launch::ManagedLaunch::Direct(_)) {
+                    if receipt.fallback_used()
+                        || matches!(request, fragcap::managed_launch::ManagedLaunch::Direct(_))
+                    {
                         if let Some(pid) = receipt.process_id() {
                             context.record_direct_managed_root_pid(pid);
                         }
                     }
                 }
-                if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
+                if receipt.fallback_used() {
+                    if let (
+                        Some(pid),
+                        Some(earliest),
+                        Some(latest),
+                        fragcap::managed_launch::ManagedLaunch::Platform(platform),
+                    ) = (
+                        receipt.process_id(),
+                        launch_earliest,
+                        launch_latest,
+                        request,
+                    ) {
+                        let alternate = platform
+                            .direct_alternate()
+                            .expect("fallback receipt has declared alternate");
+                        session.arm_direct_alternate_root(
+                            &alternate.executable().to_string_lossy(),
+                            pid,
+                            std::process::id(),
+                            earliest,
+                            latest,
+                        );
+                    }
+                } else if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
                     platform_dispatch.arm(receipt.process_id());
-                    if let (Some(pid), Some(earliest), Some(latest)) =
-                        (receipt.process_id(), launch_earliest, launch_latest)
-                    {
-                        session.arm_owned_platform_root(pid, std::process::id(), earliest, latest);
+                    if !existing_platform {
+                        if let (Some(pid), Some(earliest), Some(latest)) =
+                            (receipt.process_id(), launch_earliest, launch_latest)
+                        {
+                            session.arm_owned_platform_root(
+                                pid,
+                                std::process::id(),
+                                earliest,
+                                latest,
+                            );
+                        }
+                    }
+                    if existing_platform && platform_dispatch.observe(&session.role_bindings()) {
+                        dispatch_prepared_platform(config, &mut session, emitter);
                     }
                 }
             }
@@ -1195,16 +1413,7 @@ fn capture_live(
                     publish_managed_bindings(&session, process_evidence, &publisher);
                 }
                 if is_active(&session) && platform_dispatch.observe(&bindings) {
-                    let dispatch = config.launch.as_ref().and_then(|launch| match launch {
-                        fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
-                            Some(platform.dispatch_title())
-                        }
-                        _ => None,
-                    });
-                    if let Some(Err(error)) = dispatch {
-                        emitter.progress(&format!("platform title dispatch failed: {error}"));
-                        session.on_platform_dispatch_failure();
-                    }
+                    dispatch_prepared_platform(config, &mut session, emitter);
                 }
                 if session.acquired() {
                     acquired_at = Some(event_at);
@@ -2892,6 +3101,102 @@ mod tests {
             .role_bindings()
             .iter()
             .any(|(pid, role, _)| { *pid == 43 && role.as_deref() == Some("client") }));
+    }
+
+    #[test]
+    fn query_verified_existing_platform_snapshot_dispatches_once_and_binds_new_client() {
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"sample_client.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_contains":"steam.exe"}}]}"#).unwrap();
+        let mut session = fragcap::CaptureSession::new(
+            profile,
+            fragcap::SessionConfig {
+                managed_client_handoff: true,
+                exact_stage_ownership: true,
+                ..fragcap::SessionConfig::default()
+            },
+        );
+        let at = fragcap::Timestamp::from_nanos;
+        session.require_owned_platform_root("C:\\Steam\\steam.exe");
+        session.arm_existing_platform_root(42, at(1));
+        session.attach(at(10));
+        session.apply_snapshot(&[fragcap::ProcessRecord::new(42, 7, "steam.exe")], at(10));
+        let mut gate = PlatformDispatchGate::default();
+        gate.arm(Some(42));
+        assert!(gate.observe(&session.role_bindings()));
+        assert!(!gate.observe(&session.role_bindings()));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            43,
+            42,
+            "sample_client.exe",
+            "",
+            at(20),
+        ));
+        assert!(session.acquired());
+        assert!(session
+            .role_bindings()
+            .iter()
+            .any(|(pid, role, _)| { *pid == 43 && role.as_deref() == Some("client") }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_platform_is_rechecked_by_generation_before_dispatch() {
+        use fragcap::managed_launch::{
+            DirectExecutableLaunch, PlatformClientLaunch, PlatformDispatch,
+        };
+        let current = fragcap::managed_shutdown::ProcessIdentity::current().unwrap();
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(
+                current.path.clone(),
+                current.path.parent().unwrap().to_path_buf(),
+                Vec::new(),
+            )
+            .unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_existing_root(current.pid, current.created_unix_nanos())
+        .unwrap();
+        assert!(super::verify_existing_platform_root(&platform).is_ok());
+        let changed = platform
+            .with_existing_root(current.pid, current.created_unix_nanos() + 1)
+            .unwrap();
+        assert!(super::verify_existing_platform_root(&changed).is_err());
+    }
+
+    #[test]
+    fn failed_cold_platform_can_bind_only_the_created_direct_alternate() {
+        let profile = fragcap::Profile::parse(r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"synthetic","name":"Synthetic","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"sample_client.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe","path_contains":"steam.exe"}}]}"#).unwrap();
+        let at = fragcap::Timestamp::from_nanos;
+        let mut session = fragcap::CaptureSession::new(
+            profile,
+            fragcap::SessionConfig {
+                managed_client_handoff: true,
+                exact_stage_ownership: true,
+                ..fragcap::SessionConfig::default()
+            },
+        );
+        session.require_owned_platform_root("C:\\Steam\\steam.exe");
+        session.attach(at(0));
+        session.arm_direct_alternate_root("C:\\Game\\sample_client.exe", 43, 7, at(5), at(8));
+        session.on_process_event(fragcap::ProcessEvent::started(
+            41,
+            7,
+            "sample_client.exe",
+            "",
+            at(6),
+        ));
+        assert!(!session.acquired());
+        session.on_process_event(fragcap::ProcessEvent::started(
+            43,
+            7,
+            "sample_client.exe",
+            "",
+            at(6),
+        ));
+        assert!(session.acquired());
     }
 
     // A run that ended with no sink failure is a success on any surface.

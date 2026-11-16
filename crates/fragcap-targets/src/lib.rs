@@ -35,6 +35,7 @@ pub mod export;
 pub mod gate;
 pub mod handle;
 pub mod hint_provider;
+pub mod history;
 #[cfg(feature = "net")]
 pub mod http_catalog;
 #[cfg(feature = "net")]
@@ -89,6 +90,7 @@ pub use hint_provider::{
     entry_windows_clients, entry_windows_launch_entries, entry_windows_launch_paths,
     launch_entry_value, HintDatabaseProvider,
 };
+pub use history::{CaptureHistory, HistoryAppend, HistoryComparison, HISTORY_LIMIT};
 #[cfg(feature = "net")]
 pub use http_catalog::HttpCatalog;
 #[cfg(feature = "net")]

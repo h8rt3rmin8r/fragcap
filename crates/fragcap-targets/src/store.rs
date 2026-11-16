@@ -19,12 +19,13 @@ use crate::compatibility::{
     CompatibilityRouteIdentity, CompatibilityRoutingStrategy,
 };
 use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
+use crate::history::{CaptureHistory, HistoryAppend, HISTORY_LIMIT};
 use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_13_TO_14,
+    DDL, HISTORY_DDL, MIGRATE_10_TO_11, MIGRATE_11_TO_12, MIGRATE_12_TO_13, MIGRATE_13_TO_14,
     MIGRATE_14_TO_15_FACT, MIGRATE_14_TO_15_WORKFLOW, MIGRATE_1_TO_2, MIGRATE_2_TO_3,
     MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6, MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9,
     MIGRATE_9_TO_10, SCHEMA_VERSION,
@@ -97,6 +98,7 @@ impl Store {
         if version == 0 {
             let tx = conn.transaction()?;
             tx.execute_batch(DDL)?;
+            tx.execute_batch(HISTORY_DDL)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
             version = SCHEMA_VERSION;
@@ -262,6 +264,14 @@ impl Store {
             tx.pragma_update(None, "user_version", 16i64)?;
             tx.commit()?;
             version = 16;
+        }
+
+        if version == 16 {
+            let tx = conn.transaction()?;
+            tx.execute_batch(HISTORY_DDL)?;
+            tx.pragma_update(None, "user_version", 17i64)?;
+            tx.commit()?;
+            version = 17;
         }
 
         if version != SCHEMA_VERSION {
@@ -1694,6 +1704,73 @@ impl Store {
         Ok(out)
     }
 
+    /// Append one observed attempt and prune only this target's oldest rows in
+    /// the same transaction. A row never grants authority to a later session.
+    pub fn append_capture_history(
+        &mut self,
+        record: &CaptureHistory,
+    ) -> Result<HistoryAppend, TargetsError> {
+        record.validate()?;
+        let payload = serde_json::to_string(&record.payload()).map_err(|error| {
+            TargetsError::Model(format!("cannot encode capture history: {error}"))
+        })?;
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO capture_history (target_id, record_version, recorded_at, payload)
+             VALUES (?1, 1, ?2, ?3)",
+            params![record.target_id, record.recorded_at, payload],
+        )?;
+        let id = tx.last_insert_rowid();
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM capture_history WHERE target_id = ?1",
+            params![record.target_id],
+            |row| row.get(0),
+        )?;
+        let prune = count.saturating_sub(HISTORY_LIMIT as i64);
+        let pruned = if prune > 0 {
+            tx.execute(
+                "DELETE FROM capture_history WHERE id IN
+                 (SELECT id FROM capture_history WHERE target_id = ?1 ORDER BY id LIMIT ?2)",
+                params![record.target_id, prune],
+            )?
+        } else {
+            0
+        };
+        tx.commit()?;
+        Ok(HistoryAppend { id, pruned })
+    }
+
+    /// Read one target's retained attempts in append order. Malformed rows are
+    /// errors, not silent omissions or inferred successful observations.
+    pub fn capture_history_for_target(
+        &self,
+        target_id: i64,
+    ) -> Result<Vec<CaptureHistory>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, target_id, recorded_at, payload FROM capture_history
+             WHERE target_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![target_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, target_id, recorded_at, payload) = row?;
+            out.push(CaptureHistory::from_payload(
+                id,
+                target_id,
+                recorded_at,
+                &payload,
+            )?);
+        }
+        Ok(out)
+    }
+
     // --- Volume eligibility (slice S052) ---------------------------------------
 
     /// Whether the volume eligibility allowlist has ever been seeded. Empty means
@@ -2529,6 +2606,8 @@ mod tests {
     }
 
     fn restore_pre_v14_scope_shape(conn: &Connection, workflow_exists: bool) {
+        conn.execute_batch("DROP TABLE capture_history;")
+            .expect("restore pre-v17 history shape");
         conn.execute_batch(
             "ALTER TABLE deep_capture_facts DROP COLUMN inspection_policy_id;
              ALTER TABLE deep_capture_facts DROP COLUMN middleware_handling;
@@ -2984,7 +3063,8 @@ mod tests {
              ALTER TABLE targets DROP COLUMN folder_name;
              ALTER TABLE targets DROP COLUMN executable_hint;
              DROP TABLE deep_capture_facts;
-             DROP TABLE calibration_workflows;",
+             DROP TABLE calibration_workflows;
+             DROP TABLE capture_history;",
         )
         .expect("drop columns");
         conn.pragma_update(None, "user_version", 6i64)
@@ -3057,7 +3137,7 @@ mod tests {
         // writes one. Backfilling would fabricate compatibility (P-9).
         let store = Store::open_in_memory().expect("store");
         let conn = store.conn;
-        conn.execute_batch("DROP TABLE deep_capture_facts; DROP TABLE calibration_workflows;")
+        conn.execute_batch("DROP TABLE deep_capture_facts; DROP TABLE calibration_workflows; DROP TABLE capture_history;")
             .expect("drop v9 table");
         conn.pragma_update(None, "user_version", 8i64)
             .expect("stamp v8");
@@ -4021,5 +4101,114 @@ mod tests {
     fn game_returns_none_for_an_absent_row() {
         let store = Store::open_in_memory().expect("in-memory store");
         assert!(store.game(12345).expect("read").is_none());
+    }
+
+    #[test]
+    fn capture_history_migrates_and_retains_ordered_attempts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        conn.pragma_update(None, "user_version", 16i64).unwrap();
+        let mut store = Store::from_connection(conn).unwrap();
+        let target_id = store
+            .insert_target(&sample_target("history", None, FidelityTier::Authored))
+            .unwrap();
+        let mut first = crate::history::CaptureHistory::new(
+            target_id,
+            10,
+            "0.11.1",
+            "steam-protocol-warm",
+            "direct-socket-v1",
+            "exact-game",
+            "exact-game",
+        );
+        first.observed_launch = "failed".into();
+        first.failure = Some("dispatch-failed".into());
+        let first_id = store.append_capture_history(&first).unwrap().id;
+        let mut second = first.clone();
+        second.recorded_at = 11;
+        second.observed_launch = "steam-protocol-warm".into();
+        second.failure = None;
+        let second_id = store.append_capture_history(&second).unwrap().id;
+        assert!(second_id > first_id);
+        let rows = store.capture_history_for_target(target_id).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].failure.as_deref(), Some("dispatch-failed"));
+        assert_eq!(rows[1].observed_launch, "steam-protocol-warm");
+        assert!(store.delete_target(target_id).unwrap());
+        assert!(store
+            .capture_history_for_target(target_id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn capture_history_prunes_only_the_oldest_rows_for_the_same_target() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first_id = store
+            .insert_target(&sample_target(
+                "first_history",
+                None,
+                FidelityTier::Authored,
+            ))
+            .unwrap();
+        let other_id = store
+            .insert_target(&sample_target(
+                "other_history",
+                None,
+                FidelityTier::Authored,
+            ))
+            .unwrap();
+        let row = crate::history::CaptureHistory::new(
+            other_id,
+            1,
+            "0.11.1",
+            "direct-exe-cold",
+            "direct-socket-v1",
+            "exact-game",
+            "exact-game",
+        );
+        store.append_capture_history(&row).unwrap();
+        for index in 0..=crate::history::HISTORY_LIMIT {
+            let mut row = row.clone();
+            row.target_id = first_id;
+            row.recorded_at = index as i64;
+            let result = store.append_capture_history(&row).unwrap();
+            assert_eq!(
+                result.pruned,
+                usize::from(index >= crate::history::HISTORY_LIMIT)
+            );
+        }
+        let retained = store.capture_history_for_target(first_id).unwrap();
+        assert_eq!(retained.len(), crate::history::HISTORY_LIMIT);
+        assert_eq!(retained[0].recorded_at, 1);
+        assert_eq!(store.capture_history_for_target(other_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_history_append_preserves_previous_rows_and_pruning_state() {
+        let mut store = Store::open_in_memory().unwrap();
+        let target_id = store
+            .insert_target(&sample_target(
+                "history_failure",
+                None,
+                FidelityTier::Authored,
+            ))
+            .unwrap();
+        let row = crate::history::CaptureHistory::new(
+            target_id,
+            1,
+            "0.11.1",
+            "direct-exe-cold",
+            "direct-socket-v1",
+            "exact-game",
+            "exact-game",
+        );
+        let first_id = store.append_capture_history(&row).unwrap().id;
+        let mut absent = row.clone();
+        absent.target_id = target_id + 1;
+        assert!(store.append_capture_history(&absent).is_err());
+        let retained = store.capture_history_for_target(target_id).unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].id, Some(first_id));
     }
 }

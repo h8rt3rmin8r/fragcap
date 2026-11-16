@@ -202,7 +202,7 @@ fn managed_direct_root_flow(
         || evidence.unparseable_events != 0
         || evidence.watcher_ended
         || evidence.watcher_report.as_ref()?.lost_anything()
-        || evidence.shutdown_scope.len() != 1
+        || (evidence.shutdown_scope.len() != 1 && !evidence.direct_alternate_used)
     {
         return None;
     }
@@ -214,7 +214,14 @@ fn managed_direct_root_flow(
     if !identity.same_user_session(&operator) {
         return None;
     }
-    let expected = std::fs::canonicalize(&evidence.shutdown_scope[0]).ok()?;
+    // A direct alternate keeps the declared platform and publisher paths in
+    // the shutdown scope. Its exact created client is the terminal path.
+    let expected_path = if evidence.direct_alternate_used {
+        evidence.shutdown_scope.last()?
+    } else {
+        &evidence.shutdown_scope[0]
+    };
+    let expected = std::fs::canonicalize(expected_path).ok()?;
     let actual = std::fs::canonicalize(&identity.path).ok()?;
     if !expected
         .to_string_lossy()
@@ -902,6 +909,16 @@ mod tests {
         assert!(matches!(
             select_direct_flow(&proof, &[socket], first),
             DirectAdmission::Bypassed("owner-not-final-client")
+        ));
+        let mut alternate = proof.clone();
+        alternate.direct_alternate_used = true;
+        alternate
+            .shutdown_scope
+            .insert(0, identity.path.with_file_name("Steam.exe"));
+        socket.pid = identity.pid;
+        assert!(matches!(
+            select_direct_flow(&alternate, &[socket], first),
+            DirectAdmission::Selected(_)
         ));
     }
 

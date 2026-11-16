@@ -2483,6 +2483,20 @@ pub(super) fn bind_inception_process(
     let mut current_at = started;
     let mut proven = false;
     for _ in 0..=64 {
+        if evidence.existing_platform_root && current_pid == root_pid {
+            proven = evidence.launch_identity.as_ref().is_some_and(|identity| {
+                identity.pid == root_pid
+                    && identity.created_unix_nanos() == i128::from(launch_at.as_nanos())
+                    && identity.created_unix_nanos() <= i128::from(current_at.as_nanos())
+                    && evidence
+                        .startup_snapshot
+                        .iter()
+                        .any(|record| record.pid == root_pid)
+                    && crate::managed_shutdown::ProcessIdentity::current()
+                        .is_ok_and(|current| identity.same_user_session(&current))
+            });
+            break;
+        }
         let Some((parent, _, generation)) =
             active_process_start(&evidence.events, current_pid, current_at)
         else {
@@ -3306,6 +3320,56 @@ mod tests {
         assert_eq!(
             native_evidence_window(Some(99), None),
             super::super::EvidenceWindow::Unavailable
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn query_verified_existing_platform_root_proves_only_new_descendant_generation() {
+        let root = crate::managed_shutdown::ProcessIdentity::current().unwrap();
+        let created = i64::try_from(root.created_unix_nanos()).unwrap();
+        let child_at = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        )
+        .unwrap();
+        let child_pid = root.pid.saturating_add(100_000);
+        let mut evidence = super::super::CaptureProcessEvidence {
+            startup_snapshot: vec![fragcap_core::ProcessRecord::new(
+                root.pid,
+                0,
+                root.path.to_string_lossy().as_ref(),
+            )],
+            launch_pid: Some(root.pid),
+            launch_at: Some(Timestamp::from_nanos(created)),
+            launch_identity: Some(root.clone()),
+            existing_platform_root: true,
+            watcher_report: Some(fragcap_core::WatcherReport::default()),
+            ..Default::default()
+        };
+        evidence.events.push(ProcessEvent::started(
+            child_pid,
+            root.pid,
+            "game.exe",
+            "",
+            Timestamp::from_nanos(child_at),
+        ));
+        let connection = super::super::ConnectionInception {
+            state: "exact",
+            reason: "socket-event",
+            pid: Some(child_pid),
+            socket_created_at_ns: Some(child_at + 1),
+        };
+        assert_eq!(
+            bind_inception_process(&evidence, connection, (child_at + 2) as u64).state,
+            "exact"
+        );
+        evidence.startup_snapshot.clear();
+        assert_eq!(
+            bind_inception_process(&evidence, connection, (child_at + 2) as u64).reason,
+            "socket-owner-managed-ancestry-unproven"
         );
     }
 

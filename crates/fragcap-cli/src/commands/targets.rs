@@ -19,10 +19,11 @@ use std::io::IsTerminal;
 
 use fragcap::targets::{
     entry_windows_launch_entries, handle, identifier, install_presence, is_row_index,
-    name_divergence, resolve_id, resolve_positional, CandidateIdentity, ClassificationSource,
-    CompatibilityMatrix, DetectionScan, DirectorySource, Discovery, InstallPresence,
-    NameDivergence, RelocateTargetOutcome, Selection, SocketHolderAnswer, Store,
-    TargetClassification, TargetEntry, TargetSource, INSTALL_MISSING_NOTE,
+    name_divergence, resolve_id, resolve_positional, CandidateIdentity, CaptureHistory,
+    ClassificationSource, CompatibilityMatrix, DetectionScan, DirectorySource, Discovery,
+    HistoryComparison, InstallPresence, NameDivergence, RelocateTargetOutcome, Selection,
+    SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetSource,
+    INSTALL_MISSING_NOTE,
 };
 use serde_json::json;
 
@@ -2071,6 +2072,44 @@ fn run_exe_scan(exe: &str) -> ExeScan {
 /// handle or name that matches nothing is a clean miss (exit 0), while an unknown
 /// `--id` or an out-of-range row index is a bad machine reference (exit 2). An
 /// ambiguous name lists its matches and exits 2 rather than guessing (P-9).
+fn capture_history_json(
+    row: &CaptureHistory,
+    drift: Option<HistoryComparison>,
+) -> serde_json::Value {
+    let drift = match drift {
+        None => json!({"state":"first-attempt"}),
+        Some(HistoryComparison::Incomparable(reason)) => {
+            json!({"state":"incomparable","reason":reason})
+        }
+        Some(HistoryComparison::Comparable {
+            build_unverified,
+            changes,
+        }) => {
+            json!({"state":"comparable","build_unverified":build_unverified,"changes":changes})
+        }
+    };
+    json!({
+        "id": row.id,
+        "recorded_at": row.recorded_at,
+        "session_id": row.session_id,
+        "fragcap_version": row.fragcap_version,
+        "target_build_clue": row.target_build_clue,
+        "selected_launch": row.selected_launch,
+        "observed_launch": row.observed_launch,
+        "selected_route": row.selected_route,
+        "observed_route": row.observed_route,
+        "requested_scope": row.requested_scope,
+        "effective_scope": row.effective_scope,
+        "process_proof": row.process_proof,
+        "transfer": row.transfer,
+        "inspection": row.inspection,
+        "failure": row.failure,
+        "loss": row.loss,
+        "cleanup": row.cleanup,
+        "drift": drift,
+    })
+}
+
 fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result<Exit, CliError> {
     let db = resolve_store(args.db.as_deref())?;
     let store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
@@ -2096,6 +2135,9 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result
                 .compatibility_facts_for_target(target_id)
                 .map_err(|e| CliError::failure(e.to_string()))?;
             let compatibility = CompatibilityMatrix::from_facts(&facts);
+            let history = store
+                .capture_history_for_target(target_id)
+                .map_err(|e| CliError::failure(e.to_string()))?;
             if mode.json {
                 write_json(
                     out,
@@ -2103,6 +2145,10 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result
                         "event":"targets.show",
                         "status":"resolved",
                         "target":target_json(&t),
+                        "capture_history":history.iter().enumerate().map(|(index, row)| {
+                            let drift = index.checked_sub(1).map(|previous| history[previous].compare(row));
+                            capture_history_json(row, drift)
+                        }).collect::<Vec<_>>(),
                         "compatibility":compatibility.rows().iter().map(|row| json!({
                             "key":row.key.as_str(),
                             "value":row.value,
@@ -2122,6 +2168,27 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write, mode: ResultMode) -> Result
             } else if mode.human_result() {
                 let mut fields = target_fields(&t);
                 fields.extend(compatibility_fields(&compatibility));
+                fields.push(("Capture attempts".to_string(), history.len().to_string()));
+                for row in history.iter().rev().take(5).rev() {
+                    fields.push((
+                        format!("Attempt {}", row.id.unwrap_or_default()),
+                        format!(
+                            "{}: {} to {}; route {} to {}; scope {}; process {}; transfer {}; inspection {}; loss {}; cleanup {}; failure {}",
+                            row.recorded_at,
+                            row.selected_launch,
+                            row.observed_launch,
+                            row.selected_route,
+                            row.observed_route,
+                            row.effective_scope,
+                            row.process_proof,
+                            row.transfer,
+                            row.inspection,
+                            row.loss,
+                            row.cleanup,
+                            row.failure.as_deref().unwrap_or("none")
+                        ),
+                    ));
+                }
                 let _ = write!(
                     out,
                     "{}",

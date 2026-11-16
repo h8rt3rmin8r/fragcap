@@ -49,6 +49,17 @@ pub(super) fn missing_evidence() -> ShutdownOutcome {
     )
 }
 
+pub(super) fn existing_platform_not_controlled() -> ShutdownOutcome {
+    ShutdownOutcome {
+        result: CleanupResult {
+            resource: "route-owner".to_string(),
+            status: CleanupStatus::NotNeeded,
+            reason: "existing platform and its game were not created by this session; no process control was authorized".to_string(),
+        },
+        steps: vec![json!({"action":"existing-platform-observed","process_control":"none"})],
+    }
+}
+
 fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
     let normalized = |path: &std::path::Path| {
         let value = path.to_string_lossy();

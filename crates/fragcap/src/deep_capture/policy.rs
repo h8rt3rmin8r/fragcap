@@ -20,9 +20,15 @@ pub fn validate_compatibility_prerequisites(
     controlled: bool,
     _facts: &[CompatibilityFact],
     launch_case: LaunchCase,
-    _current: &CompatibilityCase,
+    current: &CompatibilityCase,
 ) -> Result<(), PreflightRefusal> {
     if controlled {
+        return Ok(());
+    }
+    if launch_case == LaunchCase::SteamProtocolWarm
+        && current.route_identity == crate::targets::CompatibilityRouteIdentity::DirectSocketV1
+        && current.effective_scope == crate::targets::CompatibilityInspectionScope::ExactGame
+    {
         return Ok(());
     }
     require_supported_launch_case(launch_case)
@@ -742,6 +748,40 @@ mod launch_case_tests {
             )
             .is_ok());
         }
+    }
+
+    #[test]
+    fn warm_steam_is_supported_only_for_exact_game_direct_routing() {
+        let mut case = CompatibilityCase {
+            launch_case: CompatibilityLaunchCase::SteamProtocolWarm,
+            proxy_backend: "native".into(),
+            proxy_backend_version: "test".into(),
+            routing_strategy: crate::targets::CompatibilityRoutingStrategy::DirectSocket,
+            route_identity: crate::targets::CompatibilityRouteIdentity::DirectSocketV1,
+            address_family: crate::targets::CompatibilityAddressFamily::Ipv4,
+            protocol: CompatibilityProtocol::Routing,
+            fragcap_version: "test".into(),
+            target_version: None,
+            requested_scope: crate::targets::CompatibilityRequestedInspectionScope::Auto,
+            effective_scope: crate::targets::CompatibilityInspectionScope::ExactGame,
+            middleware_handling: crate::targets::CompatibilityMiddlewareHandling::BlindRelay,
+            inspection_policy_id: "exact-game-v2".into(),
+        };
+        let check = |case: &CompatibilityCase| {
+            validate_compatibility_prerequisites(
+                SessionMode::Capture,
+                false,
+                &[],
+                LaunchCase::SteamProtocolWarm,
+                case,
+            )
+        };
+        assert!(check(&case).is_ok());
+        case.effective_scope = crate::targets::CompatibilityInspectionScope::LaunchChain;
+        assert!(check(&case).is_err());
+        case.effective_scope = crate::targets::CompatibilityInspectionScope::ExactGame;
+        case.route_identity = crate::targets::CompatibilityRouteIdentity::ChildEnvironmentV1;
+        assert!(check(&case).is_err());
     }
 
     #[test]

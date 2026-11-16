@@ -269,6 +269,7 @@ struct OwnedPlatformReceipt {
     parent: u32,
     earliest: Timestamp,
     latest: Timestamp,
+    existing: bool,
 }
 
 impl OwnedPlatformRoot {
@@ -276,17 +277,22 @@ impl OwnedPlatformRoot {
         let Some(receipt) = &self.receipt else {
             return false;
         };
-        let Some(started) = node.started() else {
-            return false;
-        };
         if node.pid().get() != receipt.pid
-            || node.parent_pid().get() != receipt.parent
-            || started < receipt.earliest
-            || started > receipt.latest
             || !node.is_live()
             || !node.image_name().eq_ignore_ascii_case(&self.image_name)
         {
             return false;
+        }
+        if !receipt.existing {
+            let Some(started) = node.started() else {
+                return false;
+            };
+            if node.parent_pid().get() != receipt.parent
+                || started < receipt.earliest
+                || started > receipt.latest
+            {
+                return false;
+            }
         }
         if node.image().contains('\\') || node.image().contains('/') {
             let observed = canonical_process_path_spelling(node.image());
@@ -343,6 +349,7 @@ pub struct CaptureSession {
     /// conditions, exactly as if it were not in the profile.
     allowed_roles: Option<Vec<String>>,
     owned_platform_root: Option<OwnedPlatformRoot>,
+    fallback_client_root: Option<OwnedPlatformRoot>,
     /// A bounded read-only setup observation can keep folding candidate exits
     /// until its caller's deadline without changing Capture's stop semantics.
     observe_until_explicit_stop: bool,
@@ -400,6 +407,7 @@ impl CaptureSession {
             observation_started_at: None,
             allowed_roles,
             owned_platform_root: None,
+            fallback_client_root: None,
             observe_until_explicit_stop: false,
         }
     }
@@ -440,8 +448,50 @@ impl CaptureSession {
                 parent,
                 earliest,
                 latest,
+                existing: false,
             });
         }
+    }
+
+    /// Bind a query-verified startup snapshot to one existing platform root.
+    /// This does not grant process control or claim a new creation event.
+    pub fn arm_existing_platform_root(&mut self, pid: u32, created: Timestamp) {
+        if let Some(root) = &mut self.owned_platform_root {
+            root.receipt = Some(OwnedPlatformReceipt {
+                pid,
+                parent: 0,
+                earliest: created,
+                latest: created,
+                existing: true,
+            });
+        }
+    }
+
+    /// Bind a direct final client only after the cold platform root failed to
+    /// start and the exact alternate named in the plan was created.
+    pub fn arm_direct_alternate_root(
+        &mut self,
+        executable: &str,
+        pid: u32,
+        parent: u32,
+        earliest: Timestamp,
+        latest: Timestamp,
+    ) {
+        self.fallback_client_root = Some(OwnedPlatformRoot {
+            path: executable.to_string(),
+            image_name: executable
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(executable)
+                .to_string(),
+            receipt: Some(OwnedPlatformReceipt {
+                pid,
+                parent,
+                earliest,
+                latest,
+                existing: false,
+            }),
+        });
     }
 
     /// Arm the session: the capture handle is open and the watcher attached.
@@ -706,7 +756,14 @@ impl CaptureSession {
         if self.tree.node(id).and_then(|node| node.stage()).is_some() {
             return;
         }
-        let stage = if let Some(root) = &self.owned_platform_root {
+        let stage = if self.fallback_client_root.as_ref().is_some_and(|root| {
+            root.matches(self.tree.node(id).expect("resolved process node exists"))
+        }) {
+            self.profile
+                .stages()
+                .iter()
+                .find(|stage| stage.is_terminal() && stage.role() == "client")
+        } else if let Some(root) = &self.owned_platform_root {
             let node = self.tree.node(id).expect("resolved process node exists");
             if root.matches(node) {
                 self.profile
@@ -728,7 +785,8 @@ impl CaptureSession {
             )
         });
         let Some((sid, lifecycle, terminal, role)) = decision else {
-            if self.owns_platform_client()
+            if self.fallback_client_root.is_none()
+                && self.owns_platform_client()
                 && self.profile.stages().iter().any(|stage| {
                     stage.is_terminal()
                         && role_in(&self.allowed_roles, stage.role())
