@@ -137,6 +137,14 @@ impl PreparedCapture {
     pub(crate) fn retain_managed_packet_roles(&mut self, roles: Option<Vec<String>>) {
         self.config.retained_packet_roles = roles;
     }
+
+    pub(crate) fn existing_platform_root(&self) -> bool {
+        matches!(
+            self.config.launch.as_ref(),
+            Some(fragcap::managed_launch::ManagedLaunch::Platform(platform))
+                if matches!(platform.root_mode(), fragcap::managed_launch::PlatformRootMode::Existing { .. })
+        )
+    }
 }
 
 fn profile_authority(profile: &fragcap::Profile) -> Value {
@@ -202,6 +210,15 @@ fn managed_launch_authority(launch: Option<&fragcap::managed_launch::ManagedLaun
             "application_id": platform.application_id(),
             "kind": "platform",
             "platform": platform.platform(),
+            "root_mode": match platform.root_mode() {
+                fragcap::managed_launch::PlatformRootMode::Created => json!({"kind":"created"}),
+                fragcap::managed_launch::PlatformRootMode::Existing { pid, created_ns } =>
+                    json!({"kind":"existing","pid":pid,"created_ns":created_ns.to_string()}),
+            },
+            "direct_alternate": platform.direct_alternate().map(|alternate| json!({
+                "condition":"cold-platform-root-create-failed-before-title-dispatch-and-no-game-process-present",
+                "root":direct_launch_authority(alternate),
+            })),
             "root": direct_launch_authority(platform.root()),
             "stages": platform.stages().iter().map(|stage| json!({
                 "executable": stage.executable().display().to_string(),
@@ -299,6 +316,8 @@ pub(crate) fn prepare(
 pub(crate) fn prepare_owned_platform(
     args: &CaptureArgs,
     emitter: &mut Emitter,
+    warm: bool,
+    allow_direct_alternate: bool,
 ) -> Result<PreparedCapture, CliError> {
     use fragcap::managed_launch::{ManagedLaunch, PlatformLaunchAdapter, SteamPlatformAdapter};
 
@@ -311,10 +330,21 @@ pub(crate) fn prepare_owned_platform(
     let target = prepared.stored_target.as_ref().ok_or_else(|| {
         CliError::usage("owned platform preparation requires a stored Steam target")
     })?;
-    let platform = SteamPlatformAdapter::discover()
+    let mut platform = SteamPlatformAdapter::discover()
         .and_then(|adapter| adapter.prepare(&prepared.profile))
         .and_then(|platform| platform.with_target_stages(target))
         .map_err(|error| CliError::usage(error.to_string()))?;
+    if warm {
+        let (pid, created_ns) =
+            super::deep_capture::existing_platform_identity(platform.root().executable())?;
+        platform = platform
+            .with_existing_root(pid, created_ns)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+    } else if allow_direct_alternate {
+        if let Ok(candidate) = platform.clone().with_direct_alternate(target) {
+            platform = candidate;
+        }
+    }
     prepared.profile = target_resolve::synthesize_platform_profile(&prepared.profile, &platform)?;
     prepared.config.launch = Some(ManagedLaunch::Platform(platform));
     prepared.config.exact_stage_ownership = true;
@@ -562,5 +592,62 @@ mod authorization_tests {
                 .to_string()
         );
         assert_eq!(value["root"]["arguments"], json!(["--probe"]));
+    }
+
+    #[test]
+    fn platform_authority_names_warm_identity_and_cold_direct_alternate_condition() {
+        use fragcap::managed_launch::{
+            DirectExecutableLaunch, ManagedLaunch, PlatformClientLaunch, PlatformDispatch,
+        };
+        use fragcap::profile::FidelityTier;
+        use fragcap::targets::{ClassificationSource, TargetClassification, TargetEntry};
+
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let directory = executable.parent().unwrap().to_path_buf();
+        let entry = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "fixture".into(),
+            name: "Fixture".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: Some("steam:42".into()),
+            launch_entries: Some(json!([{"executable": executable, "role":"client"}])),
+            install_root: Some(directory.display().to_string()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(executable.clone(), directory, Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap()
+        .with_target_stages(&entry)
+        .unwrap()
+        .with_direct_alternate(&entry)
+        .unwrap();
+        let cold = managed_launch_authority(Some(&ManagedLaunch::Platform(platform.clone())));
+        assert_eq!(cold["root_mode"]["kind"], "created");
+        assert_eq!(
+            cold["direct_alternate"]["root"]["executable"],
+            json!(executable.display().to_string())
+        );
+        assert_eq!(
+            cold["direct_alternate"]["condition"],
+            "cold-platform-root-create-failed-before-title-dispatch-and-no-game-process-present"
+        );
+        let warm = managed_launch_authority(Some(&ManagedLaunch::Platform(
+            platform.with_existing_root(42, 123).unwrap(),
+        )));
+        assert_eq!(warm["root_mode"]["kind"], "existing");
+        assert_eq!(warm["root_mode"]["pid"], 42);
+        assert_eq!(warm["root_mode"]["created_ns"], "123");
     }
 }

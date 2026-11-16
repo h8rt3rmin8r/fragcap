@@ -46,6 +46,11 @@ The default selects the exact final game and gives the managed launcher no
 Fragcap proxy variables. The signed direct route requires Administrator and
 the packaged component. Advanced launch-chain inspection changes the
 launcher environment and must be authorized as a distinct plan.
+An already-running Steam process can receive one title dispatch after exact
+query-only identity verification. Fragcap leaves that process and its game
+running; existing routed connections may close when capture ends. A reviewed
+plan may name one direct client alternate if a cold Steam root cannot start
+before title dispatch. `targets show` reports bounded chronological attempts.
 
 Use `fragcap doctor --fix` for an interrupted prior session. A captured
 protocol fact states what this attempt observed; no prior measurement is
@@ -90,8 +95,9 @@ Next commands:
   fragcap targets show "Portal 2"
   fragcap deep-capture "Portal 2" --launch"#;
 
-pub(crate) const TARGETS_SHOW_LONG_HELP: &str = r#"Target detail reports stored launch authority and exact historical
-compatibility facts without using those facts as a capture prerequisite.
+pub(crate) const TARGETS_SHOW_LONG_HELP: &str = r#"Target detail reports stored launch authority, exact historical
+compatibility facts, and bounded chronological capture outcomes. Prior facts
+and advisory drift never authorize a new capture.
 
 Next command:
   fragcap deep-capture "<installed game>" --launch"#;
@@ -256,9 +262,7 @@ pub(crate) fn next_command(
             if let Some(context) = context {
                 context.append_to(&mut command);
             }
-            if category == FirstRunRefusal::Process {
-                command.push_str(" --restart-warm");
-            } else if category == FirstRunRefusal::Bundle {
+            if category == FirstRunRefusal::Bundle {
                 command.push_str(" --bundle \"<new empty directory>\"");
             }
             command

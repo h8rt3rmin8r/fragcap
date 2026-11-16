@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use deep_capture_api::{
     calibration_outcome, observation_proves_final_client_ca_acceptance,
-    terminal_calibration_outcome,
+    terminal_calibration_outcome, InspectabilityState,
 };
 use deep_capture_api::{
     calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
@@ -32,10 +32,11 @@ use deep_capture_api::{
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
-    CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
+    CaptureHistory, CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource,
+    CompatibilityFact, CompatibilityFactKey, CompatibilityInspectionScope, CompatibilityLaunchCase,
     CompatibilityMiddlewareHandling, CompatibilityProtocol, CompatibilityRequestedInspectionScope,
-    CompatibilityRouteIdentity, CompatibilityRoutingStrategy, Selection, Store, TargetEntry,
+    CompatibilityRouteIdentity, CompatibilityRoutingStrategy, HistoryComparison, Selection, Store,
+    TargetEntry,
 };
 #[cfg(test)]
 use fragcap::FlowId;
@@ -1311,6 +1312,7 @@ struct LibraryRuntime {
     diagnostics: Option<deep_capture_api::TerminalDiagnostics>,
     phase_timing: Vec<deep_capture_api::PhaseTiming>,
     managed_launch_attempted: bool,
+    existing_platform_root: bool,
     process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
     process_release_watch: Option<crate::orchestrator::ProcessReleaseWatch>,
     retained_target_packets: Option<u64>,
@@ -1607,7 +1609,11 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             }
         };
         let registry = self.observation_context.flow_registry();
-        self.runtime.borrow_mut().managed_launch_attempted = true;
+        {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime.managed_launch_attempted = true;
+            runtime.existing_platform_root = prepared.existing_platform_root();
+        }
         let outer_prepare_elapsed = adapter_started.elapsed();
         let RealCaptureResult {
             result,
@@ -1700,7 +1706,11 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
             ..
         } = &mut *runtime
         {
-            let outcome = shutdown::release(process, budget, watch);
+            let outcome = if process.existing_platform_root {
+                shutdown::existing_platform_not_controlled()
+            } else {
+                shutdown::release(process, budget, watch)
+            };
             watch.finish_into(process);
             packet_report = watch.finish_packet_capture(&mut self.emitter.borrow_mut());
             self.observation_context.record_process_evidence(process);
@@ -1752,6 +1762,9 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
 
     fn route_owner_exit_prerequisite(&self) -> Option<Vec<(u32, i64)>> {
         let runtime = self.runtime.borrow();
+        if runtime.existing_platform_root {
+            return None;
+        }
         shutdown::owner_exit_prerequisite(runtime.process_evidence.as_ref()?)
     }
 
@@ -2958,13 +2971,14 @@ fn build_authorization_plan(
         "launch": {
             "declared_case": args.launch_case.map(CompatibilityLaunchCase::from).map(|value| value.as_str()),
             "observed_case": target_authority.launch_case.as_str(),
-            "process_control": if args.controlled_target { "none" } else { "automatic graceful close and bounded force for exact receipt-backed causal descendants, including undeclared helpers, after observation" },
+            "direct_alternate": target_authority.resolved_launch.pointer("/managed_launch/direct_alternate").cloned().unwrap_or(Value::Null),
+            "process_control": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { "none" } else { "automatic graceful close and bounded force for exact receipt-backed causal descendants, including undeclared helpers, after observation" },
             "shutdown_scope": if args.controlled_target { Value::Null } else { target_authority.resolved_launch.pointer("/shutdown_scope").cloned().unwrap_or(Value::Null) },
-            "additional_shutdown_class": if args.controlled_target { "none" } else { "same-account, same-session, canonical-path and generation-proven descendants of the exact created root; incomplete proof receives no control and blocks release" },
-            "grace_seconds": if args.controlled_target { Value::Null } else { json!(60) },
-            "force_by_seconds": if args.controlled_target { Value::Null } else { json!(90) },
-            "release_ceiling_seconds": if args.controlled_target { Value::Null } else { json!(120) },
-            "unsaved_progress": if args.controlled_target { "none" } else { "automatic close or force may discard unsaved application progress" },
+            "additional_shutdown_class": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { "none" } else { "same-account, same-session, canonical-path and generation-proven descendants of the exact created root; incomplete proof receives no control and blocks release" },
+            "grace_seconds": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { Value::Null } else { json!(60) },
+            "force_by_seconds": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { Value::Null } else { json!(90) },
+            "release_ceiling_seconds": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { Value::Null } else { json!(120) },
+            "unsaved_progress": if args.controlled_target || target_authority.launch_case == CompatibilityLaunchCase::SteamProtocolWarm { "game remains running; existing routed connections may close when the finite route is torn down" } else { "automatic close or force may discard unsaved application progress" },
         },
         "mode": session_mode_name(mode),
         "proxy": {
@@ -3819,7 +3833,7 @@ pub(crate) fn run_with_outcome(
             .join(", ")
     };
     emitter.borrow_mut().required_human(&format!(
-        "Deep Capture routing plan\n  proxy bypass rules: {}\n  session infrastructure: {}\n  managed environment: {}\n  DNS policy: requested name before resolution; every proxied answer checked on every attempt\n  fallback: none\n",
+        "Deep Capture routing plan\n  proxy bypass rules: {}\n  session infrastructure: {}\n  managed environment: {}\n  DNS policy: requested name before resolution; every proxied answer checked on every attempt\n  fallback: {}\n",
         if operator_rules.is_empty() {
             "none".to_string()
         } else {
@@ -3827,6 +3841,11 @@ pub(crate) fn run_with_outcome(
         },
         bypass.infrastructure(),
         environment_summary,
+        if authorization_plan.target_authority.resolved_launch.pointer("/managed_launch/direct_alternate").is_some_and(|value| !value.is_null()) {
+            "one exact direct client attempt if cold platform creation fails before title dispatch and no game process is present"
+        } else {
+            "none"
+        },
     ));
 
     if let Some(restart) = &restart {
@@ -3986,6 +4005,15 @@ pub(crate) fn run_with_outcome(
                 crate::display::selected_stderr_width(std::io::stderr().is_terminal()),
             ));
     }
+    append_attempt_history(
+        &mut store.borrow_mut(),
+        args,
+        &authorization_plan,
+        &pending_session_id,
+        &report,
+        &runtime.borrow(),
+        &mut emitter.borrow_mut(),
+    )?;
     if report.is_complete() {
         Ok(RunOutcome {
             observation_windows,
@@ -4024,6 +4052,196 @@ pub(crate) fn run_with_outcome(
             passive_fallback_ready,
             inspection_succeeded,
         })
+    }
+}
+
+fn append_attempt_history(
+    store: &mut Store,
+    args: &DeepCaptureArgs,
+    plan: &AuthorizationPlan,
+    session_id: &str,
+    report: &deep_capture_api::TerminalReport,
+    runtime: &LibraryRuntime,
+    emitter: &mut Emitter,
+) -> Result<(), CliError> {
+    let recorded_at = report
+        .snapshot
+        .finished_at
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| CliError::failure(format!("capture history clock is invalid: {error}")))?
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    let scope = plan.target_authority.inspection_scope;
+    let selected_launch = plan.target_authority.launch_case.as_str();
+    let route = planned_route_identity(args).as_str();
+    let mut row = CaptureHistory::new(
+        report.snapshot.target.id,
+        recorded_at,
+        env!("CARGO_PKG_VERSION"),
+        selected_launch,
+        route,
+        scope.requested.as_str(),
+        scope.effective.as_str(),
+    );
+    row.session_id = Some(session_id.to_string());
+    if runtime
+        .process_evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence.direct_alternate_used)
+    {
+        row.observed_launch = CompatibilityLaunchCase::DirectExeCold.as_str().to_string();
+    } else if runtime
+        .process_evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence.launch_pid.is_some())
+    {
+        row.observed_launch = selected_launch.to_string();
+    } else if runtime.managed_launch_attempted {
+        row.observed_launch = "failed".to_string();
+    } else {
+        row.observed_launch = "not-attempted".to_string();
+    }
+    if report
+        .snapshot
+        .route_verification
+        .as_ref()
+        .is_some_and(|value| {
+            value.state == deep_capture_api::RouteVerificationState::ReachedSocketOwner
+        })
+    {
+        row.observed_route = route.to_string();
+    } else if report.snapshot.route_verification.is_none() {
+        row.observed_route = "unavailable".to_string();
+    }
+    row.process_proof = if report
+        .snapshot
+        .observations
+        .iter()
+        .any(exact_direct_client_receipt)
+    {
+        "exact"
+    } else if runtime.process_evidence.as_ref().is_some_and(|evidence| {
+        evidence
+            .stage_transitions
+            .iter()
+            .any(|transition| transition.role == "client")
+    }) {
+        "partial"
+    } else {
+        "unknown"
+    }
+    .to_string();
+    row.transfer = if report
+        .snapshot
+        .observations
+        .iter()
+        .any(|value| value.packet_observations > 0)
+    {
+        "partial"
+    } else {
+        "unknown"
+    }
+    .to_string();
+    row.inspection =
+        history_inspection_state(&report.snapshot.classification_summary()).to_string();
+    row.failure = report
+        .snapshot
+        .failures
+        .first()
+        .map(|failure| failure.code.clone());
+    if row.failure.is_none()
+        && runtime
+            .process_evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.direct_alternate_used)
+    {
+        row.failure = Some("associated-root-create-failed".to_string());
+    }
+    if row.failure.is_none() && !report.is_complete() {
+        row.failure = Some("session-incomplete".to_string());
+    }
+    row.loss = if report.snapshot.classification_records_lost > 0
+        || runtime.process_evidence.as_ref().is_some_and(|evidence| {
+            evidence.events_unretained > 0 || evidence.unparseable_events > 0
+        }) {
+        "observed"
+    } else {
+        "unknown"
+    }
+    .to_string();
+    row.cleanup = if report.snapshot.cleanup.is_empty() {
+        "unknown"
+    } else if report.snapshot.cleanup.iter().all(|value| {
+        matches!(
+            value.status,
+            deep_capture_api::CleanupStatus::Released | deep_capture_api::CleanupStatus::NotNeeded
+        )
+    }) {
+        "succeeded"
+    } else {
+        "partial"
+    }
+    .to_string();
+    let previous = store
+        .capture_history_for_target(row.target_id)
+        .map_err(|error| CliError::failure(format!("cannot read capture history: {error}")))?
+        .into_iter()
+        .last();
+    let comparison = previous.as_ref().map(|older| older.compare(&row));
+    let appended = store.append_capture_history(&row).map_err(|error| {
+        emitter.event(&Event::DeepCaptureHistory {
+            report: json!({"status":"failed","reason":error.to_string(),"session_id":session_id}),
+        });
+        CliError::failure(format!(
+            "capture history append failed after session cleanup: {error}"
+        ))
+    })?;
+    let drift = match comparison {
+        None => json!({"state":"first-attempt"}),
+        Some(HistoryComparison::Incomparable(reason)) => {
+            json!({"state":"incomparable","reason":reason})
+        }
+        Some(HistoryComparison::Comparable {
+            build_unverified,
+            changes,
+        }) => {
+            json!({"state":"comparable","build_unverified":build_unverified,"changes":changes})
+        }
+    };
+    emitter.event(&Event::DeepCaptureHistory {
+        report: json!({"status":"appended","id":appended.id,"pruned":appended.pruned,"session_id":session_id,"drift":drift,"outcome":row.failure.as_deref().unwrap_or("completed")}),
+    });
+    emitter.terminal_human(&format!(
+        "Capture history: attempt {} retained; {} older rows pruned; drift {}\n",
+        appended.id,
+        appended.pruned,
+        drift["state"].as_str().unwrap_or("unknown")
+    ));
+    Ok(())
+}
+
+fn history_inspection_state(summary: &ClassificationSummary) -> &'static str {
+    if summary.unclassified_lost > 0 {
+        return "incomplete";
+    }
+    let mut states = summary
+        .by_inspectability
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(state, _)| *state);
+    let Some(first) = states.next() else {
+        return "none";
+    };
+    if states.next().is_some() {
+        return "partial";
+    }
+    match first {
+        "full" => "full",
+        "decrypted-unknown" => "decrypted-unknown",
+        "metadata-only" => "metadata-only",
+        "encrypted-opaque" => "opaque",
+        "packet-only" => "none",
+        _ => "unknown",
     }
 }
 
@@ -4482,7 +4700,17 @@ fn direct_launch_case(client_running: bool) -> CompatibilityLaunchCase {
 
 #[cfg(windows)]
 fn steam_is_running() -> Result<bool, CliError> {
-    process_image_is_running("steam.exe")
+    let root = fragcap::steam::installation_root().map_err(|error| {
+        CliError::usage(format!("cannot resolve associated Steam install: {error}"))
+    })?;
+    let executable = root.join("steam.exe");
+    let (matches, inaccessible) = exact_platform_instances(&executable)?;
+    if inaccessible > 0 || matches.len() > 1 {
+        return Err(CliError::usage(
+            "associated Steam process state is ambiguous or inaccessible",
+        ));
+    }
+    Ok(!matches.is_empty())
 }
 
 #[cfg(windows)]
@@ -4507,6 +4735,78 @@ fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
 /// represents the snapshot itself and never grants rights to a target process.
 #[cfg(windows)]
 pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
+    process_entries_snapshot().map(|entries| entries.into_iter().map(|(_, image)| image).collect())
+}
+
+#[cfg(windows)]
+pub(crate) fn existing_platform_identity(executable: &Path) -> Result<(u32, i128), CliError> {
+    let (matches, inaccessible) = exact_platform_instances(executable)?;
+    match matches.as_slice() {
+        [identity] if inaccessible == 0 => Ok(*identity),
+        [_] => Err(CliError::usage(
+            "another same-name platform process could not be verified; warm dispatch is ambiguous",
+        )),
+        [] if inaccessible > 0 => Err(CliError::usage(
+            "running platform candidates could not be verified by exact path and generation",
+        )),
+        [] => Err(CliError::usage(
+            "no exact current-user associated platform process is running",
+        )),
+        _ => Err(CliError::usage(
+            "more than one exact associated platform process is running",
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn exact_platform_instances(executable: &Path) -> Result<(Vec<(u32, i128)>, u32), CliError> {
+    let current = fragcap::managed_shutdown::ProcessIdentity::current().map_err(|error| {
+        CliError::failure(format!("cannot verify current process account: {error}"))
+    })?;
+    let expected = executable.canonicalize().map_err(|error| {
+        CliError::usage(format!(
+            "cannot resolve associated platform executable: {error}"
+        ))
+    })?;
+    let expected_name = expected
+        .file_name()
+        .ok_or_else(|| CliError::usage("platform executable has no file name"))?;
+    let mut matches = Vec::new();
+    let mut inaccessible = 0_u32;
+    for (pid, image) in process_entries_snapshot()? {
+        if !image.eq_ignore_ascii_case(&expected_name.to_string_lossy()) {
+            continue;
+        }
+        let identity = match fragcap::managed_shutdown::ProcessIdentity::observe(pid) {
+            Ok(identity) => identity,
+            Err(_) => {
+                inaccessible = inaccessible.saturating_add(1);
+                continue;
+            }
+        };
+        if identity
+            .path
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&expected.to_string_lossy())
+            && identity.same_user_session(&current)
+            && !identity.exited().unwrap_or(true)
+        {
+            matches.push((pid, identity.created_unix_nanos()));
+        }
+    }
+    Ok((matches, inaccessible))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn existing_platform_identity(_executable: &Path) -> Result<(u32, i128), CliError> {
+    Err(CliError::usage(
+        "warm platform inspection is only supported on Windows",
+    ))
+}
+
+/// Return one complete query-only process identity inventory.
+#[cfg(windows)]
+fn process_entries_snapshot() -> Result<Vec<(u32, String)>, CliError> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
     };
@@ -4547,7 +4847,7 @@ pub(crate) fn process_image_snapshot() -> Result<Vec<String>, CliError> {
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
         let observed = String::from_utf16_lossy(&entry.szExeFile[..end]);
-        images.push(observed);
+        images.push((entry.th32ProcessID, observed));
         // SAFETY: the same live snapshot and initialized entry remain valid.
         if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
             // SAFETY: read immediately after the failed enumeration call.
@@ -4632,11 +4932,25 @@ fn prepare_capture_authority(
     emitter: &mut Emitter,
 ) -> Result<(CaptureArgs, capture::PreparedCapture, Value), CliError> {
     let mut capture_args = real_capture_args(args, bundle, deadlines);
-    if launch_case == CompatibilityLaunchCase::SteamProtocolCold {
+    if matches!(
+        launch_case,
+        CompatibilityLaunchCase::SteamProtocolCold | CompatibilityLaunchCase::SteamProtocolWarm
+    ) {
         capture_args.wait = owned_platform_wait(capture_args.wait, deadlines.launch);
     }
-    let mut prepared = if launch_case == CompatibilityLaunchCase::SteamProtocolCold {
-        capture::prepare_owned_platform(&capture_args, emitter)
+    let mut prepared = if matches!(
+        launch_case,
+        CompatibilityLaunchCase::SteamProtocolCold | CompatibilityLaunchCase::SteamProtocolWarm
+    ) {
+        capture::prepare_owned_platform(
+            &capture_args,
+            emitter,
+            launch_case == CompatibilityLaunchCase::SteamProtocolWarm,
+            effective_direct_route(args)
+                && launcher_exposure(args) == deep_capture_api::LauncherProxyExposure::Native
+                && resolve_cli_inspection_scope(args.inspect_scope).effective
+                    == CompatibilityInspectionScope::ExactGame,
+        )
     } else {
         capture::prepare(&capture_args, emitter)
     }?;
@@ -6827,6 +7141,47 @@ mod tests {
         assert_eq!(
             direct_launch_case(false),
             CompatibilityLaunchCase::DirectExeCold
+        );
+    }
+
+    #[test]
+    fn history_inspection_distinguishes_plain_http_from_decrypted_unknown_tls() {
+        let summary = |states: &[InspectabilityState], lost| {
+            let mut summary = ClassificationSummary {
+                unclassified_lost: lost,
+                ..ClassificationSummary::default()
+            };
+            for state in states {
+                *summary.by_inspectability.entry(state.as_str()).or_default() += 1;
+                summary.observations += 1;
+            }
+            summary
+        };
+        assert_eq!(
+            history_inspection_state(&summary(&[InspectabilityState::Full], 0)),
+            "full"
+        );
+        assert_eq!(
+            history_inspection_state(&summary(&[InspectabilityState::DecryptedUnknown], 0)),
+            "decrypted-unknown"
+        );
+        assert_eq!(
+            history_inspection_state(&summary(
+                &[
+                    InspectabilityState::Full,
+                    InspectabilityState::EncryptedOpaque
+                ],
+                0
+            )),
+            "partial"
+        );
+        assert_eq!(
+            history_inspection_state(&summary(&[InspectabilityState::Unavailable], 0)),
+            "unknown"
+        );
+        assert_eq!(
+            history_inspection_state(&summary(&[InspectabilityState::Full], 1)),
+            "incomplete"
         );
     }
 

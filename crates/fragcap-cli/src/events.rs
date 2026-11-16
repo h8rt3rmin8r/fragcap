@@ -358,6 +358,10 @@ pub enum Event {
     SessionCollection {
         report: serde_json::Value,
     },
+    /// Bounded local history append and advisory comparison for one attempt.
+    DeepCaptureHistory {
+        report: serde_json::Value,
+    },
     /// Additive terminal diagnostics, with windows indexed to retained observations.
     DeepCaptureDiagnostics {
         session_id: String,
@@ -479,6 +483,7 @@ impl Event {
             Event::DeepCaptureDiagnostics { .. } => "deep_capture.diagnostics",
             Event::DeepCaptureOutputAccess { .. } => "deep_capture.output_access",
             Event::SessionCollection { .. } => "session.collection",
+            Event::DeepCaptureHistory { .. } => "deep_capture.history",
             Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
             Event::DeepCaptureRouteSummary { .. } => "deep_capture.route_summary",
             Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
@@ -1279,6 +1284,10 @@ impl Event {
                 line.push_str(&access.to_string());
             }
             Event::SessionCollection { report } => {
+                line.push_str(",\"report\":");
+                line.push_str(&report.to_string());
+            }
+            Event::DeepCaptureHistory { report } => {
                 line.push_str(",\"report\":");
                 line.push_str(&report.to_string());
             }

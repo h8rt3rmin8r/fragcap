@@ -18,7 +18,7 @@ use std::path::Path;
 use common::run;
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
-    entry_windows_launch_paths, ClassificationSource, CompatibilityEvidenceSource,
+    entry_windows_launch_paths, CaptureHistory, ClassificationSource, CompatibilityEvidenceSource,
     CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Store, TargetClassification,
     TargetEntry,
 };
@@ -215,6 +215,47 @@ fn target_show_reports_unknown_when_no_compatibility_facts_exist() {
             && line.trim_end().ends_with("unknown (no stored evidence)")),
         "target detail:\n{out}"
     );
+}
+
+#[test]
+fn target_show_reports_ordered_capture_history_and_advisory_drift() {
+    let dir = TempDir::new().expect("tempdir");
+    let store_path = dir.path().join("local.db");
+    let target_id = seed_compatibility_target(&store_path);
+    let mut store = Store::open(&store_path).unwrap();
+    let mut first = CaptureHistory::new(
+        target_id,
+        100,
+        "0.11.1",
+        "direct-exe-cold",
+        "direct-socket-v1",
+        "auto",
+        "exact-game",
+    );
+    first.observed_route = "unavailable".into();
+    store.append_capture_history(&first).unwrap();
+    let mut second = first.clone();
+    second.recorded_at = 200;
+    second.observed_route = "direct-socket-v1".into();
+    store.append_capture_history(&second).unwrap();
+    drop(store);
+
+    let (code, out, err) = run(&[
+        "--json",
+        "targets",
+        "show",
+        "sample-target",
+        "--db",
+        &store_path.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "stderr:\n{err}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let history = value["capture_history"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["recorded_at"], 100);
+    assert_eq!(history[1]["recorded_at"], 200);
+    assert_eq!(history[1]["drift"]["state"], "comparable");
+    assert_eq!(history[1]["drift"]["changes"][0], "observed-route");
 }
 
 #[test]
