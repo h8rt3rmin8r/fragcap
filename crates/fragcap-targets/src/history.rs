@@ -143,6 +143,7 @@ impl CaptureHistory {
                 "full",
                 "decrypted-unknown",
                 "partial",
+                "incomplete",
                 "failed",
             ],
             "inspection",

@@ -195,20 +195,68 @@ impl CaptureProcessEvidence {
     /// Every parent link must have one live earlier generation; a reused PID or
     /// missing event makes the chain indeterminate rather than owned.
     pub fn causal_depth(&self, pid: u32, at: Timestamp) -> Option<usize> {
+        self.causal_depth_with_root(pid, at, false)
+    }
+
+    /// Packet membership may use a query-verified startup root. This proof is
+    /// observation-only; shutdown still calls `causal_depth` above.
+    fn packet_causal_depth(&self, pid: u32, at: Timestamp) -> Option<usize> {
+        self.causal_depth_with_root(pid, at, self.existing_platform_root)
+    }
+
+    fn causal_depth_with_root(
+        &self,
+        pid: u32,
+        at: Timestamp,
+        existing_root: bool,
+    ) -> Option<usize> {
         let root = self.launch_pid?;
         let earliest = self.launch_earliest_at?;
         let latest = self.launch_at?;
-        if self
-            .events
-            .iter()
-            .filter(|event| matches!(event, ProcessEvent::Started { pid, .. } if *pid == root))
-            .count()
-            != 1
+        let snapshot_at = if existing_root {
+            let snapshot_at = self.snapshot_at?;
+            let identity = self.launch_identity.as_ref()?;
+            let records = self
+                .startup_snapshot
+                .iter()
+                .filter(|record| record.pid == root)
+                .collect::<Vec<_>>();
+            let [record] = records.as_slice() else {
+                return None;
+            };
+            if identity.pid != root
+                || (identity.created_unix_nanos() - i128::from(latest.as_nanos())).abs()
+                    > 1_000_000_000
+                || snapshot_at < latest
+                || !case_equal(
+                    image_name(&record.image),
+                    image_name(&identity.path.to_string_lossy()),
+                )
+                || self.events.iter().any(|event| {
+                    matches!(event, ProcessEvent::Started { pid, at, .. } if *pid == root && *at >= snapshot_at)
+                })
+            {
+                return None;
+            }
+            Some(snapshot_at)
+        } else {
+            None
+        };
+        if !existing_root
+            && self
+                .events
+                .iter()
+                .filter(|event| matches!(event, ProcessEvent::Started { pid, .. } if *pid == root))
+                .count()
+                != 1
         {
             return None;
         }
         let mut current = (pid, at);
         for depth in 0..=64 {
+            if existing_root && current.0 == root {
+                return (current.1 == latest).then_some(depth);
+            }
             let event = self.events.iter().find(|event| {
                 matches!(event, ProcessEvent::Started { pid, at, .. } if *pid == current.0 && *at == current.1)
             })?;
@@ -228,6 +276,19 @@ impl CaptureProcessEvidence {
             };
             if *parent == current.0 {
                 return None;
+            }
+            if let Some(snapshot_at) = snapshot_at {
+                if *parent == root {
+                    if current.1 < snapshot_at
+                        || self.events.iter().any(|candidate| {
+                            matches!(candidate, ProcessEvent::Exited { pid, at } if *pid == root && *at >= snapshot_at && *at < current.1)
+                        })
+                    {
+                        return None;
+                    }
+                    current = (root, latest);
+                    continue;
+                }
             }
             let candidates: Vec<_> = self.events.iter().filter_map(|candidate| match candidate {
                 ProcessEvent::Started { pid, at, .. } if *pid == *parent && *at <= current.1 => {
@@ -293,7 +354,7 @@ impl CaptureProcessEvidence {
                 let ProcessEvent::Started { pid, at, .. } = event else {
                     return None;
                 };
-                self.causal_depth(*pid, *at)?;
+                self.packet_causal_depth(*pid, *at)?;
                 let exited = self
                     .events
                     .iter()
@@ -1083,6 +1144,59 @@ mod tests {
         );
         evidence.observe_managed(&event);
         assert!(evidence.managed_instances.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_warm_platform_root_grants_packet_membership_only() {
+        let identity = ProcessIdentity::current().expect("current process identity");
+        let created = i64::try_from(identity.created_unix_nanos()).unwrap();
+        let started = Timestamp::from_nanos(created);
+        let snapshot_at = Timestamp::from_nanos(created + 1_000_000_000);
+        let child_at = Timestamp::from_nanos(created + 2_000_000_000);
+        let game_at = Timestamp::from_nanos(created + 3_000_000_000);
+        let child_pid = u32::MAX - 1;
+        let game_pid = u32::MAX - 2;
+        let evidence = CaptureProcessEvidence {
+            startup_snapshot: vec![ProcessRecord::new(
+                identity.pid,
+                1,
+                identity.path.to_string_lossy(),
+            )],
+            snapshot_at: Some(snapshot_at),
+            launch_pid: Some(identity.pid),
+            launch_earliest_at: Some(started),
+            launch_at: Some(started),
+            launch_identity: Some(identity.clone()),
+            existing_platform_root: true,
+            events: vec![
+                ProcessEvent::started(child_pid, identity.pid, "Helper.exe", "", child_at),
+                ProcessEvent::started(game_pid, child_pid, "Game.exe", "", game_at),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            evidence.causal_intervals(),
+            vec![(child_pid, child_at, None), (game_pid, game_at, None)]
+        );
+        assert_eq!(evidence.causal_depth(child_pid, child_at), None);
+
+        let mut exited = evidence.clone();
+        exited.events.push(ProcessEvent::Exited {
+            pid: identity.pid,
+            at: Timestamp::from_nanos(created + 1_500_000_000),
+        });
+        assert!(exited.causal_intervals().is_empty());
+
+        let mut reused = evidence;
+        reused.events.push(ProcessEvent::started(
+            identity.pid,
+            1,
+            "Reused.exe",
+            "",
+            snapshot_at,
+        ));
+        assert!(reused.causal_intervals().is_empty());
     }
 
     #[test]

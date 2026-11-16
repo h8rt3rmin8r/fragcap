@@ -23,12 +23,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use deep_capture_api::{
     calibration_outcome, observation_proves_final_client_ca_acceptance,
-    terminal_calibration_outcome,
+    terminal_calibration_outcome, InspectabilityState,
 };
 use deep_capture_api::{
     calibration_outcome_reason, CalibrationOutcome, CalibrationPhase, ClassificationSummary,
-    CompatibilityObservation as Observation, Inspectability, InspectabilityState,
-    ManifestOmissionReason,
+    CompatibilityObservation as Observation, Inspectability, ManifestOmissionReason,
 };
 use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
@@ -4143,14 +4142,8 @@ fn append_attempt_history(
         "unknown"
     }
     .to_string();
-    row.inspection = history_inspection_state(
-        report
-            .snapshot
-            .observations
-            .iter()
-            .map(|value| value.classification.inspectability()),
-    )
-    .to_string();
+    row.inspection =
+        history_inspection_state(&report.snapshot.classification_summary()).to_string();
     row.failure = report
         .snapshot
         .failures
@@ -4227,20 +4220,27 @@ fn append_attempt_history(
     Ok(())
 }
 
-fn history_inspection_state(states: impl IntoIterator<Item = InspectabilityState>) -> &'static str {
-    let mut states = states.into_iter();
+fn history_inspection_state(summary: &ClassificationSummary) -> &'static str {
+    if summary.unclassified_lost > 0 {
+        return "incomplete";
+    }
+    let mut states = summary
+        .by_inspectability
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(state, _)| *state);
     let Some(first) = states.next() else {
         return "none";
     };
-    if states.any(|state| state != first) {
+    if states.next().is_some() {
         return "partial";
     }
     match first {
-        InspectabilityState::Full => "full",
-        InspectabilityState::DecryptedUnknown => "decrypted-unknown",
-        InspectabilityState::MetadataOnly => "metadata-only",
-        InspectabilityState::EncryptedOpaque => "opaque",
-        InspectabilityState::PacketOnly => "none",
+        "full" => "full",
+        "decrypted-unknown" => "decrypted-unknown",
+        "metadata-only" => "metadata-only",
+        "encrypted-opaque" => "opaque",
+        "packet-only" => "none",
         _ => "unknown",
     }
 }
@@ -7146,24 +7146,42 @@ mod tests {
 
     #[test]
     fn history_inspection_distinguishes_plain_http_from_decrypted_unknown_tls() {
+        let summary = |states: &[InspectabilityState], lost| {
+            let mut summary = ClassificationSummary {
+                unclassified_lost: lost,
+                ..ClassificationSummary::default()
+            };
+            for state in states {
+                *summary.by_inspectability.entry(state.as_str()).or_default() += 1;
+                summary.observations += 1;
+            }
+            summary
+        };
         assert_eq!(
-            history_inspection_state([InspectabilityState::Full]),
+            history_inspection_state(&summary(&[InspectabilityState::Full], 0)),
             "full"
         );
         assert_eq!(
-            history_inspection_state([InspectabilityState::DecryptedUnknown]),
+            history_inspection_state(&summary(&[InspectabilityState::DecryptedUnknown], 0)),
             "decrypted-unknown"
         );
         assert_eq!(
-            history_inspection_state([
-                InspectabilityState::Full,
-                InspectabilityState::EncryptedOpaque
-            ]),
+            history_inspection_state(&summary(
+                &[
+                    InspectabilityState::Full,
+                    InspectabilityState::EncryptedOpaque
+                ],
+                0
+            )),
             "partial"
         );
         assert_eq!(
-            history_inspection_state([InspectabilityState::Unavailable]),
+            history_inspection_state(&summary(&[InspectabilityState::Unavailable], 0)),
             "unknown"
+        );
+        assert_eq!(
+            history_inspection_state(&summary(&[InspectabilityState::Full], 1)),
+            "incomplete"
         );
     }
 
