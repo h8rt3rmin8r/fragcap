@@ -706,13 +706,30 @@ impl NativeObservationContext {
         }) {
             return Err("direct-helper-window-overlap");
         }
+        self.direct_proof_for(&flow)?;
         owners.push(DirectHelperOwner {
             flow,
             opened_earliest_ns,
             opened_latest_ns,
         });
-        self.direct_proof_for(&owners.last().expect("new direct helper").flow)?;
         Ok(())
+    }
+
+    /// A helper whose selected socket closed before admission must not remain
+    /// eligible for later proxy evidence, including a registration racing the
+    /// CLOSE event on the helper worker.
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn retire_direct_helper_registration(
+        &self,
+        flow: &super::direct_route::OriginalFlow,
+    ) {
+        self.direct_helpers
+            .lock()
+            .expect("direct helper lock")
+            .retain(|_, owners| {
+                owners.retain(|owner| &owner.flow != flow);
+                !owners.is_empty()
+            });
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
@@ -1473,6 +1490,51 @@ mod direct_helper_tests {
     use super::*;
     use crate::deep_capture::direct_route::{DirectTuple, OriginalFlow};
     use fragcap_proxy::InspectionDecider;
+
+    #[test]
+    fn retired_pending_helper_registration_cannot_claim_later_proxy_window() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-1".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(flow.clone())
+        );
+        context.retire_direct_helper_registration(&flow);
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("tcp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(reused)
+        );
+    }
 
     #[test]
     fn empty_handshake_stays_unproven_and_datagram_response_keeps_packet_absence() {

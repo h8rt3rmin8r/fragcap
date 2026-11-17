@@ -83,6 +83,39 @@ pub struct DirectSocketEvent {
     pub kind: SocketEventKind,
 }
 
+/// Identity of one observed socket generation. Endpoint IDs and ports can be
+/// reused, so neither one identifies a selected route without the OPEN time.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SocketEpoch {
+    pub tuple: DirectTuple,
+    pub endpoint_id: u64,
+    pub pid: u32,
+    pub open_qpc: i64,
+}
+
+impl SocketEpoch {
+    pub fn from_open(event: DirectSocketEvent) -> Self {
+        debug_assert_eq!(event.kind, SocketEventKind::Open);
+        Self {
+            tuple: event.tuple,
+            endpoint_id: event.endpoint_id,
+            pid: event.pid,
+            open_qpc: event.at_qpc,
+        }
+    }
+
+    pub fn contains_packet(self, packet_qpc: i64) -> bool {
+        self.open_qpc > 0 && packet_qpc > self.open_qpc
+    }
+
+    pub fn matches_event(self, event: DirectSocketEvent) -> bool {
+        event.tuple == self.tuple
+            && event.endpoint_id == self.endpoint_id
+            && event.pid == self.pid
+            && event.at_qpc > self.open_qpc
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DirectPacketHead {
     pub tuple: DirectTuple,
@@ -335,6 +368,7 @@ pub struct PendingCandidate<A> {
 pub enum CandidateDecision<A> {
     Selected {
         flow: OriginalFlow,
+        epoch: SocketEpoch,
         packet: Vec<u8>,
         address: A,
         #[cfg(all(windows, feature = "direct-route"))]
@@ -439,7 +473,7 @@ impl<A> CandidateBuffer<A> {
     ) -> Vec<CandidateDecision<A>> {
         enum Status {
             Wait,
-            Selected(OriginalFlow),
+            Selected(OriginalFlow, SocketEpoch),
             Pass(&'static str),
         }
         let count = if newest_only {
@@ -478,7 +512,8 @@ impl<A> CandidateBuffer<A> {
                     .get(&candidate.head.tuple)
                     .map_or(&[][..], Vec::as_slice)
             });
-            let decision = match exact_socket_event(matching_events, candidate.head) {
+            let exact_event = exact_socket_event(matching_events, candidate.head);
+            let decision = match &exact_event {
                 Ok(event) if event.pid == helper_pid => {
                     Some(DirectAdmission::Bypassed("helper-self-excluded"))
                 }
@@ -486,7 +521,13 @@ impl<A> CandidateBuffer<A> {
                     .map(|evidence| select_direct_flow(evidence, matching_events, candidate.head)),
             };
             let status = match decision {
-                Some(DirectAdmission::Selected(flow)) => Status::Selected(flow),
+                Some(DirectAdmission::Selected(flow)) => {
+                    let epoch = exact_event
+                        .ok()
+                        .map(SocketEpoch::from_open)
+                        .expect("selected flow has exact socket event");
+                    Status::Selected(flow, epoch)
+                }
                 Some(DirectAdmission::Bypassed(reason) | DirectAdmission::Ambiguous(reason)) => {
                     Status::Pass(reason)
                 }
@@ -503,10 +544,11 @@ impl<A> CandidateBuffer<A> {
             };
             match status {
                 Status::Wait => self.pending.push_back(candidate),
-                Status::Selected(flow) => {
+                Status::Selected(flow, epoch) => {
                     self.held_bytes -= candidate.packet.len();
                     resolved.push(CandidateDecision::Selected {
                         flow,
+                        epoch,
                         packet: candidate.packet,
                         address: candidate.address,
                         #[cfg(all(windows, feature = "direct-route"))]

@@ -29,6 +29,7 @@ use super::{
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
         DirectSocketEvent, DirectTuple, OriginalFlow, PacketDisposition, RouteReceiptId,
+        SocketEpoch,
     },
     direct_stack::StackError,
     direct_udp::{build_udp_reply, DirectUdpAssociation},
@@ -94,7 +95,40 @@ fn candidate_timeline(
 
 enum WorkPacket {
     Candidate(super::direct_route::DirectPacketHead, Vec<u8>, Address, u64),
-    Selected(DirectTuple, Vec<u8>, Address),
+    Selected(SelectedRoute, Vec<u8>, Address),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectedRoute {
+    epoch: SocketEpoch,
+    flow_id: u64,
+}
+
+fn selected_packet_admission(
+    selected: SelectedRoute,
+    current: Option<SocketEpoch>,
+    packet_qpc: i64,
+) -> Result<(), &'static str> {
+    if !selected.epoch.contains_packet(packet_qpc) {
+        return Err("selected-packet-before-open-or-clock-ambiguous");
+    }
+    if current != Some(selected.epoch) {
+        return Err("selected-owner-epoch-changed-or-ambiguous");
+    }
+    Ok(())
+}
+
+fn selected_work_admission(
+    queued: SelectedRoute,
+    selected_now: Option<SelectedRoute>,
+    owner_now: Option<SocketEpoch>,
+    target_epoch: Option<SocketEpoch>,
+    packet_qpc: i64,
+) -> Result<(), &'static str> {
+    if selected_now != Some(queued) || target_epoch != Some(queued.epoch) {
+        return Err("selected-route-generation-retired");
+    }
+    selected_packet_admission(queued, owner_now, packet_qpc)
 }
 
 fn queue_candidate_with_selected_reserve(
@@ -278,15 +312,14 @@ fn packet_finished(stats: &SharedStats, disposition: PacketDisposition) -> io::R
 }
 
 fn mark_refused_flow(
-    refused: &Mutex<BTreeMap<DirectTuple, u64>>,
-    tuple: DirectTuple,
-    endpoint_id: u64,
+    refused: &Mutex<BTreeMap<DirectTuple, SocketEpoch>>,
+    epoch: SocketEpoch,
 ) -> bool {
     let mut flows = refused.lock().expect("refused route lock");
-    if flows.len() >= REFUSED_FLOWS && !flows.contains_key(&tuple) {
+    if flows.len() >= REFUSED_FLOWS && !flows.contains_key(&epoch.tuple) {
         return false;
     }
-    flows.insert(tuple, endpoint_id);
+    flows.insert(epoch.tuple, epoch);
     true
 }
 
@@ -408,49 +441,62 @@ fn inject_replies(
 struct ReceiveRuntimeInputs {
     handle: Arc<Handle>,
     context: NativeObservationContext,
+    proxy: std::net::SocketAddr,
     sender: SyncSender<WorkPacket>,
     queued_candidates: Arc<AtomicUsize>,
     observer: Arc<Mutex<DirectSocketObserver>>,
-    selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    selected: Arc<Mutex<BTreeMap<DirectTuple, SelectedRoute>>>,
     ack_witnesses: Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    refused: Arc<Mutex<BTreeMap<DirectTuple, SocketEpoch>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     route_events: Option<RouteEventSink>,
 }
 
+// The proxy's exact listener is infrastructure, regardless of when socket
+// ownership evidence arrives. Other unknown-owner packets remain candidates
+// while a helper connects, so a concurrent game flow is not lost.
+fn helper_packet_bypasses_candidate(
+    destination: std::net::SocketAddr,
+    proxy: std::net::SocketAddr,
+    connecting: bool,
+    owner_pid: Option<u32>,
+    helper_pid: u32,
+) -> bool {
+    destination == proxy || (connecting && owner_pid == Some(helper_pid))
+}
+
 #[derive(Clone)]
 struct AckWitness {
-    endpoint_id: u64,
+    epoch: SocketEpoch,
     flow_id: u64,
     proof: Arc<Mutex<DirectRouteProof>>,
     closed_at: Option<Instant>,
+    close_qpc: Option<i64>,
 }
 
 impl AckWitness {
-    fn accepts_owner(
-        &self,
-        current_owner: Option<u64>,
-        selected_endpoint: Option<u64>,
-        now: Instant,
-    ) -> bool {
-        match current_owner {
-            Some(endpoint_id) => endpoint_id == self.endpoint_id,
-            None => {
-                selected_endpoint == Some(self.endpoint_id)
-                    || self
-                        .closed_at
-                        .is_some_and(|closed_at| now.duration_since(closed_at) <= ACK_CLOSE_GRACE)
-            }
+    fn accepts_owner(&self, current_owner: Option<SocketEpoch>, packet_qpc: i64) -> bool {
+        if !self.epoch.contains_packet(packet_qpc)
+            || self
+                .close_qpc
+                .is_some_and(|close_qpc| packet_qpc >= close_qpc)
+        {
+            return false;
         }
+        current_owner == Some(self.epoch)
+            || self.close_qpc.is_some_and(|close_qpc| {
+                packet_qpc < close_qpc
+                    && current_owner.is_none_or(|owner| owner.open_qpc > packet_qpc)
+            })
     }
 }
 
 fn observe_returned_ack(
     packet: &[u8],
     tuple: DirectTuple,
-    selected: &Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    packet_qpc: i64,
     observer: &Arc<Mutex<DirectSocketObserver>>,
     witnesses: &Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
     route_events: Option<&RouteEventSink>,
@@ -463,16 +509,11 @@ fn observe_returned_ack(
     else {
         return;
     };
-    let selected_endpoint = selected
-        .lock()
-        .expect("selected route lock")
-        .get(&tuple)
-        .copied();
     let current_owner = observer
         .lock()
         .expect("socket observer lock")
-        .current_owner_endpoint_id(tuple);
-    if !witness.accepts_owner(current_owner, selected_endpoint, Instant::now()) {
+        .current_owner_epoch(tuple);
+    if !witness.accepts_owner(current_owner, packet_qpc) {
         return;
     }
     let mut proof = witness.proof.lock().expect("direct proof lock");
@@ -492,9 +533,10 @@ fn observe_returned_ack(
         RouteEventKind::ReturnedDataAcknowledged,
     );
     let mut witnesses = witnesses.lock().expect("ACK witness lock");
-    if witnesses.get(&tuple).is_some_and(|current| {
-        current.endpoint_id == witness.endpoint_id && current.flow_id == witness.flow_id
-    }) {
+    if witnesses
+        .get(&tuple)
+        .is_some_and(|current| current.epoch == witness.epoch && current.flow_id == witness.flow_id)
+    {
         witnesses.remove(&tuple);
     }
 }
@@ -503,6 +545,7 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
     let ReceiveRuntimeInputs {
         handle,
         context,
+        proxy,
         sender,
         queued_candidates,
         observer,
@@ -540,33 +583,84 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
             ));
         }
         let head = raw_transport_head(bytes).ok();
-        let selected_tuple = head.as_ref().and_then(|head| {
+        let selected_route = head.as_ref().and_then(|head| {
             let tuple = DirectTuple {
                 transport: head.transport,
                 local: head.source,
                 remote: head.destination,
             };
-            let selected_endpoint = selected
+            let route = selected
                 .lock()
                 .expect("selected route lock")
                 .get(&tuple)
                 .copied();
-            let observer = observer.lock().expect("socket observer lock");
-            let event_health = observer.stats();
-            (address.outbound()
-                && selected_endpoint.is_some()
-                && event_health.capacity_lost == 0
-                && event_health.clock_lost == 0
-                && !stats.event_history_overflow.load(Ordering::Acquire)
-                && selected_endpoint == observer.current_owner_endpoint_id(tuple))
-            .then_some(tuple)
+            address.outbound().then_some(route).flatten()
         });
-        if let Some(tuple) = selected_tuple {
+        if let Some(route) = selected_route {
+            let current = observer
+                .lock()
+                .expect("socket observer lock")
+                .current_owner_epoch(route.epoch.tuple);
+            if let Err(reason) = selected_packet_admission(route, current, address.timestamp_qpc) {
+                let pass_new_owner = current.is_some_and(|owner| {
+                    owner != route.epoch && owner.contains_packet(address.timestamp_qpc)
+                });
+                if pass_new_owner
+                    && head.as_ref().is_some_and(|head| {
+                        (head.transport == Proto::Tcp && head.initial_tcp_syn)
+                            || head.transport == Proto::Udp
+                    })
+                {
+                    if let Some(candidate) = sample_qpc_anchor()
+                        .ok()
+                        .and_then(|clock| address.initial_packet_head(bytes, clock))
+                    {
+                        if queue_candidate_with_selected_reserve(
+                            &sender,
+                            &queued_candidates,
+                            candidate,
+                            bytes,
+                            address,
+                            received_ns,
+                        ) {
+                            continue;
+                        }
+                        stats
+                            .candidate_capacity_bypassed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                stats.record_bypass(reason);
+                if pass_new_owner {
+                    reinject(&handle, &stats, bytes, &address)?;
+                } else {
+                    packet_finished(&stats, PacketDisposition::Lost)?;
+                }
+                if !pass_new_owner {
+                    record_route(
+                        route_events.as_ref(),
+                        route.flow_id,
+                        RouteEventKind::PacketOmission {
+                            reason,
+                            disposition: "lost",
+                        },
+                    );
+                }
+                continue;
+            }
             if sender
-                .try_send(WorkPacket::Selected(tuple, bytes.to_vec(), address))
+                .try_send(WorkPacket::Selected(route, bytes.to_vec(), address))
                 .is_err()
             {
                 packet_finished(&stats, PacketDisposition::Lost)?;
+                record_route(
+                    route_events.as_ref(),
+                    route.flow_id,
+                    RouteEventKind::PacketOmission {
+                        reason: "selected-work-queue-saturated",
+                        disposition: "lost",
+                    },
+                );
                 let _ = handle.stop();
                 return Err(io::Error::other("selected packet queue saturated"));
             }
@@ -606,7 +700,7 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                         local: head.source,
                         remote: head.destination,
                     },
-                    &selected,
+                    address.timestamp_qpc,
                     &observer,
                     &ack_witnesses,
                     route_events.as_ref(),
@@ -634,37 +728,51 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 local: head.source,
                 remote: head.destination,
             };
-            let refused_endpoint = refused
+            let refused_epoch = refused
                 .lock()
                 .expect("refused route lock")
                 .get(&tuple)
                 .copied();
-            refused_endpoint.is_some()
-                && refused_endpoint
-                    == observer
+            refused_epoch.is_some_and(|epoch| {
+                epoch.contains_packet(address.timestamp_qpc)
+                    && observer
                         .lock()
                         .expect("socket observer lock")
-                        .current_owner_endpoint_id(tuple)
+                        .current_owner_epoch(tuple)
+                        == Some(epoch)
+            })
         });
-        let busy_unowned = connecting.load(Ordering::Acquire)
-            && head.as_ref().is_none_or(|head| {
-                let tuple = DirectTuple {
-                    transport: head.transport,
-                    local: head.source,
-                    remote: head.destination,
-                };
+        let proxy_endpoint = head.as_ref().is_some_and(|head| head.destination == proxy);
+        let helper_connecting = connecting.load(Ordering::Acquire);
+        let helper_bypass = head.as_ref().is_some_and(|head| {
+            let owner_pid = if helper_connecting && !proxy_endpoint {
                 observer
                     .lock()
                     .expect("socket observer lock")
-                    .current_owner_pid(tuple)
-                    .is_none_or(|pid| pid == std::process::id())
-            });
-        if !is_candidate || busy_unowned || is_excluded || is_refused {
+                    .current_owner_pid(DirectTuple {
+                        transport: head.transport,
+                        local: head.source,
+                        remote: head.destination,
+                    })
+            } else {
+                None
+            };
+            helper_packet_bypasses_candidate(
+                head.destination,
+                proxy,
+                helper_connecting,
+                owner_pid,
+                std::process::id(),
+            )
+        });
+        if !is_candidate || helper_bypass || is_excluded || is_refused {
             if is_refused {
                 stats.record_bypass("proxy-refused-flow");
             } else if is_excluded {
                 stats.record_bypass("helper-self-excluded");
-            } else if busy_unowned && is_candidate {
+            } else if proxy_endpoint && is_candidate {
+                stats.record_bypass("helper-proxy-endpoint");
+            } else if helper_bypass && is_candidate {
                 stats
                     .admission_busy_bypassed
                     .fetch_add(1, Ordering::Relaxed);
@@ -697,7 +805,7 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
 struct ActiveTcp {
     bridge: DirectTcpBridge,
     address: Address,
-    endpoint_id: u64,
+    epoch: SocketEpoch,
     receipt: RouteReceiptId,
     helper: DirectTuple,
     flow_id: u64,
@@ -707,6 +815,7 @@ struct ActiveTcp {
 
 struct PendingTcp {
     flow: OriginalFlow,
+    epoch: SocketEpoch,
     packet: Vec<u8>,
     address: Address,
     response_address: Address,
@@ -715,6 +824,7 @@ struct PendingTcp {
     proof: Arc<Mutex<DirectRouteProof>>,
     result: Receiver<Result<(std::net::TcpStream, u64), HelperFailure>>,
     worker: JoinHandle<()>,
+    cancelled: Arc<AtomicBool>,
     extra: Vec<(Vec<u8>, Address)>,
 }
 
@@ -735,6 +845,7 @@ fn hold_pending_packet(
     packet: Vec<u8>,
     address: Address,
     stats: &SharedStats,
+    route_events: Option<&RouteEventSink>,
 ) -> io::Result<()> {
     if pending.packet == packet || pending.extra.iter().any(|(held, _)| *held == packet) {
         // The first SYN is still held. A retransmission has no new payload to
@@ -746,8 +857,45 @@ fn hold_pending_packet(
     } else {
         stats.record_bypass("pending-packet-capacity-lost");
         packet_finished(stats, PacketDisposition::Lost)?;
+        record_route(
+            route_events,
+            pending.flow_id,
+            RouteEventKind::PacketOmission {
+                reason: "pending-packet-capacity-lost",
+                disposition: "lost",
+            },
+        );
     }
     Ok(())
+}
+
+fn retire_pending_tcp(
+    pending: PendingTcp,
+    stats: &SharedStats,
+    route_events: Option<&RouteEventSink>,
+    reason: &'static str,
+    retired_helpers: &mut Vec<JoinHandle<()>>,
+) -> io::Result<RouteReceiptId> {
+    pending.cancelled.store(true, Ordering::Release);
+    lose_pending_first_packet(stats, route_events, pending.flow_id, &pending.proof)?;
+    for _ in pending.extra {
+        packet_finished(stats, PacketDisposition::Lost)?;
+        record_route(
+            route_events,
+            pending.flow_id,
+            RouteEventKind::PacketOmission {
+                reason: "pending-packet-after-owner-retired",
+                disposition: "lost",
+            },
+        );
+    }
+    record_route(
+        route_events,
+        pending.flow_id,
+        RouteEventKind::Terminal { reason },
+    );
+    retired_helpers.push(pending.worker);
+    Ok(pending.receipt)
 }
 
 fn lose_pending_first_packet(
@@ -805,7 +953,7 @@ fn reinject_selected_first_packet(
 struct ActiveUdp {
     association: DirectUdpAssociation,
     address: Address,
-    endpoint_id: u64,
+    epoch: SocketEpoch,
     receipt: RouteReceiptId,
     relay: DirectTuple,
     control: DirectTuple,
@@ -820,10 +968,10 @@ struct ProcessRuntimeInputs {
     handle: Arc<Handle>,
     observer: Arc<Mutex<DirectSocketObserver>>,
     context: NativeObservationContext,
-    selected: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    selected: Arc<Mutex<BTreeMap<DirectTuple, SelectedRoute>>>,
     ack_witnesses: Arc<Mutex<BTreeMap<DirectTuple, AckWitness>>>,
     excluded: Arc<Mutex<BTreeSet<DirectTuple>>>,
-    refused: Arc<Mutex<BTreeMap<DirectTuple, u64>>>,
+    refused: Arc<Mutex<BTreeMap<DirectTuple, SocketEpoch>>>,
     connecting: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
     session_id: String,
@@ -1052,6 +1200,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let mut process_proof_observed_ns = None::<u64>;
     let mut active = BTreeMap::<DirectTuple, ActiveTcp>::new();
     let mut pending_tcp = BTreeMap::<DirectTuple, PendingTcp>::new();
+    let mut retired_helpers = Vec::<JoinHandle<()>>::new();
     let mut active_udp = BTreeMap::<DirectTuple, ActiveUdp>::new();
     let mut receipts = DirectReceiptLedger::new(session_id.clone(), max_flows);
     let mut issued_receipts = Vec::<RouteReceiptId>::new();
@@ -1063,6 +1212,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         .map_err(|_| io::Error::other("direct route startup was abandoned"))?;
     loop {
         stats.processor_progress();
+        let mut helper_index = 0;
+        while helper_index < retired_helpers.len() {
+            if retired_helpers[helper_index].is_finished() {
+                retired_helpers
+                    .swap_remove(helper_index)
+                    .join()
+                    .map_err(|_| io::Error::other("retired direct helper task panicked"))?;
+            } else {
+                helper_index += 1;
+            }
+        }
         let mut candidate_added = false;
         if last_ack_prune.elapsed() >= ACK_CLOSE_GRACE {
             ack_witnesses
@@ -1087,12 +1247,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     .expect("refused route lock")
                     .get(&head.tuple)
                     .copied()
-                    .is_some_and(|endpoint| {
-                        observer
-                            .lock()
-                            .expect("socket observer lock")
-                            .current_owner_endpoint_id(head.tuple)
-                            == Some(endpoint)
+                    .is_some_and(|epoch| {
+                        epoch.contains_packet(head.at_qpc)
+                            && observer
+                                .lock()
+                                .expect("socket observer lock")
+                                .current_owner_epoch(head.tuple)
+                                == Some(epoch)
                     })
                 {
                     stats.record_bypass("proxy-refused-flow");
@@ -1109,9 +1270,54 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     candidate_added = true;
                 }
             }
-            Ok(WorkPacket::Selected(tuple, packet, address)) => {
+            Ok(WorkPacket::Selected(route, packet, address)) => {
+                let tuple = route.epoch.tuple;
+                let current_route = selected
+                    .lock()
+                    .expect("selected route lock")
+                    .get(&tuple)
+                    .copied();
+                let current_owner = observer
+                    .lock()
+                    .expect("socket observer lock")
+                    .current_owner_epoch(tuple);
+                let target_epoch = pending_tcp
+                    .get(&tuple)
+                    .map(|pending| pending.epoch)
+                    .or_else(|| active.get(&tuple).map(|flow| flow.epoch))
+                    .or_else(|| active_udp.get(&tuple).map(|flow| flow.epoch));
+                let reason = selected_work_admission(
+                    route,
+                    current_route,
+                    current_owner,
+                    target_epoch,
+                    address.timestamp_qpc,
+                )
+                .err();
+                if let Some(reason) = reason {
+                    stats.record_bypass(reason);
+                    let pass_new_owner = current_owner.is_some_and(|owner| {
+                        owner != route.epoch && owner.contains_packet(address.timestamp_qpc)
+                    });
+                    if pass_new_owner {
+                        reinject(&handle, &stats, &packet, &address)?;
+                    } else {
+                        packet_finished(&stats, PacketDisposition::Lost)?;
+                    }
+                    if !pass_new_owner {
+                        record_route(
+                            route_events.as_ref(),
+                            route.flow_id,
+                            RouteEventKind::PacketOmission {
+                                reason,
+                                disposition: "lost",
+                            },
+                        );
+                    }
+                    continue;
+                }
                 if let Some(pending) = pending_tcp.get_mut(&tuple) {
-                    hold_pending_packet(pending, packet, address, &stats)?;
+                    hold_pending_packet(pending, packet, address, &stats, route_events.as_ref())?;
                     continue;
                 }
                 if !forward_active_packet(
@@ -1168,6 +1374,9 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     );
                     helper_panicked |= worker.join().is_err();
                 }
+                for worker in retired_helpers {
+                    helper_panicked |= worker.join().is_err();
+                }
                 connecting.store(false, Ordering::Release);
                 for receipt in issued_receipts {
                     receipts.retire(receipt).map_err(|error| {
@@ -1210,52 +1419,81 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         // Keep exact helper socket events for prompt pass-through. The
         // candidate decision rejects this PID before process binding, so a
         // stale snapshot cannot promote proxy traffic to target ownership.
-        for event in new_events
-            .iter()
-            .filter(|event| event.kind == super::direct_route::SocketEventKind::Close)
-        {
-            if refused
-                .lock()
-                .expect("refused route lock")
-                .get(&event.tuple)
-                .copied()
-                == Some(event.endpoint_id)
+        for event in &new_events {
+            if event.kind == super::direct_route::SocketEventKind::Close
+                && refused
+                    .lock()
+                    .expect("refused route lock")
+                    .get(&event.tuple)
+                    .copied()
+                    .is_some_and(|epoch| epoch.matches_event(*event))
             {
                 refused
                     .lock()
                     .expect("refused route lock")
                     .remove(&event.tuple);
             }
-            if selected
+            let selected_route = selected
                 .lock()
                 .expect("selected route lock")
                 .get(&event.tuple)
-                .copied()
-                != Some(event.endpoint_id)
-            {
+                .copied();
+            let Some(route) = selected_route else {
                 continue;
-            }
-            if let Some(witness) = ack_witnesses
-                .lock()
-                .expect("ACK witness lock")
-                .get_mut(&event.tuple)
+            };
+            let retired_reason = match event.kind {
+                super::direct_route::SocketEventKind::Open
+                    if event.at_qpc > route.epoch.open_qpc
+                        && SocketEpoch::from_open(*event) != route.epoch =>
+                {
+                    Some("competing-socket-open")
+                }
+                super::direct_route::SocketEventKind::Close
+                    if route.epoch.matches_event(*event) =>
+                {
+                    Some("socket-closed")
+                }
+                _ => None,
+            };
+            let Some(reason) = retired_reason else {
+                continue;
+            };
             {
-                if witness.endpoint_id == event.endpoint_id {
-                    witness.closed_at = Some(Instant::now());
+                let mut witnesses = ack_witnesses.lock().expect("ACK witness lock");
+                if let Some(witness) = witnesses.get_mut(&event.tuple) {
+                    if witness.epoch == route.epoch {
+                        if event.kind == super::direct_route::SocketEventKind::Close {
+                            witness.closed_at = Some(Instant::now());
+                            witness.close_qpc = Some(event.at_qpc);
+                        } else {
+                            // An overlapping OPEN makes return ACK ownership
+                            // ambiguous until the competing socket is resolved.
+                            witnesses.remove(&event.tuple);
+                        }
+                    }
                 }
             }
             selected
                 .lock()
                 .expect("selected route lock")
                 .remove(&event.tuple);
-            let retired = if let Some(flow) = active.remove(&event.tuple) {
-                debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+            let retired = if let Some(pending) = pending_tcp.remove(&event.tuple) {
+                debug_assert_eq!(pending.epoch, route.epoch);
+                context.retire_direct_helper_registration(&pending.flow);
+                connecting.store(!pending_tcp.is_empty(), Ordering::Release);
+                Some(retire_pending_tcp(
+                    pending,
+                    &stats,
+                    route_events.as_ref(),
+                    reason,
+                    &mut retired_helpers,
+                )?)
+            } else if let Some(flow) = active.remove(&event.tuple) {
+                debug_assert_eq!(flow.epoch, route.epoch);
                 record_route(
                     route_events.as_ref(),
                     flow.flow_id,
-                    RouteEventKind::Terminal {
-                        reason: "socket-closed",
-                    },
+                    RouteEventKind::Terminal { reason },
                 );
                 excluded
                     .lock()
@@ -1263,13 +1501,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     .remove(&flow.helper);
                 Some(flow.receipt)
             } else if let Some(flow) = active_udp.remove(&event.tuple) {
-                debug_assert_eq!(flow.endpoint_id, event.endpoint_id);
+                debug_assert_eq!(flow.epoch, route.epoch);
                 record_route(
                     route_events.as_ref(),
                     flow.flow_id,
-                    RouteEventKind::Terminal {
-                        reason: "socket-closed",
-                    },
+                    RouteEventKind::Terminal { reason },
                 );
                 let mut helpers = excluded.lock().expect("helper route lock");
                 helpers.remove(&flow.relay);
@@ -1391,11 +1627,23 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 }
                 CandidateDecision::Selected {
                     mut flow,
+                    epoch,
                     packet,
                     address,
                     received_ns,
                 } => {
                     stats.record_candidate_terminal_delay(received_ns);
+                    if !epoch.contains_packet(address.timestamp_qpc)
+                        || observer
+                            .lock()
+                            .expect("socket observer lock")
+                            .current_owner_epoch(flow.tuple)
+                            != Some(epoch)
+                    {
+                        stats.record_bypass("candidate-owner-epoch-changed-or-ambiguous");
+                        packet_finished(&stats, PacketDisposition::Lost)?;
+                        continue;
+                    }
                     // Exact socket and managed process ownership have already
                     // selected this target packet. Only now read its complete
                     // datagram for the passive original-packet join.
@@ -1418,30 +1666,63 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .expect("refused route lock")
                         .get(&flow.tuple)
                         .copied()
-                        == Some(flow.endpoint_id)
+                        == Some(epoch)
                     {
                         stats.record_bypass("proxy-refused-flow");
                         reinject(&handle, &stats, &packet, &address)?;
                         continue;
                     }
                     if let Some(pending) = pending_tcp.get_mut(&flow.tuple) {
-                        if pending.flow.endpoint_id == flow.endpoint_id {
-                            hold_pending_packet(pending, packet, address, &stats)?;
-                        } else {
-                            reinject(&handle, &stats, &packet, &address)?;
+                        if pending.epoch == epoch {
+                            hold_pending_packet(
+                                pending,
+                                packet,
+                                address,
+                                &stats,
+                                route_events.as_ref(),
+                            )?;
+                            continue;
                         }
-                        continue;
                     }
-                    let active_endpoint = if flow.tuple.transport == Proto::Udp {
-                        active_udp
+                    if let Some(stale) = pending_tcp.remove(&flow.tuple) {
+                        context.retire_direct_helper_registration(&stale.flow);
+                        let stale_route = SelectedRoute {
+                            epoch: stale.epoch,
+                            flow_id: stale.flow_id,
+                        };
+                        if selected
+                            .lock()
+                            .expect("selected route lock")
                             .get(&flow.tuple)
-                            .map(|existing| existing.endpoint_id)
+                            .copied()
+                            == Some(stale_route)
+                        {
+                            selected
+                                .lock()
+                                .expect("selected route lock")
+                                .remove(&flow.tuple);
+                        }
+                        let retired_receipt = retire_pending_tcp(
+                            stale,
+                            &stats,
+                            route_events.as_ref(),
+                            "owner-epoch-replaced-before-close-delivery",
+                            &mut retired_helpers,
+                        )?;
+                        receipts.retire(retired_receipt).map_err(|error| {
+                            io::Error::other(format!("retire replaced helper receipt: {error:?}"))
+                        })?;
+                        issued_receipts.retain(|issued| *issued != retired_receipt);
+                        connecting.store(!pending_tcp.is_empty(), Ordering::Release);
+                    }
+                    let active_epoch = if flow.tuple.transport == Proto::Udp {
+                        active_udp.get(&flow.tuple).map(|existing| existing.epoch)
                     } else {
-                        active.get(&flow.tuple).map(|existing| existing.endpoint_id)
+                        active.get(&flow.tuple).map(|existing| existing.epoch)
                     };
-                    if let Some(endpoint_id) = active_endpoint {
-                        let forwarded = endpoint_id == flow.endpoint_id
-                            && forward_active_packet(
+                    if let Some(existing_epoch) = active_epoch {
+                        if existing_epoch == epoch {
+                            let forwarded = forward_active_packet(
                                 flow.tuple,
                                 &packet,
                                 address,
@@ -1456,10 +1737,62 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     route_events: route_events.as_ref(),
                                 },
                             )?;
-                        if !forwarded {
-                            reinject(&handle, &stats, &packet, &address)?;
+                            if !forwarded {
+                                reinject(&handle, &stats, &packet, &address)?;
+                            }
+                            continue;
                         }
-                        continue;
+                        ack_witnesses
+                            .lock()
+                            .expect("ACK witness lock")
+                            .remove(&flow.tuple);
+                        if let Some(stale) = active.remove(&flow.tuple) {
+                            debug_assert_eq!(stale.epoch, existing_epoch);
+                            excluded
+                                .lock()
+                                .expect("helper route lock")
+                                .remove(&stale.helper);
+                            record_route(
+                                route_events.as_ref(),
+                                stale.flow_id,
+                                RouteEventKind::Terminal {
+                                    reason: "owner-epoch-replaced-before-close-delivery",
+                                },
+                            );
+                            receipts.retire(stale.receipt).map_err(|error| {
+                                io::Error::other(format!("retire replaced TCP receipt: {error:?}"))
+                            })?;
+                            issued_receipts.retain(|issued| *issued != stale.receipt);
+                        }
+                        if let Some(stale) = active_udp.remove(&flow.tuple) {
+                            debug_assert_eq!(stale.epoch, existing_epoch);
+                            let mut helpers = excluded.lock().expect("helper route lock");
+                            helpers.remove(&stale.relay);
+                            helpers.remove(&stale.control);
+                            record_route(
+                                route_events.as_ref(),
+                                stale.flow_id,
+                                RouteEventKind::Terminal {
+                                    reason: "owner-epoch-replaced-before-close-delivery",
+                                },
+                            );
+                            receipts.retire(stale.receipt).map_err(|error| {
+                                io::Error::other(format!("retire replaced UDP receipt: {error:?}"))
+                            })?;
+                            issued_receipts.retain(|issued| *issued != stale.receipt);
+                        }
+                        if selected
+                            .lock()
+                            .expect("selected route lock")
+                            .get(&flow.tuple)
+                            .copied()
+                            .is_some_and(|route| route.epoch == existing_epoch)
+                        {
+                            selected
+                                .lock()
+                                .expect("selected route lock")
+                                .remove(&flow.tuple);
+                        }
                     }
                     if active
                         .len()
@@ -1467,7 +1800,8 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         .saturating_add(pending_tcp.len())
                         >= max_flows
                         || (flow.tuple.transport == Proto::Tcp
-                            && pending_tcp.len() >= MAX_PENDING_HELPERS)
+                            && pending_tcp.len().saturating_add(retired_helpers.len())
+                                >= MAX_PENDING_HELPERS)
                     {
                         stats.record_bypass("direct-flow-capacity");
                         reinject(&handle, &stats, &packet, &address)?;
@@ -1532,7 +1866,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     },
                                 );
                                 stats.record_bypass("reply-interface-unavailable");
-                                if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
+                                if !mark_refused_flow(&refused, epoch) {
                                     reinject(&handle, &stats, &packet, &address)?;
                                     return Err(io::Error::other("refused route ledger full"));
                                 }
@@ -1605,7 +1939,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                     ))
                                 })?;
                                 stats.proxy_refused.fetch_add(1, Ordering::Relaxed);
-                                if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
+                                if !mark_refused_flow(&refused, epoch) {
                                     reinject(&handle, &stats, &packet, &address)?;
                                     return Err(io::Error::other("refused route ledger full"));
                                 }
@@ -1673,10 +2007,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 "first selected UDP packet: {error}"
                             )));
                         }
-                        selected
-                            .lock()
-                            .expect("selected route lock")
-                            .insert(flow.tuple, flow.endpoint_id);
+                        selected.lock().expect("selected route lock").insert(
+                            flow.tuple,
+                            SelectedRoute {
+                                epoch,
+                                flow_id: helper_id,
+                            },
+                        );
                         packet_finished(&stats, PacketDisposition::Consumed)?;
                         proof
                             .lock()
@@ -1709,7 +2046,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             ActiveUdp {
                                 association,
                                 address: response_address,
-                                endpoint_id: flow.endpoint_id,
+                                epoch,
                                 receipt,
                                 relay,
                                 control,
@@ -1771,7 +2108,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 },
                             );
                             stats.record_bypass("reply-interface-unavailable");
-                            if !mark_refused_flow(&refused, flow.tuple, flow.endpoint_id) {
+                            if !mark_refused_flow(&refused, epoch) {
                                 reinject(&handle, &stats, &packet, &address)?;
                                 return Err(io::Error::other("refused route ledger full"));
                             }
@@ -1794,6 +2131,8 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let task_context = context.clone();
                     let task_flow = flow.clone();
                     let task_password = password.clone();
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let worker_cancelled = Arc::clone(&cancelled);
                     let worker = match thread::Builder::new()
                         .name("fragcap-direct-helper".into())
                         .spawn(move || {
@@ -1804,7 +2143,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                 task_password.as_bytes(),
                                 TCP_PROXY_CONNECT_TIMEOUT,
                                 |stream| {
-                                    task_context
+                                    if worker_cancelled.load(Ordering::Acquire) {
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::Interrupted,
+                                            "socket owner retired before helper registration",
+                                        ));
+                                    }
+                                    let registered = task_context
                                         .register_direct_helper(
                                             "tcp",
                                             stream.local_addr()?,
@@ -1813,7 +2158,16 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                                             helper_open_earliest,
                                             unix_now_ns()?,
                                         )
-                                        .map_err(io::Error::other)
+                                        .map_err(io::Error::other);
+                                    if worker_cancelled.load(Ordering::Acquire) {
+                                        task_context.retire_direct_helper_registration(&task_flow);
+                                        Err(io::Error::new(
+                                            io::ErrorKind::Interrupted,
+                                            "socket owner retired during helper registration",
+                                        ))
+                                    } else {
+                                        registered
+                                    }
                                 },
                             )
                             .map(|stream| (stream, began.elapsed().as_millis() as u64));
@@ -1831,14 +2185,18 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         }
                     };
                     issued_receipts.push(receipt);
-                    selected
-                        .lock()
-                        .expect("selected route lock")
-                        .insert(flow.tuple, flow.endpoint_id);
+                    selected.lock().expect("selected route lock").insert(
+                        flow.tuple,
+                        SelectedRoute {
+                            epoch,
+                            flow_id: helper_id,
+                        },
+                    );
                     pending_tcp.insert(
                         flow.tuple,
                         PendingTcp {
                             flow,
+                            epoch,
                             packet,
                             address,
                             response_address,
@@ -1847,6 +2205,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             proof,
                             result: result_receiver,
                             worker,
+                            cancelled,
                             extra: Vec::new(),
                         },
                     );
@@ -1886,6 +2245,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
             };
             let PendingTcp {
                 flow,
+                epoch,
                 packet,
                 address,
                 response_address,
@@ -1898,8 +2258,8 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
             if observer
                 .lock()
                 .expect("socket observer lock")
-                .current_owner_endpoint_id(tuple)
-                != Some(flow.endpoint_id)
+                .current_owner_epoch(tuple)
+                != Some(epoch)
             {
                 match &outcome {
                     Ok((_, elapsed_ms)) => record_route(
@@ -1933,8 +2293,17 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 receipts.retire(receipt).map_err(|error| {
                     io::Error::other(format!("retire stale helper receipt: {error:?}"))
                 })?;
+                context.retire_direct_helper_registration(&flow);
                 issued_receipts.retain(|issued| *issued != receipt);
-                selected.lock().expect("selected route lock").remove(&tuple);
+                if selected
+                    .lock()
+                    .expect("selected route lock")
+                    .get(&tuple)
+                    .copied()
+                    == Some(SelectedRoute { epoch, flow_id })
+                {
+                    selected.lock().expect("selected route lock").remove(&tuple);
+                }
                 lose_pending_first_packet(&stats, route_events.as_ref(), flow_id, &proof)?;
                 for _ in extra {
                     packet_finished(&stats, PacketDisposition::Lost)?;
@@ -1980,9 +2349,18 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     receipts.retire(receipt).map_err(|error| {
                         io::Error::other(format!("retire failed helper receipt: {error:?}"))
                     })?;
+                    context.retire_direct_helper_registration(&flow);
                     issued_receipts.retain(|issued| *issued != receipt);
-                    selected.lock().expect("selected route lock").remove(&tuple);
-                    if !mark_refused_flow(&refused, tuple, flow.endpoint_id) {
+                    if selected
+                        .lock()
+                        .expect("selected route lock")
+                        .get(&tuple)
+                        .copied()
+                        == Some(SelectedRoute { epoch, flow_id })
+                    {
+                        selected.lock().expect("selected route lock").remove(&tuple);
+                    }
+                    if !mark_refused_flow(&refused, epoch) {
                         reinject_selected_first_packet(
                             &handle,
                             &stats,
@@ -2058,7 +2436,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                 ActiveTcp {
                     bridge,
                     address: response_address,
-                    endpoint_id: flow.endpoint_id,
+                    epoch,
                     receipt,
                     helper: helper_tuple,
                     flow_id,
@@ -2072,10 +2450,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     witnesses.insert(
                         tuple,
                         AckWitness {
-                            endpoint_id: flow.endpoint_id,
+                            epoch,
                             flow_id,
                             proof,
                             closed_at: None,
+                            close_qpc: None,
                         },
                     );
                 } else {
@@ -2283,6 +2662,7 @@ impl DirectPacketRuntime {
                     let result = receive_packets(ReceiveRuntimeInputs {
                         handle: Arc::clone(&handle),
                         context: receive_context,
+                        proxy,
                         sender,
                         queued_candidates,
                         observer,
@@ -2559,6 +2939,236 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_work_captured_before_close_cannot_enter_reused_tuple_bridge() {
+        let tuple = DirectTuple {
+            transport: Proto::Tcp,
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+        };
+        let a = SelectedRoute {
+            epoch: SocketEpoch {
+                tuple,
+                endpoint_id: 7,
+                pid: 42,
+                open_qpc: 100,
+            },
+            flow_id: 1,
+        };
+        let b = SelectedRoute {
+            epoch: SocketEpoch {
+                open_qpc: 200,
+                ..a.epoch
+            },
+            flow_id: 2,
+        };
+        assert!(selected_work_admission(a, Some(a), Some(a.epoch), Some(a.epoch), 125).is_ok());
+        assert_eq!(
+            selected_work_admission(a, None, None, None, 125),
+            Err("selected-route-generation-retired")
+        );
+        assert_eq!(
+            selected_work_admission(a, Some(b), Some(b.epoch), Some(b.epoch), 125),
+            Err("selected-route-generation-retired")
+        );
+        assert_eq!(
+            selected_work_admission(a, Some(b), Some(b.epoch), Some(b.epoch), 225),
+            Err("selected-route-generation-retired")
+        );
+        assert_eq!(
+            selected_packet_admission(b, Some(b.epoch), 199),
+            Err("selected-packet-before-open-or-clock-ambiguous")
+        );
+        assert!(selected_work_admission(b, Some(b), Some(b.epoch), Some(b.epoch), 225).is_ok());
+        assert_eq!(
+            selected_packet_admission(b, None, 225),
+            Err("selected-owner-epoch-changed-or-ambiguous")
+        );
+    }
+
+    #[test]
+    fn closed_pending_helper_retires_receipt_and_frees_same_tuple() {
+        let tuple = DirectTuple {
+            transport: Proto::Tcp,
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+        };
+        let flow = OriginalFlow {
+            tuple,
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-1".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let mut receipts = DirectReceiptLedger::new("test".into(), 2);
+        let a_receipt = receipts.issue(flow.clone(), 1_000).unwrap();
+        let stats = SharedStats::new();
+        packet_received(&stats).unwrap();
+        packet_received(&stats).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = thread::spawn(move || {
+            while !worker_cancelled.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+        });
+        let (_sender, result) = mpsc::channel();
+        let pending = PendingTcp {
+            flow: flow.clone(),
+            epoch: SocketEpoch {
+                tuple,
+                endpoint_id: 7,
+                pid: 42,
+                open_qpc: 90,
+            },
+            packet: vec![1],
+            address: Address::default(),
+            response_address: Address::default(),
+            receipt: a_receipt,
+            flow_id: 1,
+            proof: Arc::new(Mutex::new(DirectRouteProof::default())),
+            result,
+            worker,
+            cancelled: Arc::clone(&cancelled),
+            extra: vec![(vec![2], Address::default())],
+        };
+        let mut retired = Vec::new();
+        let retired_receipt =
+            retire_pending_tcp(pending, &stats, None, "socket-closed", &mut retired).unwrap();
+        assert_eq!(retired_receipt, a_receipt);
+        receipts.retire(retired_receipt).unwrap();
+        assert!(cancelled.load(Ordering::Acquire));
+        let mut b = flow;
+        b.endpoint_id = 7; // Numeric endpoint reuse is allowed after the old CLOSE.
+        b.first_packet_at_ns = 200;
+        let b_receipt = receipts.issue(b, 1_000).unwrap();
+        assert_ne!(a_receipt, b_receipt);
+        assert!(matches!(
+            receipts.consume(a_receipt, "test", tuple, 1, 300),
+            Err(crate::deep_capture::direct_route::ReceiptError::Unknown)
+        ));
+        assert_eq!(retired.len(), 1);
+        retired.pop().unwrap().join().unwrap();
+        let accounting = *stats.packets.lock().unwrap();
+        assert_eq!(accounting.received, 2);
+        assert_eq!(accounting.lost, 2);
+        accounting.release().unwrap();
+    }
+
+    #[test]
+    fn pending_helper_keeps_concurrent_unknown_game_syns_and_bypasses_exact_proxy() {
+        use crate::deep_capture::direct_route::{DirectPacketHead, SocketEventKind};
+
+        let proxy: SocketAddr = "127.0.0.1:1080".parse().unwrap();
+        let other_loopback: SocketAddr = "127.0.0.1:1081".parse().unwrap();
+        let remote: SocketAddr = "198.51.100.20:443".parse().unwrap();
+        let helper_pid = 99;
+        assert!(helper_packet_bypasses_candidate(
+            proxy, proxy, true, None, helper_pid
+        ));
+        assert!(helper_packet_bypasses_candidate(
+            proxy, proxy, false, None, helper_pid
+        ));
+        assert!(helper_packet_bypasses_candidate(
+            remote,
+            proxy,
+            true,
+            Some(helper_pid),
+            helper_pid,
+        ));
+        assert!(!helper_packet_bypasses_candidate(
+            remote, proxy, true, None, helper_pid
+        ));
+        assert!(!helper_packet_bypasses_candidate(
+            remote,
+            proxy,
+            true,
+            Some(12),
+            helper_pid,
+        ));
+        assert!(!helper_packet_bypasses_candidate(
+            other_loopback,
+            proxy,
+            true,
+            None,
+            helper_pid,
+        ));
+
+        let evidence = CaptureProcessEvidence {
+            events: vec![
+                ProcessEvent::started(10, 1, "platform.exe", "", Timestamp::from_nanos(1000)),
+                ProcessEvent::started(12, 10, "client.exe", "", Timestamp::from_nanos(1200)),
+            ],
+            launch_pid: Some(10),
+            launch_at: Some(Timestamp::from_nanos(1000)),
+            stage_transitions: vec![StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid: 12,
+                role: "client".into(),
+                stage: None,
+                at: Timestamp::from_nanos(1220),
+            }],
+            watcher_report: Some(WatcherReport::default()),
+            ..Default::default()
+        };
+        let mut candidates = CandidateBuffer::new(2, 128, CANDIDATE_WAIT_NS).unwrap();
+        let mut socket_events = Vec::new();
+        for (index, port) in [40000u16, 40001u16].into_iter().enumerate() {
+            assert!(!helper_packet_bypasses_candidate(
+                remote, proxy, true, None, helper_pid
+            ));
+            let tuple = DirectTuple {
+                transport: Proto::Tcp,
+                local: SocketAddr::from(([127, 0, 0, 1], port)),
+                remote,
+            };
+            candidates
+                .enqueue(
+                    DirectPacketHead {
+                        tuple,
+                        at_qpc: 101,
+                        at_unix_ns: 1300,
+                        clock_error_ns: 1,
+                        initial: true,
+                        packet_digest: Some([index as u8; 32]),
+                    },
+                    vec![index as u8 + 1],
+                    port,
+                    0,
+                )
+                .ok()
+                .expect("unknown owner must enter the candidate buffer");
+            socket_events.push(DirectSocketEvent {
+                tuple,
+                endpoint_id: index as u64 + 1,
+                pid: 12,
+                at_qpc: 100,
+                at_unix_ns: 1250,
+                clock_error_ns: 1000,
+                kind: SocketEventKind::Open,
+            });
+        }
+        assert!(candidates
+            .resolve(None, &[], 1_000_000, helper_pid)
+            .is_empty());
+        assert_eq!(candidates.len(), 2);
+        let decisions = candidates.resolve(Some(&evidence), &socket_events, 2_000_000, helper_pid);
+        assert_eq!(decisions.len(), 2);
+        for (index, decision) in decisions.into_iter().enumerate() {
+            let CandidateDecision::Selected { flow, address, .. } = decision else {
+                panic!("both exact game sockets must be selected")
+            };
+            assert_eq!(flow.pid, 12);
+            assert_eq!(flow.endpoint_id, index as u64 + 1);
+            assert_eq!(address, [40000u16, 40001u16][index]);
+        }
+        assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
     fn handshake_ack_does_not_acknowledge_returned_payload() {
         fn packet(sequence: u32, acknowledgment: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
             let mut packet = vec![0u8; 40 + payload.len()];
@@ -2602,23 +3212,36 @@ mod tests {
     }
 
     #[test]
-    fn returned_ack_witness_rejects_reused_owner_and_expired_close() {
+    fn returned_ack_witness_uses_capture_qpc_across_close_and_reuse() {
         let now = Instant::now();
-        let witness = AckWitness {
+        let tuple = DirectTuple {
+            transport: Proto::Tcp,
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+        };
+        let epoch = SocketEpoch {
+            tuple,
             endpoint_id: 7,
+            pid: 42,
+            open_qpc: 100,
+        };
+        let reused = SocketEpoch {
+            open_qpc: 201,
+            ..epoch
+        };
+        let witness = AckWitness {
+            epoch,
             flow_id: 1,
             proof: Arc::new(Mutex::new(DirectRouteProof::default())),
             closed_at: Some(now),
+            close_qpc: Some(200),
         };
-        assert!(witness.accepts_owner(Some(7), None, now));
-        assert!(witness.accepts_owner(None, Some(7), now));
-        assert!(witness.accepts_owner(None, None, now));
-        assert!(!witness.accepts_owner(Some(8), Some(7), now));
-        assert!(!witness.accepts_owner(
-            None,
-            None,
-            now + ACK_CLOSE_GRACE + Duration::from_millis(1)
-        ));
+        assert!(witness.accepts_owner(Some(epoch), 150));
+        assert!(witness.accepts_owner(None, 150));
+        assert!(witness.accepts_owner(Some(reused), 150));
+        assert!(!witness.accepts_owner(Some(reused), 200));
+        assert!(!witness.accepts_owner(Some(reused), 210));
+        assert!(!witness.accepts_owner(Some(reused), 100));
     }
     use std::{
         io::{BufRead, BufReader, Read, Write},
@@ -3198,7 +3821,15 @@ mod tests {
         );
         assert!(sender
             .try_send(WorkPacket::Selected(
-                tuple,
+                SelectedRoute {
+                    epoch: SocketEpoch {
+                        tuple,
+                        endpoint_id: 7,
+                        pid: 42,
+                        open_qpc: 1,
+                    },
+                    flow_id: 1,
+                },
                 b"selected".to_vec(),
                 Address::default(),
             ))

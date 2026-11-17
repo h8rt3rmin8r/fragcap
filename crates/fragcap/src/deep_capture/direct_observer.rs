@@ -13,7 +13,7 @@ use std::{
 };
 
 use super::{
-    direct_route::{DirectSocketEvent, DirectTuple, SocketEventKind},
+    direct_route::{DirectSocketEvent, DirectTuple, SocketEpoch, SocketEventKind},
     windivert::{
         sample_qpc_anchor, Address, Api, Handle, FLAG_RECV_ONLY, FLAG_SNIFF, SOCKET_LAYER,
     },
@@ -21,20 +21,79 @@ use super::{
 
 const SOCKET_FILTER: &str = "(event == CONNECT or event == CLOSE) and (tcp or udp)";
 
+#[derive(Default)]
+struct OwnerLedger {
+    by_tuple: BTreeMap<DirectTuple, Vec<SocketEpoch>>,
+    live_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurrentOwner {
+    Absent,
+    Unique(SocketEpoch),
+    Ambiguous,
+}
+
+impl OwnerLedger {
+    fn state(&self, tuple: DirectTuple) -> CurrentOwner {
+        match self.by_tuple.get(&tuple).map(Vec::as_slice) {
+            None | Some([]) => CurrentOwner::Absent,
+            Some([epoch]) => CurrentOwner::Unique(*epoch),
+            Some(_) => CurrentOwner::Ambiguous,
+        }
+    }
+
+    fn unique_epoch(&self, tuple: DirectTuple) -> Option<SocketEpoch> {
+        match self.state(tuple) {
+            CurrentOwner::Unique(epoch) => Some(epoch),
+            CurrentOwner::Absent | CurrentOwner::Ambiguous => None,
+        }
+    }
+}
+
 fn update_current_owner(
-    owners: &mut BTreeMap<DirectTuple, (u64, u32)>,
+    owners: &mut OwnerLedger,
     event: DirectSocketEvent,
     capacity: usize,
 ) -> bool {
     match event.kind {
-        SocketEventKind::Open if owners.len() < capacity || owners.contains_key(&event.tuple) => {
-            owners.insert(event.tuple, (event.endpoint_id, event.pid));
+        SocketEventKind::Open => {
+            if owners.live_count >= capacity {
+                return false;
+            }
+            owners
+                .by_tuple
+                .entry(event.tuple)
+                .or_default()
+                .push(SocketEpoch::from_open(event));
+            owners.live_count += 1;
             true
         }
-        SocketEventKind::Open => false,
         SocketEventKind::Close => {
-            if owners.get(&event.tuple) == Some(&(event.endpoint_id, event.pid)) {
-                owners.remove(&event.tuple);
+            if let Some(epochs) = owners.by_tuple.get_mut(&event.tuple) {
+                let mut unique = None;
+                let mut ambiguous = false;
+                for (index, epoch) in epochs.iter().enumerate() {
+                    if epoch.matches_event(event) {
+                        if unique.is_some() {
+                            ambiguous = true;
+                            break;
+                        }
+                        unique = Some(index);
+                    }
+                }
+                // A reused endpoint/PID with two eligible OPENs is
+                // indistinguishable at CLOSE. Preserve ambiguity rather than
+                // guessing which socket generation ended.
+                if !ambiguous {
+                    if let Some(index) = unique {
+                        epochs.remove(index);
+                        owners.live_count -= 1;
+                    }
+                }
+                if epochs.is_empty() {
+                    owners.by_tuple.remove(&event.tuple);
+                }
             }
             true
         }
@@ -62,7 +121,7 @@ struct Counters {
 pub struct DirectSocketObserver {
     handle: Arc<Handle>,
     events: Arc<Mutex<VecDeque<DirectSocketEvent>>>,
-    current_owners: Arc<Mutex<BTreeMap<DirectTuple, (u64, u32)>>>,
+    current_owners: Arc<Mutex<OwnerLedger>>,
     counters: Arc<Counters>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
@@ -78,7 +137,7 @@ impl DirectSocketObserver {
         let handle =
             Arc::new(api.open(SOCKET_FILTER, SOCKET_LAYER, FLAG_SNIFF | FLAG_RECV_ONLY)?);
         let events = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
-        let current_owners = Arc::new(Mutex::new(BTreeMap::new()));
+        let current_owners = Arc::new(Mutex::new(OwnerLedger::default()));
         let endpoint_tuples = Arc::new(Mutex::new(BTreeMap::<(u64, u32), DirectTuple>::new()));
         let counters = Arc::new(Counters::default());
         let worker_handle = Arc::clone(&handle);
@@ -148,6 +207,10 @@ impl DirectSocketObserver {
                                 clock_error_ns,
                                 kind,
                             };
+                            if event.at_qpc <= 0 {
+                                worker_counters.clock_lost.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
                             {
                                 let mut owners =
                                     worker_owners.lock().expect("socket owner map lock");
@@ -190,19 +253,29 @@ impl DirectSocketObserver {
     }
 
     pub fn current_owner_pid(&self, tuple: DirectTuple) -> Option<u32> {
-        self.current_owners
-            .lock()
-            .expect("socket owner map lock")
-            .get(&tuple)
-            .map(|owner| owner.1)
+        self.current_owner_epoch(tuple).map(|owner| owner.pid)
     }
 
+    #[cfg(test)]
     pub fn current_owner_endpoint_id(&self, tuple: DirectTuple) -> Option<u64> {
+        self.current_owner_epoch(tuple)
+            .map(|owner| owner.endpoint_id)
+    }
+
+    /// Returns one live generation only. Two overlapping OPENs sharing a
+    /// tuple are ambiguous even when their endpoint IDs differ.
+    pub fn current_owner_epoch(&self, tuple: DirectTuple) -> Option<SocketEpoch> {
         self.current_owners
             .lock()
             .expect("socket owner map lock")
-            .get(&tuple)
-            .map(|owner| owner.0)
+            .unique_epoch(tuple)
+    }
+
+    pub fn current_owner_state(&self, tuple: DirectTuple) -> CurrentOwner {
+        self.current_owners
+            .lock()
+            .expect("socket owner map lock")
+            .state(tuple)
     }
 
     pub fn stats(&self) -> SocketObserverStats {
@@ -248,38 +321,131 @@ mod tests {
             local: "127.0.0.1:41001".parse().unwrap(),
             remote: "127.0.0.1:41002".parse().unwrap(),
         };
-        let event = |endpoint_id, pid, kind| DirectSocketEvent {
+        let event = |endpoint_id, pid, at_qpc, kind| DirectSocketEvent {
             tuple,
             endpoint_id,
             pid,
-            at_qpc: 1,
+            at_qpc,
             at_unix_ns: 1,
             clock_error_ns: 0,
             kind,
         };
-        let mut owners = BTreeMap::new();
+        let mut owners = OwnerLedger::default();
         assert!(update_current_owner(
             &mut owners,
-            event(7, 42, SocketEventKind::Open),
+            event(7, 42, 1, SocketEventKind::Open),
             2
         ));
         assert!(update_current_owner(
             &mut owners,
-            event(8, 99, SocketEventKind::Open),
+            event(8, 99, 2, SocketEventKind::Open),
             2
         ));
         assert!(update_current_owner(
             &mut owners,
-            event(7, 42, SocketEventKind::Close),
+            event(7, 42, 3, SocketEventKind::Close),
             2
         ));
-        assert_eq!(owners.get(&tuple), Some(&(8, 99)));
+        assert_eq!(
+            owners.by_tuple.get(&tuple),
+            Some(&vec![SocketEpoch {
+                tuple,
+                endpoint_id: 8,
+                pid: 99,
+                open_qpc: 2,
+            }])
+        );
         assert!(update_current_owner(
             &mut owners,
-            event(8, 99, SocketEventKind::Close),
+            event(8, 99, 4, SocketEventKind::Close),
             2
         ));
-        assert!(owners.is_empty());
+        assert!(owners.by_tuple.is_empty());
+        assert_eq!(owners.live_count, 0);
+    }
+
+    #[test]
+    fn same_endpoint_id_reuse_is_a_distinct_generation_and_closes_normally() {
+        let tuple = DirectTuple {
+            transport: fragcap_core::Proto::Tcp,
+            local: "127.0.0.1:41001".parse().unwrap(),
+            remote: "127.0.0.1:41002".parse().unwrap(),
+        };
+        let event = |at_qpc, kind| DirectSocketEvent {
+            tuple,
+            endpoint_id: 7,
+            pid: 42,
+            at_qpc,
+            at_unix_ns: at_qpc,
+            clock_error_ns: 0,
+            kind,
+        };
+        let mut owners = OwnerLedger::default();
+        assert!(update_current_owner(
+            &mut owners,
+            event(100, SocketEventKind::Open),
+            2
+        ));
+        assert!(update_current_owner(
+            &mut owners,
+            event(150, SocketEventKind::Close),
+            2
+        ));
+        assert!(update_current_owner(
+            &mut owners,
+            event(200, SocketEventKind::Open),
+            2
+        ));
+        assert_eq!(owners.unique_epoch(tuple).unwrap().open_qpc, 200);
+        assert!(update_current_owner(
+            &mut owners,
+            event(300, SocketEventKind::Close),
+            2
+        ));
+        assert!(owners.unique_epoch(tuple).is_none());
+        assert_eq!(owners.live_count, 0);
+    }
+
+    #[test]
+    fn overlapping_open_is_ambiguous_even_with_reused_endpoint_and_pid() {
+        let tuple = DirectTuple {
+            transport: fragcap_core::Proto::Udp,
+            local: "127.0.0.1:41001".parse().unwrap(),
+            remote: "127.0.0.1:41002".parse().unwrap(),
+        };
+        let event = |at_qpc, kind| DirectSocketEvent {
+            tuple,
+            endpoint_id: 7,
+            pid: 42,
+            at_qpc,
+            at_unix_ns: at_qpc,
+            clock_error_ns: 0,
+            kind,
+        };
+        let mut owners = OwnerLedger::default();
+        assert!(update_current_owner(
+            &mut owners,
+            event(100, SocketEventKind::Open),
+            2
+        ));
+        assert!(update_current_owner(
+            &mut owners,
+            event(200, SocketEventKind::Open),
+            2
+        ));
+        assert!(owners.unique_epoch(tuple).is_none());
+        assert!(update_current_owner(
+            &mut owners,
+            event(250, SocketEventKind::Close),
+            2
+        ));
+        assert!(owners.unique_epoch(tuple).is_none());
+        assert_eq!(owners.live_count, 2);
+        assert!(!update_current_owner(
+            &mut owners,
+            event(300, SocketEventKind::Open),
+            2
+        ));
     }
 
     #[test]

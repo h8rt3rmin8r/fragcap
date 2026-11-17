@@ -733,10 +733,19 @@ mod tests {
         let mut client_sent = false;
         let mut response = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        for tick in 0..2_000 {
-            assert!(std::time::Instant::now() < deadline, "bridge stalled");
+        let mut tick = 0;
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bridge stalled: client_sent={client_sent}, response_bytes={}, client_send_closed={}, transferred={:?}",
+                response.len(),
+                bridge.client_send_closed,
+                bridge.transferred_bytes(),
+            );
+            let mut progressed = false;
             iface.poll(Instant::from_millis(tick), &mut device, &mut sockets);
             while let Some(packet) = device.pop_egress() {
+                progressed = true;
                 for reply in bridge
                     .ingest_diverted(&packet, false, false, true, tick)
                     .unwrap()
@@ -749,19 +758,27 @@ mod tests {
                 assert_eq!(client.send_slice(b"packet-to-proxy").unwrap(), 15);
                 client.close();
                 client_sent = true;
+                progressed = true;
             }
             let mut buffer = [0; 64];
             if client.can_recv() {
                 let count = client.recv_slice(&mut buffer).unwrap();
                 response.extend_from_slice(&buffer[..count]);
+                progressed |= count != 0;
             }
             for reply in bridge.poll(tick).unwrap() {
                 device.push(&reply).unwrap();
+                progressed = true;
             }
             if response == b"proxy-to-packet" {
                 break;
             }
-            thread::yield_now();
+            tick += 1;
+            if progressed {
+                thread::yield_now();
+            } else {
+                thread::sleep(Duration::from_millis(1));
+            }
         }
         assert!(client_sent && bridge.client_send_closed);
         assert_eq!(response, b"proxy-to-packet");
