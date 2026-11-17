@@ -15,7 +15,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::core::GUID;
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SUCCESS};
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+};
 use windows_sys::Win32::System::Diagnostics::Etw::{
     ControlTraceW, EnableTraceEx2, StartTraceW, ENABLE_TRACE_PARAMETERS,
     EVENT_CONTROL_CODE_DISABLE_PROVIDER, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
@@ -103,6 +105,7 @@ pub struct Session {
     /// successful read means "none observed yet", not "known lossless".
     last_events: AtomicU64,
     last_buffers: AtomicU64,
+    stopped: bool,
 }
 
 impl std::fmt::Debug for Session {
@@ -167,6 +170,7 @@ impl Session {
             name: wide,
             last_events: AtomicU64::new(0),
             last_buffers: AtomicU64::new(0),
+            stopped: false,
         };
 
         // SAFETY: the session started, so the handle is valid. The provider
@@ -210,6 +214,12 @@ impl Session {
     /// successful read the cached figures are zero, which is honest: none has
     /// been observed.
     pub fn lost(&self) -> (u64, u64) {
+        if self.stopped {
+            return (
+                self.last_events.load(Ordering::Relaxed),
+                self.last_buffers.load(Ordering::Relaxed),
+            );
+        }
         let mut props = TraceProps::boxed();
 
         // SAFETY: the handle is valid for the lifetime of `self`, and `props`
@@ -235,18 +245,16 @@ impl Session {
         self.last_buffers.store(buffers, Ordering::Relaxed);
         (events, buffers)
     }
-}
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        // A trace session outlives the process that started it. Leaving one
-        // running is a resource leak the operator cannot see and cannot easily
-        // find, so this is not best-effort cleanup: it is the only place the
-        // session is ever stopped.
-
-        // SAFETY: the handle was returned by a successful `StartTraceW` and has
-        // not been closed. Failures are ignored because there is nothing left
-        // to do about them at drop time.
+    /// Stop only this session while its name and real-time consumer remain owned.
+    /// The controller STOP flushes the final buffers; the consumer drains them
+    /// before its trace handle is closed and joined. Drop retries only if STOP
+    /// did not establish that the session ended.
+    pub(super) fn stop_owned(&mut self) -> Result<(), u32> {
+        if self.stopped {
+            return Ok(());
+        }
+        // SAFETY: this handle was returned by StartTraceW for this Session.
         unsafe {
             EnableTraceEx2(
                 self.handle,
@@ -259,18 +267,44 @@ impl Drop for Session {
                 std::ptr::null::<ENABLE_TRACE_PARAMETERS>() as *const _,
             );
         }
-
         let mut props = TraceProps::boxed();
-        // SAFETY: the handle is valid and `props` is live and correctly sized
-        // and aligned for the call.
-        unsafe {
+        // SAFETY: the owned handle and session name are live for this call.
+        let rc = unsafe {
             ControlTraceW(
                 self.handle,
                 self.name.as_ptr(),
                 TraceProps::as_ptr(&mut props),
                 EVENT_TRACE_CONTROL_STOP,
-            );
+            )
+        };
+        if rc == ERROR_SUCCESS {
+            self.last_events
+                .fetch_max(props.props.EventsLost as u64, Ordering::Relaxed);
+            self.last_buffers
+                .fetch_max(props.props.RealTimeBuffersLost as u64, Ordering::Relaxed);
+            self.stopped = true;
+            return Ok(());
         }
+        if rc == ERROR_MORE_DATA {
+            // Microsoft documents that STOP has already taken effect even when
+            // the result buffer cannot hold all returned properties.
+            self.stopped = true;
+            return Ok(());
+        }
+        if rc == ERROR_WMI_INSTANCE_NOT_FOUND {
+            // It was not ours to stop any longer. Preserve the authority failure
+            // for the caller, but do not retry a now-invalid session handle.
+            self.stopped = true;
+        }
+        Err(rc)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // A trace session outlives its creator process. Keep the fallback for
+        // early-return paths and for a failed explicit stop.
+        let _ = self.stop_owned();
     }
 }
 

@@ -35,6 +35,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::packet::CapturedPacket;
 use crate::stats::CaptureStats;
@@ -47,6 +48,13 @@ pub(crate) enum Item {
     /// The acquisition side finished, carrying its final counters. Sent exactly
     /// once, and exempt from the capacity bound.
     End(Box<CaptureStats>),
+}
+
+/// A timed consumer read distinguishes an idle open producer from completion.
+pub(crate) enum TimedItem {
+    Item(Item),
+    Timeout,
+    Closed,
 }
 
 /// The state both halves share, guarded by one mutex.
@@ -197,6 +205,31 @@ impl Consumer {
             shared = cvar
                 .wait(shared)
                 .expect("the buffer mutex is never poisoned");
+        }
+    }
+
+    /// Wait at most `timeout` for another item while the output thread has
+    /// deferred causal decisions to reconsider. The producer's push still
+    /// holds the mutex only for a queue operation and wakes this wait.
+    pub(crate) fn next_and_evicted_timeout(&self, timeout: Duration) -> (TimedItem, u64) {
+        let deadline = Instant::now() + timeout;
+        let (lock, cvar) = &*self.shared;
+        let mut shared = lock.lock().expect("the buffer mutex is never poisoned");
+        loop {
+            if let Some(item) = shared.queue.pop_front() {
+                return (TimedItem::Item(item), shared.evicted);
+            }
+            if !shared.open {
+                return (TimedItem::Closed, shared.evicted);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return (TimedItem::Timeout, shared.evicted);
+            }
+            shared = cvar
+                .wait_timeout(shared, remaining)
+                .expect("the buffer mutex is never poisoned")
+                .0;
         }
     }
 }

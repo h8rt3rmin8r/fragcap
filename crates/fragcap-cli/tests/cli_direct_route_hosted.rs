@@ -10,6 +10,7 @@ use fragcap::targets::{
     TargetClassification, TargetEntry,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -59,6 +60,107 @@ fn native_command(binary: &PathBuf) -> Command {
         command.env_remove(override_name);
     }
     command
+}
+
+fn s211_session_dir(client: &Path) -> Option<PathBuf> {
+    std::env::var_os("FRAGCAP_S211_SESSION_DIR").map(|value| {
+        let scratch = client
+            .parent()
+            .unwrap()
+            .join("s211-physical")
+            .canonicalize()
+            .expect("S211 physical scratch exists");
+        let dir = PathBuf::from(value)
+            .canonicalize()
+            .expect("S211 session directory exists");
+        let run_root = dir.parent().expect("S211 attempt has a run root");
+        assert_eq!(
+            run_root.parent(),
+            Some(scratch.as_path()),
+            "S211 run root must be a direct scratch child"
+        );
+        assert!(
+            run_root
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-run-"))
+                && dir
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("attempt-")),
+            "S211 session directory must be a named attempt under its run root"
+        );
+        dir
+    })
+}
+
+fn assert_terminal_bundle_reconciliation(
+    complete: &Value,
+    bundle: &Path,
+    report: &Value,
+    compatibility: &Value,
+) {
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(complete["manifest"], "manifest.json");
+    assert_eq!(complete["session_id"], manifest["session_id"]);
+    assert_eq!(compatibility["session_id"], manifest["session_id"]);
+    assert_eq!(complete["cleanup_status"], manifest["cleanup"]["status"]);
+    assert_eq!(report["cleanup"]["status"], manifest["cleanup"]["status"]);
+    assert_eq!(complete["cleanup_status"], "succeeded");
+    assert!(
+        complete["status"] == "complete" || complete["status"] == "partial",
+        "unexpected terminal status: {complete:#?}"
+    );
+    assert!(
+        manifest["state"] == "complete" || manifest["state"] == "partial",
+        "unexpected manifest state: {manifest:#?}"
+    );
+    assert!(manifest["failures"].as_array().unwrap().is_empty());
+    for artifact in manifest["artifacts"].as_array().unwrap() {
+        if artifact["required"] == true {
+            assert_eq!(artifact["finalization"], "complete", "{artifact:#?}");
+            assert!(
+                artifact["completeness"] == "complete" || artifact["completeness"] == "partial",
+                "required artifact missing or failed: {artifact:#?}"
+            );
+            let path = artifact["path"].as_str().expect("required artifact path");
+            assert!(
+                bundle.join(path).is_file(),
+                "required artifact absent: {path}"
+            );
+        }
+    }
+
+    let summary = &manifest["correlation"]["direct_route"];
+    assert_eq!(summary, &compatibility["direct_route_correlation"]);
+    let observations = compatibility["observations"].as_array().unwrap();
+    let selected = observations
+        .iter()
+        .filter(|observation| observation["direct_route"].is_object())
+        .collect::<Vec<_>>();
+    assert_eq!(summary["records"].as_u64(), Some(selected.len() as u64));
+    assert_eq!(report["route"]["selected_flows"], summary["records"]);
+    for (field, histogram) in [
+        ("original_packet_state", "original_packet_states"),
+        ("packet_history_state", "packet_history_states"),
+        ("route_state", "route_states"),
+        (
+            "selected_packet_disposition",
+            "selected_packet_dispositions",
+        ),
+    ] {
+        let mut counts = BTreeMap::<String, u64>::new();
+        for observation in &selected {
+            let state = observation["direct_route"][field]
+                .as_str()
+                .expect("selected direct-route state");
+            *counts.entry(state.to_owned()).or_default() += 1;
+        }
+        assert_eq!(
+            summary[histogram],
+            serde_json::to_value(counts).unwrap(),
+            "{field} did not reconcile across compatibility and manifest"
+        );
+    }
 }
 
 struct RegisteredTarget<'a> {
@@ -155,6 +257,7 @@ fn package_public_udp_direct_route_case() {
     let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("UDP client"))
         .canonicalize()
         .expect("UDP client exists");
+    let session_dir = s211_session_dir(&client);
     let peer: SocketAddr = std::env::var("FRAGCAP_S205_PEER")
         .expect("external UDP peer")
         .parse()
@@ -238,16 +341,21 @@ fn package_public_udp_direct_route_case() {
         "--wait".to_owned(),
         "30s".to_owned(),
     ]);
+    let mut capture_command = native_command(&binary);
+    capture_command
+        .args(&capture_args)
+        .env("S211_UDP_PEER", peer.to_string())
+        .env("S211_UDP_BIND_IP", "0.0.0.0")
+        .env("S211_UDP_GATE", gate_signal)
+        .envs(refusal.then_some(("S211_UDP_REFUSAL", "1")))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &session_dir {
+        capture_command.env("FRAGCAP_SESSION_DIR", dir);
+    }
     let mut child = SessionChild(
-        native_command(&binary)
-            .args(&capture_args)
-            .env("S211_UDP_PEER", peer.to_string())
-            .env("S211_UDP_BIND_IP", "0.0.0.0")
-            .env("S211_UDP_GATE", gate_signal)
-            .envs(refusal.then_some(("S211_UDP_REFUSAL", "1")))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+        capture_command
             .spawn()
             .expect("public UDP direct-route command"),
     );
@@ -311,6 +419,7 @@ fn package_public_udp_direct_route_case() {
     }
     let compatibility: Value =
         serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap()).unwrap();
+    assert_terminal_bundle_reconciliation(complete, &bundle, &report, &compatibility);
     assert!(compatibility["observations"].is_array());
     if refusal {
         assert!(
@@ -533,6 +642,7 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     );
     let binary = binary.canonicalize().expect("package binary exists");
     let client = client.canonicalize().expect("controlled client exists");
+    let session_dir = s211_session_dir(&client);
     let baseline = (0..3)
         .map(|_| unrelated_sentinel(peer).expect("baseline unrelated sentinel"))
         .collect::<Vec<_>>();
@@ -612,14 +722,19 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         "--wait".to_owned(),
         "30s".to_owned(),
     ]);
+    let mut capture_command = native_command(&binary);
+    capture_command
+        .args(&capture_args)
+        .env("S205_CONTROLLED_PEER", peer.to_string())
+        .env("S205_CONTROLLED_GATE", &gate_signal)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &session_dir {
+        capture_command.env("FRAGCAP_SESSION_DIR", dir);
+    }
     let mut child = SessionChild(
-        native_command(&binary)
-            .args(&capture_args)
-            .env("S205_CONTROLLED_PEER", peer.to_string())
-            .env("S205_CONTROLLED_GATE", &gate_signal)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+        capture_command
             .spawn()
             .expect("public direct-route command"),
     );
@@ -699,11 +814,12 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     } else {
         assert_eq!(report["route"]["state"], "complete");
         assert_eq!(report["route"]["dropped_events"], 0);
+        let compatibility: Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap())
+                .unwrap();
+        assert_terminal_bundle_reconciliation(complete, &bundle, &report, &compatibility);
         if refusal {
             assert_eq!(report["route"]["bidirectional_flows"], 0);
-            let compatibility: Value =
-                serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap())
-                    .unwrap();
             assert!(
                 compatibility["observations"]
                     .as_array()

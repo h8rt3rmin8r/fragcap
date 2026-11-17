@@ -1708,19 +1708,40 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         }
         let mut runtime = self.runtime.borrow_mut();
         let mut packet_report = None;
+        let mut timing_steps = Vec::new();
+        let timing_step = |phase: &'static str, started: Instant| {
+            serde_json::json!({
+                "action": "release-timing",
+                "phase": phase,
+                "elapsed_us": u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            })
+        };
         let outcome = if let LibraryRuntime {
             process_evidence: Some(process),
             process_release_watch: Some(watch),
             ..
         } = &mut *runtime
         {
+            let started = Instant::now();
             let outcome = if process.existing_platform_root {
                 shutdown::existing_platform_not_controlled()
             } else {
                 shutdown::release(process, budget, watch)
             };
+            timing_steps.push(timing_step("shutdown-release", started));
+            let started = Instant::now();
             watch.finish_into(process);
+            timing_steps.push(timing_step("etw-finalize", started));
+            let started = Instant::now();
             packet_report = watch.finish_packet_capture(&mut self.emitter.borrow_mut());
+            timing_steps.push(timing_step("packet-finalize", started));
+            timing_steps.extend(watch.take_release_timings().into_iter().map(|timing| {
+                serde_json::json!({
+                    "action": "release-timing",
+                    "phase": timing.phase,
+                    "elapsed_us": timing.elapsed_us,
+                })
+            }));
             self.observation_context.record_process_evidence(process);
             outcome
         } else {
@@ -1755,6 +1776,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
         runtime.process_release_watch.take();
         drop(runtime);
         self.route_owner_steps = outcome.steps;
+        self.route_owner_steps.extend(timing_steps);
         if outcome.result.status == deep_capture_api::CleanupStatus::Failed {
             self.emitter.borrow_mut().error(&format!(
                 "Route-owner cleanup is unresolved ({}).",

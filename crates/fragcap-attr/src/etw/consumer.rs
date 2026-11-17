@@ -18,8 +18,12 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use windows_sys::core::GUID;
+use windows_sys::Win32::Foundation::{
+    ERROR_CTX_CLOSE_PENDING, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+};
 use windows_sys::Win32::System::Diagnostics::Etw::{
     CloseTrace, OpenTraceW, ProcessTrace, EVENT_HEADER_FLAG_32_BIT_HEADER, EVENT_RECORD,
     EVENT_TRACE_LOGFILEW, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME,
@@ -142,8 +146,14 @@ impl Fanout {
 pub(super) struct Consumer {
     /// A trace handle. Plain `u64` on this binding line, which predates the
     /// handle newtypes; `u64::MAX` is the invalid value.
-    handle: u64,
-    thread: Option<std::thread::JoinHandle<()>>,
+    handle: Option<u64>,
+    thread: Option<std::thread::JoinHandle<u32>>,
+}
+
+pub(super) struct ConsumerStopTiming {
+    pub close_us: u64,
+    pub join_us: u64,
+    pub complete: bool,
 }
 
 impl Consumer {
@@ -177,29 +187,45 @@ impl Consumer {
                 // SAFETY: the handle came from a successful `OpenTraceW` and is
                 // closed only by `Consumer::drop`, which joins this thread
                 // afterwards. `ProcessTrace` blocks until then.
-                unsafe {
-                    ProcessTrace(&h, 1, std::ptr::null(), std::ptr::null());
-                }
+                unsafe { ProcessTrace(&h, 1, std::ptr::null(), std::ptr::null()) }
             })
             .ok()?;
 
         Some(Consumer {
-            handle,
+            handle: Some(handle),
             thread: Some(thread),
         })
+    }
+
+    pub(super) fn close_and_join(&mut self) -> ConsumerStopTiming {
+        let mut complete = true;
+        let close_started = Instant::now();
+        if let Some(handle) = self.handle.take() {
+            // SAFETY: this is exactly the handle returned by OpenTraceW.
+            let code = unsafe { CloseTrace(handle) };
+            complete &= code == ERROR_SUCCESS || code == ERROR_CTX_CLOSE_PENDING;
+        }
+        let close_us = u64::try_from(close_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let join_started = Instant::now();
+        if let Some(thread) = self.thread.take() {
+            // A real-time ProcessTrace may report that its source is gone
+            // after the owned controller has deliberately stopped it.
+            complete &= matches!(
+                thread.join(),
+                Ok(ERROR_SUCCESS | ERROR_WMI_INSTANCE_NOT_FOUND)
+            );
+        }
+        ConsumerStopTiming {
+            close_us,
+            join_us: u64::try_from(join_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            complete,
+        }
     }
 }
 
 impl Drop for Consumer {
     fn drop(&mut self) {
-        // SAFETY: the handle came from a successful `OpenTraceW`. Closing it is
-        // what makes the blocking `ProcessTrace` return.
-        unsafe {
-            CloseTrace(self.handle);
-        }
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        let _ = self.close_and_join();
     }
 }
 

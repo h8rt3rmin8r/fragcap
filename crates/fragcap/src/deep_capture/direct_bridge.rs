@@ -153,8 +153,12 @@ pub struct DirectTcpBridge {
 
 impl DirectTcpBridge {
     pub fn new(tuple: DirectTuple, helper: TcpStream) -> Result<Self, DirectBridgeError> {
-        helper.set_read_timeout(Some(Duration::from_millis(1)))?;
-        helper.set_write_timeout(Some(Duration::from_millis(1)))?;
+        // Admission has completed its bounded blocking SOCKS handshake. The
+        // packet worker polls this established stream after every work item;
+        // even a one-millisecond read timeout accumulates into seconds of
+        // queued unrelated packets under load. Both directions already retain
+        // partial progress and treat WouldBlock as no data for this pass.
+        helper.set_nonblocking(true)?;
         Ok(Self {
             stack: TcpFlowStack::new(tuple)?,
             helper,
@@ -640,6 +644,27 @@ mod tests {
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(report.observation.protocol.socks_client_bytes, 16);
         assert_eq!(report.observation.protocol.socks_upstream_bytes, 12);
+    }
+
+    #[test]
+    fn idle_bridge_helper_is_nonblocking_after_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = listener.local_addr().unwrap();
+        let helper = TcpStream::connect(remote).unwrap();
+        let local = helper.local_addr().unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        let tuple = DirectTuple {
+            transport: fragcap_core::Proto::Tcp,
+            local,
+            remote,
+        };
+        let mut bridge = DirectTcpBridge::new(tuple, helper).unwrap();
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            bridge.helper.read(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        bridge.poll(0).unwrap();
     }
 
     #[test]

@@ -24,7 +24,7 @@ Close #619 by moving slow selected TCP SOCKS admission off the packet worker and
 
 ## Source Boundary
 
-`direct_bridge.rs` owns staged SOCKS errors and finite handshake deadline. `direct_runtime.rs` owns bounded off-worker admission, pending-flow identity, selected packet dispositions, watchdog progress, and cleanup. `route_events.rs` owns protected diagnostic serialization. Existing native correlation owns packet truth without a new authority. The controlled package harness owns physical ordering and cleanup checks.
+`direct_bridge.rs` owns staged SOCKS errors, finite handshake deadline, and nonblocking established helper polling. `direct_runtime.rs` owns bounded off-worker admission, pending-flow identity, selected packet dispositions, watchdog progress, and cleanup. `route_events.rs` owns protected diagnostic serialization. The core pipeline owns a separate finite output decision lane; the managed session gate admits only exact selected-packet proof before ETW publication. Native correlation binds retained capture digests to one selected flow and records ambiguity. The ETW watcher stops the owned producer before consumer drain. The controlled package harness owns physical ordering, terminal-to-bundle reconciliation, and cleanup checks.
 
 ## Project Structure
 

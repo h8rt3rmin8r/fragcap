@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -407,14 +407,44 @@ fn run() -> io::Result<()> {
         )?;
         return Ok(());
     }
-    if mode != "run" && mode != "run-refusal" && mode != "run-all" && mode != "run-all-external" {
+    if mode != "run"
+        && mode != "run-refusal"
+        && mode != "run-all"
+        && mode != "run-all-external"
+        && mode != "run-refusal-external"
+    {
         return Err(io::Error::other("unknown mode"));
     }
-    if (mode == "run-all-external") != external_peer.is_some() {
+    if (mode == "run-all-external" || mode == "run-refusal-external") != external_peer.is_some() {
         return Err(io::Error::other("external runner peer mismatch"));
     }
+    let session_root = if external_peer.is_some() {
+        let root = PathBuf::from(
+            env::var_os("FRAGCAP_S211_SESSION_ROOT")
+                .ok_or_else(|| io::Error::other("S211 session root is missing"))?,
+        );
+        if !root.is_absolute() {
+            return Err(io::Error::other("S211 session root is not absolute"));
+        }
+        let root = root.canonicalize()?;
+        let scratch = client
+            .parent()
+            .ok_or_else(|| io::Error::other("client has no parent"))?
+            .join("s211-physical")
+            .canonicalize()?;
+        if root.parent() != Some(scratch.as_path())
+            || !root
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-run-"))
+        {
+            return Err(io::Error::other("S211 session root is outside scratch"));
+        }
+        Some(root)
+    } else {
+        None
+    };
     let mut failed = false;
-    let attempts = if mode == "run-refusal" {
+    let attempts = if mode == "run-refusal" || mode == "run-refusal-external" {
         1
     } else if mode == "run-all" || mode == "run-all-external" {
         4
@@ -422,7 +452,20 @@ fn run() -> io::Result<()> {
         3
     };
     for attempt in 1..=attempts {
+        let session_dir = session_root
+            .as_ref()
+            .map(|root| -> io::Result<PathBuf> {
+                let nonce = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| io::Error::other("system time is before Unix epoch"))?
+                    .as_nanos();
+                let dir = root.join(format!("attempt-{}-{nonce}-{attempt}", std::process::id()));
+                fs::create_dir(&dir)?;
+                Ok(dir)
+            })
+            .transpose()?;
         let refusal = mode == "run-refusal"
+            || mode == "run-refusal-external"
             || (mode == "run-all" && attempt == 4)
             || (mode == "run-all-external" && attempt == 1);
         let attempt_log = output.with_extension(format!("attempt-{attempt}.log"));
@@ -431,11 +474,13 @@ fn run() -> io::Result<()> {
         let mut worker_command = Command::new(env::current_exe()?);
         worker_command
             .args([
-                std::ffi::OsStr::new(if mode == "run-all-external" {
-                    "worker-external"
-                } else {
-                    "worker"
-                }),
+                std::ffi::OsStr::new(
+                    if mode == "run-all-external" || mode == "run-refusal-external" {
+                        "worker-external"
+                    } else {
+                        "worker"
+                    },
+                ),
                 test.as_os_str(),
                 binary.as_os_str(),
                 client.as_os_str(),
@@ -448,6 +493,9 @@ fn run() -> io::Result<()> {
             .creation_flags(CREATE_NO_WINDOW);
         if let Some(peer) = external_peer {
             worker_command.arg(peer.to_string());
+        }
+        if let Some(dir) = &session_dir {
+            worker_command.env("FRAGCAP_S211_SESSION_DIR", dir);
         }
         if refusal {
             worker_command.env("FRAGCAP_S211_REFUSAL", "1");

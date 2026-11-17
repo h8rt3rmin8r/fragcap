@@ -1826,6 +1826,13 @@ impl SessionGate {
                         return GateDecision::Pending;
                     }
                     in_cooldown = true;
+                } else if shared.direct_original_proof && packet.flow.is_some() {
+                    // Npcap may deliver the selected first packet before
+                    // WinDivert registers its exact packet proof and before
+                    // the socket table publishes an owner. The output lane
+                    // gives that packet one finite chance to acquire either
+                    // proof; neither condition alone admits it.
+                    return GateDecision::Pending;
                 }
             }
             let reason = if shared.causal.is_some() {
@@ -2216,6 +2223,14 @@ mod gate_tests {
         selected.attribution =
             Some(Attribution::new(42, "target.exe", Fidelity::DirectRoute).with_role("target"));
         assert_eq!(gate.decide(&selected), GateDecision::Admit);
+        let mut before_proof = selected.clone();
+        before_proof.attribution = None;
+        before_proof.flow = Some(fragcap_core::flow::FlowKey::new(
+            fragcap_core::flow::Proto::Tcp,
+            "192.0.2.10:40001".parse().unwrap(),
+            "198.51.100.5:5055".parse().unwrap(),
+        ));
+        assert_eq!(gate.decide(&before_proof), GateDecision::Pending);
         let mut wrong_role = selected.clone();
         wrong_role.attribution =
             Some(Attribution::new(42, "target.exe", Fidelity::DirectRoute).with_role("launcher"));
@@ -2224,6 +2239,9 @@ mod gate_tests {
         live_without_etw.attribution =
             Some(Attribution::new(42, "target.exe", Fidelity::Live).with_role("target"));
         assert_eq!(gate.decide(&live_without_etw), GateDecision::Pending);
+        let mut unrelated = live_without_etw.clone();
+        unrelated.attribution = Some(Attribution::new(99, "other.exe", Fidelity::Live));
+        assert_eq!(gate.decide(&unrelated), GateDecision::Pending);
         let mut too_early = selected;
         too_early.ts = Timestamp::from_nanos(9);
         assert_eq!(

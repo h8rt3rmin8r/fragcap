@@ -194,6 +194,17 @@ pub struct ProcessReleaseWatch {
     forwarder: Option<std::thread::JoinHandle<()>>,
     #[cfg(all(feature = "etw", windows))]
     packet_capture: Option<PacketReleaseCapture>,
+    release_timings: Vec<ReleasePhaseTiming>,
+}
+
+/// Monotonic duration of one managed-release step, retained with cleanup evidence.
+pub struct ReleasePhaseTiming {
+    pub phase: &'static str,
+    pub elapsed_us: u64,
+}
+
+fn elapsed_us(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 #[cfg(all(feature = "etw", windows))]
@@ -219,6 +230,7 @@ impl ProcessReleaseWatch {
             receiver,
             forwarder: Some(forwarder),
             packet_capture: None,
+            release_timings: Vec::new(),
         }
     }
 
@@ -231,7 +243,12 @@ impl ProcessReleaseWatch {
             receiver,
             forwarder: Some(forwarder),
             packet_capture: None,
+            release_timings: Vec::new(),
         }
+    }
+
+    pub fn take_release_timings(&mut self) -> Vec<ReleasePhaseTiming> {
+        std::mem::take(&mut self.release_timings)
     }
 
     pub fn drain_into(&mut self, evidence: &mut CaptureProcessEvidence) {
@@ -266,12 +283,33 @@ impl ProcessReleaseWatch {
         {
             self.drain_into(evidence);
             if let Some(watcher) = self.watcher.take() {
-                evidence.unparseable_events = watcher.unparsed_events();
-                evidence.rundown_ignored = watcher.rundown_ignored();
-                evidence.watcher_report = Some(watcher.stop());
+                let started = std::time::Instant::now();
+                let (report, timing) = watcher.stop_with_timings();
+                evidence.watcher_report = Some(report);
+                evidence.unparseable_events = timing.final_unparsed_events;
+                evidence.rundown_ignored = timing.final_rundown_ignored;
+                evidence.watcher_ended |= !timing.complete;
+                for (phase, elapsed_us) in [
+                    ("etw-report-query", timing.report_query_us),
+                    ("etw-session-stop", timing.session_stop_us),
+                    ("etw-consumer-close", timing.consumer_close_us),
+                    ("etw-consumer-join", timing.consumer_join_us),
+                ] {
+                    self.release_timings
+                        .push(ReleasePhaseTiming { phase, elapsed_us });
+                }
+                self.release_timings.push(ReleasePhaseTiming {
+                    phase: "etw-stop",
+                    elapsed_us: elapsed_us(started),
+                });
             }
             if let Some(forwarder) = self.forwarder.take() {
+                let started = std::time::Instant::now();
                 let _ = forwarder.join();
+                self.release_timings.push(ReleasePhaseTiming {
+                    phase: "event-forwarder-join",
+                    elapsed_us: elapsed_us(started),
+                });
             }
             // WatcherLost is expected after our deliberate stop.
             while let Ok(message) = self.receiver.try_recv() {
@@ -293,12 +331,22 @@ impl ProcessReleaseWatch {
         {
             let lease = self.packet_capture.take()?;
             lease.stop.stop();
+            let started = std::time::Instant::now();
             let report = lease
                 .handle
                 .join()
                 .expect("the packet pipeline did not panic");
+            self.release_timings.push(ReleasePhaseTiming {
+                phase: "packet-pipeline-join",
+                elapsed_us: elapsed_us(started),
+            });
             if let Some(forwarder) = lease.packet_forward {
+                let started = std::time::Instant::now();
                 let _ = forwarder.join();
+                self.release_timings.push(ReleasePhaseTiming {
+                    phase: "packet-forwarder-join",
+                    elapsed_us: elapsed_us(started),
+                });
             }
             emit_stream_reports(&lease.stream_reports, emitter);
             emit_ring_report(&lease.ring_evicted, emitter);
@@ -1155,6 +1203,13 @@ fn capture_live(
     // clone of the stamper, since the stamper itself is moved into the pipeline
     // here and the filter-narrowed count is read after acquisition.
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
+    #[cfg(all(windows, feature = "direct-route"))]
+    let direct_original_proof = components
+        .inspection_context
+        .as_ref()
+        .is_some_and(|context| context.direct_original_attestation_active());
+    #[cfg(not(all(windows, feature = "direct-route")))]
+    let direct_original_proof = false;
     let (gate, gate_handle) = if config.shutdown_scope.is_empty() {
         SessionGate::new(&config.session_config(), tee_tx)
     } else {
@@ -1163,7 +1218,7 @@ fn capture_live(
             tee_tx,
             publisher.clone(),
             config.retained_packet_roles.clone(),
-            components.inspection_context.is_some(),
+            direct_original_proof,
         )
     };
     let stamper_reader = components.stamper.clone();
@@ -1704,6 +1759,7 @@ fn capture_live(
                 receiver: merged_rx,
                 forwarder: Some(event_forward),
                 packet_capture: None,
+                release_timings: Vec::new(),
             };
             release_watch.drain_into(process_evidence);
             release_watch

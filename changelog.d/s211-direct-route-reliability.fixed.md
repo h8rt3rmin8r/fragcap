@@ -3,4 +3,6 @@ Selected TCP direct-route SOCKS admission now runs outside the packet-processing
 
 Direct-route candidate resolution indexes socket events by tuple and reports bounded queue and hold timing. A complete captured first packet can acquire distinct `direct-route` attribution only after exact packet, tuple, time, and causal-generation agreement; unmatched traffic remains unattributed.
 
+Established TCP bridge sockets now use nonblocking I/O after their bounded SOCKS handshake, preventing repeated idle reads from accumulating in the packet worker. A separate bounded output lane retries late causal, socket, and exact packet proof without holding later selected packets; unresolved expiry and capacity displacement remain counted. Selected-flow capture digests reconcile a checksum-normalized original that reaches Npcap just after a refused proxy leg closes, while same-tuple ambiguity and bounded digest overflow stay explicit. ETW shutdown stops the owned session before draining its consumer so final buffered counters are reported. The controlled portable TCP/UDP matrix passed with an original-present TCP refusal, honest original-absent cases, and native artifact reconciliation; installed ESO remains unqualified.
+
 The documentation site now uses Next.js 16.4.6 to clear the reported security advisory in its dependency audit.
