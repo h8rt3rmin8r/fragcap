@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+#[cfg(all(windows, feature = "direct-route"))]
+use std::time::UNIX_EPOCH;
 use std::time::{Duration, Instant, SystemTime};
 
 pub use fragcap_proxy::ClientIdentity;
@@ -374,6 +376,9 @@ struct DirectHelperOwner {
     flow: super::direct_route::OriginalFlow,
     opened_earliest_ns: u64,
     opened_latest_ns: u64,
+    /// A completed proxy admission remains available for exact historical
+    /// reconciliation, but cannot authorize another live inspection decision.
+    retired_at_ns: Option<u64>,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -701,7 +706,8 @@ impl NativeObservationContext {
             .entry((transport, helper_local, proxy_local))
             .or_default();
         if owners.iter().any(|owner| {
-            owner.opened_earliest_ns <= opened_latest_ns
+            owner.retired_at_ns.is_none()
+                && owner.opened_earliest_ns <= opened_latest_ns
                 && opened_earliest_ns <= owner.opened_latest_ns
         }) {
             return Err("direct-helper-window-overlap");
@@ -711,25 +717,48 @@ impl NativeObservationContext {
             flow,
             opened_earliest_ns,
             opened_latest_ns,
+            retired_at_ns: None,
         });
         Ok(())
     }
 
-    /// A helper whose selected socket closed before admission must not remain
-    /// eligible for later proxy evidence, including a registration racing the
-    /// CLOSE event on the helper worker.
+    /// Retain the exact connection window for final artifacts while revoking
+    /// its authority over future proxy connections.
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn retire_direct_helper_registration_at(
+        &self,
+        flow: &super::direct_route::OriginalFlow,
+        retired_at_ns: u64,
+    ) -> bool {
+        let mut registry = self.direct_helpers.lock().expect("direct helper lock");
+        let mut found = false;
+        for owners in registry.values_mut() {
+            for owner in owners {
+                if &owner.flow == flow && owner.retired_at_ns.is_none() {
+                    owner.retired_at_ns = Some(retired_at_ns);
+                    found = true;
+                }
+            }
+        }
+        found
+    }
+
+    /// A connected helper can still have a proxy connection whose observation
+    /// is finalized after the route worker retires it. Preserve that exact
+    /// historical match, while excluding this row from live inspection and
+    /// every proxy connection opened after retirement. A helper that never
+    /// connected has no registration to retain.
     #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn retire_direct_helper_registration(
         &self,
         flow: &super::direct_route::OriginalFlow,
     ) {
-        self.direct_helpers
-            .lock()
-            .expect("direct helper lock")
-            .retain(|_, owners| {
-                owners.retain(|owner| &owner.flow != flow);
-                !owners.is_empty()
-            });
+        let retired_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(0);
+        self.retire_direct_helper_registration_at(flow, retired_at_ns);
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
@@ -935,10 +964,29 @@ impl NativeObservationContext {
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
-    fn direct_helper_flow(
+    pub(crate) fn direct_helper_flow(
         &self,
         descriptor: ConnectionDescriptor,
         opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        self.lookup_direct_helper_flow(descriptor, opened_at_ns, false)
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn direct_helper_historical_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        self.lookup_direct_helper_flow(descriptor, opened_at_ns, true)
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn lookup_direct_helper_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+        include_retired: bool,
     ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
         let registry = self.direct_helpers.lock().expect("direct helper lock");
         let Some(owners) = registry.get(&(
@@ -949,14 +997,18 @@ impl NativeObservationContext {
             return Ok(None);
         };
         let mut matching = owners.iter().filter(|owner| {
-            owner
-                .opened_earliest_ns
-                .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
-                <= opened_at_ns
+            (include_retired || owner.retired_at_ns.is_none())
+                && owner
+                    .opened_earliest_ns
+                    .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                    <= opened_at_ns
                 && opened_at_ns
                     <= owner
                         .opened_latest_ns
                         .saturating_add(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                && owner
+                    .retired_at_ns
+                    .is_none_or(|retired_at_ns| opened_at_ns <= retired_at_ns)
         });
         let Some(owner) = matching.next() else {
             return Ok(None);
@@ -974,7 +1026,22 @@ impl NativeObservationContext {
         opened_at_ns: u64,
         closed_at_ns: u64,
     ) -> Option<super::DirectRouteCorrelation> {
-        let flow = self.direct_helper_flow(descriptor, opened_at_ns).ok()??;
+        let flow = match self.direct_helper_historical_flow(descriptor, opened_at_ns) {
+            Ok(Some(flow)) => flow,
+            Ok(None) => return None,
+            Err(reason) => {
+                return Some(super::DirectRouteCorrelation {
+                    schema_version: 2,
+                    receipt_state: "unavailable",
+                    selected_packet_disposition: "unavailable",
+                    route_state: reason,
+                    original_packet_state: "unavailable",
+                    packet_history_state: "incomplete",
+                    process_instance_id: None,
+                    original_tuple: None,
+                });
+            }
+        };
         let proof = self
             .direct_proofs
             .lock()
@@ -1140,7 +1207,7 @@ impl NativeObservationContext {
         opened_at_ns: u64,
         closed_at_ns: u64,
     ) -> Option<NativeCorrelation> {
-        let flow = match self.direct_helper_flow(descriptor, opened_at_ns) {
+        let flow = match self.direct_helper_historical_flow(descriptor, opened_at_ns) {
             Ok(Some(flow)) => flow,
             Ok(None) => return None,
             Err(reason) => {
@@ -1426,7 +1493,7 @@ impl NativeObservationContext {
         window: &ApplicationConnectionWindow,
     ) -> super::ConnectionOwnerEvidence {
         #[cfg(all(windows, feature = "direct-route"))]
-        match self.direct_helper_flow(window.descriptor, window.opened_at_ns) {
+        match self.direct_helper_historical_flow(window.descriptor, window.opened_at_ns) {
             Ok(Some(flow)) => {
                 return super::ConnectionOwnerEvidence {
                     state: "exact".into(),
@@ -1533,6 +1600,154 @@ mod direct_helper_tests {
         assert_eq!(
             context.direct_helper_flow(descriptor, 150).unwrap(),
             Some(reused)
+        );
+    }
+
+    #[test]
+    fn retired_udp_helper_revokes_live_owner_but_keeps_accepted_history() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Udp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42001".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "udp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("udp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150),
+            Ok(Some(flow.clone()))
+        );
+        assert!(context.retire_direct_helper_registration_at(&flow, 175));
+        assert!(!context.retire_direct_helper_registration_at(&flow, 176));
+        assert_eq!(context.direct_helper_flow(descriptor, 150), Ok(None));
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Ok(Some(flow.clone()))
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 176),
+            Ok(None)
+        );
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("udp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150),
+            Ok(Some(reused))
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Err("direct-helper-window-ambiguous")
+        );
+    }
+
+    #[test]
+    fn retired_helper_keeps_exact_historical_refusal_without_live_authority() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        context
+            .direct_proof_for(&flow)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .selected_packet_reinjected = true;
+        assert!(context.retire_direct_helper_registration_at(&flow, 175));
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        assert_eq!(
+            context
+                .direct_helper_historical_flow(descriptor, 150)
+                .unwrap(),
+            Some(flow.clone())
+        );
+        assert_eq!(
+            context
+                .direct_helper_historical_flow(descriptor, 176)
+                .unwrap(),
+            None
+        );
+        let window = ApplicationConnectionWindow {
+            descriptor,
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let reconciled = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(reconciled.route_state, "selected-packet-reinjected");
+        assert_eq!(reconciled.selected_packet_disposition, "reinjected");
+        assert_eq!(reconciled.original_packet_state, "unavailable");
+        let owner = context.connection_owner(&window);
+        assert_eq!(owner.state, "exact");
+        assert_eq!(owner.pid, Some(42));
+        assert_eq!(owner.process_instance_id.as_deref(), Some("process-42-100"));
+
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("tcp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(reused)
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Err("direct-helper-window-ambiguous")
+        );
+        assert_eq!(
+            context
+                .direct_reconciliation_window(&window)
+                .unwrap()
+                .route_state,
+            "direct-helper-window-ambiguous"
+        );
+        assert_eq!(context.connection_owner(&window).state, "ambiguous");
+        assert_eq!(
+            context.correlate_proxy_window(&window).7,
+            CorrelationState::Ambiguous
         );
     }
 

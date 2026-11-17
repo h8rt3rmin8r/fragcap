@@ -22,16 +22,26 @@ fn run() -> io::Result<()> {
     let mut stream = TcpStream::connect_timeout(&peer, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    stream.write_all(b"runtime-client-request")?;
-    let mut reply = [0; 20];
-    stream.read_exact(&mut reply)?;
-    if &reply != b"runtime-origin-reply" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected reply",
-        ));
+    let no_payload = std::env::var_os("S211_NO_PAYLOAD").is_some();
+    if !no_payload {
+        stream.write_all(b"runtime-client-request")?;
+        let mut reply = [0; 20];
+        stream.read_exact(&mut reply)?;
+        if &reply != b"runtime-origin-reply" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected reply",
+            ));
+        }
     }
-    std::fs::write(&gate, b"reply-received")?;
+    std::fs::write(
+        &gate,
+        if no_payload {
+            b"connected-no-payload".as_slice()
+        } else {
+            b"reply-received".as_slice()
+        },
+    )?;
     let release = gate.with_extension("release");
     let deadline = Instant::now() + Duration::from_secs(30);
     while !release.is_file() {
@@ -43,7 +53,9 @@ fn run() -> io::Result<()> {
         }
         thread::sleep(Duration::from_millis(20));
     }
-    stream.write_all(b"runtime-client-finish")?;
+    if !no_payload {
+        stream.write_all(b"runtime-client-finish")?;
+    }
     stream.shutdown(Shutdown::Write)?;
     let mut tail = Vec::new();
     stream.read_to_end(&mut tail)?;

@@ -391,8 +391,13 @@ pub struct CandidateBuffer<A> {
     max_packets: usize,
     max_bytes: usize,
     held_bytes: usize,
+    held_udp_packets: usize,
+    held_udp_bytes: usize,
+    held_udp_by_tuple: BTreeMap<DirectTuple, usize>,
     wait_ns: u64,
 }
+
+const MAX_PENDING_UDP_PER_TUPLE: usize = 8;
 
 impl<A> CandidateBuffer<A> {
     pub fn new(max_packets: usize, max_bytes: usize, wait_ns: u64) -> Option<Self> {
@@ -410,6 +415,9 @@ impl<A> CandidateBuffer<A> {
             max_packets,
             max_bytes,
             held_bytes: 0,
+            held_udp_packets: 0,
+            held_udp_bytes: 0,
+            held_udp_by_tuple: BTreeMap::new(),
             wait_ns,
         })
     }
@@ -429,6 +437,18 @@ impl<A> CandidateBuffer<A> {
             packet,
             address,
         };
+        // Unknown-owner UDP can arrive in a burst from a few pre-existing
+        // sockets. Reserve one eighth of this finite buffer for initial TCP
+        // SYNs and bound each pending UDP tuple without inspecting payloads.
+        // Tiny test buffers have no reserve, preserving their exact capacity.
+        let udp = candidate.head.tuple.transport == Proto::Udp;
+        let udp_packet_limit = self.max_packets - self.max_packets / 8;
+        let udp_byte_limit = self.max_bytes
+            - if self.max_packets >= 8 {
+                self.max_bytes / 8
+            } else {
+                0
+            };
         if candidate.packet.is_empty()
             || candidate.packet.len() > 65_535
             || self.pending.len() >= self.max_packets
@@ -436,12 +456,48 @@ impl<A> CandidateBuffer<A> {
                 .held_bytes
                 .checked_add(candidate.packet.len())
                 .is_none_or(|total| total > self.max_bytes)
+            || (udp
+                && (self.held_udp_packets >= udp_packet_limit
+                    || self
+                        .held_udp_bytes
+                        .checked_add(candidate.packet.len())
+                        .is_none_or(|total| total > udp_byte_limit)
+                    || self
+                        .held_udp_by_tuple
+                        .get(&candidate.head.tuple)
+                        .copied()
+                        .unwrap_or(0)
+                        >= MAX_PENDING_UDP_PER_TUPLE))
         {
             return Err(Box::new(candidate));
         }
         self.held_bytes += candidate.packet.len();
+        if udp {
+            self.held_udp_packets += 1;
+            self.held_udp_bytes += candidate.packet.len();
+            *self
+                .held_udp_by_tuple
+                .entry(candidate.head.tuple)
+                .or_default() += 1;
+        }
         self.pending.push_back(candidate);
         Ok(())
+    }
+
+    fn release(&mut self, candidate: &PendingCandidate<A>) {
+        self.held_bytes -= candidate.packet.len();
+        if candidate.head.tuple.transport == Proto::Udp {
+            self.held_udp_packets -= 1;
+            self.held_udp_bytes -= candidate.packet.len();
+            let count = self
+                .held_udp_by_tuple
+                .get_mut(&candidate.head.tuple)
+                .expect("pending UDP candidate has tuple count");
+            *count -= 1;
+            if *count == 0 {
+                self.held_udp_by_tuple.remove(&candidate.head.tuple);
+            }
+        }
     }
 
     pub fn resolve(
@@ -550,7 +606,7 @@ impl<A> CandidateBuffer<A> {
                 Status::Selected(flow, epoch) => {
                     #[cfg(not(all(windows, feature = "direct-route")))]
                     let _ = epoch;
-                    self.held_bytes -= candidate.packet.len();
+                    self.release(&candidate);
                     resolved.push(CandidateDecision::Selected {
                         flow,
                         #[cfg(all(windows, feature = "direct-route"))]
@@ -562,7 +618,7 @@ impl<A> CandidateBuffer<A> {
                     });
                 }
                 Status::Pass(reason) => {
-                    self.held_bytes -= candidate.packet.len();
+                    self.release(&candidate);
                     resolved.push(CandidateDecision::PassThrough {
                         reason,
                         packet: candidate.packet,
@@ -578,6 +634,9 @@ impl<A> CandidateBuffer<A> {
 
     pub fn drain(&mut self) -> Vec<CandidateDecision<A>> {
         self.held_bytes = 0;
+        self.held_udp_packets = 0;
+        self.held_udp_bytes = 0;
+        self.held_udp_by_tuple.clear();
         self.pending
             .drain(..)
             .map(|candidate| CandidateDecision::PassThrough {
@@ -600,7 +659,7 @@ impl<A> CandidateBuffer<A> {
             .is_some_and(|candidate| now_ns >= candidate.deadline_ns)
         {
             let candidate = self.pending.pop_front().expect("due front");
-            self.held_bytes -= candidate.packet.len();
+            self.release(&candidate);
             expired.push(CandidateDecision::PassThrough {
                 reason: "candidate-wait-expired",
                 packet: candidate.packet,
@@ -1018,6 +1077,99 @@ mod tests {
             } if packet == b"stop"
         ));
         assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn udp_burst_leaves_candidate_space_for_a_target_tcp_syn() {
+        let mut buffer = CandidateBuffer::new(64, 4096, 100).unwrap();
+        for offset in 0..7 {
+            let mut udp = packet(40000 + offset);
+            udp.tuple.transport = Proto::Udp;
+            for _ in 0..MAX_PENDING_UDP_PER_TUPLE {
+                assert!(buffer.enqueue(udp, vec![1; 16], 1u32, 0).is_ok());
+            }
+        }
+        assert_eq!(buffer.len(), 56);
+        let mut extra_udp = packet(45000);
+        extra_udp.tuple.transport = Proto::Udp;
+        let overflow = buffer.enqueue(extra_udp, vec![2; 16], 2, 0).unwrap_err();
+        assert_eq!(overflow.packet, vec![2; 16]);
+        assert_eq!(overflow.address, 2);
+        assert_eq!(buffer.len(), 56);
+
+        assert!(buffer.enqueue(packet(50000), vec![3; 16], 3, 0).is_ok());
+        let selected = buffer.resolve_newest(Some(&evidence()), &[event(12, 50000)], 1, 99);
+        assert!(matches!(
+            &selected[..],
+            [CandidateDecision::Selected { packet, address: 3, .. }] if packet == &vec![3; 16]
+        ));
+        let expired = buffer.expire_due(100);
+        assert_eq!(expired.len(), 56);
+        assert!(expired.iter().all(|decision| matches!(
+            decision,
+            CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                ..
+            }
+        )));
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert_eq!(buffer.held_udp_bytes, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
+    }
+
+    #[test]
+    fn repeated_udp_tuple_is_bounded_and_reopens_after_expiry() {
+        let mut buffer = CandidateBuffer::new(64, 4096, 100).unwrap();
+        let mut udp = packet(40000);
+        udp.tuple.transport = Proto::Udp;
+        for _ in 0..MAX_PENDING_UDP_PER_TUPLE {
+            assert!(buffer.enqueue(udp, vec![4; 16], 1u32, 0).is_ok());
+        }
+        let rejected = buffer.enqueue(udp, vec![5; 16], 2, 0).unwrap_err();
+        assert_eq!(rejected.packet, vec![5; 16]);
+        assert_eq!(rejected.address, 2);
+        assert_eq!(buffer.expire_due(100).len(), MAX_PENDING_UDP_PER_TUPLE);
+        assert!(buffer.enqueue(udp, vec![6; 16], 3, 101).is_ok());
+        assert_eq!(buffer.drain().len(), 1);
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
+    }
+
+    #[test]
+    fn udp_byte_reserve_returns_exact_rejected_packet_and_conserves_bounds() {
+        let mut buffer = CandidateBuffer::new(64, 1024, 100).unwrap();
+        for offset in 0..7 {
+            let mut udp = packet(40000 + offset);
+            udp.tuple.transport = Proto::Udp;
+            assert!(buffer.enqueue(udp, vec![7; 128], offset, 0).is_ok());
+        }
+        let mut extra_udp = packet(45000);
+        extra_udp.tuple.transport = Proto::Udp;
+        let rejected = buffer.enqueue(extra_udp, vec![8; 128], 8, 0).unwrap_err();
+        assert_eq!(rejected.packet, vec![8; 128]);
+        assert_eq!(rejected.address, 8);
+        assert_eq!(buffer.held_bytes, 7 * 128);
+        assert_eq!(buffer.held_udp_bytes, 7 * 128);
+        assert!(buffer.enqueue(packet(50000), vec![9; 64], 9, 0).is_ok());
+        let returned = buffer.drain();
+        assert_eq!(returned.len(), 8);
+        assert_eq!(
+            returned
+                .iter()
+                .map(|decision| match decision {
+                    CandidateDecision::PassThrough { packet, .. } => packet.len(),
+                    CandidateDecision::Selected { .. } => panic!("drain passes original packets"),
+                })
+                .sum::<usize>(),
+            7 * 128 + 64
+        );
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert_eq!(buffer.held_udp_bytes, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
     }
 
     #[test]

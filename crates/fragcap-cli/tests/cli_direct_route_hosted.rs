@@ -474,6 +474,10 @@ struct LocalPeer {
 
 impl LocalPeer {
     fn start(ip: std::net::IpAddr) -> std::io::Result<Self> {
+        Self::start_case(ip, false)
+    }
+
+    fn start_case(ip: std::net::IpAddr, no_payload: bool) -> std::io::Result<Self> {
         if ip.is_loopback() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -486,7 +490,7 @@ impl LocalPeer {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(120);
+            let deadline = Instant::now() + Duration::from_secs(if no_payload { 20 } else { 120 });
             let mut handlers = Vec::new();
             while handlers.len() < 10 && !worker_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -495,7 +499,20 @@ impl LocalPeer {
                         stream.set_read_timeout(Some(Duration::from_secs(35)))?;
                         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
                         let mut first = [0; 16];
-                        std::io::Read::read_exact(&mut stream, &mut first)?;
+                        let mut filled = 0;
+                        while filled < first.len() {
+                            let count = std::io::Read::read(&mut stream, &mut first[filled..])?;
+                            if count == 0 {
+                                if filled == 0 && no_payload {
+                                    return Ok::<_, std::io::Error>(true);
+                                }
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "controlled request ended mid-header",
+                                ));
+                            }
+                            filled += count;
+                        }
                         if &first == b"sentinel-request" {
                             stream.write_all(b"sentinel-reply")?;
                             return Ok::<_, std::io::Error>(false);
@@ -621,13 +638,19 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         return;
     }
     let refusal = std::env::var_os("FRAGCAP_S211_REFUSAL").is_some();
+    let no_payload = std::env::var_os("FRAGCAP_S211_NO_PAYLOAD").is_some();
+    assert!(!(refusal && no_payload), "choose one controlled TCP case");
     let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"));
     let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("cold client"));
     let mut local_peer = std::env::var("FRAGCAP_S211_BIND_IP")
         .ok()
-        .map(|ip| LocalPeer::start(ip.parse().expect("controlled bind IP")))
+        .map(|ip| LocalPeer::start_case(ip.parse().expect("controlled bind IP"), no_payload))
         .transpose()
         .expect("controlled non-loopback peer");
+    assert!(
+        !no_payload || local_peer.is_some(),
+        "the no-payload case requires its finite local peer"
+    );
     let peer: SocketAddr = if let Some(peer) = &local_peer {
         peer.address
     } else {
@@ -680,7 +703,12 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     let sentinels = std::thread::spawn(move || -> std::io::Result<Vec<Duration>> {
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
-            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == b"reply-received") {
+            let expected = if no_payload {
+                b"connected-no-payload".as_slice()
+            } else {
+                b"reply-received".as_slice()
+            };
+            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == expected) {
                 break;
             }
             if Instant::now() >= deadline {
@@ -691,15 +719,29 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if !gate_active.load(Ordering::Acquire) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "selected reply arrived without confirmed route activation",
-            ));
+        while !gate_active.load(Ordering::Acquire) {
+            if !no_payload {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "selected reply arrived without confirmed route activation",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "zero-byte client did not reach route activation",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
         let mut elapsed = Vec::new();
         for _ in 0..3 {
             elapsed.push(unrelated_sentinel(peer)?);
+        }
+        if no_payload {
+            // The client remains open while the finite helper completes its
+            // upstream connection; neither side sends application bytes.
+            std::thread::sleep(Duration::from_secs(1));
         }
         std::fs::write(&gate_release, b"release")?;
         Ok(elapsed)
@@ -727,6 +769,7 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
         .args(&capture_args)
         .env("S205_CONTROLLED_PEER", peer.to_string())
         .env("S205_CONTROLLED_GATE", &gate_signal)
+        .envs(no_payload.then_some(("S211_NO_PAYLOAD", "1")))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -838,6 +881,24 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
                 pcapng_packet_blocks(&bundle.join("capture.fcapng")) > 0,
                 "Npcap did not retain a reinjected original packet"
             );
+        } else if no_payload {
+            assert_eq!(report["route"]["selected_flows"], 1);
+            assert_eq!(report["route"]["zero_byte_connected_flows"], 1);
+            assert_eq!(report["route"]["client_reachable_flows"], 0);
+            assert_eq!(report["route"]["bidirectional_flows"], 0);
+            assert_eq!(report["flows"][0]["client_to_upstream_bytes"], 0);
+            assert_eq!(report["flows"][0]["upstream_to_client_bytes"], 0);
+            assert!(
+                compatibility["observations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|observation| {
+                        observation["direct_route"]["receipt_state"] == "consumed"
+                            && observation["direct_route"]["route_state"] == "delivery-unproven"
+                    }),
+                "zero-byte TCP route was incorrectly presented as transferred: {compatibility:#?}"
+            );
         } else {
             assert_eq!(report["route"]["bidirectional_flows"], 1);
             assert_eq!(report["flows"][0]["process_generation_join"], "exact");
@@ -863,7 +924,13 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     assert!(bundle.join("capture.fcapng").is_file());
     eprintln!(
         "S211 mode={} package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
-        if refusal { "refusal" } else { "transfer" },
+        if refusal {
+            "refusal"
+        } else if no_payload {
+            "no-payload"
+        } else {
+            "transfer"
+        },
         binary.display(),
         peer,
         bundle.display(),

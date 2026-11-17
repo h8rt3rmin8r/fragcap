@@ -409,6 +409,7 @@ fn run() -> io::Result<()> {
     }
     if mode != "run"
         && mode != "run-refusal"
+        && mode != "run-no-payload"
         && mode != "run-all"
         && mode != "run-all-external"
         && mode != "run-refusal-external"
@@ -418,7 +419,7 @@ fn run() -> io::Result<()> {
     if (mode == "run-all-external" || mode == "run-refusal-external") != external_peer.is_some() {
         return Err(io::Error::other("external runner peer mismatch"));
     }
-    let session_root = if external_peer.is_some() {
+    let session_root = if external_peer.is_some() || mode == "run-no-payload" {
         let root = PathBuf::from(
             env::var_os("FRAGCAP_S211_SESSION_ROOT")
                 .ok_or_else(|| io::Error::other("S211 session root is missing"))?,
@@ -446,6 +447,8 @@ fn run() -> io::Result<()> {
     let mut failed = false;
     let attempts = if mode == "run-refusal" || mode == "run-refusal-external" {
         1
+    } else if mode == "run-no-payload" {
+        1
     } else if mode == "run-all" || mode == "run-all-external" {
         4
     } else {
@@ -468,6 +471,14 @@ fn run() -> io::Result<()> {
             || mode == "run-refusal-external"
             || (mode == "run-all" && attempt == 4)
             || (mode == "run-all-external" && attempt == 1);
+        let no_payload = mode == "run-no-payload";
+        let case_name = if refusal {
+            "refusal"
+        } else if no_payload {
+            "no-payload"
+        } else {
+            "transfer"
+        };
         let attempt_log = output.with_extension(format!("attempt-{attempt}.log"));
         let bind_ip_arg = std::ffi::OsString::from(bind_ip.to_string());
         let job = job::Job::new()?;
@@ -502,6 +513,11 @@ fn run() -> io::Result<()> {
         } else {
             worker_command.env_remove("FRAGCAP_S211_REFUSAL");
         }
+        if no_payload {
+            worker_command.env("FRAGCAP_S211_NO_PAYLOAD", "1");
+        } else {
+            worker_command.env_remove("FRAGCAP_S211_NO_PAYLOAD");
+        }
         let mut worker = worker_command.spawn()?;
         if let Err(error) = job.assign(&worker) {
             worker.kill()?;
@@ -524,7 +540,7 @@ fn run() -> io::Result<()> {
                 writeln!(
                     summary,
                     "attempt {attempt} ({}): timed out; contained descendants terminated",
-                    if refusal { "refusal" } else { "transfer" }
+                    case_name
                 )?;
                 failed = true;
                 break None;
@@ -537,7 +553,7 @@ fn run() -> io::Result<()> {
             writeln!(
                 summary,
                 "attempt {attempt} ({}): failed; log={}",
-                if refusal { "refusal" } else { "transfer" },
+                case_name,
                 attempt_log.display()
             )?;
             failed = true;
@@ -545,7 +561,7 @@ fn run() -> io::Result<()> {
             writeln!(
                 summary,
                 "attempt {attempt} ({}): passed; log={}",
-                if refusal { "refusal" } else { "transfer" },
+                case_name,
                 attempt_log.display()
             )?;
         }

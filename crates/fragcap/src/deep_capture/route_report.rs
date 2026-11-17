@@ -63,6 +63,43 @@ fn packet_omission_reason(reason: Option<&str>) -> &'static str {
         }
         Some("selected-route-generation-retired") => "selected-route-generation-retired",
         Some("pending-packet-after-owner-retired") => "pending-packet-after-owner-retired",
+        Some("pending-packet-after-setup-failed") => "pending-packet-after-setup-failed",
+        Some("pending-packet-after-forward-failed") => "pending-packet-after-forward-failed",
+        Some("pending-packet-runtime-stopped") => "pending-packet-runtime-stopped",
+        Some("selected-udp-owner-unproven-original-reinjected") => {
+            "selected-udp-owner-unproven-original-reinjected"
+        }
+        Some("selected-udp-route-unavailable-original-reinjected") => {
+            "selected-udp-route-unavailable-original-reinjected"
+        }
+        Some("selected-udp-after-close-original-reinjected") => {
+            "selected-udp-after-close-original-reinjected"
+        }
+        Some("selected-udp-original-reinjection-failed") => {
+            "selected-udp-original-reinjection-failed"
+        }
+        Some("selected-tcp-payload-before-close-unproven") => {
+            "selected-tcp-payload-before-close-unproven"
+        }
+        Some("selected-tcp-payload-close-boundary-unproven") => {
+            "selected-tcp-payload-close-boundary-unproven"
+        }
+        Some("selected-tcp-payload-after-close-unproven") => {
+            "selected-tcp-payload-after-close-unproven"
+        }
+        Some("selected-tcp-payload-close-unavailable") => "selected-tcp-payload-close-unavailable",
+        Some("selected-tcp-header-only-before-close-unproven") => {
+            "selected-tcp-header-only-before-close-unproven"
+        }
+        Some("selected-tcp-header-only-close-boundary-unproven") => {
+            "selected-tcp-header-only-close-boundary-unproven"
+        }
+        Some("selected-tcp-header-only-after-close-unproven") => {
+            "selected-tcp-header-only-after-close-unproven"
+        }
+        Some("selected-tcp-header-only-close-unavailable") => {
+            "selected-tcp-header-only-close-unavailable"
+        }
         _ => "other",
     }
 }
