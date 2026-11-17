@@ -5,7 +5,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use fragcap_core::packet::Timestamp;
 use fragcap_core::process::{ProcessEvent, ProcessRecord, WatcherReport};
@@ -20,13 +20,28 @@ use super::WatcherError;
 pub struct EtwWatcher {
     fanout: Arc<Fanout>,
     session: Session,
-    /// Dropped before the session, which is what stops the consumer thread
-    /// before the session it is reading disappears underneath it.
+    /// Kept attached through owned-session STOP, then closed and joined so
+    /// the final ETW buffer contributes to the report and parser counters.
     consumer: Option<Consumer>,
     snapshot: Vec<ProcessRecord>,
     /// The instant the snapshot reflects, for the tree to bound reconciliation
     /// with. See [`snapshot_taken_at`](Self::snapshot_taken_at).
     snapshot_at: Option<Timestamp>,
+}
+
+/// Monotonic ETW shutdown spans and counters after the consumer has drained.
+pub struct EtwStopTiming {
+    pub report_query_us: u64,
+    pub session_stop_us: u64,
+    pub consumer_close_us: u64,
+    pub consumer_join_us: u64,
+    pub final_unparsed_events: u64,
+    pub final_rundown_ignored: u64,
+    pub complete: bool,
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 impl EtwWatcher {
@@ -135,12 +150,41 @@ impl EtwWatcher {
         self.fanout.unparsed.load(Ordering::Relaxed)
     }
 
-    /// Stop, and report what was observed.
-    pub fn stop(mut self) -> WatcherReport {
+    /// Stop the owned producer first, then drain and join its real-time consumer.
+    /// Keeping the consumer attached through STOP retains the final ETW buffer.
+    pub fn stop_with_timings(mut self) -> (WatcherReport, EtwStopTiming) {
+        let started = Instant::now();
         let mut report = self.report();
+        let report_query_us = elapsed_us(started);
+        let started = Instant::now();
+        let stopped = self.session.stop_owned().is_ok();
+        let session_stop_us = elapsed_us(started);
+        let consumer = self
+            .consumer
+            .as_mut()
+            .map(|consumer| consumer.close_and_join());
         self.consumer = None;
+        let (events, buffers) = self.session.lost();
+        report.events_lost = events + self.fanout.unparsed.load(Ordering::Relaxed);
+        report.buffers_lost = buffers;
         report.running = false;
-        report
+        let timing = EtwStopTiming {
+            report_query_us,
+            session_stop_us,
+            consumer_close_us: consumer.as_ref().map_or(0, |timing| timing.close_us),
+            consumer_join_us: consumer.as_ref().map_or(0, |timing| timing.join_us),
+            // The consumer can parse its final ETW buffer during join. These
+            // values must describe that completed drain, not the pre-stop view.
+            final_unparsed_events: self.fanout.unparsed.load(Ordering::Relaxed),
+            final_rundown_ignored: self.fanout.rundown_ignored.load(Ordering::Relaxed),
+            complete: stopped && consumer.as_ref().is_none_or(|timing| timing.complete),
+        };
+        (report, timing)
+    }
+
+    /// Stop, and report what was observed.
+    pub fn stop(self) -> WatcherReport {
+        self.stop_with_timings().0
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(all(windows, feature = "direct-route"))]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+#[cfg(all(windows, feature = "direct-route"))]
+use std::time::UNIX_EPOCH;
 use std::time::{Duration, Instant, SystemTime};
 
 pub use fragcap_proxy::ClientIdentity;
@@ -23,6 +25,8 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use fragcap_attr::{socket_match_rank, SocketTable};
 #[cfg(all(windows, feature = "socket-table"))]
 use fragcap_attr::{IpHelperTable, SocketTableSource};
+#[cfg(all(windows, feature = "direct-route"))]
+use fragcap_core::{Attribution, CapturedPacket};
 use fragcap_core::{Fidelity, FlowKey, FlowRegistry, ProcessEvent, Proto, Timestamp};
 use fragcap_proxy::ConnectionDescriptor;
 
@@ -323,14 +327,47 @@ pub struct NativeObservationContext {
     direct_managed_root_pid: Arc<AtomicU32>,
     process_evidence: Arc<Mutex<Option<super::CaptureProcessEvidence>>>,
     #[cfg(all(windows, feature = "direct-route"))]
+    process_evidence_version: Arc<AtomicU64>,
+    #[cfg(all(windows, feature = "direct-route"))]
     direct_helpers: Arc<Mutex<DirectHelperRegistry>>,
     #[cfg(all(windows, feature = "direct-route"))]
     direct_proofs:
         Arc<Mutex<BTreeMap<super::direct_route::OriginalFlow, Arc<Mutex<DirectRouteProof>>>>>,
     #[cfg(all(windows, feature = "direct-route"))]
+    direct_packet_attestation: Arc<DirectPacketAttestationCounters>,
+    #[cfg(all(windows, feature = "direct-route"))]
     direct_route_active: Arc<AtomicBool>,
     #[cfg(all(windows, feature = "socket-table"))]
     socket_collector: Arc<SocketInceptionCollector>,
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+#[derive(Debug, Default)]
+struct DirectPacketAttestationCounters {
+    tuple_seen: AtomicU64,
+    time_mismatch: AtomicU64,
+    incomplete: AtomicU64,
+    digest_mismatch: AtomicU64,
+    ambiguous: AtomicU64,
+    matched: AtomicU64,
+    checksum_normalized_matched: AtomicU64,
+    ipv4_id_only_match: AtomicU64,
+    transport_only_match: AtomicU64,
+}
+
+/// Aggregate capture-side join outcomes without storing packet bytes or digests.
+#[cfg(all(windows, feature = "direct-route"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectPacketAttestationStats {
+    pub tuple_seen: u64,
+    pub time_mismatch: u64,
+    pub incomplete: u64,
+    pub digest_mismatch: u64,
+    pub ambiguous: u64,
+    pub matched: u64,
+    pub checksum_normalized_matched: u64,
+    pub ipv4_id_only_match: u64,
+    pub transport_only_match: u64,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -339,12 +376,23 @@ struct DirectHelperOwner {
     flow: super::direct_route::OriginalFlow,
     opened_earliest_ns: u64,
     opened_latest_ns: u64,
+    /// A completed proxy admission remains available for exact historical
+    /// reconciliation, but cannot authorize another live inspection decision.
+    retired_at_ns: Option<u64>,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DirectRouteProof {
+    pub first_packet_digests: Option<fragcap_core::parse::DirectDatagramDigests>,
+    /// Full capture-side digests independently matched to this selected first
+    /// packet. An attribution's PID and role alone cannot distinguish a later
+    /// selected flow that reused the same tuple and process.
+    attested_capture_digests: BTreeSet<[u8; 32]>,
+    attested_capture_digest_overflow: bool,
+    pub receipt_consumed: bool,
     pub selected_packet_consumed: bool,
+    pub selected_packet_reinjected: bool,
     pub selected_packet_lost: bool,
     pub proxy_connected: bool,
     pub reply_sent: bool,
@@ -360,8 +408,23 @@ pub(crate) struct DirectRouteProof {
 
 #[cfg(all(windows, feature = "direct-route"))]
 impl DirectRouteProof {
+    fn record_attested_capture_digest(&mut self, digest: [u8; 32]) -> bool {
+        if self.attested_capture_digests.contains(&digest) {
+            return true;
+        }
+        if self.attested_capture_digests.len() >= DIRECT_CAPTURE_DIGEST_LIMIT {
+            self.attested_capture_digest_overflow = true;
+            return false;
+        }
+        self.attested_capture_digests.insert(digest);
+        true
+    }
+
     fn confirms_reachability(&self, transport: Proto) -> bool {
-        self.selected_packet_consumed
+        self.receipt_consumed
+            && self.selected_packet_consumed
+            && !self.selected_packet_reinjected
+            && !self.selected_packet_lost
             && self.proxy_connected
             && self.reply_sent
             && !self.reply_failed
@@ -399,6 +462,99 @@ type DirectHelperRegistry =
 const DIRECT_HELPER_ACCEPT_SLACK_NS: u64 = 50_000_000;
 #[cfg(all(windows, feature = "direct-route"))]
 const DIRECT_PACKET_JOIN_SLACK_NS: u64 = 50_000_000;
+#[cfg(all(windows, feature = "direct-route"))]
+const DIRECT_CAPTURE_DIGEST_LIMIT: usize = 32;
+
+/// The proxy may close just before a refused first packet is reinjected and
+/// observed by Npcap. Extend its packet window only for the selected original:
+/// an exact datagram digest or the capture-side checksum-normalized DirectRoute
+/// attestation, within the existing 50 ms first-packet bound. Other packets
+/// retain the proxy's actual close instant as their upper bound.
+#[cfg(all(windows, feature = "direct-route"))]
+fn direct_packet_in_proxy_window(
+    context: &NativeObservationContext,
+    flow: &super::direct_route::OriginalFlow,
+    proof: Option<&DirectRouteProof>,
+    observation: &fragcap_core::FlowObservation,
+    closed_at_ns: u64,
+) -> bool {
+    let at = observation.timestamp.as_nanos();
+    let start = flow
+        .first_packet_at_ns
+        .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
+    if at < start {
+        return false;
+    }
+    let closed = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
+    if at <= closed {
+        return true;
+    }
+    let selected_end = flow
+        .first_packet_at_ns
+        .saturating_add(DIRECT_PACKET_JOIN_SLACK_NS as i64);
+    at <= selected_end && direct_selected_packet_identity(context, flow, proof, observation)
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+fn direct_selected_packet_identity(
+    context: &NativeObservationContext,
+    flow: &super::direct_route::OriginalFlow,
+    proof: Option<&DirectRouteProof>,
+    observation: &fragcap_core::FlowObservation,
+) -> bool {
+    let at = observation.timestamp.as_nanos();
+    let Some(digest) = observation.packet_digest else {
+        return false;
+    };
+    if at.abs_diff(flow.first_packet_at_ns) > DIRECT_PACKET_JOIN_SLACK_NS
+        || (flow.first_packet_digest != Some(digest)
+            && !proof.is_some_and(|proof| proof.attested_capture_digests.contains(&digest)))
+    {
+        return false;
+    }
+    // An identical datagram can be selected twice on a reused tuple. The
+    // capture-side attestor refuses that ambiguity; correlation must not
+    // independently attach the same retained packet to both route flows.
+    !context
+        .direct_proofs
+        .lock()
+        .expect("direct proof lock")
+        .iter()
+        .any(|(other, other_proof)| {
+            other != flow
+                && other.tuple == flow.tuple
+                && at.abs_diff(other.first_packet_at_ns) <= DIRECT_PACKET_JOIN_SLACK_NS
+                && (other.first_packet_digest == Some(digest)
+                    || other_proof
+                        .lock()
+                        .expect("direct proof lock")
+                        .attested_capture_digests
+                        .contains(&digest))
+        })
+}
+
+#[cfg(all(windows, feature = "direct-route"))]
+fn direct_tuple_reused_in_window(
+    context: &NativeObservationContext,
+    flow: &super::direct_route::OriginalFlow,
+    closed_at_ns: u64,
+) -> bool {
+    let start = flow
+        .first_packet_at_ns
+        .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
+    let end = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
+    context
+        .direct_proofs
+        .lock()
+        .expect("direct proof lock")
+        .keys()
+        .any(|other| {
+            other != flow
+                && other.tuple == flow.tuple
+                && other.first_packet_at_ns >= start
+                && other.first_packet_at_ns <= end
+        })
+}
 
 impl NativeObservationContext {
     #[cfg(all(windows, feature = "direct-route"))]
@@ -418,12 +574,63 @@ impl NativeObservationContext {
     /// Cloning the full event history on every ETW event would be quadratic.
     pub fn record_live_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
         let mut held = self.process_evidence.lock().expect("process evidence lock");
+        if held.as_ref().is_some_and(|live| {
+            let live_identity = live.launch_identity.as_ref().map(|identity| {
+                (
+                    identity.pid,
+                    identity.created,
+                    &identity.path,
+                    &identity.user_sid,
+                    identity.session,
+                )
+            });
+            let incoming_identity = evidence.launch_identity.as_ref().map(|identity| {
+                (
+                    identity.pid,
+                    identity.created,
+                    &identity.path,
+                    &identity.user_sid,
+                    identity.session,
+                )
+            });
+            live.event_limit == evidence.event_limit
+                && (!live.startup_snapshot.is_empty() || evidence.startup_snapshot.is_empty())
+                && live.snapshot_at == evidence.snapshot_at
+                && live.launch_pid == evidence.launch_pid
+                && live.launch_at == evidence.launch_at
+                && live.launch_earliest_at == evidence.launch_earliest_at
+                && live_identity == incoming_identity
+                && live.existing_platform_root == evidence.existing_platform_root
+                && live.direct_alternate_used == evidence.direct_alternate_used
+                && live.associated_root_failure == evidence.associated_root_failure
+                && live.events_unretained == evidence.events_unretained
+                && live.stage_transitions_unretained == evidence.stage_transitions_unretained
+                && live.stage_path_limitations == evidence.stage_path_limitations
+                && live.unparseable_events == evidence.unparseable_events
+                && live.rundown_ignored == evidence.rundown_ignored
+                && live.watcher_ended == evidence.watcher_ended
+                && live.watcher_report == evidence.watcher_report
+                && (!live.shutdown_scope.is_empty() || evidence.shutdown_scope.is_empty())
+                && live.events.len() >= evidence.events.len()
+                && live.stage_transitions.len() >= evidence.stage_transitions.len()
+                && live.managed_instances.len() >= evidence.managed_instances.len()
+                && live.managed_instance_limit_reached == evidence.managed_instance_limit_reached
+        }) {
+            return;
+        }
         let live = held.get_or_insert_with(super::CaptureProcessEvidence::default);
         live.event_limit = evidence.event_limit;
+        if live.startup_snapshot.is_empty() {
+            live.startup_snapshot.clone_from(&evidence.startup_snapshot);
+        }
+        live.snapshot_at = evidence.snapshot_at;
         live.launch_pid = evidence.launch_pid;
         live.launch_at = evidence.launch_at;
         live.launch_earliest_at = evidence.launch_earliest_at;
         live.launch_identity = evidence.launch_identity.clone();
+        live.existing_platform_root = evidence.existing_platform_root;
+        live.direct_alternate_used = evidence.direct_alternate_used;
+        live.associated_root_failure = evidence.associated_root_failure.clone();
         live.events_unretained = evidence.events_unretained;
         live.stage_transitions_unretained = evidence.stage_transitions_unretained;
         live.stage_path_limitations = evidence.stage_path_limitations.clone();
@@ -447,11 +654,22 @@ impl NativeObservationContext {
                 .extend_from_slice(&evidence.managed_instances[live.managed_instances.len()..]);
         }
         live.managed_instance_limit_reached = evidence.managed_instance_limit_reached;
+        #[cfg(all(windows, feature = "direct-route"))]
+        self.process_evidence_version
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Retain already observed process events for the final connection-instance join.
     pub fn record_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
         *self.process_evidence.lock().expect("process evidence lock") = Some(evidence.clone());
+        #[cfg(all(windows, feature = "direct-route"))]
+        self.process_evidence_version
+            .fetch_add(1, Ordering::Release);
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn direct_process_evidence_version(&self) -> u64 {
+        self.process_evidence_version.load(Ordering::Acquire)
     }
 
     /// Read the current retained generation proof for a pending direct SYN.
@@ -488,18 +706,59 @@ impl NativeObservationContext {
             .entry((transport, helper_local, proxy_local))
             .or_default();
         if owners.iter().any(|owner| {
-            owner.opened_earliest_ns <= opened_latest_ns
+            owner.retired_at_ns.is_none()
+                && owner.opened_earliest_ns <= opened_latest_ns
                 && opened_earliest_ns <= owner.opened_latest_ns
         }) {
             return Err("direct-helper-window-overlap");
         }
+        self.direct_proof_for(&flow)?;
         owners.push(DirectHelperOwner {
             flow,
             opened_earliest_ns,
             opened_latest_ns,
+            retired_at_ns: None,
         });
-        self.direct_proof_for(&owners.last().expect("new direct helper").flow)?;
         Ok(())
+    }
+
+    /// Retain the exact connection window for final artifacts while revoking
+    /// its authority over future proxy connections.
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn retire_direct_helper_registration_at(
+        &self,
+        flow: &super::direct_route::OriginalFlow,
+        retired_at_ns: u64,
+    ) -> bool {
+        let mut registry = self.direct_helpers.lock().expect("direct helper lock");
+        let mut found = false;
+        for owners in registry.values_mut() {
+            for owner in owners {
+                if &owner.flow == flow && owner.retired_at_ns.is_none() {
+                    owner.retired_at_ns = Some(retired_at_ns);
+                    found = true;
+                }
+            }
+        }
+        found
+    }
+
+    /// A connected helper can still have a proxy connection whose observation
+    /// is finalized after the route worker retires it. Preserve that exact
+    /// historical match, while excluding this row from live inspection and
+    /// every proxy connection opened after retirement. A helper that never
+    /// connected has no registration to retain.
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub(crate) fn retire_direct_helper_registration(
+        &self,
+        flow: &super::direct_route::OriginalFlow,
+    ) {
+        let retired_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(0);
+        self.retire_direct_helper_registration_at(flow, retired_at_ns);
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
@@ -519,9 +778,168 @@ impl NativeObservationContext {
         Ok(proof)
     }
 
+    /// Resolve only a complete packet independently observed by the capture
+    /// source whose full or checksum-normalized datagram digest, tuple, and
+    /// capture instant match one selected direct-route packet. The route's process generation
+    /// was proven at selection; the managed packet gate checks it again at the
+    /// packet instant. An ambiguous or partial match remains unattributed.
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn attest_direct_original(&self, packet: &CapturedPacket) -> Option<Attribution> {
+        if !self.direct_route_active.load(Ordering::Acquire) {
+            return None;
+        }
+        let key = packet.flow?;
+        let proofs = self.direct_proofs.lock().ok()?;
+        let mut tuple_seen = false;
+        let mut time_seen = false;
+        let mut exact = None;
+        let mut ambiguous = false;
+        let mut normalized_cache = None;
+        let mut normalized_only = false;
+        for (flow, proof) in proofs.iter() {
+            if key != FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote) {
+                continue;
+            }
+            tuple_seen = true;
+            if packet.ts.as_nanos().abs_diff(flow.first_packet_at_ns) > DIRECT_PACKET_JOIN_SLACK_NS
+            {
+                continue;
+            }
+            time_seen = true;
+            let full =
+                packet.packet_digest.is_some() && packet.packet_digest == flow.first_packet_digest;
+            let digests = *normalized_cache.get_or_insert_with(|| {
+                packet
+                    .network_offset
+                    .and_then(|offset| packet.data.get(offset..))
+                    .and_then(fragcap_core::parse::direct_datagram_digests)
+            });
+            let selected_digests = proof.lock().ok()?.first_packet_digests;
+            let normalized = digests
+                .zip(selected_digests)
+                .is_some_and(|(observed, selected)| {
+                    observed.checksum_normalized == selected.checksum_normalized
+                });
+            if !full && !normalized {
+                if let Some((observed, selected)) = digests.zip(selected_digests) {
+                    if observed.ipv4_id_normalized == selected.ipv4_id_normalized {
+                        self.direct_packet_attestation
+                            .ipv4_id_only_match
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else if observed.transport_only == selected.transport_only {
+                        self.direct_packet_attestation
+                            .transport_only_match
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            if full || normalized {
+                if exact.replace(flow).is_some() {
+                    ambiguous = true;
+                } else {
+                    normalized_only = !full;
+                }
+            }
+        }
+        if !tuple_seen {
+            return None;
+        }
+        self.direct_packet_attestation
+            .tuple_seen
+            .fetch_add(1, Ordering::Relaxed);
+        if !time_seen {
+            self.direct_packet_attestation
+                .time_mismatch
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        if packet.packet_digest.is_none() {
+            self.direct_packet_attestation
+                .incomplete
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let Some(flow) = exact else {
+            self.direct_packet_attestation
+                .digest_mismatch
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        if ambiguous {
+            self.direct_packet_attestation
+                .ambiguous
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        // Retain the capture-side full digest only after this packet matched
+        // exactly one selected flow. Correlation can then bind checksum-
+        // normalized captures back to that flow without borrowing another
+        // flow's PID/role tag on a reused tuple. The bounded registry refuses
+        // further novel digests rather than silently weakening that identity.
+        let capture_digest = packet.packet_digest?;
+        if !proofs
+            .get(flow)?
+            .lock()
+            .ok()?
+            .record_attested_capture_digest(capture_digest)
+        {
+            self.direct_packet_attestation
+                .ambiguous
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        self.direct_packet_attestation
+            .matched
+            .fetch_add(1, Ordering::Relaxed);
+        if normalized_only {
+            self.direct_packet_attestation
+                .checksum_normalized_matched
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Some(
+            Attribution::new(flow.pid, &flow.process_image, Fidelity::DirectRoute)
+                .with_role(&flow.process_role),
+        )
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn direct_packet_attestation_stats(&self) -> DirectPacketAttestationStats {
+        let counters = &self.direct_packet_attestation;
+        DirectPacketAttestationStats {
+            tuple_seen: counters.tuple_seen.load(Ordering::Relaxed),
+            time_mismatch: counters.time_mismatch.load(Ordering::Relaxed),
+            incomplete: counters.incomplete.load(Ordering::Relaxed),
+            digest_mismatch: counters.digest_mismatch.load(Ordering::Relaxed),
+            ambiguous: counters.ambiguous.load(Ordering::Relaxed),
+            matched: counters.matched.load(Ordering::Relaxed),
+            checksum_normalized_matched: counters
+                .checksum_normalized_matched
+                .load(Ordering::Relaxed),
+            ipv4_id_only_match: counters.ipv4_id_only_match.load(Ordering::Relaxed),
+            transport_only_match: counters.transport_only_match.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn direct_original_attestation_active(&self) -> bool {
+        self.direct_route_active.load(Ordering::Acquire)
+    }
+
     #[cfg(all(windows, feature = "direct-route"))]
     pub(crate) fn set_direct_route_active(&self, active: bool) {
         if active {
+            let counters = &self.direct_packet_attestation;
+            counters.tuple_seen.store(0, Ordering::Relaxed);
+            counters.time_mismatch.store(0, Ordering::Relaxed);
+            counters.incomplete.store(0, Ordering::Relaxed);
+            counters.digest_mismatch.store(0, Ordering::Relaxed);
+            counters.ambiguous.store(0, Ordering::Relaxed);
+            counters.matched.store(0, Ordering::Relaxed);
+            counters
+                .checksum_normalized_matched
+                .store(0, Ordering::Relaxed);
+            counters.ipv4_id_only_match.store(0, Ordering::Relaxed);
+            counters.transport_only_match.store(0, Ordering::Relaxed);
             self.direct_helpers
                 .lock()
                 .expect("direct helper lock")
@@ -546,10 +964,29 @@ impl NativeObservationContext {
     }
 
     #[cfg(all(windows, feature = "direct-route"))]
-    fn direct_helper_flow(
+    pub(crate) fn direct_helper_flow(
         &self,
         descriptor: ConnectionDescriptor,
         opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        self.lookup_direct_helper_flow(descriptor, opened_at_ns, false)
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn direct_helper_historical_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+    ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
+        self.lookup_direct_helper_flow(descriptor, opened_at_ns, true)
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    fn lookup_direct_helper_flow(
+        &self,
+        descriptor: ConnectionDescriptor,
+        opened_at_ns: u64,
+        include_retired: bool,
     ) -> Result<Option<super::direct_route::OriginalFlow>, &'static str> {
         let registry = self.direct_helpers.lock().expect("direct helper lock");
         let Some(owners) = registry.get(&(
@@ -560,14 +997,18 @@ impl NativeObservationContext {
             return Ok(None);
         };
         let mut matching = owners.iter().filter(|owner| {
-            owner
-                .opened_earliest_ns
-                .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
-                <= opened_at_ns
+            (include_retired || owner.retired_at_ns.is_none())
+                && owner
+                    .opened_earliest_ns
+                    .saturating_sub(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                    <= opened_at_ns
                 && opened_at_ns
                     <= owner
                         .opened_latest_ns
                         .saturating_add(DIRECT_HELPER_ACCEPT_SLACK_NS)
+                && owner
+                    .retired_at_ns
+                    .is_none_or(|retired_at_ns| opened_at_ns <= retired_at_ns)
         });
         let Some(owner) = matching.next() else {
             return Ok(None);
@@ -585,7 +1026,22 @@ impl NativeObservationContext {
         opened_at_ns: u64,
         closed_at_ns: u64,
     ) -> Option<super::DirectRouteCorrelation> {
-        let flow = self.direct_helper_flow(descriptor, opened_at_ns).ok()??;
+        let flow = match self.direct_helper_historical_flow(descriptor, opened_at_ns) {
+            Ok(Some(flow)) => flow,
+            Ok(None) => return None,
+            Err(reason) => {
+                return Some(super::DirectRouteCorrelation {
+                    schema_version: 2,
+                    receipt_state: "unavailable",
+                    selected_packet_disposition: "unavailable",
+                    route_state: reason,
+                    original_packet_state: "unavailable",
+                    packet_history_state: "incomplete",
+                    process_instance_id: None,
+                    original_tuple: None,
+                });
+            }
+        };
         let proof = self
             .direct_proofs
             .lock()
@@ -595,19 +1051,21 @@ impl NativeObservationContext {
         let route_state = match proof.as_ref() {
             Some(value) if value.confirms_reachability(flow.tuple.transport) => "transferred",
             Some(value) if value.selected_packet_lost => "selected-packet-lost",
+            Some(value) if value.selected_packet_reinjected => "selected-packet-reinjected",
             Some(value) if value.selected_packet_consumed => "delivery-unproven",
             _ => "selected-disposition-unavailable",
         };
         let key = FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote);
         let summary = self.flow_registry.summary(&key);
-        let window_start = flow
-            .first_packet_at_ns
-            .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
-        let window_end = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
         let mut original_packet_state = "unavailable";
         // Buffer eviction is capture-wide and can erase every observation of
         // this tuple, leaving no per-flow summary to inspect.
-        let mut packet_history_state = if self.flow_registry.globally_unretained() > 0 {
+        let mut packet_history_state = if self.flow_registry.globally_unretained() > 0
+            || proof
+                .as_ref()
+                .is_some_and(|proof| proof.attested_capture_digest_overflow)
+            || direct_tuple_reused_in_window(self, &flow, closed_at_ns)
+        {
             "incomplete"
         } else {
             "complete"
@@ -622,14 +1080,16 @@ impl NativeObservationContext {
             }
             let mut later_packet = false;
             for observation in &summary.observations {
-                let at = observation.timestamp.as_nanos();
-                if at < window_start || at > window_end {
+                if !direct_packet_in_proxy_window(
+                    self,
+                    &flow,
+                    proof.as_ref(),
+                    observation,
+                    closed_at_ns,
+                ) {
                     continue;
                 }
-                if flow.first_packet_digest.is_none()
-                    || observation.packet_digest != flow.first_packet_digest
-                    || at.abs_diff(flow.first_packet_at_ns) > DIRECT_PACKET_JOIN_SLACK_NS
-                {
+                if !direct_selected_packet_identity(self, &flow, proof.as_ref(), observation) {
                     later_packet = true;
                     continue;
                 }
@@ -637,7 +1097,7 @@ impl NativeObservationContext {
                     Some(owner)
                         if owner.pid == flow.pid
                             && owner.process.as_ref() == flow.process_image
-                            && owner.role.as_deref() == Some("client") =>
+                            && owner.role.as_deref() == Some(flow.process_role.as_str()) =>
                     {
                         "observed-owned"
                     }
@@ -659,10 +1119,15 @@ impl NativeObservationContext {
         }
         Some(super::DirectRouteCorrelation {
             schema_version: 2,
-            receipt_state: "consumed",
+            receipt_state: if proof.as_ref().is_some_and(|value| value.receipt_consumed) {
+                "consumed"
+            } else {
+                "unconsumed"
+            },
             selected_packet_disposition: match proof.as_ref() {
                 Some(value) if value.selected_packet_consumed => "consumed",
                 Some(value) if value.selected_packet_lost => "lost",
+                Some(value) if value.selected_packet_reinjected => "reinjected",
                 _ => "unavailable",
             },
             route_state,
@@ -671,7 +1136,12 @@ impl NativeObservationContext {
             process_instance_id: Some(flow.process_instance_id),
             original_tuple: Some(format!(
                 "{}:{}->{}",
-                descriptor.transport, flow.tuple.local, flow.tuple.remote
+                match flow.tuple.transport {
+                    Proto::Tcp => "tcp",
+                    Proto::Udp => "udp",
+                },
+                flow.tuple.local,
+                flow.tuple.remote
             )),
         })
     }
@@ -737,7 +1207,7 @@ impl NativeObservationContext {
         opened_at_ns: u64,
         closed_at_ns: u64,
     ) -> Option<NativeCorrelation> {
-        let flow = match self.direct_helper_flow(descriptor, opened_at_ns) {
+        let flow = match self.direct_helper_historical_flow(descriptor, opened_at_ns) {
             Ok(Some(flow)) => flow,
             Ok(None) => return None,
             Err(reason) => {
@@ -807,58 +1277,61 @@ impl NativeObservationContext {
                 .into(),
             ));
         };
-        let window_start = flow
-            .first_packet_at_ns
-            .saturating_sub(DIRECT_PACKET_JOIN_SLACK_NS as i64);
-        let window_end = i64::try_from(closed_at_ns).unwrap_or(i64::MAX);
-        let in_window = |time: i64| time >= window_start && time <= window_end;
+        let in_window = |observation: &fragcap_core::FlowObservation| {
+            direct_packet_in_proxy_window(
+                self,
+                &flow,
+                route_proof.as_ref(),
+                observation,
+                closed_at_ns,
+            )
+        };
         let observed = summary
             .observations
             .iter()
-            .filter(|observation| in_window(observation.timestamp.as_nanos()))
+            .filter(|observation| in_window(observation))
             .count() as u64;
         let incomplete = summary.omission_precision_lost
             || summary.unretained_observations != 0
             || summary.global_unretained_observations != 0
-            || !summary.omissions.is_empty();
+            || !summary.omissions.is_empty()
+            || route_proof
+                .as_ref()
+                .is_some_and(|proof| proof.attested_capture_digest_overflow);
+        let tuple_reused = direct_tuple_reused_in_window(self, &flow, closed_at_ns);
         let first_packet_seen = summary.observations.iter().any(|observation| {
-            in_window(observation.timestamp.as_nanos())
-                && observation
-                    .timestamp
-                    .as_nanos()
-                    .abs_diff(flow.first_packet_at_ns)
-                    <= DIRECT_PACKET_JOIN_SLACK_NS
-                && flow.first_packet_digest.is_some()
-                && observation.packet_digest == flow.first_packet_digest
+            in_window(observation)
+                && direct_selected_packet_identity(self, &flow, route_proof.as_ref(), observation)
         });
         let first_packet_retained = summary.observations.iter().any(|observation| {
-            in_window(observation.timestamp.as_nanos())
-                && observation
-                    .timestamp
-                    .as_nanos()
-                    .abs_diff(flow.first_packet_at_ns)
-                    <= DIRECT_PACKET_JOIN_SLACK_NS
-                && flow.first_packet_digest.is_some()
-                && observation.packet_digest == flow.first_packet_digest
+            in_window(observation)
+                && direct_selected_packet_identity(self, &flow, route_proof.as_ref(), observation)
                 && observation.attribution.as_ref().is_some_and(|owner| {
                     owner.pid == flow.pid
                         && owner.process.as_ref() == flow.process_image
-                        && owner.role.as_deref() == Some("client")
+                        && owner.role.as_deref() == Some(flow.process_role.as_str())
                 })
         });
         let competing_owner = summary.observations.iter().any(|observation| {
-            in_window(observation.timestamp.as_nanos())
-                && observation
-                    .timestamp
-                    .as_nanos()
-                    .abs_diff(flow.first_packet_at_ns)
-                    <= DIRECT_PACKET_JOIN_SLACK_NS
-                && flow.first_packet_digest.is_some()
-                && observation.packet_digest == flow.first_packet_digest
+            in_window(observation)
+                && direct_selected_packet_identity(self, &flow, route_proof.as_ref(), observation)
                 && observation.attribution.as_ref().is_some_and(|owner| {
                     owner.pid != flow.pid || owner.process.as_ref() != flow.process_image
                 })
         });
+        if tuple_reused {
+            return Some((
+                Some(summary.id),
+                None,
+                None,
+                None,
+                None,
+                observed,
+                summary.unretained_observations,
+                CorrelationState::Ambiguous,
+                "direct-original-tuple-reused-within-window".into(),
+            ));
+        }
         if !route_positive && !competing_owner {
             return Some((
                 Some(summary.id),
@@ -1020,7 +1493,7 @@ impl NativeObservationContext {
         window: &ApplicationConnectionWindow,
     ) -> super::ConnectionOwnerEvidence {
         #[cfg(all(windows, feature = "direct-route"))]
-        match self.direct_helper_flow(window.descriptor, window.opened_at_ns) {
+        match self.direct_helper_historical_flow(window.descriptor, window.opened_at_ns) {
             Ok(Some(flow)) => {
                 return super::ConnectionOwnerEvidence {
                     state: "exact".into(),
@@ -1086,6 +1559,199 @@ mod direct_helper_tests {
     use fragcap_proxy::InspectionDecider;
 
     #[test]
+    fn retired_pending_helper_registration_cannot_claim_later_proxy_window() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-1".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(flow.clone())
+        );
+        context.retire_direct_helper_registration(&flow);
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("tcp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(reused)
+        );
+    }
+
+    #[test]
+    fn retired_udp_helper_revokes_live_owner_but_keeps_accepted_history() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Udp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42001".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "udp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("udp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150),
+            Ok(Some(flow.clone()))
+        );
+        assert!(context.retire_direct_helper_registration_at(&flow, 175));
+        assert!(!context.retire_direct_helper_registration_at(&flow, 176));
+        assert_eq!(context.direct_helper_flow(descriptor, 150), Ok(None));
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Ok(Some(flow.clone()))
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 176),
+            Ok(None)
+        );
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("udp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150),
+            Ok(Some(reused))
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Err("direct-helper-window-ambiguous")
+        );
+    }
+
+    #[test]
+    fn retired_helper_keeps_exact_historical_refusal_without_live_authority() {
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100,
+            first_packet_clock_error_ns: 0,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "game.exe".into(),
+            process_role: "client".into(),
+            first_packet_digest: None,
+        };
+        let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: helper,
+            proxy_local: proxy,
+        };
+        let context = NativeObservationContext::default();
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        context
+            .direct_proof_for(&flow)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .selected_packet_reinjected = true;
+        assert!(context.retire_direct_helper_registration_at(&flow, 175));
+        assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
+        assert_eq!(
+            context
+                .direct_helper_historical_flow(descriptor, 150)
+                .unwrap(),
+            Some(flow.clone())
+        );
+        assert_eq!(
+            context
+                .direct_helper_historical_flow(descriptor, 176)
+                .unwrap(),
+            None
+        );
+        let window = ApplicationConnectionWindow {
+            descriptor,
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let reconciled = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(reconciled.route_state, "selected-packet-reinjected");
+        assert_eq!(reconciled.selected_packet_disposition, "reinjected");
+        assert_eq!(reconciled.original_packet_state, "unavailable");
+        let owner = context.connection_owner(&window);
+        assert_eq!(owner.state, "exact");
+        assert_eq!(owner.pid, Some(42));
+        assert_eq!(owner.process_instance_id.as_deref(), Some("process-42-100"));
+
+        let mut reused = flow;
+        reused.first_packet_at_ns = 300;
+        context
+            .register_direct_helper("tcp", helper, proxy, reused.clone(), 100, 200)
+            .unwrap();
+        assert_eq!(
+            context.direct_helper_flow(descriptor, 150).unwrap(),
+            Some(reused)
+        );
+        assert_eq!(
+            context.direct_helper_historical_flow(descriptor, 150),
+            Err("direct-helper-window-ambiguous")
+        );
+        assert_eq!(
+            context
+                .direct_reconciliation_window(&window)
+                .unwrap()
+                .route_state,
+            "direct-helper-window-ambiguous"
+        );
+        assert_eq!(context.connection_owner(&window).state, "ambiguous");
+        assert_eq!(
+            context.correlate_proxy_window(&window).7,
+            CorrelationState::Ambiguous
+        );
+    }
+
+    #[test]
     fn empty_handshake_stays_unproven_and_datagram_response_keeps_packet_absence() {
         let flow = OriginalFlow {
             tuple: DirectTuple {
@@ -1099,6 +1765,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
+            process_role: "client".into(),
             first_packet_digest: Some([7; 32]),
         };
         let helper: SocketAddr = "127.0.0.1:41000".parse().unwrap();
@@ -1121,6 +1788,7 @@ mod direct_helper_tests {
         let proof = context.direct_proof_for(&flow).unwrap();
         {
             let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;
@@ -1157,24 +1825,21 @@ mod direct_helper_tests {
         };
         let udp_context = NativeObservationContext::default();
         udp_context
-            .register_direct_helper("udp", helper, proxy, udp.clone(), 100, 200)
+            .register_direct_helper("tcp", helper, proxy, udp.clone(), 100, 200)
             .unwrap();
         let udp_proof = udp_context.direct_proof_for(&udp).unwrap();
         {
             let mut proof = udp_proof.lock().unwrap();
+            proof.receipt_consumed = true;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;
             proof.client_datagrams = 1;
             proof.peer_datagrams = 1;
         }
-        let udp_window = ApplicationConnectionWindow {
-            descriptor: ConnectionDescriptor {
-                transport: "udp",
-                ..descriptor
-            },
-            ..window
-        };
+        // SOCKS5 UDP uses a TCP control connection, even though the selected
+        // original flow and its tuple are UDP.
+        let udp_window = window;
         let response = udp_context.correlate_proxy_window(&udp_window);
         assert_eq!(response.5, 0);
         assert_eq!(response.7, CorrelationState::Unavailable);
@@ -1199,6 +1864,10 @@ mod direct_helper_tests {
         assert_eq!(evidence.route_state, "transferred");
         assert_eq!(evidence.original_packet_state, "unavailable");
         assert_eq!(evidence.packet_history_state, "complete");
+        assert_eq!(
+            evidence.original_tuple.as_deref(),
+            Some("udp:192.0.2.10:49152->198.51.100.20:443")
+        );
 
         // A capture-wide eviction can remove the only original packet before
         // a flow summary exists. Both projections must retain that loss.
@@ -1225,6 +1894,212 @@ mod direct_helper_tests {
     }
 
     #[test]
+    fn selected_original_reinjected_after_proxy_close_remains_packet_evidence() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:32001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:32002".parse().unwrap();
+        let selected_at = 1_000_000_000;
+        let closed_at = 1_005_000_000;
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:32003".parse().unwrap(),
+                remote: "198.51.100.10:32004".parse().unwrap(),
+            },
+            first_packet_at_ns: selected_at,
+            first_packet_clock_error_ns: 1_000,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some([7; 32]),
+        };
+        context
+            .register_direct_helper(
+                "tcp",
+                helper,
+                proxy,
+                flow.clone(),
+                selected_at as u64,
+                closed_at,
+            )
+            .unwrap();
+        let window = ApplicationConnectionWindow {
+            descriptor: ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: helper,
+                proxy_local: proxy,
+            },
+            opened_at_ns: selected_at as u64,
+            closed_at_ns: Some(closed_at),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let key = FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote);
+        let owner = fragcap_core::Attribution::new(42, "target.exe", Fidelity::DirectRoute)
+            .with_role("target");
+        // The checksum-normalized capture-side proof preserves the selected
+        // identity even though the raw digest differs from WinDivert's bytes.
+        context.flow_registry.observe_packet_at(
+            key,
+            Timestamp::from_nanos(selected_at + 12_000_000),
+            Some(&owner),
+            Some(0x02),
+            Some([8; 32]),
+        );
+        // A later same-tuple packet is outside the proxy close and has no
+        // selected-original identity. It must not enter the extended window.
+        context.flow_registry.observe_packet_at(
+            key,
+            Timestamp::from_nanos(selected_at + 13_000_000),
+            Some(
+                &fragcap_core::Attribution::new(42, "target.exe", Fidelity::Live)
+                    .with_role("target"),
+            ),
+            Some(0x10),
+            Some([9; 32]),
+        );
+        // A second selected flow may reuse the tuple within 50 ms. Its own
+        // DirectRoute tag must not authenticate this flow's original packet.
+        context.flow_registry.observe_packet_at(
+            key,
+            Timestamp::from_nanos(selected_at + 14_000_000),
+            Some(
+                &fragcap_core::Attribution::new(99, "other.exe", Fidelity::DirectRoute)
+                    .with_role("target"),
+            ),
+            Some(0x02),
+            Some([10; 32]),
+        );
+        let proof = context.direct_proof_for(&flow).unwrap();
+        {
+            let mut proof = proof.lock().unwrap();
+            assert!(proof.record_attested_capture_digest([8; 32]));
+            proof.selected_packet_reinjected = true;
+        }
+        let refused = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(refused.route_state, "selected-packet-reinjected");
+        assert_eq!(refused.original_packet_state, "observed-owned");
+        assert_eq!(context.correlate_proxy_window(&window).5, 1);
+
+        // Direct route reachability is a separate decision. When its proof is
+        // present, the same selected copy is one packet observation despite
+        // having arrived after the proxy's close event.
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.selected_packet_reinjected = false;
+            proof.receipt_consumed = true;
+            proof.selected_packet_consumed = true;
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_ack = true;
+            proof.returned_data_acknowledged = true;
+            proof.client_to_upstream = 1;
+            proof.upstream_to_client = 1;
+        }
+        let correlated = context.correlate_proxy_window(&window);
+        assert_eq!(correlated.5, 1);
+        assert_eq!(correlated.7, CorrelationState::Matched);
+        assert_eq!(
+            correlated.8,
+            "direct-original-flow-and-managed-process-instance"
+        );
+    }
+
+    #[test]
+    fn reused_tuple_same_owner_cannot_borrow_second_selected_packet() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:32101".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:32102".parse().unwrap();
+        let selected_at = 1_000_000_000;
+        let closed_at = 1_005_000_000;
+        let first = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:32103".parse().unwrap(),
+                remote: "198.51.100.10:32104".parse().unwrap(),
+            },
+            first_packet_at_ns: selected_at,
+            first_packet_clock_error_ns: 1_000,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some([7; 32]),
+        };
+        let mut second = first.clone();
+        second.first_packet_at_ns += 1_000_000;
+        second.endpoint_id = 8;
+        second.first_packet_digest = Some([9; 32]);
+        context
+            .register_direct_helper(
+                "tcp",
+                helper,
+                proxy,
+                first.clone(),
+                selected_at as u64,
+                closed_at,
+            )
+            .unwrap();
+        let first_proof = context.direct_proof_for(&first).unwrap();
+        first_proof.lock().unwrap().selected_packet_reinjected = true;
+        let second_proof = context.direct_proof_for(&second).unwrap();
+        assert!(second_proof
+            .lock()
+            .unwrap()
+            .record_attested_capture_digest([10; 32]));
+        let owner = fragcap_core::Attribution::new(42, "target.exe", Fidelity::DirectRoute)
+            .with_role("target");
+        let key = FlowKey::new(first.tuple.transport, first.tuple.local, first.tuple.remote);
+        context.flow_registry.observe_packet_at(
+            key,
+            Timestamp::from_nanos(selected_at + 12_000_000),
+            Some(&owner),
+            Some(0x02),
+            Some([10; 32]),
+        );
+        let window = ApplicationConnectionWindow {
+            descriptor: ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: helper,
+                proxy_local: proxy,
+            },
+            opened_at_ns: selected_at as u64,
+            closed_at_ns: Some(closed_at),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let refused = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(refused.route_state, "selected-packet-reinjected");
+        assert_eq!(refused.original_packet_state, "unavailable");
+        assert_eq!(context.correlate_proxy_window(&window).5, 0);
+
+        let same_bytes = fragcap_core::FlowObservation {
+            timestamp: Timestamp::from_nanos(selected_at + 12_000_000),
+            attribution: Some(owner),
+            tcp_flags: Some(0x02),
+            packet_digest: Some([7; 32]),
+        };
+        let first_proof_snapshot = first_proof.lock().unwrap().clone();
+        assert!(direct_selected_packet_identity(
+            &context,
+            &first,
+            Some(&first_proof_snapshot),
+            &same_bytes
+        ));
+        let mut same_byte_second = first.clone();
+        same_byte_second.first_packet_at_ns += 2_000_000;
+        same_byte_second.endpoint_id = 9;
+        context.direct_proof_for(&same_byte_second).unwrap();
+        assert!(!direct_selected_packet_identity(
+            &context,
+            &first,
+            Some(&first_proof_snapshot),
+            &same_bytes
+        ));
+    }
+
+    #[test]
     fn helper_receipt_restores_original_owner_only_for_exact_accept_window() {
         let context = NativeObservationContext::default();
         let helper: SocketAddr = "127.0.0.1:31001".parse().unwrap();
@@ -1241,6 +2116,7 @@ mod direct_helper_tests {
             pid: 42,
             process_instance_id: "process-42-100".into(),
             process_image: "client.exe".into(),
+            process_role: "client".into(),
             first_packet_digest: Some([7; 32]),
         };
         context
@@ -1288,14 +2164,31 @@ mod direct_helper_tests {
         let missing_packet = context.correlate_proxy_window(&window);
         assert_eq!(missing_packet.7, CorrelationState::Unavailable);
         assert_eq!(missing_packet.8, "direct-original-packet-not-retained");
+        let before_consumption = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(before_consumption.receipt_state, "unconsumed");
+        assert_eq!(
+            before_consumption.route_state,
+            "selected-disposition-unavailable"
+        );
         let proof = context.direct_proof_for(&flow).unwrap();
         proof.lock().unwrap().selected_packet_lost = true;
         let failed = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(failed.receipt_state, "unconsumed");
         assert_eq!(failed.selected_packet_disposition, "lost");
         assert_eq!(failed.route_state, "selected-packet-lost");
         {
             let mut proof = proof.lock().unwrap();
             proof.selected_packet_lost = false;
+            proof.selected_packet_reinjected = true;
+        }
+        let reinjected = context.direct_reconciliation_window(&window).unwrap();
+        assert_eq!(reinjected.receipt_state, "unconsumed");
+        assert_eq!(reinjected.selected_packet_disposition, "reinjected");
+        assert_eq!(reinjected.route_state, "selected-packet-reinjected");
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
+            proof.selected_packet_reinjected = false;
             proof.selected_packet_consumed = true;
             proof.proxy_connected = true;
             proof.reply_sent = true;
@@ -1473,6 +2366,257 @@ mod direct_helper_tests {
         context.set_direct_route_active(true);
         assert_eq!(context.direct_helper_flow(descriptor, 150).unwrap(), None);
         context.set_direct_route_active(false);
+    }
+
+    #[test]
+    fn direct_root_target_packet_role_matches_while_proxy_reports_client() {
+        let context = NativeObservationContext::default();
+        let helper: SocketAddr = "127.0.0.1:32001".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:32002".parse().unwrap();
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "127.0.0.1:32003".parse().unwrap(),
+                remote: "127.0.0.1:32004".parse().unwrap(),
+            },
+            first_packet_at_ns: 120,
+            first_packet_clock_error_ns: 2,
+            endpoint_id: 9,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some([7; 32]),
+        };
+        context
+            .register_direct_helper("tcp", helper, proxy, flow.clone(), 100, 200)
+            .unwrap();
+        let window = ApplicationConnectionWindow {
+            descriptor: ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: helper,
+                proxy_local: proxy,
+            },
+            opened_at_ns: 150,
+            closed_at_ns: Some(300),
+            inception: Arc::new(Mutex::new(super::super::ConnectionInception::default())),
+        };
+        let proof = context.direct_proof_for(&flow).unwrap();
+        {
+            let mut proof = proof.lock().unwrap();
+            proof.receipt_consumed = true;
+            proof.selected_packet_consumed = true;
+            proof.proxy_connected = true;
+            proof.reply_sent = true;
+            proof.client_to_upstream = 1;
+            proof.upstream_to_client = 1;
+            proof.client_ack = true;
+            proof.returned_data_acknowledged = true;
+        }
+        context.flow_registry.observe_packet_at(
+            FlowKey::new(flow.tuple.transport, flow.tuple.local, flow.tuple.remote),
+            Timestamp::from_nanos(121),
+            Some(
+                &fragcap_core::Attribution::new(42, "target.exe", Fidelity::Live)
+                    .with_role("target"),
+            ),
+            Some(0x02),
+            Some([7; 32]),
+        );
+        assert_eq!(
+            context
+                .direct_reconciliation_window(&window)
+                .unwrap()
+                .original_packet_state,
+            "observed-owned"
+        );
+        assert_eq!(
+            context.connection_owner(&window).role.as_deref(),
+            Some("client")
+        );
+        let correlation = context.correlate_proxy_window(&window);
+        assert_eq!(correlation.3.as_deref(), Some("client"));
+        assert_eq!(correlation.7, CorrelationState::Matched);
+    }
+
+    #[test]
+    fn direct_packet_attestation_requires_one_complete_exact_original() {
+        let context = NativeObservationContext::default();
+        context.set_direct_route_active(true);
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100_000_000,
+            first_packet_clock_error_ns: 1_000,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some([7; 32]),
+        };
+        context.direct_proof_for(&flow).unwrap();
+        let mut packet = CapturedPacket::from_raw(
+            fragcap_core::RawPacket::new(
+                Timestamp::from_nanos(100_000_001),
+                fragcap_core::Payload::from_static(b"packet"),
+                6,
+            ),
+            fragcap_core::InterfaceId::default(),
+        );
+        packet.flow = Some(FlowKey::new(
+            flow.tuple.transport,
+            flow.tuple.local,
+            flow.tuple.remote,
+        ));
+        packet.packet_digest = Some([7; 32]);
+        let owner = context.attest_direct_original(&packet).unwrap();
+        assert_eq!(owner.pid, 42);
+        assert_eq!(owner.role.as_deref(), Some("target"));
+        assert_eq!(owner.fidelity, Fidelity::DirectRoute);
+
+        packet.packet_digest = None;
+        assert!(context.attest_direct_original(&packet).is_none());
+        packet.packet_digest = Some([8; 32]);
+        assert!(context.attest_direct_original(&packet).is_none());
+        packet.packet_digest = Some([7; 32]);
+        packet.ts = Timestamp::from_nanos(151_000_000);
+        assert!(context.attest_direct_original(&packet).is_none());
+        packet.ts = Timestamp::from_nanos(100_000_001);
+        packet.flow = Some(FlowKey::new(
+            Proto::Tcp,
+            "192.0.2.10:49153".parse().unwrap(),
+            flow.tuple.remote,
+        ));
+        assert!(context.attest_direct_original(&packet).is_none());
+        packet.flow = Some(FlowKey::new(
+            flow.tuple.transport,
+            flow.tuple.local,
+            flow.tuple.remote,
+        ));
+        let mut second = flow.clone();
+        second.pid = 43;
+        context.direct_proof_for(&second).unwrap();
+        assert!(context.attest_direct_original(&packet).is_none());
+        assert_eq!(
+            context.direct_packet_attestation_stats(),
+            DirectPacketAttestationStats {
+                tuple_seen: 5,
+                time_mismatch: 1,
+                incomplete: 1,
+                digest_mismatch: 1,
+                ambiguous: 1,
+                matched: 1,
+                checksum_normalized_matched: 0,
+                ipv4_id_only_match: 0,
+                transport_only_match: 0,
+            }
+        );
+        context.set_direct_route_active(false);
+        assert!(context.attest_direct_original(&packet).is_none());
+    }
+
+    #[test]
+    fn direct_packet_attestation_accepts_checksum_offload_but_not_changed_identity() {
+        let context = NativeObservationContext::default();
+        context.set_direct_route_active(true);
+        let mut original = vec![0u8; 40];
+        original[0] = 0x45;
+        original[2..4].copy_from_slice(&40u16.to_be_bytes());
+        original[4..6].copy_from_slice(&7u16.to_be_bytes());
+        original[9] = 6;
+        original[10..12].copy_from_slice(&0x1234u16.to_be_bytes());
+        original[12..16].copy_from_slice(&[192, 0, 2, 10]);
+        original[16..20].copy_from_slice(&[198, 51, 100, 20]);
+        original[20..22].copy_from_slice(&49152u16.to_be_bytes());
+        original[22..24].copy_from_slice(&443u16.to_be_bytes());
+        original[32] = 0x50;
+        original[33] = 0x02;
+        original[36..38].copy_from_slice(&0x5678u16.to_be_bytes());
+        let flow = OriginalFlow {
+            tuple: DirectTuple {
+                transport: Proto::Tcp,
+                local: "192.0.2.10:49152".parse().unwrap(),
+                remote: "198.51.100.20:443".parse().unwrap(),
+            },
+            first_packet_at_ns: 100_000_000,
+            first_packet_clock_error_ns: 1_000,
+            endpoint_id: 7,
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            process_image: "target.exe".into(),
+            process_role: "target".into(),
+            first_packet_digest: Some(*blake3::hash(&original).as_bytes()),
+        };
+        context
+            .direct_proof_for(&flow)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .first_packet_digests = fragcap_core::parse::direct_datagram_digests(&original);
+        let mut offloaded = original;
+        offloaded[10..12].fill(0);
+        offloaded[36..38].fill(0);
+        let mut frame = vec![0u8; 14];
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        frame.extend_from_slice(&offloaded);
+        let mut packet = CapturedPacket::from_raw(
+            fragcap_core::RawPacket::new(
+                Timestamp::from_nanos(100_000_001),
+                fragcap_core::Payload::from(frame),
+                54,
+            ),
+            fragcap_core::InterfaceId::default(),
+        );
+        packet.flow = Some(FlowKey::new(
+            Proto::Tcp,
+            flow.tuple.local,
+            flow.tuple.remote,
+        ));
+        packet.packet_digest = Some(*blake3::hash(&offloaded).as_bytes());
+        packet.network_offset = Some(14);
+        assert_eq!(context.attest_direct_original(&packet).unwrap().pid, 42);
+        assert!(context
+            .direct_proof_for(&flow)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .attested_capture_digests
+            .contains(&packet.packet_digest.unwrap()));
+        assert_eq!(
+            context
+                .direct_packet_attestation_stats()
+                .checksum_normalized_matched,
+            1
+        );
+        packet.data = {
+            let mut changed = packet.data.to_vec();
+            changed[14 + 4] ^= 1;
+            fragcap_core::Payload::from(changed)
+        };
+        packet.packet_digest = Some(*blake3::hash(&packet.data[14..]).as_bytes());
+        assert!(context.attest_direct_original(&packet).is_none());
+        assert_eq!(
+            context.direct_packet_attestation_stats().ipv4_id_only_match,
+            1
+        );
+        packet.data = {
+            let mut changed = packet.data.to_vec();
+            changed[14 + 4] ^= 1;
+            changed[14 + 8] ^= 1;
+            fragcap_core::Payload::from(changed)
+        };
+        packet.packet_digest = Some(*blake3::hash(&packet.data[14..]).as_bytes());
+        assert!(context.attest_direct_original(&packet).is_none());
+        assert_eq!(
+            context
+                .direct_packet_attestation_stats()
+                .transport_only_match,
+            1
+        );
     }
 }
 
@@ -2996,9 +4140,10 @@ fn correlate_native_observation(
         .collect::<Vec<_>>();
     owners.sort_by_key(|owner| {
         let fidelity = match owner.fidelity {
-            Fidelity::Retained => 0,
-            Fidelity::Live => 1,
-            Fidelity::None => 2,
+            Fidelity::DirectRoute => 0,
+            Fidelity::Retained => 1,
+            Fidelity::Live => 2,
+            Fidelity::None => 3,
         };
         (
             owner.pid,
@@ -3058,6 +4203,7 @@ fn correlate_native_observation(
             match attribution.fidelity {
                 Fidelity::Live => "live",
                 Fidelity::Retained => "retained",
+                Fidelity::DirectRoute => "direct-route",
                 Fidelity::None => "none",
             }
             .to_string(),
@@ -3309,6 +4455,60 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    #[test]
+    fn live_process_revision_changes_only_with_new_evidence() {
+        let context = NativeObservationContext::default();
+        let mut evidence = super::super::CaptureProcessEvidence::default();
+        assert_eq!(context.direct_process_evidence_version(), 0);
+
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 1);
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 1);
+
+        evidence.watcher_report = Some(fragcap_core::WatcherReport {
+            events_lost: 1,
+            ..Default::default()
+        });
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 2);
+
+        evidence.events.push(ProcessEvent::started(
+            42,
+            1,
+            "client.exe",
+            "client",
+            Timestamp::from_nanos(10),
+        ));
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 3);
+
+        evidence.existing_platform_root = true;
+        evidence.direct_alternate_used = true;
+        evidence.associated_root_failure = Some("associated-root-failed".into());
+        evidence.snapshot_at = Some(Timestamp::from_nanos(5));
+        evidence
+            .startup_snapshot
+            .push(fragcap_core::ProcessRecord::new(42, 1, "client.exe"));
+        evidence.shutdown_scope.push(PathBuf::from("client.exe"));
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 4);
+        let retained = context.direct_process_evidence().expect("live evidence");
+        assert_eq!(retained.events.len(), 1);
+        assert!(retained.existing_platform_root);
+        assert!(retained.direct_alternate_used);
+        assert_eq!(retained.snapshot_at, evidence.snapshot_at);
+        assert_eq!(retained.startup_snapshot, evidence.startup_snapshot);
+        assert_eq!(retained.shutdown_scope, evidence.shutdown_scope);
+        assert_eq!(
+            retained.associated_root_failure.as_deref(),
+            Some("associated-root-failed")
+        );
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 4);
+    }
 
     #[cfg(windows)]
     #[test]

@@ -80,6 +80,87 @@ fn selected_tcp_stream_has_exact_flow_and_terminal_outcome() {
 }
 
 #[test]
+fn packet_omission_limits_report_without_erasing_observed_transfer() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut lease =
+        RouteEventLease::open(temp.path().join("route.jsonl"), "session-test", 16).unwrap();
+    let sink = lease.sink();
+    let kinds = [
+        RouteEventKind::Selected {
+            protocol: "tcp",
+            local: "192.0.2.10:49152".parse().unwrap(),
+            remote: "198.51.100.20:443".parse().unwrap(),
+            pid: 42,
+            process_instance_id: "process-42-100".into(),
+            endpoint_id: 9,
+            first_packet_at_ns: 90,
+            first_packet_clock_error_ns: 2,
+            tcp_flags: Some(2),
+            packet_flags: 0,
+            ip_checksum_valid: false,
+            if_idx: 0,
+            sub_if_idx: 0,
+            tcp_checksum_valid: false,
+        },
+        RouteEventKind::ProxyConnected {
+            helper_local: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        },
+        RouteEventKind::SyntheticReplySent { packets: 1 },
+        RouteEventKind::ClientResponse { ack: true },
+        RouteEventKind::ReturnedDataAcknowledged,
+        RouteEventKind::Transfer {
+            client_to_upstream: 5,
+            upstream_to_client: 8,
+        },
+        RouteEventKind::PacketOmission {
+            reason: "selected-route-generation-retired",
+            disposition: "lost",
+        },
+        RouteEventKind::PacketOmission {
+            reason: "selected-owner-epoch-changed-or-ambiguous",
+            disposition: "reinjected",
+        },
+        RouteEventKind::PacketOmission {
+            reason: "C:\\private\\owner",
+            disposition: "lost",
+        },
+    ];
+    for (index, kind) in kinds.into_iter().enumerate() {
+        assert_eq!(
+            sink.record(RouteEvent {
+                flow_id: 1,
+                at_ns: 100 + index as u64,
+                clock_error_ns: Some(2),
+                kind,
+            }),
+            RouteRecordDisposition::Accepted
+        );
+    }
+    lease.finish().unwrap();
+
+    let report = build_route_debug_report(temp.path()).unwrap();
+    let flow = &report["flows"][0];
+    assert_eq!(flow["status"], "limited-packet-omission");
+    assert_eq!(flow["observed_outcome"], "bidirectional-transfer-observed");
+    assert_eq!(flow["bidirectional_transfer_observed"], true);
+    assert_eq!(flow["client_reachability_observed"], true);
+    assert_eq!(flow["client_to_upstream_bytes"], 5);
+    assert_eq!(flow["upstream_to_client_bytes"], 8);
+    assert_eq!(flow["packet_omissions"]["count"], 3);
+    assert_eq!(flow["packet_omissions"]["lost"], 2);
+    assert_eq!(flow["packet_omissions"]["reinjected"], 1);
+    assert_eq!(
+        flow["packet_omissions"]["reasons"]["selected-route-generation-retired"],
+        1
+    );
+    assert_eq!(flow["packet_omissions"]["reasons"]["other"], 1);
+    assert_eq!(report["route"]["bidirectional_flows"], 1);
+    assert_eq!(report["route"]["limited_flows"], 1);
+    assert!(!report.to_string().contains("C:\\private\\owner"));
+}
+
+#[test]
 fn crash_prefix_does_not_claim_completion() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("route.jsonl");
@@ -109,13 +190,16 @@ fn selected_packet_disposition_round_trips_and_rejects_tampering() {
         RouteEventKind::SelectedPacketDisposition {
             disposition: "consumed",
         },
+        RouteEventKind::SelectedPacketDisposition {
+            disposition: "reinjected",
+        },
     ]
     .into_iter()
     .enumerate()
     {
         assert_eq!(
             sink.record(RouteEvent {
-                flow_id: 1,
+                flow_id: if index == 2 { 2 } else { 1 },
                 at_ns: index as u64 + 1,
                 clock_error_ns: None,
                 kind,
@@ -128,8 +212,17 @@ fn selected_packet_disposition_round_trips_and_rejects_tampering() {
     assert!(prefix.complete());
     assert_eq!(prefix.events[0].kind, "receipt-consumed");
     assert_eq!(prefix.events[1].fields["disposition"], "consumed");
+    assert_eq!(prefix.events[2].fields["disposition"], "reinjected");
+    assert_eq!(prefix.events[1].fields["evidence_version"], 2);
+    assert_eq!(prefix.events[2].fields["evidence_version"], 3);
 
     let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen("\"evidence_version\":3", "\"evidence_version\":2", 1),
+    )
+    .unwrap();
+    assert!(read_route_prefix(&path).is_err());
     std::fs::write(
         &path,
         text.replacen(
@@ -274,7 +367,7 @@ fn report_requires_client_response_and_omits_route_identity() {
         "proxy-connected-without-client-reachability-proof"
     );
     let serialized = incomplete.to_string();
-    assert_eq!(incomplete["transformations"].as_array().unwrap().len(), 4);
+    assert_eq!(incomplete["transformations"].as_array().unwrap().len(), 5);
     for secret in [
         "192.0.2.10",
         "198.51.100.20",

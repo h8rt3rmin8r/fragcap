@@ -39,8 +39,18 @@ pub enum RouteEventKind {
         tcp_checksum_valid: bool,
     },
     ProxyAttempt,
+    HelperOutcome {
+        stage: &'static str,
+        elapsed_ms: u64,
+        outcome: &'static str,
+        error_kind: Option<String>,
+    },
     ReceiptConsumed,
     SelectedPacketDisposition {
+        disposition: &'static str,
+    },
+    PacketOmission {
+        reason: &'static str,
         disposition: &'static str,
     },
     ProxyConnected {
@@ -112,10 +122,26 @@ impl RouteEventKind {
                     "tcp_checksum_valid": tcp_checksum_valid}),
             ),
             Self::ProxyAttempt => ("proxy-attempt", json!({})),
+            Self::HelperOutcome {
+                stage,
+                elapsed_ms,
+                outcome,
+                error_kind,
+            } => (
+                "helper-outcome",
+                json!({"stage": stage, "elapsed_ms": elapsed_ms, "outcome": outcome, "error_kind": error_kind}),
+            ),
             Self::ReceiptConsumed => ("receipt-consumed", json!({"evidence_version": 2})),
             Self::SelectedPacketDisposition { disposition } => (
                 "selected-packet-disposition",
-                json!({"evidence_version": 2, "disposition": disposition}),
+                json!({"evidence_version": if disposition == "reinjected" { 3 } else { 2 }, "disposition": disposition}),
+            ),
+            Self::PacketOmission {
+                reason,
+                disposition,
+            } => (
+                "packet-omission",
+                json!({"evidence_version": 1, "reason": reason, "disposition": disposition}),
             ),
             Self::ProxyConnected {
                 helper_local,
@@ -180,7 +206,36 @@ impl RouteEventKind {
                     && !process_instance_id.is_empty()
             }
             Self::SelectedPacketDisposition { disposition } => {
-                matches!(*disposition, "consumed" | "lost")
+                matches!(*disposition, "consumed" | "reinjected" | "lost")
+            }
+            Self::PacketOmission {
+                reason,
+                disposition,
+            } => {
+                !reason.is_empty()
+                    && reason.len() <= MAX_IDENTITY_BYTES
+                    && matches!(*disposition, "reinjected" | "lost")
+            }
+            Self::HelperOutcome {
+                stage,
+                outcome,
+                error_kind,
+                ..
+            } => {
+                matches!(
+                    *stage,
+                    "scope"
+                        | "proxy-connect"
+                        | "helper-register"
+                        | "method-write"
+                        | "method-reply"
+                        | "auth-write"
+                        | "auth-reply"
+                        | "connect-write"
+                        | "connect-reply"
+                        | "complete"
+                ) && matches!(*outcome, "success" | "refused" | "timeout" | "io-error")
+                    && error_kind.as_ref().is_none_or(|kind| kind.len() <= 64)
             }
             _ => true,
         }
@@ -379,6 +434,25 @@ pub struct RoutePrefix {
     pub dropped_events: Option<u64>,
 }
 
+fn valid_route_evidence(kind: &str, body: &Value) -> bool {
+    match kind {
+        "receipt-consumed" => body["evidence_version"] == 2,
+        "selected-packet-disposition" => match body["disposition"].as_str() {
+            Some("consumed" | "lost") => body["evidence_version"] == 2,
+            Some("reinjected") => body["evidence_version"] == 3,
+            _ => false,
+        },
+        "packet-omission" => {
+            body["evidence_version"] == 1
+                && body["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty() && reason.len() <= MAX_IDENTITY_BYTES)
+                && matches!(body["disposition"].as_str(), Some("lost" | "reinjected"))
+        }
+        _ => true,
+    }
+}
+
 impl RoutePrefix {
     pub fn complete(&self) -> bool {
         self.status == LifecycleStreamStatus::Complete && self.dropped_events == Some(0)
@@ -415,11 +489,7 @@ pub fn read_route_prefix(path: &Path) -> io::Result<RoutePrefix> {
                 let body = fields.get("fields").ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "route event missing body")
                 })?;
-                if matches!(kind, "receipt-consumed" | "selected-packet-disposition")
-                    && (body["evidence_version"] != 2
-                        || (kind == "selected-packet-disposition"
-                            && !matches!(body["disposition"].as_str(), Some("consumed" | "lost"))))
-                {
+                if !valid_route_evidence(kind, body) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "route event has invalid selected packet evidence",
@@ -457,4 +527,39 @@ pub fn read_route_prefix(path: &Path) -> io::Result<RoutePrefix> {
 
 pub fn route_stream_size(path: &Path) -> io::Result<u64> {
     Ok(fs::metadata(path)?.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packet_omission_schema_rejects_invalid_dispositions() {
+        let (kind, fields) = RouteEventKind::PacketOmission {
+            reason: "selected-route-generation-retired",
+            disposition: "lost",
+        }
+        .into_parts();
+        assert_eq!(kind, "packet-omission");
+        assert!(valid_route_evidence(kind, &fields));
+        let mut invalid = fields.clone();
+        invalid["disposition"] = serde_json::json!("unknown");
+        assert!(!valid_route_evidence(kind, &invalid));
+        invalid = fields;
+        invalid["reason"] = serde_json::json!("");
+        assert!(!valid_route_evidence(kind, &invalid));
+        invalid =
+            serde_json::json!({"reason":"selected-route-generation-retired", "disposition":"lost"});
+        assert!(!valid_route_evidence(kind, &invalid));
+        assert!(!RouteEventKind::PacketOmission {
+            reason: "",
+            disposition: "lost",
+        }
+        .valid());
+        assert!(!RouteEventKind::PacketOmission {
+            reason: "selected-route-generation-retired",
+            disposition: "unknown",
+        }
+        .valid());
+    }
 }

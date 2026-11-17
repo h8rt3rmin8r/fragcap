@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.131-draft \
+**Version:** 0.1.136-draft \
 **Applies-To:** 0.11.1 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-11-12 \
+**Date:** 2026-11-16 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -222,6 +222,10 @@ enforcement.
 | 0.1.130-draft | 2026-11-12 | Codex | S206 distinguishes missing socket attribution, expired causal proof, and proof cooldown for managed-chain packet omissions, and records bounded flow-local omission intervals in the protected process trace. Updates sections 17, 26, and 27; physical #594 qualification remains a separate gate. |
 | 0.1.131-draft | 2026-11-12 | Codex | Reconciles the published v0.11.1 tag, certified files, registry crates, and current documentation after independent public readback. Updates sections 1, 22, 24, and 27; installed positive calibration and original-present Npcap ordering remain unverified. |
 | 0.1.132-draft | 2026-11-15 | Codex | S207 makes ordinary Deep Capture game-first, removes calibration from the public workflow, binds launcher exposure and direct routing in one authorization plan, and keeps incomplete SOCKS prefixes unknown. Store version 16 widens exact route facts while preserving old rows. Updates sections 15, 17, 27, and 28; installed ESO qualification remains separate. |
+| 0.1.133-draft | 2026-11-16 | Codex | S208 requires exact owned test cleanup and residual reporting. Updates sections 24 and 25; installed default paths remain independent. |
+| 0.1.134-draft | 2026-11-16 | Codex | S209 makes stored Steam association authoritative for warm or cold dispatch and retains bounded target-scoped attempt history. Updates sections 16, 17, and 27. |
+| 0.1.135-draft | 2026-11-16 | Codex | S210 separates exact direct-route transfer from passive original-packet presence and binds post-exit process tails only with finite observed proof. Updates sections 11, 13, 17, and 27; physical packet ordering remains open. |
+| 0.1.136-draft | 2026-11-16 | Codex | S211 moves selected TCP helper admission off the packet worker, records stage, elapsed time and actual error kind, and requires packaged WinDivert/Npcap original-packet ordering acceptance. A complete captured datagram may gain `direct-route` attribution only after its full or checksum-normalized digest, tuple, and time match one selected flow; broader near matches are diagnostic only. The selected route's process-generation and stage proof can admit that exact first packet before the separate ETW causal interval is published, subject to the same capture window, declared role, direction, and volume bounds. Other packets still require ETW causal membership. Candidate resolution indexes socket events by tuple, checks only the new candidate when evidence is unchanged, and records bounded queue and hold timing. Updates sections 10, 13, 17, 26, and 27. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1481,6 +1485,15 @@ acquisition keeps `acquisitiontimeout` as its terminal reason in the composed
 Deep Capture result; packet, proxy, manifest, and cleanup evidence each retain
 their own observed state.
 
+The managed packet gate normally requires the packet's own instant to fall
+inside an ETW-derived causal process interval. A native direct route may
+independently prove one complete selected first packet from its exact process
+generation, selected tuple, and full or checksum-normalized datagram identity.
+That proof may admit the first packet before ETW publishes its interval, while
+the declared role, capture window, direction, and volume bounds still apply.
+Other packets retain the ETW causal requirement. The process query and ETW
+start instants are not substituted for one another.
+
 ### 10.4 Lifecycle Classes
 
 Every stage declares a lifecycle, which governs how fragcap treats
@@ -1917,7 +1930,7 @@ a percent sign.
 | `role` | When stage-bound | Profile role name |
 | `stage` | When stage-bound | Profile stage identifier |
 | `dir` | Always | `in`, `out`, or `local` |
-| `attr` | Always | `live`, `retained`, or `none` |
+| `attr` | Always | `live`, `retained`, `direct-route`, or `none` |
 | `iface` | When multi-interface | Capture interface name |
 | `flow_id` | When packet has a flow key | Stable session-local flow identifier |
 
@@ -1962,6 +1975,16 @@ time of resolution. `retained` indicates resolution from the grace
 period map described in section 11.4. `none` indicates the packet could
 not be attributed, in which case `pid`, `proc`, `role`, and `stage` are
 absent.
+
+`direct-route` indicates that a complete datagram independently acquired by
+the capture source matched one selected direct-route first packet by full or
+checksum-normalized network-datagram digest, flow tuple, and bounded capture
+instant. Normalization omits only the IPv4 header and TCP/UDP checksum fields
+that capture planes can observe before or after checksum offload. Selection
+already proved the managed process generation, and the packet gate checks that
+generation and role from the route's selected packet. This value makes no
+socket-table-presence claim. A missing digest, incomplete datagram, conflicting
+match, or failed causal gate cannot produce this attribution.
 
 Distinguishing `live` from `retained` matters because retained
 attribution is inferential. An endpoint that closed and was reassigned
@@ -4506,6 +4529,26 @@ S209 uses the stored target's Steam association for ordinary exact-game Deep Cap
 
 S210 keeps direct-route client transfer and passive original-packet observation as independent facts. The selected raw IP datagram receives a bounded BLAKE3 identity that can match a complete passive capture of that same datagram; a later packet sharing its tuple or process owner does not prove the selected packet was captured. A consumed original packet may therefore coexist with proven two-way client transfer and unavailable passive original-packet evidence. The one-use receipt, selected disposition, transport-specific transfer, exact process generation, packet-history completeness, and conflicting owner remain separate versioned correlation fields in application and compatibility artifacts, with bounded counts in manifest correlation contract version 3. The curated Rust API advances to major version 2 for its added optional observation field. A post-exit socket-owner answer requires the socket creation instant, observed TCP flags, a unique generation whose lifetime contains that instant, an observed exit, complete process-event authority, and at most 100 ms from exit to packet. RST can bind directly; ACK or FIN also requires prior same-flow continuity without packet-history loss or intervening owner conflict. The process trace records the true exit instant and tail basis, validates its version 2 trailer, and retains version 1 readback. Source tests do not establish the packaged WinDivert/Npcap original-present and original-absent outcomes required for #594 closure.
 
+S211 gives selected TCP helper admission a finite pending flow and performs the SOCKS handshake outside the packet-processing worker. The worker retains exact packet disposition authority and continues unrelated pass-through while the helper waits. The protected route stream records the helper stage, elapsed milliseconds, outcome, and actual I/O error kind without credentials. A proxy refusal, helper timeout, and other I/O failure remain different terminal states. A helper registered before admission can have an unconsumed receipt; only actual ledger consumption produces `receipt_state: consumed`. A pending first packet lost to endpoint change or shutdown records its per-flow lost disposition as well as aggregate loss. A successfully reinjected selected first packet after helper failure records `reinjected` as its disposition under route-event evidence version 3; existing consumed and lost records retain version 2. Reinjection never implies a passive packet observation or client delivery. The timeout for selected TCP admission is 500 ms; UDP retains its 50 ms worker bound until a separate UDP design is justified. Pending work is capped by flow and packet count, and cancellation remains finite. A positive route still requires actual client transfer, and passive original-packet presence remains independent. The packaged WinDivert/Npcap original-present and original-absent gate for #594 is satisfied only by controlled physical observations and matching native artifact readback, never by source fixtures alone.
+
+The S211 packet worker changes an admitted TCP bridge helper socket to nonblocking I/O after its bounded SOCKS handshake; a one-millisecond idle read on every work item had accumulated into a measured second-scale queue delay. Capture acquisition can prefer a uniquely digest-attested original over a stale socket-table owner. For managed direct-route output only, a flow-bearing packet with unsettled owner or causal proof enters a separate capacity-bounded, 250 ms decision lane so it does not block later packets. A due retry checks both socket ownership and packet-specific attestation; expiry or lane displacement records a gate drop and flow-local omission. This can emit a deferred packet after a later capture timestamp by at most its decision window. Acquisition-stage attributed and unattributed counters describe the initial lookup; the retained packet's final owner is read from its packet record and flow observation. The selected flow retains at most 32 uniquely attested capture-side digests. Correlation accepts one exact or uniquely attested checksum-normalized original up to 50 ms after selection even if a refused proxy leg closed first, while same-tuple reuse, duplicate matching, and digest-cap overflow remain incomplete or ambiguous instead of positive. Owned ETW session STOP precedes consumer close and join so final buffered events and counters are drained before reporting. The exact portable candidate passed controlled TCP/UDP refusal and transfer cases with an independently captured original-present TCP refusal and original-absent cases; process-trace completeness stayed partial and pre-receive packet loss stayed unmeasurable. This does not qualify installed ESO gameplay.
+
+A later S211 source audit found that the receive fast path treated an unknown packet owner as the Fragcap helper whenever any TCP helper was connecting, reinjecting a concurrent game packet before its own socket evidence could arrive. The corrected fast path immediately bypasses the exact proxy listener and positively known helper PID, while an unknown owner for another destination remains a finite candidate subject to the unchanged exact game-generation proof. A controlled two-socket source test proves distinct pending game candidates can resolve to distinct endpoint generations. The portable eight-case physical matrix ran one selected flow per attempt; it does not independently qualify simultaneous selected-flow admission.
+
+A later observed socket-epoch repair binds a selected direct route to tuple, endpoint identifier, PID, and socket OPEN QPC. Receive and worker admission require the packet timestamp after that OPEN and one exact observed owner interval. The socket observer retains bounded `[OPEN, CLOSE)` history, so a network packet or already queued work can finish on its old selected bridge when its QPC predates a matching CLOSE or competing OPEN that the observer saw first. The receive thread registers selected work before enqueue. Route retirement keeps old TCP and UDP associations briefly for already admitted pre-CLOSE packets, but releases their receipts immediately so a reused tuple can issue a new receipt. An old association never becomes the new observed owner's bridge, and synthetic replies are withheld when the old owner is no longer uniquely observed live at the send decision. A bounded session-long tuple quarantine prevents expired selected TCP packets from passing raw into a reused connection. An outbound UDP datagram without sufficient owner proof instead returns once with its unchanged original bytes and address as explicit uninspected pass-through; it receives no old-owner attribution, proxy transfer, or client-delivery claim. This preserves an ordinary UDP delivery attempt but can change the remote's observed source endpoint relative to an earlier proxy relay, so stateful peer acceptance remains unproved. A header-only TCP FIN/RST observed after its exact socket CLOSE remains Lost with a distinct post-close control-tail reason, not a positive packet-owner claim. Returned-data ACK proof remains tied to the original epoch and observed close time. WinDivert's separate network and socket handles do not provide an atomic owner snapshot. A competing event still in flight when the network packet arrives, or published between a reply owner check and injection, remains unobservable to that check; the historical join cannot prove its absence. Completion of #594 requires an exact-candidate packaged WinDivert/Npcap packet and artifact matrix with honest limited outcomes.
+
+A connected direct helper can leave an accepted proxy connection even when SOCKS admission later fails or its selected socket closes. Its live helper association retires immediately for inspection decisions, while a bounded historical association remains until final native artifact reconciliation. Historical lookup requires the exact transport, helper source, proxy destination, and proxy accept instant within the registration window and no later than helper retirement. A reused source port whose active and retired windows both match is ambiguous. The historical association alone never proves client delivery, receipt consumption, or passive original-packet presence.
+
+Selected first-packet setup failures settle the diverted packet exactly once and keep its reinjected, lost, or consumed disposition aligned with the route journal and compatibility observation. A local reply-interface failure is a local terminal cause, not a proxy refusal. UDP helper registration belongs to a scoped setup guard until the live association takes ownership; association cleanup closes its sockets, removes exact helper exclusions, and retires live helper authority while retaining historical accepted-connection evidence. When owner-unproven selected TCP traffic is lost, fixed metadata-only reasons distinguish payload from header-only traffic and its packet timestamp relative to an exact observed socket CLOSE. These labels do not prove packet ownership or harmlessness.
+
+Pending TCP cancellation precedes helper retirement at socket CLOSE or competing OPEN. Shutdown joins the cancelled helper and retires any registration it completed during the transition. If forwarding a pending packet fails, every unprocessed held packet is counted Lost with an omission on the selected flow. Live helper lookup stops at owner retirement for TCP and UDP, while the already accepted bridge remains available for QPC-proven pre-retirement work.
+
+A controlled S211 native fixture also found initial TCP selection could fail before route creation: unknown-owner UDP from a few other tuples filled both candidate stages, and one target SYN was counted as a capacity bypass. The receive channel now limits queued UDP candidates to 112 of its 128 candidate slots, while the worker buffer reserves one eighth of packet and byte capacity for TCP SYNs and holds at most eight unproven UDP packets per tuple. Excess unknown UDP is returned once with the existing capacity-bypass accounting. The limits protect TCP admission against the observed UDP burst; they do not promise admission under arbitrary TCP SYN floods or retain every datagram of a game UDP burst before its owner is known.
+
+The exact selected direct-flow identity also retains its proven process stage role. An authorized direct executable may bind as `target`, whereas a managed launcher chain's final game binds as `client`. Original-packet owner comparison uses that exact stage role. Helper-facing proxy facts continue to normalize the final game as `client` for the exact-game inspection decider. A retained packet is still required for any original-present claim.
+
+Exact-game packet retention takes its role from the prepared profile's validated terminal stage. It cannot assume the string `client`: a direct executable's terminal role is `target`, so filtering for `client` excludes any of its attributed packets that reach the gate. The earlier physical window saw the selected tuple in independent Npcap but not in the native bundle. The S211 exact candidate subsequently retained one selected original with the proven `target` role and reported other originals as unavailable. Launch-chain inspection leaves packet-role retention unrestricted only when the operator selects that wider scope.
+
 The pipeline tests run on runners with no capture driver installed and
 no game present, which is the property section 25 exists to guarantee.
 
@@ -5281,6 +5324,14 @@ S206 (`specs/206-correlation-integrity`) separates #594's physical original-pack
 S207 (`specs/207-game-first-capture`) groups #611, #608, #612, #614, and #609. It makes ordinary Deep Capture a first-run exact-game attempt with no prior compatibility gate, defaults to direct-socket routing and native launcher network exposure, and limits packet retention to the proven final-game generation. Explicit full-chain sessions may authorize SOCKS-only launcher exposure. The authorization plan binds the selected route and environment actions, and the prepared facade route must match before effects. SOCKS prefix loss remains unknown evidence; HTTP CONNECT client close before TLS is reported at the client tunnel handoff. Store version 16 transactionally rebuilds the fact table to admit `direct-socket` and the two new route identities without changing historical rows. Public calibration controls retire while stored facts and artifact readers remain compatible. Controlled qualification does not assert an installed ESO success.
 
 S210 (`specs/210-direct-packet-process-correlation`) pairs #594 and #618. Exact selected-packet identity and the original packet's disposition are distinct from later same-tuple packet history and from proven client transfer. Process trace version 2 limits post-exit RST and continuous ACK/FIN binding to unique event-backed generations within 100 ms. The controlled source matrix supports implementation review; #594's packaged physical packet-ordering gate remains independent.
+
+S211 (`specs/211-direct-route-reliability`) pairs #619 with the remaining #594 physical gate. A bounded selected TCP helper runs its SOCKS admission away from the packet worker, and a typed route outcome retains stage, elapsed time, and actual error kind. Controlled delayed success, refusal, timeout, unrelated sentinel, and cancellation cases precede a portable packaged WinDivert/Npcap original-packet present/absent and history-truncation matrix. TCP/UDP negative cases and native artifact agreement are required for issue closeout. Private ESO gameplay and installed default-path acceptance remain separate evidence.
+
+The S211 controlled portable matrix later passed on the exact official-feature static-CRT candidate: one TCP and one UDP refusal plus three transfers of each transport, with route, compatibility, terminal, and manifest reconciliation. The TCP refusal retained an exact-game original packet; other cases preserved unavailable packet states where capture did not retain one. Independent Npcap recorded 509 packets with zero reported driver drops. Required streams finalized, while process-trace limitations kept each manifest partial and pre-receive loss remained unmeasurable. No installed ESO success follows.
+
+The later concurrent-flow source correction keeps an unknown-owner game packet in the finite candidate path while another helper connects, bypassing only the exact proxy endpoint or positively known Fragcap helper PID. The prior physical matrix tested one selected flow per attempt, so its result remains a separate earlier candidate qualification.
+
+The subsequent observed socket-epoch repair prevents a selected tuple from silently borrowing a later endpoint generation after an observed CLOSE or competing OPEN. Rejected queued packets and lost pending work keep their disposition and omission evidence. Because WinDivert network and socket handles do not expose an atomic cross-handle owner view, in-flight socket events still limit packet-owner proof. #594 remains open; the prior portable hashes are historical, and neither final-head CI nor physical qualification for this source has been claimed.
 
 ### 27.4 Critical Path
 

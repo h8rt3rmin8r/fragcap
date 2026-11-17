@@ -75,7 +75,7 @@ mod live_stats;
 
 pub use live_stats::LiveStats;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,6 +86,7 @@ use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
+use crate::attribution::Attribution;
 use crate::error::{SinkError, SourceError};
 use crate::filter::{FilterConfig, FilterManager, FilterProgram};
 use crate::flow::Endpoint;
@@ -114,6 +115,13 @@ pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// promptly a settled endpoint set is narrowed without itself thrashing; it also
 /// bounds how long the control thread lingers after the run stops.
 const FILTER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+// Causal ownership can arrive after its packet. Keep that packet off the
+// single output writer's critical path, but bound both the wait and the extra
+// memory independently from the acquisition buffer.
+const PENDING_PROOF_WINDOW: Duration = Duration::from_millis(250);
+const PENDING_RETRY_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_DEFERRED_PACKETS: usize = 256;
 
 /// What an operator can vary without changing which components are attached.
 #[derive(Clone, Debug)]
@@ -337,6 +345,9 @@ impl fmt::Display for PipelineError {
 
 impl Error for PipelineError {}
 
+/// Optional packet-specific owner proof consulted after flow attribution misses.
+pub type PacketAttributor = dyn Fn(&CapturedPacket) -> Option<Attribution> + Send + Sync;
+
 /// Everything one run owns.
 ///
 /// Built from trait objects throughout, so a new source, attributor, or sink
@@ -346,6 +357,9 @@ impl Error for PipelineError {}
 pub struct Pipeline {
     sources: Vec<SourceBinding>,
     attributor: Box<dyn FlowAttributor>,
+    /// Optional packet-specific owner proof. It takes precedence over a stale
+    /// socket-table answer and must name its own fidelity.
+    packet_attributor: Option<Arc<PacketAttributor>>,
     sinks: Vec<Box<dyn Sink>>,
     config: PipelineConfig,
     filter_config: FilterConfig,
@@ -464,6 +478,7 @@ impl Pipeline {
             fixed_filter_endpoints: vec![Vec::new(); sources.len()],
             sources,
             attributor,
+            packet_attributor: None,
             sinks: Vec::new(),
             config,
             filter_config: FilterConfig::default(),
@@ -490,6 +505,13 @@ impl Pipeline {
     /// produce an exactly-bounded file and to discard and count watch-time frames.
     pub fn set_write_gate(&mut self, gate: Arc<dyn WriteGate>) {
         self.gate = Some(gate);
+    }
+
+    /// Attach a packet-specific owner proof for a socket-table miss. The
+    /// callback sees the parsed complete datagram before attribution counters
+    /// and the write gate, and must return a truthfully stamped fidelity.
+    pub fn set_packet_attributor(&mut self, attributor: Arc<PacketAttributor>) {
+        self.packet_attributor = Some(attributor);
     }
 
     /// Override the filter maintenance timings the control thread uses. Defaults
@@ -562,6 +584,7 @@ impl Pipeline {
         let Pipeline {
             sources,
             attributor,
+            packet_attributor,
             sinks,
             config,
             filter_config,
@@ -575,9 +598,11 @@ impl Pipeline {
         let attributor: Arc<dyn FlowAttributor> = Arc::from(attributor);
 
         let (tx, rx) = buffer::channel(config.capacity);
+        let deferred_capacity = config.capacity.min(MAX_DEFERRED_PACKETS);
         let output_stop = stop.clone();
         let output_flow_registry = Arc::clone(&flow_registry);
         let output_attributor = Arc::clone(&attributor);
+        let output_packet_attributor = packet_attributor.clone();
         let handle = std::thread::spawn(move || {
             // Ends the acquisition loop however this thread terminates,
             // including an unwinding panic from a sink. Without it a panicking
@@ -595,6 +620,8 @@ impl Pipeline {
                 live,
                 output_flow_registry,
                 output_attributor,
+                output_packet_attributor,
+                deferred_capacity,
             )
         });
         // The guard owns the producer as well as the join handle, so that
@@ -651,6 +678,7 @@ impl Pipeline {
             let (filter_tx, filter_rx) = mpsc::channel::<FilterProgram>();
             filter_senders.push(filter_tx);
             let attributor = Arc::clone(&attributor);
+            let packet_attributor = packet_attributor.clone();
             let tx = Arc::clone(guard.producer());
             let stop = stop.clone();
             let read_timeout = config.read_timeout;
@@ -680,6 +708,7 @@ impl Pipeline {
                     handle,
                     &ack_tx,
                     &flow_registry,
+                    packet_attributor.as_deref(),
                 );
                 stats.parse = *parser.stats();
                 stats.set_source(id, source.stats());
@@ -913,6 +942,7 @@ fn acquire(
     handle: usize,
     ack_tx: &Sender<(usize, bool)>,
     flow_registry: &FlowRegistry,
+    packet_attributor: Option<&PacketAttributor>,
 ) -> EndReason {
     loop {
         if stop.is_stopped() {
@@ -964,6 +994,14 @@ fn acquire(
             //
             // No lock. Section 11.6, and slice S10.
             packet.attribution = attributor.resolve(key, packet.ts);
+        }
+        if let Some(attest) = packet_attributor {
+            // A digest-bound packet proof identifies this exact capture. A
+            // socket-table snapshot can be stale at the first-packet race, so
+            // prefer the proof even when the table returned another owner.
+            if let Some(proved) = attest(&packet) {
+                packet.attribution = Some(proved);
+            }
         }
         match packet.attribution_state() {
             AttributionState::Resolved => {
@@ -1050,12 +1088,103 @@ impl Drop for OutputThread {
     }
 }
 
+struct DeferredPacket {
+    packet: Box<CapturedPacket>,
+    deadline: Instant,
+    next_retry: Instant,
+}
+
+/// Retry each due decision without waiting on a missing PID. A socket-table
+/// refresh may replace stale attribution, but must never erase an exact
+/// packet-specific direct-route proof. The returned decisions are final and
+/// must be accounted once by the output loop.
+fn retry_deferred(
+    deferred: &mut VecDeque<DeferredPacket>,
+    ready: &mut VecDeque<(Box<CapturedPacket>, GateDecision)>,
+    gate: &dyn WriteGate,
+    attributor: &dyn FlowAttributor,
+    packet_attributor: Option<&PacketAttributor>,
+    next_due: &mut Option<Instant>,
+) {
+    let now = Instant::now();
+    if next_due.is_none_or(|due| now < due) {
+        return;
+    }
+    *next_due = None;
+    for _ in 0..deferred.len() {
+        let mut entry = deferred.pop_front().expect("the counted deferred entry");
+        let now = Instant::now();
+        if now < entry.next_retry && now < entry.deadline {
+            let due = entry.next_retry.min(entry.deadline);
+            *next_due = Some(next_due.map_or(due, |current| current.min(due)));
+            deferred.push_back(entry);
+            continue;
+        }
+        if let Some(flow) = entry.packet.flow {
+            if !entry
+                .packet
+                .attribution
+                .as_ref()
+                .is_some_and(|attribution| {
+                    attribution.fidelity == crate::attribution::Fidelity::DirectRoute
+                })
+            {
+                // A transient table miss does not erase the previous answer;
+                // the packet remains eligible for a later exact re-resolution.
+                if let Some(refreshed) = attributor.resolve(&flow, entry.packet.ts) {
+                    entry.packet.attribution = Some(refreshed);
+                }
+            }
+        }
+        if let Some(attest) = packet_attributor {
+            if let Some(proved) = attest(&entry.packet) {
+                entry.packet.attribution = Some(proved);
+            }
+        }
+        let decision = if now >= entry.deadline {
+            match gate.decide(&entry.packet) {
+                GateDecision::Pending => GateDecision::Reject(GateRejection::Unresolved),
+                final_decision => final_decision,
+            }
+        } else {
+            gate.decide(&entry.packet)
+        };
+        if decision == GateDecision::Pending {
+            entry.next_retry = now + PENDING_RETRY_INTERVAL;
+            let due = entry.next_retry.min(entry.deadline);
+            *next_due = Some(next_due.map_or(due, |current| current.min(due)));
+            deferred.push_back(entry);
+        } else {
+            ready.push_back((entry.packet, decision));
+        }
+    }
+}
+
+fn finish_displaced(
+    packet: Box<CapturedPacket>,
+    ready: &mut VecDeque<(Box<CapturedPacket>, GateDecision)>,
+    gate: &dyn WriteGate,
+) {
+    // The lane is full. Give the gate one nonblocking chance to recognize a
+    // proof that arrived since the last retry, then account any rejection as a
+    // gate drop and a flow-local omission. There is no hidden eviction.
+    let decision = match gate.decide(&packet) {
+        GateDecision::Pending => GateDecision::Reject(GateRejection::Unresolved),
+        final_decision => final_decision,
+    };
+    ready.push_back((packet, decision));
+}
+
 /// The output loop: drain, gate, fan out, then flush and finish.
 ///
 /// `live` mirrors `sink_dropped`, the holder tally, and `buffer_dropped`
 /// (slice S069) into a handle a caller on another thread can read while this
 /// loop is still running; see [`LiveStats`]'s module documentation for why
 /// each of the three is updated the way it is.
+// The output thread receives its distinct ownership, gate, sink, and proof
+// authorities directly. Grouping them solely to satisfy an argument-count
+// lint would obscure which of those authorities is optional.
+#[allow(clippy::too_many_arguments)]
 fn output_loop(
     rx: buffer::Consumer,
     mut sinks: Vec<Box<dyn Sink>>,
@@ -1064,6 +1193,8 @@ fn output_loop(
     live: LiveStats,
     flow_registry: Arc<FlowRegistry>,
     attributor: Arc<dyn FlowAttributor>,
+    packet_attributor: Option<Arc<PacketAttributor>>,
+    deferred_capacity: usize,
 ) -> OutputOutcome {
     let mut failures: Vec<SinkFailure> = Vec::new();
     let mut retired = vec![false; sinks.len()];
@@ -1084,84 +1215,180 @@ fn output_loop(
     // no terminal item, and the output side still has to report what it
     // counted.
     let mut stats = CaptureStats::default();
+    let mut deferred: VecDeque<DeferredPacket> = VecDeque::new();
+    let mut next_due: Option<Instant> = None;
+    let mut ready: VecDeque<(Box<CapturedPacket>, GateDecision)> = VecDeque::new();
+    let mut input_ended = false;
 
     loop {
-        let (item, evicted) = rx.next_and_evicted();
-        live.set_buffer_dropped(evicted);
-        let Some(item) = item else { break };
-        let mut packet = match item {
-            Item::Packet(packet) => packet,
-            Item::End(final_stats) => {
-                stats = *final_stats;
-                break;
-            }
-        };
-        // Consult the gate before any sink sees the packet, so a rejected
-        // packet is written nowhere. Counting it here, before the fan-out, is
-        // what makes `gate_dropped` a single capture-wide term of the
-        // conservation identity: a gate drop is withheld from every sink at once.
-        if let Some(gate) = gate.as_ref() {
-            let mut decision = gate.decide(&packet);
-            if decision == GateDecision::Pending {
-                let deadline = Instant::now() + Duration::from_millis(250);
-                loop {
-                    if let Some(flow) = packet.flow {
-                        packet.attribution = attributor.resolve(&flow, packet.ts);
-                    }
-                    decision = gate.decide(&packet);
-                    if decision != GateDecision::Pending {
-                        break;
-                    }
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        decision = match gate.finish_pending(&packet, Duration::ZERO) {
-                            GateDecision::Pending => {
-                                GateDecision::Reject(GateRejection::Unresolved)
-                            }
-                            final_decision => final_decision,
-                        };
-                        break;
-                    }
-                    gate.await_pending(&packet, remaining);
-                }
-            }
-            if let GateDecision::Reject(reason) = decision {
-                // The packet still existed as correlation evidence even though
-                // capture policy withheld it from every sink. Preserve that
-                // fact conservatively so a later packet on a reused tuple
-                // cannot become a false sole match.
-                if let Some(flow) = packet.flow {
-                    let cause = match reason {
-                        GateRejection::Waiting => crate::flow::FlowOmissionCause::Waiting,
-                        GateRejection::OutOfWindow => crate::flow::FlowOmissionCause::OutOfWindow,
-                        GateRejection::OutOfScope => crate::flow::FlowOmissionCause::ScopeWithheld,
-                        GateRejection::Unresolved => {
-                            crate::flow::FlowOmissionCause::ScopeUnresolved
-                        }
-                        GateRejection::NoSocketAttribution => {
-                            crate::flow::FlowOmissionCause::NoSocketAttribution
-                        }
-                        GateRejection::CausalProofUnavailable => {
-                            crate::flow::FlowOmissionCause::CausalProofUnavailable
-                        }
-                        GateRejection::CausalProofCooldown => {
-                            crate::flow::FlowOmissionCause::CausalProofCooldown
-                        }
-                        GateRejection::Direction => {
-                            crate::flow::FlowOmissionCause::DirectionWithheld
-                        }
-                        GateRejection::DirectionUnknown => {
-                            crate::flow::FlowOmissionCause::DirectionUnknown
-                        }
-                        GateRejection::VolumeReached => {
-                            crate::flow::FlowOmissionCause::VolumeReached
-                        }
-                    };
-                    flow_registry.mark_unretained_at(flow, packet.ts, cause);
-                }
-                gate_dropped = gate_dropped.saturating_add(1);
+        // A newly captured packet has priority over unresolved causal work.
+        // That is essential for the selected DirectRoute packet: one unrelated
+        // PID cannot make it wait behind a 250 ms proof interval. Only packets
+        // that were deferred can appear after a later capture timestamp in the
+        // sink; normal packets retain arrival order.
+        let (mut packet, decision) = if let Some(ready_packet) = ready.pop_front() {
+            ready_packet
+        } else if input_ended {
+            let Some(gate) = gate.as_ref() else { break };
+            retry_deferred(
+                &mut deferred,
+                &mut ready,
+                gate.as_ref(),
+                attributor.as_ref(),
+                packet_attributor.as_deref(),
+                &mut next_due,
+            );
+            if !ready.is_empty() {
                 continue;
             }
+            let Some(first) = deferred.front() else { break };
+            let wait = next_due
+                .expect("nonempty deferred lane")
+                .saturating_duration_since(Instant::now())
+                .min(PENDING_RETRY_INTERVAL);
+            gate.await_pending(&first.packet, wait);
+            continue;
+        } else {
+            let (next, evicted) = if deferred.is_empty() {
+                let (item, evicted) = rx.next_and_evicted();
+                (
+                    item.map_or(buffer::TimedItem::Closed, buffer::TimedItem::Item),
+                    evicted,
+                )
+            } else {
+                let wait = next_due
+                    .expect("nonempty deferred lane")
+                    .saturating_duration_since(Instant::now())
+                    .min(PENDING_RETRY_INTERVAL);
+                rx.next_and_evicted_timeout(wait)
+            };
+            live.set_buffer_dropped(evicted);
+            let packet = match next {
+                buffer::TimedItem::Item(Item::Packet(packet)) => packet,
+                buffer::TimedItem::Item(Item::End(final_stats)) => {
+                    stats = *final_stats;
+                    input_ended = true;
+                    continue;
+                }
+                buffer::TimedItem::Timeout => {
+                    if let Some(gate) = gate.as_ref() {
+                        retry_deferred(
+                            &mut deferred,
+                            &mut ready,
+                            gate.as_ref(),
+                            attributor.as_ref(),
+                            packet_attributor.as_deref(),
+                            &mut next_due,
+                        );
+                    }
+                    continue;
+                }
+                buffer::TimedItem::Closed => {
+                    input_ended = true;
+                    continue;
+                }
+            };
+            let decision = gate
+                .as_ref()
+                .map_or(GateDecision::Admit, |gate| gate.decide(&packet));
+            if decision == GateDecision::Pending {
+                let gate = gate.as_ref().expect("only a gate can return pending");
+                if deferred.len() == deferred_capacity {
+                    let selected = packet.attribution.as_ref().is_some_and(|attribution| {
+                        attribution.fidelity == crate::attribution::Fidelity::DirectRoute
+                    });
+                    if selected {
+                        let displaced = deferred
+                            .iter()
+                            .position(|entry| {
+                                !entry
+                                    .packet
+                                    .attribution
+                                    .as_ref()
+                                    .is_some_and(|attribution| {
+                                        attribution.fidelity
+                                            == crate::attribution::Fidelity::DirectRoute
+                                    })
+                            })
+                            .unwrap_or(0);
+                        let displaced = deferred.remove(displaced).expect("full deferred lane");
+                        finish_displaced(displaced.packet, &mut ready, gate.as_ref());
+                    } else {
+                        finish_displaced(packet, &mut ready, gate.as_ref());
+                        retry_deferred(
+                            &mut deferred,
+                            &mut ready,
+                            gate.as_ref(),
+                            attributor.as_ref(),
+                            packet_attributor.as_deref(),
+                            &mut next_due,
+                        );
+                        continue;
+                    }
+                }
+                let now = Instant::now();
+                deferred.push_back(DeferredPacket {
+                    packet,
+                    deadline: now + PENDING_PROOF_WINDOW,
+                    next_retry: now + PENDING_RETRY_INTERVAL,
+                });
+                let due = now + PENDING_RETRY_INTERVAL;
+                next_due = Some(next_due.map_or(due, |current| current.min(due)));
+                retry_deferred(
+                    &mut deferred,
+                    &mut ready,
+                    gate.as_ref(),
+                    attributor.as_ref(),
+                    packet_attributor.as_deref(),
+                    &mut next_due,
+                );
+                continue;
+            }
+            (packet, decision)
+        };
+        // Consult the gate before any sink sees the packet, so a rejected
+        // packet is written nowhere. Count each final rejection once, before
+        // fan-out, including timeout and deferred-capacity displacement.
+        if let GateDecision::Reject(reason) = decision {
+            // The packet still existed as correlation evidence even though
+            // capture policy withheld it from every sink. Preserve that
+            // fact conservatively so a later packet on a reused tuple
+            // cannot become a false sole match.
+            if let Some(flow) = packet.flow {
+                let cause = match reason {
+                    GateRejection::Waiting => crate::flow::FlowOmissionCause::Waiting,
+                    GateRejection::OutOfWindow => crate::flow::FlowOmissionCause::OutOfWindow,
+                    GateRejection::OutOfScope => crate::flow::FlowOmissionCause::ScopeWithheld,
+                    GateRejection::Unresolved => crate::flow::FlowOmissionCause::ScopeUnresolved,
+                    GateRejection::NoSocketAttribution => {
+                        crate::flow::FlowOmissionCause::NoSocketAttribution
+                    }
+                    GateRejection::CausalProofUnavailable => {
+                        crate::flow::FlowOmissionCause::CausalProofUnavailable
+                    }
+                    GateRejection::CausalProofCooldown => {
+                        crate::flow::FlowOmissionCause::CausalProofCooldown
+                    }
+                    GateRejection::Direction => crate::flow::FlowOmissionCause::DirectionWithheld,
+                    GateRejection::DirectionUnknown => {
+                        crate::flow::FlowOmissionCause::DirectionUnknown
+                    }
+                    GateRejection::VolumeReached => crate::flow::FlowOmissionCause::VolumeReached,
+                };
+                flow_registry.mark_unretained_at(flow, packet.ts, cause);
+            }
+            gate_dropped = gate_dropped.saturating_add(1);
+            if let Some(gate) = gate.as_ref() {
+                retry_deferred(
+                    &mut deferred,
+                    &mut ready,
+                    gate.as_ref(),
+                    attributor.as_ref(),
+                    packet_attributor.as_deref(),
+                    &mut next_due,
+                );
+            }
+            continue;
         }
         if let Some(flow) = packet.flow {
             packet.flow_id = Some(flow_registry.observe_packet_at(
@@ -1209,6 +1436,16 @@ fn output_loop(
             // Wind the acquisition side down, then keep draining and counting
             // so that nothing leaves the buffer uncounted.
             stop.stop();
+        }
+        if let Some(gate) = gate.as_ref() {
+            retry_deferred(
+                &mut deferred,
+                &mut ready,
+                gate.as_ref(),
+                attributor.as_ref(),
+                packet_attributor.as_deref(),
+                &mut next_due,
+            );
         }
     }
 
@@ -2329,6 +2566,459 @@ mod tests {
         );
         assert!(!report.stats.lost_anything());
         assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn packet_attestation_fills_only_socket_misses_and_preserves_accounting() {
+        let log = log();
+        let source = StubSource::new(vec![frame(1, 40001), frame(2, 45000), unparseable(3)]);
+        let mut p = pipeline(Box::new(source), 64);
+        p.set_packet_attributor(Arc::new(|packet| {
+            (packet.flow == Some(flow_key(45000)))
+                .then(|| Attribution::new(72, "target.exe", Fidelity::DirectRoute))
+        }));
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        let held = log.lock().expect("the log mutex is never poisoned");
+        assert_eq!(
+            held.written[0].attribution.as_ref().unwrap().fidelity,
+            Fidelity::Live
+        );
+        assert_eq!(
+            held.written[1].attribution.as_ref().unwrap().fidelity,
+            Fidelity::DirectRoute
+        );
+        assert!(held.written[2].attribution.is_none());
+        drop(held);
+        assert_eq!(report.stats.packets_captured, 3);
+        assert_eq!(report.stats.packets_attributed, 2);
+        assert_eq!(report.stats.packets_unattributed, 0);
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn direct_route_proof_overrides_stale_socket_owner_and_survives_pending_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PendingOnce {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl WriteGate for PendingOnce {
+            fn admit(&self, packet: &CapturedPacket) -> bool {
+                packet
+                    .attribution
+                    .as_ref()
+                    .is_some_and(|attr| attr.fidelity == Fidelity::DirectRoute)
+            }
+
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    assert!(
+                        self.admit(packet),
+                        "acquisition must attach direct-route proof"
+                    );
+                    GateDecision::Pending
+                } else if self.admit(packet) {
+                    GateDecision::Admit
+                } else {
+                    GateDecision::Reject(GateRejection::Unresolved)
+                }
+            }
+
+            fn await_pending(&self, _packet: &CapturedPacket, _timeout: Duration) {}
+        }
+
+        let log = log();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(StubSource::new(vec![frame(7, 40001)])),
+                local_addrs(),
+            )],
+            Box::new(StubAttributor::resolving()),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_packet_attributor(Arc::new(|packet| {
+            (packet.flow == Some(flow_key(40001)))
+                .then(|| Attribution::new(72, "target.exe", Fidelity::DirectRoute))
+        }));
+        p.set_write_gate(Arc::new(PendingOnce {
+            calls: Arc::clone(&calls),
+        }));
+        p.add_sink(StubSink::recording(&log));
+
+        let report = p.run();
+        let held = log.lock().expect("the log mutex is never poisoned");
+        assert_eq!(
+            held.written.len(),
+            1,
+            "the attested packet must reach the sink"
+        );
+        assert_eq!(
+            held.written[0].attribution.as_ref().unwrap().fidelity,
+            Fidelity::DirectRoute
+        );
+        drop(held);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn unknown_pid_can_bind_after_selected_packet_without_blocking_output() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ChangingOwner(Arc<AtomicBool>);
+        impl FlowAttributor for ChangingOwner {
+            fn resolve(&self, flow: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+                (flow == &flow_key(40001)).then(|| {
+                    if self.0.load(Ordering::Acquire) {
+                        Attribution::new(42, "target.exe", Fidelity::Live)
+                    } else {
+                        Attribution::new(99, "stale.exe", Fidelity::Live)
+                    }
+                })
+            }
+            fn refresh(&self) -> Result<(), crate::error::AttrError> {
+                Ok(())
+            }
+            fn active_endpoints(&self) -> Vec<Endpoint> {
+                Vec::new()
+            }
+        }
+
+        struct DelayedBinding {
+            bound: Arc<AtomicBool>,
+            selected_seen: Sender<()>,
+        }
+        impl WriteGate for DelayedBinding {
+            fn admit(&self, packet: &CapturedPacket) -> bool {
+                packet.attribution.as_ref().is_some_and(|attribution| {
+                    attribution.fidelity == Fidelity::DirectRoute
+                        || (attribution.pid == 42 && self.bound.load(Ordering::Acquire))
+                })
+            }
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                if packet
+                    .attribution
+                    .as_ref()
+                    .is_some_and(|attribution| attribution.fidelity == Fidelity::DirectRoute)
+                {
+                    let _ = self.selected_seen.send(());
+                }
+                if self.admit(packet) {
+                    GateDecision::Admit
+                } else {
+                    GateDecision::Pending
+                }
+            }
+            fn finish_pending(&self, packet: &CapturedPacket, _timeout: Duration) -> GateDecision {
+                if self.admit(packet) {
+                    GateDecision::Admit
+                } else {
+                    GateDecision::Reject(GateRejection::CausalProofUnavailable)
+                }
+            }
+        }
+
+        let owner_bound = Arc::new(AtomicBool::new(false));
+        let (selected_tx, selected_rx) = mpsc::channel();
+        let mut source = StubSource::new(vec![frame(1, 40001), frame(2, 40002)]);
+        source.queued[0].ts = Timestamp::from_nanos(1);
+        source.queued[1].ts = Timestamp::from_nanos(2);
+        let log = log();
+        let mut pipeline = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(ChangingOwner(Arc::clone(&owner_bound))),
+            PipelineConfig::default(),
+        )
+        .unwrap();
+        pipeline.set_packet_attributor(Arc::new(|packet| {
+            (packet.flow == Some(flow_key(40002)))
+                .then(|| Attribution::new(42, "target.exe", Fidelity::DirectRoute))
+        }));
+        pipeline.set_write_gate(Arc::new(DelayedBinding {
+            bound: Arc::clone(&owner_bound),
+            selected_seen: selected_tx,
+        }));
+        pipeline.add_sink(StubSink::recording(&log));
+        let run = std::thread::spawn(move || pipeline.run());
+        selected_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("the selected packet must pass the unrelated pending PID promptly");
+        owner_bound.store(true, Ordering::Release);
+        let report = run.join().unwrap();
+        let held = log.lock().unwrap();
+        assert_eq!(
+            held.written.iter().map(marker_of).collect::<Vec<_>>(),
+            vec![2, 1],
+            "only the deferred packet may be emitted after a later selected packet"
+        );
+        assert_eq!(held.written[1].attribution.as_ref().unwrap().pid, 42);
+        assert_eq!(held.written[0].ts.as_nanos(), 2);
+        assert_eq!(held.written[1].ts.as_nanos(), 1);
+        drop(held);
+        assert_eq!(report.stats.gate_dropped, 0);
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn pending_packet_acquires_exact_proof_registered_after_capture() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ProofGate(Sender<()>);
+        impl WriteGate for ProofGate {
+            fn admit(&self, packet: &CapturedPacket) -> bool {
+                packet
+                    .attribution
+                    .as_ref()
+                    .is_some_and(|attribution| attribution.fidelity == Fidelity::DirectRoute)
+            }
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                if self.admit(packet) {
+                    GateDecision::Admit
+                } else {
+                    let _ = self.0.send(());
+                    GateDecision::Pending
+                }
+            }
+        }
+
+        let proof_ready = Arc::new(AtomicBool::new(false));
+        let (pending_tx, pending_rx) = mpsc::channel();
+        let log = log();
+        let mut pipeline = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(StubSource::new(vec![frame(1, 40001)])),
+                local_addrs(),
+            )],
+            Box::new(StubAttributor::empty()),
+            PipelineConfig::default(),
+        )
+        .unwrap();
+        let ready = Arc::clone(&proof_ready);
+        pipeline.set_packet_attributor(Arc::new(move |packet| {
+            (ready.load(Ordering::Acquire) && packet.flow == Some(flow_key(40001)))
+                .then(|| Attribution::new(42, "target.exe", Fidelity::DirectRoute))
+        }));
+        pipeline.set_write_gate(Arc::new(ProofGate(pending_tx)));
+        pipeline.add_sink(StubSink::recording(&log));
+        let run = std::thread::spawn(move || pipeline.run());
+        pending_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("the packet initially had no owner or direct proof");
+        proof_ready.store(true, Ordering::Release);
+        let report = run.join().unwrap();
+        let held = log.lock().unwrap();
+        assert_eq!(held.written.len(), 1);
+        assert_eq!(
+            held.written[0].attribution.as_ref().unwrap().fidelity,
+            Fidelity::DirectRoute
+        );
+        drop(held);
+        assert_eq!(report.stats.gate_dropped, 0);
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn deferred_deadline_expires_while_unrelated_input_continues() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct PacedSource {
+            remaining: usize,
+            delivered: u64,
+            ended: Arc<AtomicBool>,
+        }
+        impl PacketSource for PacedSource {
+            fn next_packet(
+                &mut self,
+                _timeout: Duration,
+            ) -> Result<Option<RawPacket>, SourceError> {
+                if self.remaining == 0 {
+                    self.ended.store(true, Ordering::Release);
+                    return Err(SourceError::Closed);
+                }
+                if self.delivered != 0 {
+                    std::thread::sleep(Duration::from_millis(4));
+                }
+                let marker = if self.delivered == 0 { 1 } else { 2 };
+                self.remaining -= 1;
+                self.delivered += 1;
+                Ok(Some(raw(frame(marker, 40001))))
+            }
+            fn set_filter(&mut self, _filter: &FilterProgram) -> Result<(), SourceError> {
+                Ok(())
+            }
+            fn stats(&self) -> SourceStats {
+                SourceStats {
+                    received: self.delivered,
+                    ..SourceStats::default()
+                }
+            }
+            fn link_type(&self) -> LinkType {
+                LinkType::ETHERNET
+            }
+        }
+
+        struct ExpiringGate {
+            source_ended: Arc<AtomicBool>,
+            expired_during_input: Arc<AtomicBool>,
+            first_seen: Mutex<Option<Instant>>,
+        }
+        impl WriteGate for ExpiringGate {
+            fn admit(&self, _packet: &CapturedPacket) -> bool {
+                false
+            }
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                if marker_of(packet) == 1 {
+                    let mut first = self.first_seen.lock().unwrap();
+                    let started = first.get_or_insert_with(Instant::now);
+                    if started.elapsed() >= PENDING_PROOF_WINDOW
+                        && !self.source_ended.load(Ordering::Acquire)
+                    {
+                        self.expired_during_input.store(true, Ordering::Release);
+                    }
+                    GateDecision::Pending
+                } else {
+                    GateDecision::Reject(GateRejection::OutOfScope)
+                }
+            }
+        }
+
+        let source_ended = Arc::new(AtomicBool::new(false));
+        let expired_during_input = Arc::new(AtomicBool::new(false));
+        let log = log();
+        let mut pipeline = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(PacedSource {
+                    remaining: 101,
+                    delivered: 0,
+                    ended: Arc::clone(&source_ended),
+                }),
+                local_addrs(),
+            )],
+            Box::new(StubAttributor::resolving()),
+            PipelineConfig::default(),
+        )
+        .unwrap();
+        pipeline.set_write_gate(Arc::new(ExpiringGate {
+            source_ended,
+            expired_during_input: Arc::clone(&expired_during_input),
+            first_seen: Mutex::new(None),
+        }));
+        pipeline.add_sink(StubSink::recording(&log));
+        let registry = Arc::new(FlowRegistry::default());
+        pipeline.set_flow_registry(Arc::clone(&registry));
+        let report = pipeline.run();
+        assert!(
+            expired_during_input.load(Ordering::Acquire),
+            "a steady stream of rejected packets cannot postpone the 250 ms proof deadline"
+        );
+        assert_eq!(report.stats.gate_dropped, 101);
+        assert_eq!(report.stats.buffer_dropped, 0);
+        assert!(registry
+            .summary(&flow_key(40001))
+            .unwrap()
+            .omissions
+            .iter()
+            .any(|omission| omission.cause == crate::flow::FlowOmissionCause::ScopeUnresolved));
+        assert_conserved(&report, &log, 0);
+    }
+
+    #[test]
+    fn full_deferred_lane_retains_selected_proof_and_accounts_displacement() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PendingGate {
+            first_seen: Sender<()>,
+            selected_calls: AtomicUsize,
+        }
+        impl WriteGate for PendingGate {
+            fn admit(&self, packet: &CapturedPacket) -> bool {
+                marker_of(packet) == 2
+            }
+            fn decide(&self, packet: &CapturedPacket) -> GateDecision {
+                if marker_of(packet) == 1 {
+                    let _ = self.first_seen.send(());
+                    GateDecision::Pending
+                } else if self.selected_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    GateDecision::Pending
+                } else {
+                    GateDecision::Admit
+                }
+            }
+            fn finish_pending(&self, packet: &CapturedPacket, _timeout: Duration) -> GateDecision {
+                if self.admit(packet) {
+                    GateDecision::Admit
+                } else {
+                    GateDecision::Reject(GateRejection::Unresolved)
+                }
+            }
+        }
+
+        let packet = |marker, port, fidelity| {
+            let mut packet =
+                CapturedPacket::from_raw(raw(frame(marker, port)), InterfaceId::default());
+            packet.flow = Some(flow_key(port));
+            packet.attribution = Some(Attribution::new(42, "target.exe", fidelity));
+            Box::new(packet)
+        };
+        let (tx, rx) = buffer::channel(1);
+        let (first_tx, first_rx) = mpsc::channel();
+        let log = log();
+        let registry = Arc::new(FlowRegistry::default());
+        let output = {
+            let log = Arc::clone(&log);
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || {
+                output_loop(
+                    rx,
+                    vec![StubSink::recording(&log)],
+                    StopHandle::default(),
+                    Some(Arc::new(PendingGate {
+                        first_seen: first_tx,
+                        selected_calls: AtomicUsize::new(0),
+                    })),
+                    LiveStats::new(),
+                    registry,
+                    Arc::new(StubAttributor::empty()),
+                    None,
+                    1,
+                )
+            })
+        };
+        tx.push(Item::Packet(packet(1, 40001, Fidelity::Live)));
+        first_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("the unrelated packet entered the deferred lane");
+        tx.push(Item::Packet(packet(2, 40002, Fidelity::DirectRoute)));
+        tx.push(Item::End(Box::new(CaptureStats {
+            packets_captured: 2,
+            packets_attributed: 2,
+            ..CaptureStats::default()
+        })));
+        drop(tx);
+        let outcome = output.join().unwrap();
+        assert_eq!(outcome.stats.buffer_dropped, 0);
+        assert_eq!(outcome.stats.gate_dropped, 1);
+        assert_eq!(written(&log), vec![2]);
+        assert_eq!(
+            registry.summary(&flow_key(40001)).unwrap().omissions[0].cause,
+            crate::flow::FlowOmissionCause::ScopeUnresolved
+        );
+        assert_eq!(
+            written(&log).len() as u64 + outcome.stats.buffer_dropped + outcome.stats.gate_dropped,
+            outcome.stats.packets_captured
+        );
     }
 
     // T036. FR-021. The parser's own counters reach the run.

@@ -161,6 +161,9 @@ pub struct CapturedPacket {
     pub tcp_flags: Option<u8>,
     /// Digest of the complete network datagram, excluding link-layer framing.
     pub packet_digest: Option<[u8; 32]>,
+    /// Offset of the parsed network datagram in `data`, for bounded
+    /// cross-capture identity checks that run only on selected tuples.
+    pub network_offset: Option<usize>,
     /// Populated by the socket table attributor in slice S10.
     pub attribution: Option<Attribution>,
 }
@@ -183,6 +186,7 @@ impl CapturedPacket {
             direction: None,
             tcp_flags: None,
             packet_digest: None,
+            network_offset: None,
             attribution: None,
         }
     }

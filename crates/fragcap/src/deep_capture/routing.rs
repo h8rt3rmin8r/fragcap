@@ -932,6 +932,7 @@ impl RoutingAdapter for NativeDirectRouting {
         Ok(Box::new(NativeDirectLease {
             applied,
             runtime: Some(runtime),
+            observations: self.observations.clone(),
         }))
     }
 }
@@ -940,6 +941,7 @@ impl RoutingAdapter for NativeDirectRouting {
 struct NativeDirectLease {
     applied: AppliedRoute,
     runtime: Option<super::direct_runtime::DirectPacketRuntime>,
+    observations: super::native::NativeObservationContext,
 }
 
 #[cfg(all(windows, feature = "direct-route"))]
@@ -961,7 +963,7 @@ impl RoutingLease for NativeDirectLease {
                 resource: "target-route".into(),
                 status: CleanupStatus::Released,
                 reason: format!(
-                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, bypass-reasons={:?}, proxy-refused={}, udp-relay-resets={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}, watchdog-release-after-progress-ms={}; route-stream={:?}; pre-receive loss unmeasurable={}",
+                    "signed route closed; received={}, reinjected={}, consumed={}, lost={}; socket-events={}, socket-capacity-lost={}, socket-clock-lost={}; admission-busy-bypassed={}, candidate-capacity-bypassed={}, candidate-max-queue-us={}, candidate-max-hold-us={}, candidate-over-50ms={}, bypass-reasons={:?}, proxy-refused={}, udp-relay-resets={}, synthetic-reply-lost={}, event-history-overflow={}, watchdog-released={}, watchdog-release-after-progress-ms={}; route-stream={:?}; capture-join={:?}; pre-receive loss unmeasurable={}",
                     stats.packets.received,
                     stats.packets.reinjected,
                     stats.packets.consumed,
@@ -971,6 +973,9 @@ impl RoutingLease for NativeDirectLease {
                     stats.socket_events.clock_lost,
                     stats.admission_busy_bypassed,
                     stats.candidate_capacity_bypassed,
+                    stats.candidate_max_queue_us,
+                    stats.candidate_max_hold_us,
+                    stats.candidate_over_50ms,
                     stats.bypass_reasons,
                     stats.proxy_refused,
                     stats.udp_relay_resets,
@@ -979,6 +984,7 @@ impl RoutingLease for NativeDirectLease {
                     stats.watchdog_released,
                     stats.watchdog_release_after_progress_ms,
                     stats.route_stream,
+                    self.observations.direct_packet_attestation_stats(),
                     stats.pre_receive_loss_unmeasurable,
                 ),
             },

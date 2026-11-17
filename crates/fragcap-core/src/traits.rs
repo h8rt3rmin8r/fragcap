@@ -236,7 +236,8 @@ pub enum GateRejection {
 pub enum GateDecision {
     Admit,
     Reject(GateRejection),
-    /// The writer holds only this head packet for a finite proof interval.
+    /// The writer may defer this packet in a bounded lane for a finite proof
+    /// interval while later captured packets continue to the sinks.
     Pending,
 }
 
@@ -255,7 +256,7 @@ pub trait WriteGate: Send + Sync {
         }
     }
 
-    /// Wait for evidence that may settle a pending head without counting a
+    /// Wait for evidence that may settle deferred packets without counting a
     /// decision. The output path then refreshes attribution before finalizing.
     fn await_pending(&self, _packet: &CapturedPacket, timeout: Duration) {
         std::thread::sleep(timeout);

@@ -83,6 +83,41 @@ pub struct DirectSocketEvent {
     pub kind: SocketEventKind,
 }
 
+/// Identity of one observed socket generation. Endpoint IDs and ports can be
+/// reused, so neither one identifies a selected route without the OPEN time.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SocketEpoch {
+    pub tuple: DirectTuple,
+    pub endpoint_id: u64,
+    pub pid: u32,
+    pub open_qpc: i64,
+}
+
+impl SocketEpoch {
+    pub fn from_open(event: DirectSocketEvent) -> Self {
+        debug_assert_eq!(event.kind, SocketEventKind::Open);
+        Self {
+            tuple: event.tuple,
+            endpoint_id: event.endpoint_id,
+            pid: event.pid,
+            open_qpc: event.at_qpc,
+        }
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn contains_packet(self, packet_qpc: i64) -> bool {
+        self.open_qpc > 0 && packet_qpc > self.open_qpc
+    }
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    pub fn matches_event(self, event: DirectSocketEvent) -> bool {
+        event.tuple == self.tuple
+            && event.endpoint_id == self.endpoint_id
+            && event.pid == self.pid
+            && event.at_qpc > self.open_qpc
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DirectPacketHead {
     pub tuple: DirectTuple,
@@ -102,6 +137,7 @@ pub struct OriginalFlow {
     pub pid: u32,
     pub process_instance_id: String,
     pub process_image: String,
+    pub process_role: String,
     pub first_packet_digest: Option<[u8; 32]>,
 }
 
@@ -188,6 +224,12 @@ pub fn select_direct_flow(
         pid: event.pid,
         process_instance_id,
         process_image,
+        process_role: if direct_root_target {
+            "target"
+        } else {
+            "client"
+        }
+        .into(),
         first_packet_digest: packet.packet_digest,
     })
 }
@@ -252,6 +294,12 @@ fn managed_direct_root_flow(
         pid: event.pid,
         process_instance_id: format!("process-{}-{created}", event.pid),
         process_image: image,
+        process_role: if evidence.direct_alternate_used {
+            "client"
+        } else {
+            "target"
+        }
+        .into(),
         first_packet_digest: packet.packet_digest,
     })
 }
@@ -321,7 +369,9 @@ pub struct PendingCandidate<A> {
 
 pub enum CandidateDecision<A> {
     Selected {
-        flow: OriginalFlow,
+        flow: Box<OriginalFlow>,
+        #[cfg(all(windows, feature = "direct-route"))]
+        epoch: SocketEpoch,
         packet: Vec<u8>,
         address: A,
         #[cfg(all(windows, feature = "direct-route"))]
@@ -341,8 +391,13 @@ pub struct CandidateBuffer<A> {
     max_packets: usize,
     max_bytes: usize,
     held_bytes: usize,
+    held_udp_packets: usize,
+    held_udp_bytes: usize,
+    held_udp_by_tuple: BTreeMap<DirectTuple, usize>,
     wait_ns: u64,
 }
+
+const MAX_PENDING_UDP_PER_TUPLE: usize = 8;
 
 impl<A> CandidateBuffer<A> {
     pub fn new(max_packets: usize, max_bytes: usize, wait_ns: u64) -> Option<Self> {
@@ -360,6 +415,9 @@ impl<A> CandidateBuffer<A> {
             max_packets,
             max_bytes,
             held_bytes: 0,
+            held_udp_packets: 0,
+            held_udp_bytes: 0,
+            held_udp_by_tuple: BTreeMap::new(),
             wait_ns,
         })
     }
@@ -379,6 +437,18 @@ impl<A> CandidateBuffer<A> {
             packet,
             address,
         };
+        // Unknown-owner UDP can arrive in a burst from a few pre-existing
+        // sockets. Reserve one eighth of this finite buffer for initial TCP
+        // SYNs and bound each pending UDP tuple without inspecting payloads.
+        // Tiny test buffers have no reserve, preserving their exact capacity.
+        let udp = candidate.head.tuple.transport == Proto::Udp;
+        let udp_packet_limit = self.max_packets - self.max_packets / 8;
+        let udp_byte_limit = self.max_bytes
+            - if self.max_packets >= 8 {
+                self.max_bytes / 8
+            } else {
+                0
+            };
         if candidate.packet.is_empty()
             || candidate.packet.len() > 65_535
             || self.pending.len() >= self.max_packets
@@ -386,12 +456,48 @@ impl<A> CandidateBuffer<A> {
                 .held_bytes
                 .checked_add(candidate.packet.len())
                 .is_none_or(|total| total > self.max_bytes)
+            || (udp
+                && (self.held_udp_packets >= udp_packet_limit
+                    || self
+                        .held_udp_bytes
+                        .checked_add(candidate.packet.len())
+                        .is_none_or(|total| total > udp_byte_limit)
+                    || self
+                        .held_udp_by_tuple
+                        .get(&candidate.head.tuple)
+                        .copied()
+                        .unwrap_or(0)
+                        >= MAX_PENDING_UDP_PER_TUPLE))
         {
             return Err(Box::new(candidate));
         }
         self.held_bytes += candidate.packet.len();
+        if udp {
+            self.held_udp_packets += 1;
+            self.held_udp_bytes += candidate.packet.len();
+            *self
+                .held_udp_by_tuple
+                .entry(candidate.head.tuple)
+                .or_default() += 1;
+        }
         self.pending.push_back(candidate);
         Ok(())
+    }
+
+    fn release(&mut self, candidate: &PendingCandidate<A>) {
+        self.held_bytes -= candidate.packet.len();
+        if candidate.head.tuple.transport == Proto::Udp {
+            self.held_udp_packets -= 1;
+            self.held_udp_bytes -= candidate.packet.len();
+            let count = self
+                .held_udp_by_tuple
+                .get_mut(&candidate.head.tuple)
+                .expect("pending UDP candidate has tuple count");
+            *count -= 1;
+            if *count == 0 {
+                self.held_udp_by_tuple.remove(&candidate.head.tuple);
+            }
+        }
     }
 
     pub fn resolve(
@@ -401,26 +507,86 @@ impl<A> CandidateBuffer<A> {
         now_ns: u64,
         helper_pid: u32,
     ) -> Vec<CandidateDecision<A>> {
+        self.resolve_inner(evidence, events, now_ns, helper_pid, false)
+    }
+
+    /// A new packet cannot change any older candidate's proof. Resolve only
+    /// that packet until socket or process evidence changes.
+    pub fn resolve_newest(
+        &mut self,
+        evidence: Option<&CaptureProcessEvidence>,
+        events: &[DirectSocketEvent],
+        now_ns: u64,
+        helper_pid: u32,
+    ) -> Vec<CandidateDecision<A>> {
+        self.resolve_inner(evidence, events, now_ns, helper_pid, true)
+    }
+
+    fn resolve_inner(
+        &mut self,
+        evidence: Option<&CaptureProcessEvidence>,
+        events: &[DirectSocketEvent],
+        now_ns: u64,
+        helper_pid: u32,
+        newest_only: bool,
+    ) -> Vec<CandidateDecision<A>> {
         enum Status {
             Wait,
-            Selected(OriginalFlow),
+            Selected(Box<OriginalFlow>, SocketEpoch),
             Pass(&'static str),
         }
+        let count = if newest_only {
+            usize::from(!self.pending.is_empty())
+        } else {
+            self.pending.len()
+        };
+        if count == 0 {
+            return Vec::new();
+        }
         let mut resolved = Vec::new();
-        let count = self.pending.len();
+        // A candidate must only inspect events for its own tuple. Under busy
+        // traffic, scanning the full socket-event history once per held SYN
+        // can delay unrelated packets beyond their candidate deadline.
+        let by_tuple = if count > 1 {
+            let mut index = BTreeMap::<DirectTuple, Vec<DirectSocketEvent>>::new();
+            for event in events {
+                index.entry(event.tuple).or_default().push(*event);
+            }
+            Some(index)
+        } else {
+            None
+        };
         for _ in 0..count {
-            let candidate = self.pending.pop_front().expect("fixed pending length");
+            let candidate = if newest_only {
+                self.pending.pop_back()
+            } else {
+                self.pending.pop_front()
+            }
+            .expect("fixed pending length");
             // The worker may receive the socket event and process proof on the
             // same iteration that the deadline becomes due. Resolve that
             // already available proof before deciding that it was absent.
-            let decision = match exact_socket_event(events, candidate.head) {
+            let matching_events = by_tuple.as_ref().map_or(events, |index| {
+                index
+                    .get(&candidate.head.tuple)
+                    .map_or(&[][..], Vec::as_slice)
+            });
+            let exact_event = exact_socket_event(matching_events, candidate.head);
+            let decision = match &exact_event {
                 Ok(event) if event.pid == helper_pid => {
                     Some(DirectAdmission::Bypassed("helper-self-excluded"))
                 }
-                _ => evidence.map(|evidence| select_direct_flow(evidence, events, candidate.head)),
+                _ => evidence
+                    .map(|evidence| select_direct_flow(evidence, matching_events, candidate.head)),
             };
             let status = match decision {
-                Some(DirectAdmission::Selected(flow)) => Status::Selected(flow),
+                Some(DirectAdmission::Selected(flow)) => {
+                    let epoch = exact_event
+                        .ok()
+                        .map(SocketEpoch::from_open)
+                        .expect("selected flow has exact socket event");
+                    Status::Selected(Box::new(flow), epoch)
+                }
                 Some(DirectAdmission::Bypassed(reason) | DirectAdmission::Ambiguous(reason)) => {
                     Status::Pass(reason)
                 }
@@ -437,10 +603,14 @@ impl<A> CandidateBuffer<A> {
             };
             match status {
                 Status::Wait => self.pending.push_back(candidate),
-                Status::Selected(flow) => {
-                    self.held_bytes -= candidate.packet.len();
+                Status::Selected(flow, epoch) => {
+                    #[cfg(not(all(windows, feature = "direct-route")))]
+                    let _ = epoch;
+                    self.release(&candidate);
                     resolved.push(CandidateDecision::Selected {
                         flow,
+                        #[cfg(all(windows, feature = "direct-route"))]
+                        epoch,
                         packet: candidate.packet,
                         address: candidate.address,
                         #[cfg(all(windows, feature = "direct-route"))]
@@ -448,7 +618,7 @@ impl<A> CandidateBuffer<A> {
                     });
                 }
                 Status::Pass(reason) => {
-                    self.held_bytes -= candidate.packet.len();
+                    self.release(&candidate);
                     resolved.push(CandidateDecision::PassThrough {
                         reason,
                         packet: candidate.packet,
@@ -464,6 +634,9 @@ impl<A> CandidateBuffer<A> {
 
     pub fn drain(&mut self) -> Vec<CandidateDecision<A>> {
         self.held_bytes = 0;
+        self.held_udp_packets = 0;
+        self.held_udp_bytes = 0;
+        self.held_udp_by_tuple.clear();
         self.pending
             .drain(..)
             .map(|candidate| CandidateDecision::PassThrough {
@@ -474,6 +647,28 @@ impl<A> CandidateBuffer<A> {
                 received_ns: candidate.received_ns,
             })
             .collect()
+    }
+
+    /// When neither socket nor process evidence changed, only deadlines can
+    /// change a pending candidate's outcome. Enqueue order is deadline order.
+    pub fn expire_due(&mut self, now_ns: u64) -> Vec<CandidateDecision<A>> {
+        let mut expired = Vec::new();
+        while self
+            .pending
+            .front()
+            .is_some_and(|candidate| now_ns >= candidate.deadline_ns)
+        {
+            let candidate = self.pending.pop_front().expect("due front");
+            self.release(&candidate);
+            expired.push(CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet: candidate.packet,
+                address: candidate.address,
+                #[cfg(all(windows, feature = "direct-route"))]
+                received_ns: candidate.received_ns,
+            });
+        }
+        expired
     }
 
     pub fn len(&self) -> usize {
@@ -793,6 +988,59 @@ mod tests {
     }
 
     #[test]
+    fn idle_candidate_deadlines_reinject_once_in_enqueue_order() {
+        let mut buffer = CandidateBuffer::new(3, 128, 100).unwrap();
+        assert!(buffer.enqueue(packet(40000), vec![1], 1u32, 0).is_ok());
+        assert!(buffer.enqueue(packet(40001), vec![2], 2u32, 50).is_ok());
+        assert!(buffer.expire_due(99).is_empty());
+        let first = buffer.expire_due(100);
+        assert!(matches!(
+            &first[..],
+            [CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet,
+                address: 1,
+                ..
+            }] if packet == &[1]
+        ));
+        assert_eq!(buffer.len(), 1);
+        assert!(buffer.expire_due(149).is_empty());
+        let second = buffer.expire_due(150);
+        assert!(matches!(
+            &second[..],
+            [CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                packet,
+                address: 2,
+                ..
+            }] if packet == &[2]
+        ));
+        assert!(buffer.drain().is_empty());
+    }
+
+    #[test]
+    fn new_candidate_only_checks_its_own_proof_and_preserves_older_deadline() {
+        let mut buffer = CandidateBuffer::new(3, 128, 100).unwrap();
+        assert!(buffer.enqueue(packet(40000), vec![1], 1u32, 0).is_ok());
+        assert!(buffer.enqueue(packet(40001), vec![2], 2u32, 50).is_ok());
+        assert!(buffer.resolve_newest(None, &[], 50, 99).is_empty());
+        assert_eq!(buffer.len(), 2);
+        let expired = buffer.expire_due(100);
+        assert!(matches!(
+            &expired[..],
+            [CandidateDecision::PassThrough {
+                packet,
+                address: 1,
+                ..
+            }] if packet == &[1]
+        ));
+        assert_eq!(buffer.len(), 1);
+        assert!(buffer.resolve_newest(None, &[], 149, 99).is_empty());
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.expire_due(150).len(), 1);
+    }
+
+    #[test]
     fn unrelated_candidate_returns_original_packet_and_capacity_is_finite() {
         let mut buffer = CandidateBuffer::new(1, 8, 100_000_000).unwrap();
         buffer
@@ -829,6 +1077,111 @@ mod tests {
             } if packet == b"stop"
         ));
         assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn udp_burst_leaves_candidate_space_for_a_target_tcp_syn() {
+        let mut buffer = CandidateBuffer::new(64, 4096, 100).unwrap();
+        for offset in 0..7 {
+            let mut udp = packet(40000 + offset);
+            udp.tuple.transport = Proto::Udp;
+            for _ in 0..MAX_PENDING_UDP_PER_TUPLE {
+                assert!(buffer.enqueue(udp, vec![1; 16], 1u32, 0).is_ok());
+            }
+        }
+        assert_eq!(buffer.len(), 56);
+        let mut extra_udp = packet(45000);
+        extra_udp.tuple.transport = Proto::Udp;
+        let overflow = buffer.enqueue(extra_udp, vec![2; 16], 2, 0).unwrap_err();
+        assert_eq!(overflow.packet, vec![2; 16]);
+        assert_eq!(overflow.address, 2);
+        assert_eq!(buffer.len(), 56);
+
+        assert!(buffer.enqueue(packet(50000), vec![3; 16], 3, 0).is_ok());
+        let selected = buffer.resolve_newest(Some(&evidence()), &[event(12, 50000)], 1, 99);
+        assert!(matches!(
+            &selected[..],
+            [CandidateDecision::Selected { packet, address: 3, .. }] if packet == &vec![3; 16]
+        ));
+        let expired = buffer.expire_due(100);
+        assert_eq!(expired.len(), 56);
+        assert!(expired.iter().all(|decision| matches!(
+            decision,
+            CandidateDecision::PassThrough {
+                reason: "candidate-wait-expired",
+                ..
+            }
+        )));
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert_eq!(buffer.held_udp_bytes, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
+    }
+
+    #[test]
+    fn repeated_udp_tuple_is_bounded_and_reopens_after_expiry() {
+        let mut buffer = CandidateBuffer::new(64, 4096, 100).unwrap();
+        let mut udp = packet(40000);
+        udp.tuple.transport = Proto::Udp;
+        for _ in 0..MAX_PENDING_UDP_PER_TUPLE {
+            assert!(buffer.enqueue(udp, vec![4; 16], 1u32, 0).is_ok());
+        }
+        let rejected = buffer.enqueue(udp, vec![5; 16], 2, 0).unwrap_err();
+        assert_eq!(rejected.packet, vec![5; 16]);
+        assert_eq!(rejected.address, 2);
+        assert_eq!(buffer.expire_due(100).len(), MAX_PENDING_UDP_PER_TUPLE);
+        assert!(buffer.enqueue(udp, vec![6; 16], 3, 101).is_ok());
+        assert_eq!(buffer.drain().len(), 1);
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
+    }
+
+    #[test]
+    fn udp_byte_reserve_returns_exact_rejected_packet_and_conserves_bounds() {
+        let mut buffer = CandidateBuffer::new(64, 1024, 100).unwrap();
+        for offset in 0..7 {
+            let mut udp = packet(40000 + offset);
+            udp.tuple.transport = Proto::Udp;
+            assert!(buffer.enqueue(udp, vec![7; 128], offset, 0).is_ok());
+        }
+        let mut extra_udp = packet(45000);
+        extra_udp.tuple.transport = Proto::Udp;
+        let rejected = buffer.enqueue(extra_udp, vec![8; 128], 8, 0).unwrap_err();
+        assert_eq!(rejected.packet, vec![8; 128]);
+        assert_eq!(rejected.address, 8);
+        assert_eq!(buffer.held_bytes, 7 * 128);
+        assert_eq!(buffer.held_udp_bytes, 7 * 128);
+        assert!(buffer.enqueue(packet(50000), vec![9; 64], 9, 0).is_ok());
+        let returned = buffer.drain();
+        assert_eq!(returned.len(), 8);
+        assert_eq!(
+            returned
+                .iter()
+                .map(|decision| match decision {
+                    CandidateDecision::PassThrough { packet, .. } => packet.len(),
+                    CandidateDecision::Selected { .. } => panic!("drain passes original packets"),
+                })
+                .sum::<usize>(),
+            7 * 128 + 64
+        );
+        assert_eq!(buffer.held_bytes, 0);
+        assert_eq!(buffer.held_udp_packets, 0);
+        assert_eq!(buffer.held_udp_bytes, 0);
+        assert!(buffer.held_udp_by_tuple.is_empty());
+    }
+
+    #[test]
+    fn direct_root_selection_carries_target_role() {
+        let mut direct = evidence();
+        direct.launch_pid = Some(12);
+        direct.shutdown_scope = vec![std::path::PathBuf::from("client.exe")];
+        direct.stage_transitions[0].role = "target".into();
+        assert!(matches!(
+            select_direct_flow(&direct, &[event(12, 40000)], packet(40000)),
+            DirectAdmission::Selected(OriginalFlow { process_role, .. }) if process_role == "target"
+        ));
     }
 
     #[test]
@@ -965,8 +1318,9 @@ mod tests {
             DirectAdmission::Selected(OriginalFlow {
                 endpoint_id: 100,
                 pid: 12,
+                process_role,
                 ..
-            })
+            }) if process_role == "client"
         ));
         assert!(matches!(
             select_direct_flow(&evidence(), &[old, close], first),

@@ -408,6 +408,7 @@ fn allowed_direct_route_reinjection(shown: &str, code: &str) -> bool {
     code == "fn reinject("
         || code.starts_with("reinject(&handle, &stats, ")
         || code.starts_with("let sent = reinject(&handle, &stats, ")
+        || code.starts_with("let result = reinject(handle, stats, ")
 }
 
 const FORBIDDEN_CALLS: &[(&str, &str)] = &[
@@ -658,6 +659,10 @@ mod tests {
         assert!(allowed_direct_route_reinjection(
             DIRECT_ROUTE_SOURCE,
             "let sent = reinject(&handle, &stats, bytes, &address);"
+        ));
+        assert!(allowed_direct_route_reinjection(
+            DIRECT_ROUTE_SOURCE,
+            "let result = reinject(handle, stats, packet, address);"
         ));
         assert!(!allowed_direct_route_reinjection(
             "crates/fragcap/src/capture.rs",

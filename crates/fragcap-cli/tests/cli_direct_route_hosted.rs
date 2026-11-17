@@ -10,15 +10,41 @@ use fragcap::targets::{
     TargetClassification, TargetEntry,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn pcapng_packet_blocks(path: &Path) -> usize {
+    let bytes = std::fs::read(path).expect("native pcapng exists");
+    let mut offset = 0;
+    let mut packets = 0;
+    while offset < bytes.len() {
+        assert!(bytes.len() - offset >= 12, "truncated pcapng block");
+        let kind = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let length = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        assert!(length >= 12 && length & 3 == 0);
+        assert!(length <= bytes.len() - offset, "pcapng block beyond file");
+        assert_eq!(
+            u32::from_le_bytes(
+                bytes[offset + length - 4..offset + length]
+                    .try_into()
+                    .unwrap()
+            ) as usize,
+            length,
+            "pcapng block length trailer"
+        );
+        packets += usize::from(kind == 6);
+        offset += length;
+    }
+    packets
+}
 
 fn native_command(binary: &PathBuf) -> Command {
     use std::os::windows::process::CommandExt;
@@ -34,6 +60,107 @@ fn native_command(binary: &PathBuf) -> Command {
         command.env_remove(override_name);
     }
     command
+}
+
+fn s211_session_dir(client: &Path) -> Option<PathBuf> {
+    std::env::var_os("FRAGCAP_S211_SESSION_DIR").map(|value| {
+        let scratch = client
+            .parent()
+            .unwrap()
+            .join("s211-physical")
+            .canonicalize()
+            .expect("S211 physical scratch exists");
+        let dir = PathBuf::from(value)
+            .canonicalize()
+            .expect("S211 session directory exists");
+        let run_root = dir.parent().expect("S211 attempt has a run root");
+        assert_eq!(
+            run_root.parent(),
+            Some(scratch.as_path()),
+            "S211 run root must be a direct scratch child"
+        );
+        assert!(
+            run_root
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-run-"))
+                && dir
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("attempt-")),
+            "S211 session directory must be a named attempt under its run root"
+        );
+        dir
+    })
+}
+
+fn assert_terminal_bundle_reconciliation(
+    complete: &Value,
+    bundle: &Path,
+    report: &Value,
+    compatibility: &Value,
+) {
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(complete["manifest"], "manifest.json");
+    assert_eq!(complete["session_id"], manifest["session_id"]);
+    assert_eq!(compatibility["session_id"], manifest["session_id"]);
+    assert_eq!(complete["cleanup_status"], manifest["cleanup"]["status"]);
+    assert_eq!(report["cleanup"]["status"], manifest["cleanup"]["status"]);
+    assert_eq!(complete["cleanup_status"], "succeeded");
+    assert!(
+        complete["status"] == "complete" || complete["status"] == "partial",
+        "unexpected terminal status: {complete:#?}"
+    );
+    assert!(
+        manifest["state"] == "complete" || manifest["state"] == "partial",
+        "unexpected manifest state: {manifest:#?}"
+    );
+    assert!(manifest["failures"].as_array().unwrap().is_empty());
+    for artifact in manifest["artifacts"].as_array().unwrap() {
+        if artifact["required"] == true {
+            assert_eq!(artifact["finalization"], "complete", "{artifact:#?}");
+            assert!(
+                artifact["completeness"] == "complete" || artifact["completeness"] == "partial",
+                "required artifact missing or failed: {artifact:#?}"
+            );
+            let path = artifact["path"].as_str().expect("required artifact path");
+            assert!(
+                bundle.join(path).is_file(),
+                "required artifact absent: {path}"
+            );
+        }
+    }
+
+    let summary = &manifest["correlation"]["direct_route"];
+    assert_eq!(summary, &compatibility["direct_route_correlation"]);
+    let observations = compatibility["observations"].as_array().unwrap();
+    let selected = observations
+        .iter()
+        .filter(|observation| observation["direct_route"].is_object())
+        .collect::<Vec<_>>();
+    assert_eq!(summary["records"].as_u64(), Some(selected.len() as u64));
+    assert_eq!(report["route"]["selected_flows"], summary["records"]);
+    for (field, histogram) in [
+        ("original_packet_state", "original_packet_states"),
+        ("packet_history_state", "packet_history_states"),
+        ("route_state", "route_states"),
+        (
+            "selected_packet_disposition",
+            "selected_packet_dispositions",
+        ),
+    ] {
+        let mut counts = BTreeMap::<String, u64>::new();
+        for observation in &selected {
+            let state = observation["direct_route"][field]
+                .as_str()
+                .expect("selected direct-route state");
+            *counts.entry(state.to_owned()).or_default() += 1;
+        }
+        assert_eq!(
+            summary[histogram],
+            serde_json::to_value(counts).unwrap(),
+            "{field} did not reconcile across compatibility and manifest"
+        );
+    }
 }
 
 struct RegisteredTarget<'a> {
@@ -105,18 +232,440 @@ fn unrelated_sentinel(peer: SocketAddr) -> std::io::Result<Duration> {
     Ok(start.elapsed())
 }
 
-#[test]
-#[ignore = "requires an elevated package binary, cold controlled client, and finite external peer"]
-fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
-    let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"));
-    let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("cold client"));
+fn unrelated_udp_sentinel(peer: SocketAddr) -> std::io::Result<Duration> {
+    let start = Instant::now();
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(peer)?;
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    socket.send(b"udp-sentinel-request")?;
+    let mut reply = [0u8; 64];
+    let count = socket.recv(&mut reply)?;
+    if &reply[..count] != b"udp-sentinel-reply" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unexpected unrelated UDP reply",
+        ));
+    }
+    Ok(start.elapsed())
+}
+
+fn package_public_udp_direct_route_case() {
+    let refusal = std::env::var_os("FRAGCAP_S211_REFUSAL").is_some();
+    let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"))
+        .canonicalize()
+        .expect("package binary exists");
+    let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("UDP client"))
+        .canonicalize()
+        .expect("UDP client exists");
+    let session_dir = s211_session_dir(&client);
     let peer: SocketAddr = std::env::var("FRAGCAP_S205_PEER")
-        .expect("external peer")
+        .expect("external UDP peer")
         .parse()
         .expect("IP:port");
-    assert!(!peer.ip().is_loopback(), "the peer must be external");
+    assert!(!peer.ip().is_loopback(), "external UDP peer required");
+    let baseline = (0..3)
+        .map(|_| unrelated_udp_sentinel(peer).expect("baseline UDP sentinel"))
+        .collect::<Vec<_>>();
+    let handle = "s211_controlled_udp_client";
+    let registration = native_command(&binary)
+        .args([
+            "targets",
+            "add",
+            "S211 Controlled UDP Client",
+            "--handle",
+            handle,
+            "--exe",
+            client.to_str().unwrap(),
+            "--socket-holder",
+            "yes",
+        ])
+        .output()
+        .expect("public UDP target registration");
+    assert!(registration.status.success(), "{registration:?}");
+    let mut registration_guard = RegisteredTarget {
+        binary: &binary,
+        handle,
+        removed: false,
+    };
+    let gate_signal = client
+        .parent()
+        .unwrap()
+        .join(format!("s211-udp-gate-{}.signal", std::process::id()));
+    let gate_release = gate_signal.with_extension("release");
+    let _gate_files = GateFiles(gate_signal.clone(), gate_release.clone());
+    let gate_for_sentinels = gate_signal.clone();
+    let route_active = Arc::new(AtomicBool::new(false));
+    let reader_active = Arc::clone(&route_active);
+    let sentinels = std::thread::spawn(move || -> std::io::Result<Vec<Duration>> {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == b"ready-for-sentinels")
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "UDP client did not reach sentinel gate",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !reader_active.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "UDP client settled without confirmed route activation",
+            ));
+        }
+        let mut elapsed = Vec::new();
+        for _ in 0..3 {
+            elapsed.push(unrelated_udp_sentinel(peer)?);
+        }
+        std::fs::write(&gate_release, b"release")?;
+        Ok(elapsed)
+    });
+    let mut capture_args = vec![
+        "--json".to_owned(),
+        "deep-capture".to_owned(),
+        handle.to_owned(),
+        "--launch".to_owned(),
+        "--direct-route".to_owned(),
+    ];
+    if !refusal {
+        capture_args.extend(["--proxy-allow-destination".to_owned(), peer.to_string()]);
+    }
+    capture_args.extend([
+        "--authorize-stdin".to_owned(),
+        "--duration".to_owned(),
+        "8s".to_owned(),
+        "--wait".to_owned(),
+        "30s".to_owned(),
+    ]);
+    let mut capture_command = native_command(&binary);
+    capture_command
+        .args(&capture_args)
+        .env("S211_UDP_PEER", peer.to_string())
+        .env("S211_UDP_BIND_IP", "0.0.0.0")
+        .env("S211_UDP_GATE", gate_signal)
+        .envs(refusal.then_some(("S211_UDP_REFUSAL", "1")))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &session_dir {
+        capture_command.env("FRAGCAP_SESSION_DIR", dir);
+    }
+    let mut child = SessionChild(
+        capture_command
+            .spawn()
+            .expect("public UDP direct-route command"),
+    );
+    let mut stdin = child.0.stdin.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let line = line.expect("JSON event line");
+            if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                if event["event"] == "deep_capture.authorization_plan" {
+                    writeln!(stdin, "{}", event["plan_id"].as_str().unwrap())
+                        .expect("authorize exact UDP plan");
+                    stdin.flush().expect("flush UDP authorization");
+                }
+                if event["event"] == "deep_capture.proxy_started" {
+                    route_active.store(true, Ordering::Release);
+                }
+                event_tx.send(event).expect("UDP event receiver");
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut events = Vec::new();
+    let status = loop {
+        events.extend(event_rx.try_iter());
+        if let Some(status) = child.0.try_wait().expect("UDP session status") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.0.kill().expect("terminate timed-out UDP session");
+            child.0.wait().expect("reap timed-out UDP session");
+            panic!("public UDP direct-route session timed out: {events:#?}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    reader.join().expect("UDP event reader");
+    events.extend(event_rx.try_iter());
+    let active = sentinels
+        .join()
+        .expect("UDP sentinel thread")
+        .unwrap_or_else(|error| panic!("UDP sentinels failed: {error}; events={events:#?}"));
+    let post = (0..3)
+        .map(|_| unrelated_udp_sentinel(peer).expect("post UDP sentinel"))
+        .collect::<Vec<_>>();
+    assert!(status.success(), "UDP session failed: {events:#?}");
+    let complete = events
+        .iter()
+        .find(|event| event["event"] == "deep_capture.complete")
+        .expect("UDP terminal completion event");
+    let bundle = PathBuf::from(complete["bundle_effective"].as_str().unwrap());
+    let report = fragcap::deep_capture::build_route_debug_report(&bundle).unwrap();
+    assert_eq!(report["route"]["state"], "complete");
+    assert_eq!(report["route"]["dropped_events"], 0);
+    if refusal {
+        assert_eq!(report["route"]["bidirectional_flows"], 0);
+    } else {
+        assert_eq!(report["route"]["bidirectional_flows"], 1);
+        assert_eq!(report["flows"][0]["process_generation_join"], "exact");
+        assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
+    }
+    let compatibility: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap()).unwrap();
+    assert_terminal_bundle_reconciliation(complete, &bundle, &report, &compatibility);
+    assert!(compatibility["observations"].is_array());
+    if refusal {
+        assert!(
+            compatibility["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|observation| {
+                    observation["direct_route"]["receipt_state"] == "consumed"
+                        && observation["direct_route"]["selected_packet_disposition"] == "consumed"
+                        && observation["direct_route"]["route_state"] == "delivery-unproven"
+                }),
+            "refused UDP datagram lacked consumed-but-untransferred evidence: {compatibility:#?}"
+        );
+        let proxy_events =
+            std::fs::read_to_string(bundle.join("proxy.jsonl")).expect("UDP refusal proxy stream");
+        assert!(
+            proxy_events.lines().any(|line| {
+                let event: Value = serde_json::from_str(line).expect("typed proxy event");
+                event["type"] == "proxy.socks5-udp"
+                    && event["fields"]["detail"]["outcome"] == "destination-refused"
+                    && event["fields"]["detail"]["payload_bytes"] == b"runtime-udp-request".len()
+            }),
+            "refused UDP destination did not retain a drop observation"
+        );
+    }
+    let limit = std::cmp::max(
+        Duration::from_millis(50),
+        baseline.iter().copied().max().unwrap().saturating_mul(4),
+    );
+    assert!(
+        active.iter().all(|elapsed| *elapsed <= limit),
+        "active unrelated UDP sentinel exceeded {limit:?}: baseline={baseline:?}, active={active:?}"
+    );
+    eprintln!(
+        "S211 UDP mode={} bundle={} packet_blocks={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
+        if refusal { "refusal" } else { "transfer" },
+        bundle.display(),
+        pcapng_packet_blocks(&bundle.join("capture.fcapng")),
+        baseline.iter().map(Duration::as_millis).collect::<Vec<_>>(),
+        active.iter().map(Duration::as_millis).collect::<Vec<_>>(),
+        post.iter().map(Duration::as_millis).collect::<Vec<_>>(),
+    );
+    registration_guard.remove().expect("remove UDP target");
+}
+
+struct LocalPeer {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<std::io::Result<(usize, usize)>>>,
+}
+
+impl LocalPeer {
+    fn start(ip: std::net::IpAddr) -> std::io::Result<Self> {
+        Self::start_case(ip, false)
+    }
+
+    fn start_case(ip: std::net::IpAddr, no_payload: bool) -> std::io::Result<Self> {
+        if ip.is_loopback() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "controlled non-loopback IP required",
+            ));
+        }
+        let listener = TcpListener::bind(SocketAddr::new(ip, 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(if no_payload { 20 } else { 120 });
+            let mut handlers = Vec::new();
+            while handlers.len() < 10 && !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => handlers.push(std::thread::spawn(move || {
+                        stream.set_nonblocking(false)?;
+                        stream.set_read_timeout(Some(Duration::from_secs(35)))?;
+                        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                        let mut first = [0; 16];
+                        let mut filled = 0;
+                        while filled < first.len() {
+                            let count = std::io::Read::read(&mut stream, &mut first[filled..])?;
+                            if count == 0 {
+                                if filled == 0 && no_payload {
+                                    return Ok::<_, std::io::Error>(true);
+                                }
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "controlled request ended mid-header",
+                                ));
+                            }
+                            filled += count;
+                        }
+                        if &first == b"sentinel-request" {
+                            stream.write_all(b"sentinel-reply")?;
+                            return Ok::<_, std::io::Error>(false);
+                        }
+                        let mut remainder = [0; 6];
+                        std::io::Read::read_exact(&mut stream, &mut remainder)?;
+                        if [&first[..], &remainder[..]].concat() != b"runtime-client-request" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "unknown controlled request",
+                            ));
+                        }
+                        stream.write_all(b"runtime-origin-reply")?;
+                        let mut finish = [0; 21];
+                        std::io::Read::read_exact(&mut stream, &mut finish)?;
+                        if &finish != b"runtime-client-finish" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "controlled client did not finish",
+                            ));
+                        }
+                        Ok(true)
+                    })),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let mut selected = 0;
+            let mut sentinels = 0;
+            for handler in handlers {
+                if handler
+                    .join()
+                    .map_err(|_| std::io::Error::other("controlled peer panicked"))??
+                {
+                    selected += 1;
+                } else {
+                    sentinels += 1;
+                }
+            }
+            Ok((selected, sentinels))
+        });
+        Ok(Self {
+            address,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        let counts = self
+            .worker
+            .take()
+            .expect("peer worker exists")
+            .join()
+            .map_err(|_| std::io::Error::other("controlled peer panicked"))??;
+        if counts != (1, 9) {
+            return Err(std::io::Error::other(format!(
+                "controlled peer counts: {counts:?}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LocalPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            if let Err(error) = worker
+                .join()
+                .map_err(|_| std::io::Error::other("controlled peer panicked"))
+                .and_then(|result| result.map(|_| ()))
+            {
+                eprintln!("S211 controlled peer cleanup failed: {error}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a local non-loopback bind IP; tests only the disposable peer"]
+fn local_peer_protocol_completes_without_driver() {
+    let ip = std::env::var("FRAGCAP_S211_BIND_IP")
+        .expect("controlled bind IP")
+        .parse()
+        .expect("IP literal");
+    let mut peer = LocalPeer::start(ip).expect("start local peer");
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("baseline sentinel");
+    }
+    let mut selected = TcpStream::connect(peer.address).expect("selected connection");
+    selected
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    selected.write_all(b"runtime-client-request").unwrap();
+    let mut reply = [0; 20];
+    std::io::Read::read_exact(&mut selected, &mut reply).unwrap();
+    assert_eq!(&reply, b"runtime-origin-reply");
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("active sentinel");
+    }
+    selected.write_all(b"runtime-client-finish").unwrap();
+    selected.shutdown(Shutdown::Write).unwrap();
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut selected, &mut tail).unwrap();
+    assert!(tail.is_empty());
+    for _ in 0..3 {
+        unrelated_sentinel(peer.address).expect("post sentinel");
+    }
+    peer.finish().expect("exact peer exchange counts");
+}
+
+#[test]
+#[ignore = "requires an elevated package binary, cold controlled client, and finite peer"]
+fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
+    if std::env::var_os("FRAGCAP_S211_UDP").is_some() {
+        package_public_udp_direct_route_case();
+        return;
+    }
+    let refusal = std::env::var_os("FRAGCAP_S211_REFUSAL").is_some();
+    let no_payload = std::env::var_os("FRAGCAP_S211_NO_PAYLOAD").is_some();
+    assert!(!(refusal && no_payload), "choose one controlled TCP case");
+    let binary = PathBuf::from(std::env::var_os("FRAGCAP_S205_BINARY").expect("package binary"));
+    let client = PathBuf::from(std::env::var_os("FRAGCAP_S205_CLIENT").expect("cold client"));
+    let mut local_peer = std::env::var("FRAGCAP_S211_BIND_IP")
+        .ok()
+        .map(|ip| LocalPeer::start_case(ip.parse().expect("controlled bind IP"), no_payload))
+        .transpose()
+        .expect("controlled non-loopback peer");
+    assert!(
+        !no_payload || local_peer.is_some(),
+        "the no-payload case requires its finite local peer"
+    );
+    let peer: SocketAddr = if let Some(peer) = &local_peer {
+        peer.address
+    } else {
+        std::env::var("FRAGCAP_S205_PEER")
+            .expect("external peer")
+            .parse()
+            .expect("IP:port")
+    };
+    assert!(
+        !peer.ip().is_loopback(),
+        "the peer IP must not be a loopback literal"
+    );
     let binary = binary.canonicalize().expect("package binary exists");
     let client = client.canonicalize().expect("controlled client exists");
+    let session_dir = s211_session_dir(&client);
     let baseline = (0..3)
         .map(|_| unrelated_sentinel(peer).expect("baseline unrelated sentinel"))
         .collect::<Vec<_>>();
@@ -154,7 +703,12 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     let sentinels = std::thread::spawn(move || -> std::io::Result<Vec<Duration>> {
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
-            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == b"reply-received") {
+            let expected = if no_payload {
+                b"connected-no-payload".as_slice()
+            } else {
+                b"reply-received".as_slice()
+            };
+            if std::fs::read(&gate_for_sentinels).is_ok_and(|bytes| bytes == expected) {
                 break;
             }
             if Instant::now() >= deadline {
@@ -165,41 +719,65 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if !gate_active.load(Ordering::Acquire) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "selected reply arrived without confirmed route activation",
-            ));
+        while !gate_active.load(Ordering::Acquire) {
+            if !no_payload {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "selected reply arrived without confirmed route activation",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "zero-byte client did not reach route activation",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
         let mut elapsed = Vec::new();
         for _ in 0..3 {
             elapsed.push(unrelated_sentinel(peer)?);
         }
+        if no_payload {
+            // The client remains open while the finite helper completes its
+            // upstream connection; neither side sends application bytes.
+            std::thread::sleep(Duration::from_secs(1));
+        }
         std::fs::write(&gate_release, b"release")?;
         Ok(elapsed)
     });
 
+    let mut capture_args = vec![
+        "--json".to_owned(),
+        "deep-capture".to_owned(),
+        handle.to_owned(),
+        "--launch".to_owned(),
+        "--direct-route".to_owned(),
+    ];
+    if !refusal {
+        capture_args.extend(["--proxy-allow-destination".to_owned(), peer.to_string()]);
+    }
+    capture_args.extend([
+        "--authorize-stdin".to_owned(),
+        "--duration".to_owned(),
+        "8s".to_owned(),
+        "--wait".to_owned(),
+        "30s".to_owned(),
+    ]);
+    let mut capture_command = native_command(&binary);
+    capture_command
+        .args(&capture_args)
+        .env("S205_CONTROLLED_PEER", peer.to_string())
+        .env("S205_CONTROLLED_GATE", &gate_signal)
+        .envs(no_payload.then_some(("S211_NO_PAYLOAD", "1")))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &session_dir {
+        capture_command.env("FRAGCAP_SESSION_DIR", dir);
+    }
     let mut child = SessionChild(
-        native_command(&binary)
-            .args([
-                "--json",
-                "deep-capture",
-                handle,
-                "--launch",
-                "--direct-route",
-                "--proxy-allow-destination",
-                &peer.to_string(),
-                "--authorize-stdin",
-                "--duration",
-                "8s",
-                "--wait",
-                "30s",
-            ])
-            .env("S205_CONTROLLED_PEER", peer.to_string())
-            .env("S205_CONTROLLED_GATE", &gate_signal)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+        capture_command
             .spawn()
             .expect("public direct-route command"),
     );
@@ -279,17 +857,61 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     } else {
         assert_eq!(report["route"]["state"], "complete");
         assert_eq!(report["route"]["dropped_events"], 0);
-        assert_eq!(report["route"]["bidirectional_flows"], 1);
-        assert_eq!(report["flows"][0]["process_generation_join"], "exact");
-        assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
-        assert_eq!(
-            report["flows"][0]["client_to_upstream_bytes"],
-            (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
-        );
-        assert_eq!(
-            report["flows"][0]["upstream_to_client_bytes"],
-            b"runtime-origin-reply".len() as u64
-        );
+        let compatibility: Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap())
+                .unwrap();
+        assert_terminal_bundle_reconciliation(complete, &bundle, &report, &compatibility);
+        if refusal {
+            assert_eq!(report["route"]["bidirectional_flows"], 0);
+            assert!(
+                compatibility["observations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|observation| {
+                        observation["direct_route"]["receipt_state"] == "unconsumed"
+                            && observation["direct_route"]["selected_packet_disposition"]
+                                == "reinjected"
+                            && observation["direct_route"]["original_packet_state"]
+                                == "observed-owned"
+                    }),
+                "refused selected packet was not retained with exact owner: {compatibility:#?}"
+            );
+            assert!(
+                pcapng_packet_blocks(&bundle.join("capture.fcapng")) > 0,
+                "Npcap did not retain a reinjected original packet"
+            );
+        } else if no_payload {
+            assert_eq!(report["route"]["selected_flows"], 1);
+            assert_eq!(report["route"]["zero_byte_connected_flows"], 1);
+            assert_eq!(report["route"]["client_reachable_flows"], 0);
+            assert_eq!(report["route"]["bidirectional_flows"], 0);
+            assert_eq!(report["flows"][0]["client_to_upstream_bytes"], 0);
+            assert_eq!(report["flows"][0]["upstream_to_client_bytes"], 0);
+            assert!(
+                compatibility["observations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|observation| {
+                        observation["direct_route"]["receipt_state"] == "consumed"
+                            && observation["direct_route"]["route_state"] == "delivery-unproven"
+                    }),
+                "zero-byte TCP route was incorrectly presented as transferred: {compatibility:#?}"
+            );
+        } else {
+            assert_eq!(report["route"]["bidirectional_flows"], 1);
+            assert_eq!(report["flows"][0]["process_generation_join"], "exact");
+            assert_eq!(report["flows"][0]["final_client_generation_proven"], true);
+            assert_eq!(
+                report["flows"][0]["client_to_upstream_bytes"],
+                (b"runtime-client-request".len() + b"runtime-client-finish".len()) as u64
+            );
+            assert_eq!(
+                report["flows"][0]["upstream_to_client_bytes"],
+                b"runtime-origin-reply".len() as u64
+            );
+        }
         let limit = std::cmp::max(
             Duration::from_millis(50),
             baseline.iter().copied().max().unwrap().saturating_mul(4),
@@ -301,7 +923,14 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     }
     assert!(bundle.join("capture.fcapng").is_file());
     eprintln!(
-        "S205 package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
+        "S211 mode={} package={} peer={} bundle={} baseline_ms={:?} active_ms={:?} post_ms={:?}",
+        if refusal {
+            "refusal"
+        } else if no_payload {
+            "no-payload"
+        } else {
+            "transfer"
+        },
         binary.display(),
         peer,
         bundle.display(),
@@ -315,6 +944,10 @@ fn package_public_direct_route_exchanges_external_bytes_with_native_defaults() {
     registration_guard
         .remove()
         .expect("remove controlled target");
+    if let Some(peer) = local_peer.as_mut() {
+        peer.finish()
+            .expect("controlled peer completed exact exchanges");
+    }
 }
 
 #[test]

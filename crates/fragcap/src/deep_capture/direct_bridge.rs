@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use fragcap_proxy::PROXY_USERNAME;
@@ -18,6 +18,95 @@ use super::{
 };
 
 const MAX_BRIDGE_BYTES: usize = 65_536;
+
+#[derive(Debug)]
+pub(super) struct HelperFailure {
+    pub stage: &'static str,
+    pub elapsed_ms: u64,
+    pub error: io::Error,
+}
+
+fn helper_step<T>(
+    stream: &mut TcpStream,
+    started: Instant,
+    deadline: Instant,
+    stage: &'static str,
+    action: impl FnOnce(&mut TcpStream) -> io::Result<T>,
+) -> Result<T, HelperFailure> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(HelperFailure {
+            stage,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: io::Error::new(io::ErrorKind::TimedOut, "SOCKS helper deadline elapsed"),
+        });
+    }
+    let value = stream
+        .set_read_timeout(Some(remaining))
+        .and_then(|_| stream.set_write_timeout(Some(remaining)))
+        .and_then(|_| action(stream))
+        .map_err(|error| HelperFailure {
+            stage,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error,
+        })?;
+    if Instant::now() >= deadline {
+        return Err(HelperFailure {
+            stage,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: io::Error::new(io::ErrorKind::TimedOut, "SOCKS helper deadline elapsed"),
+        });
+    }
+    Ok(value)
+}
+
+fn read_exact_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SOCKS helper deadline elapsed",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(count) => bytes = &mut bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_all_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SOCKS helper deadline elapsed",
+            ));
+        }
+        stream.set_write_timeout(Some(remaining))?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(count) => bytes = &bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub enum DirectBridgeError {
@@ -64,8 +153,12 @@ pub struct DirectTcpBridge {
 
 impl DirectTcpBridge {
     pub fn new(tuple: DirectTuple, helper: TcpStream) -> Result<Self, DirectBridgeError> {
-        helper.set_read_timeout(Some(Duration::from_millis(1)))?;
-        helper.set_write_timeout(Some(Duration::from_millis(1)))?;
+        // Admission has completed its bounded blocking SOCKS handshake. The
+        // packet worker polls this established stream after every work item;
+        // even a one-millisecond read timeout accumulates into seconds of
+        // queued unrelated packets under load. Both directions already retain
+        // partial progress and treat WouldBlock as no data for this pass.
+        helper.set_nonblocking(true)?;
         Ok(Self {
             stack: TcpFlowStack::new(tuple)?,
             helper,
@@ -190,6 +283,7 @@ pub fn connect_authenticated_socks5(
     connect_authenticated_socks5_with_hook(proxy, original, password, timeout, |_| Ok(()))
 }
 
+#[cfg(test)]
 pub fn connect_authenticated_socks5_with_hook<F>(
     proxy: SocketAddr,
     original: SocketAddr,
@@ -200,13 +294,38 @@ pub fn connect_authenticated_socks5_with_hook<F>(
 where
     F: FnOnce(&TcpStream) -> io::Result<()>,
 {
+    connect_authenticated_socks5_staged(proxy, original, password, timeout, on_connected)
+        .map_err(|failure| failure.error)
+}
+
+pub(super) fn connect_authenticated_socks5_staged<F>(
+    proxy: SocketAddr,
+    original: SocketAddr,
+    password: &[u8],
+    timeout: Duration,
+    on_connected: F,
+) -> Result<TcpStream, HelperFailure>
+where
+    F: FnOnce(&TcpStream) -> io::Result<()>,
+{
     if original.ip().is_unspecified() || original.port() == 0 {
-        return Err(refused("invalid direct bridge scope"));
+        return Err(HelperFailure {
+            stage: "scope",
+            elapsed_ms: 0,
+            error: refused("invalid direct bridge scope"),
+        });
     }
-    let mut stream = authenticate_socks5_with_hook(proxy, password, timeout, on_connected)?;
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let mut stream =
+        authenticate_socks5_staged(proxy, password, timeout, on_connected, started, deadline)?;
     let request = socks5_request(1, original);
-    stream.write_all(&request)?;
-    read_socks5_reply(&mut stream)?;
+    helper_step(&mut stream, started, deadline, "connect-write", |stream| {
+        write_all_deadline(stream, &request, deadline)
+    })?;
+    helper_step(&mut stream, started, deadline, "connect-reply", |stream| {
+        read_socks5_reply_deadline(stream, deadline)
+    })?;
     Ok(stream)
 }
 
@@ -219,24 +338,62 @@ pub(super) fn authenticate_socks5_with_hook<F>(
 where
     F: FnOnce(&TcpStream) -> io::Result<()>,
 {
+    let started = Instant::now();
+    let deadline = started + timeout;
+    authenticate_socks5_staged(proxy, password, timeout, on_connected, started, deadline)
+        .map_err(|failure| failure.error)
+}
+
+fn authenticate_socks5_staged<F>(
+    proxy: SocketAddr,
+    password: &[u8],
+    timeout: Duration,
+    on_connected: F,
+    started: Instant,
+    deadline: Instant,
+) -> Result<TcpStream, HelperFailure>
+where
+    F: FnOnce(&TcpStream) -> io::Result<()>,
+{
     if password.is_empty()
         || password.len() > u8::MAX as usize
         || PROXY_USERNAME.len() > u8::MAX as usize
         || timeout.is_zero()
         || !proxy.ip().is_loopback()
     {
-        return Err(refused("invalid direct bridge scope"));
+        return Err(HelperFailure {
+            stage: "scope",
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: refused("invalid direct bridge scope"),
+        });
     }
-    let mut stream = TcpStream::connect_timeout(&proxy, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    on_connected(&stream)?;
+    let mut stream =
+        TcpStream::connect_timeout(&proxy, timeout).map_err(|error| HelperFailure {
+            stage: "proxy-connect",
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error,
+        })?;
+    helper_step(
+        &mut stream,
+        started,
+        deadline,
+        "helper-register",
+        |stream| on_connected(stream),
+    )?;
 
-    stream.write_all(&[5, 1, 2])?;
+    helper_step(&mut stream, started, deadline, "method-write", |stream| {
+        write_all_deadline(stream, &[5, 1, 2], deadline)
+    })?;
     let mut method = [0; 2];
-    stream.read_exact(&mut method)?;
+    helper_step(&mut stream, started, deadline, "method-reply", |stream| {
+        read_exact_deadline(stream, &mut method, deadline)
+    })?;
     if method != [5, 2] {
-        return Err(refused("native proxy refused SOCKS5 authentication method"));
+        return Err(HelperFailure {
+            stage: "method-reply",
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: refused("native proxy refused SOCKS5 authentication method"),
+        });
     }
 
     let mut authentication = Zeroizing::new(Vec::with_capacity(
@@ -246,11 +403,19 @@ where
     authentication.extend_from_slice(PROXY_USERNAME.as_bytes());
     authentication.push(password.len() as u8);
     authentication.extend_from_slice(password);
-    stream.write_all(&authentication)?;
+    helper_step(&mut stream, started, deadline, "auth-write", |stream| {
+        write_all_deadline(stream, &authentication, deadline)
+    })?;
     let mut authenticated = [0; 2];
-    stream.read_exact(&mut authenticated)?;
+    helper_step(&mut stream, started, deadline, "auth-reply", |stream| {
+        read_exact_deadline(stream, &mut authenticated, deadline)
+    })?;
     if authenticated != [1, 0] {
-        return Err(refused("native proxy refused direct bridge capability"));
+        return Err(HelperFailure {
+            stage: "auth-reply",
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: refused("native proxy refused direct bridge capability"),
+        });
     }
     Ok(stream)
 }
@@ -272,8 +437,18 @@ pub(super) fn socks5_request(command: u8, original: SocketAddr) -> Vec<u8> {
 }
 
 pub(super) fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<SocketAddr> {
+    read_socks5_reply_with(|bytes| stream.read_exact(bytes))
+}
+
+fn read_socks5_reply_deadline(stream: &mut TcpStream, deadline: Instant) -> io::Result<SocketAddr> {
+    read_socks5_reply_with(|bytes| read_exact_deadline(stream, bytes, deadline))
+}
+
+fn read_socks5_reply_with(
+    mut read_exact: impl FnMut(&mut [u8]) -> io::Result<()>,
+) -> io::Result<SocketAddr> {
     let mut reply = [0; 4];
-    stream.read_exact(&mut reply)?;
+    read_exact(&mut reply)?;
     if reply[0] != 5 || reply[1] != 0 || reply[2] != 0 {
         return Err(refused("native proxy refused original destination"));
     }
@@ -283,7 +458,7 @@ pub(super) fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<SocketAddr
         _ => return Err(refused("native proxy returned invalid address family")),
     };
     let mut address = [0; 18];
-    stream.read_exact(&mut address[..remaining])?;
+    read_exact(&mut address[..remaining])?;
     let port = u16::from_be_bytes([address[remaining - 2], address[remaining - 1]]);
     let ip = match reply[3] {
         1 => std::net::IpAddr::V4(std::net::Ipv4Addr::new(
@@ -313,6 +488,119 @@ mod tests {
         time::Instant,
         wire::{HardwareAddress, IpCidr},
     };
+
+    #[test]
+    fn staged_socks_connect_distinguishes_delay_refusal_and_timeout() {
+        fn exchange(
+            reply: Option<u8>,
+            delay: Duration,
+            fragment_delay: Duration,
+            budget: Duration,
+        ) -> Result<u64, HelperFailure> {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let proxy = listener.local_addr().unwrap();
+            let proof = format!("s211-{:?}", std::time::SystemTime::now()).into_bytes();
+            let server_proof = proof.clone();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut method = [0; 3];
+                stream.read_exact(&mut method).unwrap();
+                assert_eq!(method, [5, 1, 2]);
+                stream.write_all(&[5, 2]).unwrap();
+                let mut authentication = [0; 2];
+                stream.read_exact(&mut authentication).unwrap();
+                assert_eq!(authentication[0], 1);
+                let mut username = vec![0; authentication[1] as usize];
+                stream.read_exact(&mut username).unwrap();
+                let mut length = [0; 1];
+                stream.read_exact(&mut length).unwrap();
+                let mut password = vec![0; length[0] as usize];
+                stream.read_exact(&mut password).unwrap();
+                assert_eq!(password, server_proof);
+                stream.write_all(&[1, 0]).unwrap();
+                let mut request = [0; 10];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(&request[..4], &[5, 1, 0, 1]);
+                thread::sleep(delay);
+                if let Some(code) = reply {
+                    let bytes = [5, code, 0, 1, 127, 0, 0, 1, 0, 80];
+                    if fragment_delay.is_zero() {
+                        let _ = stream.write_all(&bytes);
+                    } else {
+                        for byte in bytes {
+                            if stream.write_all(&[byte]).is_err() {
+                                break;
+                            }
+                            thread::sleep(fragment_delay);
+                        }
+                    }
+                }
+            });
+            let started = std::time::Instant::now();
+            let result = connect_authenticated_socks5_staged(
+                proxy,
+                "127.0.0.1:80".parse().unwrap(),
+                &proof,
+                budget,
+                |_| Ok(()),
+            )
+            .map(|_| started.elapsed().as_millis() as u64);
+            server.join().unwrap();
+            result
+        }
+
+        for delayed_ms in [60_u64, 80, 100] {
+            assert!(
+                exchange(
+                    Some(0),
+                    Duration::from_millis(delayed_ms),
+                    Duration::ZERO,
+                    Duration::from_millis(300)
+                )
+                .unwrap()
+                    >= delayed_ms.saturating_sub(15)
+            );
+        }
+        let refused = exchange(
+            Some(5),
+            Duration::from_millis(80),
+            Duration::ZERO,
+            Duration::from_millis(250),
+        )
+        .unwrap_err();
+        assert_eq!(refused.stage, "connect-reply");
+        assert_eq!(refused.error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refused.elapsed_ms >= 60);
+        let timeout = exchange(
+            None,
+            Duration::from_millis(200),
+            Duration::ZERO,
+            Duration::from_millis(120),
+        )
+        .unwrap_err();
+        assert_eq!(timeout.stage, "connect-reply");
+        assert!(matches!(
+            timeout.error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(timeout.elapsed_ms >= 100);
+        let fragmented = exchange(
+            Some(0),
+            Duration::from_millis(10),
+            Duration::from_millis(30),
+            Duration::from_millis(120),
+        )
+        .unwrap_err();
+        assert_eq!(fragmented.stage, "connect-reply");
+        assert!(matches!(
+            fragmented.error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(fragmented.elapsed_ms <= 180);
+    }
 
     #[test]
     fn native_proxy_bridge_preserves_raw_bytes_and_half_close() {
@@ -356,6 +644,27 @@ mod tests {
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(report.observation.protocol.socks_client_bytes, 16);
         assert_eq!(report.observation.protocol.socks_upstream_bytes, 12);
+    }
+
+    #[test]
+    fn idle_bridge_helper_is_nonblocking_after_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = listener.local_addr().unwrap();
+        let helper = TcpStream::connect(remote).unwrap();
+        let local = helper.local_addr().unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        let tuple = DirectTuple {
+            transport: fragcap_core::Proto::Tcp,
+            local,
+            remote,
+        };
+        let mut bridge = DirectTcpBridge::new(tuple, helper).unwrap();
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            bridge.helper.read(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        bridge.poll(0).unwrap();
     }
 
     #[test]
@@ -424,10 +733,19 @@ mod tests {
         let mut client_sent = false;
         let mut response = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        for tick in 0..2_000 {
-            assert!(std::time::Instant::now() < deadline, "bridge stalled");
+        let mut tick = 0;
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bridge stalled: client_sent={client_sent}, response_bytes={}, client_send_closed={}, transferred={:?}",
+                response.len(),
+                bridge.client_send_closed,
+                bridge.transferred_bytes(),
+            );
+            let mut progressed = false;
             iface.poll(Instant::from_millis(tick), &mut device, &mut sockets);
             while let Some(packet) = device.pop_egress() {
+                progressed = true;
                 for reply in bridge
                     .ingest_diverted(&packet, false, false, true, tick)
                     .unwrap()
@@ -440,19 +758,27 @@ mod tests {
                 assert_eq!(client.send_slice(b"packet-to-proxy").unwrap(), 15);
                 client.close();
                 client_sent = true;
+                progressed = true;
             }
             let mut buffer = [0; 64];
             if client.can_recv() {
                 let count = client.recv_slice(&mut buffer).unwrap();
                 response.extend_from_slice(&buffer[..count]);
+                progressed |= count != 0;
             }
             for reply in bridge.poll(tick).unwrap() {
                 device.push(&reply).unwrap();
+                progressed = true;
             }
             if response == b"proxy-to-packet" {
                 break;
             }
-            thread::yield_now();
+            tick += 1;
+            if progressed {
+                thread::yield_now();
+            } else {
+                thread::sleep(Duration::from_millis(1));
+            }
         }
         assert!(client_sent && bridge.client_send_closed);
         assert_eq!(response, b"proxy-to-packet");

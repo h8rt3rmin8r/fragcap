@@ -37,6 +37,7 @@ pub fn fidelity_str(f: Fidelity) -> &'static str {
     match f {
         Fidelity::Live => "live",
         Fidelity::Retained => "retained",
+        Fidelity::DirectRoute => "direct-route",
         Fidelity::None => "none",
     }
 }
@@ -45,6 +46,7 @@ fn parse_fidelity(s: &str) -> Option<Fidelity> {
     match s {
         "live" => Some(Fidelity::Live),
         "retained" => Some(Fidelity::Retained),
+        "direct-route" => Some(Fidelity::DirectRoute),
         "none" => Some(Fidelity::None),
         _ => None,
     }
@@ -619,7 +621,12 @@ mod tests {
             AnnotatedDirection::Local,
             AnnotatedDirection::Unknown,
         ] {
-            for fid in [Fidelity::Live, Fidelity::Retained, Fidelity::None] {
+            for fid in [
+                Fidelity::Live,
+                Fidelity::Retained,
+                Fidelity::DirectRoute,
+                Fidelity::None,
+            ] {
                 let a = Annotation {
                     pid: None,
                     process: None,
