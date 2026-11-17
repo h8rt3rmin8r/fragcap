@@ -1,2 +1,0 @@
-<!-- spec-impact: 11.3, 13.3, 24.3 -->
-Direct-route evidence now separates the consumed selected packet, proven client transfer, and passive observation of that exact original IP datagram. Application and compatibility records retain versioned route and packet states, including absent, incomplete, and conflicting evidence. Process trace version 2 records socket creation, observed TCP flags, the true process exit instant, and a bounded post-exit tail basis while retaining version 1 readback.
