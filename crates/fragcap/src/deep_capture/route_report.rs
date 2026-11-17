@@ -97,6 +97,12 @@ fn packet_omission_reason(reason: Option<&str>) -> &'static str {
         Some("selected-tcp-header-only-after-close-unproven") => {
             "selected-tcp-header-only-after-close-unproven"
         }
+        Some("selected-tuple-post-close-control-unattributed") => {
+            "selected-tuple-post-close-control-unattributed"
+        }
+        Some("selected-tuple-post-close-ack-only-unattributed") => {
+            "selected-tuple-post-close-ack-only-unattributed"
+        }
         Some("selected-tcp-header-only-close-unavailable") => {
             "selected-tcp-header-only-close-unavailable"
         }
@@ -579,4 +585,20 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         ],
         "limitations": ["A WinDivert send success alone does not prove delivery to the client.", "Packet artifact presence does not prove an original diverted packet was retained.", "A crash prefix or lost route event may omit a later outcome."],
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packet_omission_reason;
+
+    #[test]
+    fn exact_post_close_control_reasons_survive_report_projection() {
+        for reason in [
+            "selected-tuple-post-close-control-unattributed",
+            "selected-tuple-post-close-ack-only-unattributed",
+        ] {
+            assert_eq!(packet_omission_reason(Some(reason)), reason);
+        }
+        assert_eq!(packet_omission_reason(Some("unrecognized")), "other");
+    }
 }

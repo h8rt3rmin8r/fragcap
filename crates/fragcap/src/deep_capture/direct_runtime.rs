@@ -274,9 +274,36 @@ enum SelectedIngress {
     },
 }
 
-// A socket can emit a header-only TCP reset or FIN just after its CLOSE event.
-// This is an unattributed control tail: losing it is counted, but it must not
-// be returned to a potentially reused tuple or confused with selected data.
+// A socket can emit a header-only TCP control packet just after its CLOSE
+// event. It stays counted as lost and never borrows a reused tuple's owner.
+fn selected_post_close_header_flags(
+    packet: &[u8],
+    packet_qpc: i64,
+    close_qpc: Option<i64>,
+    historical: CurrentOwner,
+    live: CurrentOwner,
+) -> Option<u8> {
+    if historical != CurrentOwner::Absent
+        || live != CurrentOwner::Absent
+        || close_qpc.is_none_or(|close| packet_qpc <= close)
+    {
+        return None;
+    }
+    let head = raw_transport_head(packet).ok()?;
+    if head.transport != Proto::Tcp {
+        return None;
+    }
+    let flags = head.tcp_flags?;
+    let transport =
+        packet.get(head.transport_offset..head.transport_offset + head.transport_len)?;
+    if transport.len() < 20 {
+        return None;
+    }
+    let header_len = usize::from(transport[12] >> 4) * 4;
+    (header_len >= 20 && header_len == transport.len()).then_some(flags)
+}
+
+// FIN and RST may be emitted after CLOSE. SYN is never a control tail.
 fn selected_post_close_control_tail(
     packet: &[u8],
     packet_qpc: i64,
@@ -284,31 +311,21 @@ fn selected_post_close_control_tail(
     historical: CurrentOwner,
     live: CurrentOwner,
 ) -> bool {
-    if historical != CurrentOwner::Absent
-        || live != CurrentOwner::Absent
-        || close_qpc.is_none_or(|close| packet_qpc <= close)
-    {
-        return false;
-    }
-    let Ok(head) = raw_transport_head(packet) else {
-        return false;
-    };
-    let Some(flags) = head.tcp_flags else {
-        return false;
-    };
-    if head.transport != Proto::Tcp || flags & 0x05 == 0 || flags & 0x02 != 0 {
-        return false;
-    }
-    let Some(transport) =
-        packet.get(head.transport_offset..head.transport_offset + head.transport_len)
-    else {
-        return false;
-    };
-    if transport.len() < 20 {
-        return false;
-    }
-    let header_len = usize::from(transport[12] >> 4) * 4;
-    header_len >= 20 && header_len == transport.len()
+    selected_post_close_header_flags(packet, packet_qpc, close_qpc, historical, live)
+        .is_some_and(|flags| flags & 0x05 != 0 && flags & 0x02 == 0)
+}
+
+fn selected_post_close_ack_only_tail(
+    packet: &[u8],
+    packet_qpc: i64,
+    close_qpc: Option<i64>,
+    historical: CurrentOwner,
+    live: CurrentOwner,
+    unique_lineage: bool,
+) -> bool {
+    unique_lineage
+        && selected_post_close_header_flags(packet, packet_qpc, close_qpc, historical, live)
+            == Some(0x10)
 }
 
 fn selected_tcp_omission_detail(
@@ -348,24 +365,45 @@ fn selected_tcp_omission_detail(
     })
 }
 
+#[derive(Clone, Copy)]
+struct SelectedLossOwnership {
+    historical: CurrentOwner,
+    live: CurrentOwner,
+    unique_lineage: bool,
+}
+
 fn selected_loss_reason(
     default: &'static str,
     route: SelectedRoute,
     packet: &[u8],
     packet_qpc: i64,
-    historical: CurrentOwner,
-    live: CurrentOwner,
+    ownership: SelectedLossOwnership,
     observer: &Arc<Mutex<DirectSocketObserver>>,
 ) -> &'static str {
-    if historical != CurrentOwner::Absent || live != CurrentOwner::Absent {
+    if ownership.historical != CurrentOwner::Absent || ownership.live != CurrentOwner::Absent {
         return default;
     }
     let close_qpc = observer
         .lock()
         .expect("socket observer lock")
         .closed_qpc_for_exact_epoch(route.epoch);
-    if selected_post_close_control_tail(packet, packet_qpc, close_qpc, historical, live) {
+    if selected_post_close_control_tail(
+        packet,
+        packet_qpc,
+        close_qpc,
+        ownership.historical,
+        ownership.live,
+    ) {
         "selected-tuple-post-close-control-unattributed"
+    } else if selected_post_close_ack_only_tail(
+        packet,
+        packet_qpc,
+        close_qpc,
+        ownership.historical,
+        ownership.live,
+        ownership.unique_lineage,
+    ) {
+        "selected-tuple-post-close-ack-only-unattributed"
     } else if matches!(
         default,
         "selected-owner-epoch-changed-or-ambiguous"
@@ -1141,14 +1179,21 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                     .lock()
                     .expect("selected route lock")
                     .exact_retired_route_at_close(tuple, last_retire_qpc);
+                let unique_lineage = selected
+                    .lock()
+                    .expect("selected route lock")
+                    .unique_lineage_route(tuple);
                 let reason = old_route.map_or("selected-tuple-quarantined", |route| {
                     selected_loss_reason(
                         "selected-tuple-quarantined",
                         route,
                         bytes,
                         address.timestamp_qpc,
-                        historical,
-                        live,
+                        SelectedLossOwnership {
+                            historical,
+                            live,
+                            unique_lineage: unique_lineage == Some(route),
+                        },
                         &observer,
                     )
                 });
@@ -1192,7 +1237,11 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                 }
                 stats.record_bypass(reason);
                 packet_finished(&stats, PacketDisposition::Lost)?;
-                if reason == "selected-tuple-post-close-control-unattributed" {
+                if matches!(
+                    reason,
+                    "selected-tuple-post-close-control-unattributed"
+                        | "selected-tuple-post-close-ack-only-unattributed"
+                ) {
                     record_route(
                         route_events.as_ref(),
                         old_route
@@ -1233,8 +1282,15 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                     route,
                     bytes,
                     address.timestamp_qpc,
-                    historical,
-                    current_state,
+                    SelectedLossOwnership {
+                        historical,
+                        live: current_state,
+                        unique_lineage: selected
+                            .lock()
+                            .expect("selected route lock")
+                            .unique_lineage_route(route.epoch.tuple)
+                            == Some(route),
+                    },
                     &observer,
                 );
                 let pass_new_owner = current.is_some_and(|owner| {
@@ -2450,8 +2506,15 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                         route,
                         &packet,
                         address.timestamp_qpc,
-                        historical_owner,
-                        current_owner_state,
+                        SelectedLossOwnership {
+                            historical: historical_owner,
+                            live: current_owner_state,
+                            unique_lineage: selected
+                                .lock()
+                                .expect("selected route lock")
+                                .unique_lineage_route(route.epoch.tuple)
+                                == Some(route),
+                        },
                         &observer,
                     );
                     let pass_new_owner = current_owner.is_some_and(|owner| {
@@ -5168,6 +5231,53 @@ mod tests {
     }
 
     #[test]
+    fn post_close_ack_only_tail_requires_unique_lineage_and_exact_empty_ack() {
+        let mut packet = vec![0u8; 40];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&40u16.to_be_bytes());
+        packet[8] = 64;
+        packet[9] = 6;
+        packet[12..16].copy_from_slice(&[192, 0, 2, 10]);
+        packet[16..20].copy_from_slice(&[198, 51, 100, 20]);
+        packet[20..22].copy_from_slice(&49152u16.to_be_bytes());
+        packet[22..24].copy_from_slice(&443u16.to_be_bytes());
+        packet[32] = 0x50;
+        packet[33] = 0x10;
+        let absent = CurrentOwner::Absent;
+        let qualifies = |packet: &[u8], qpc, close, historical, live, unique| {
+            selected_post_close_ack_only_tail(packet, qpc, close, historical, live, unique)
+        };
+        assert!(qualifies(&packet, 201, Some(200), absent, absent, true));
+        assert!(!qualifies(&packet, 200, Some(200), absent, absent, true));
+        assert!(!qualifies(&packet, 201, None, absent, absent, true));
+        assert!(!qualifies(&packet, 201, Some(200), absent, absent, false));
+        assert!(!qualifies(
+            &packet,
+            201,
+            Some(200),
+            CurrentOwner::Ambiguous,
+            absent,
+            true,
+        ));
+        assert!(!qualifies(
+            &packet,
+            201,
+            Some(200),
+            absent,
+            CurrentOwner::Ambiguous,
+            true,
+        ));
+        for flags in [0x02, 0x12, 0x11, 0x14, 0x18] {
+            packet[33] = flags;
+            assert!(!qualifies(&packet, 201, Some(200), absent, absent, true));
+        }
+        packet[33] = 0x10;
+        packet[2..4].copy_from_slice(&41u16.to_be_bytes());
+        packet.push(1);
+        assert!(!qualifies(&packet, 201, Some(200), absent, absent, true));
+    }
+
+    #[test]
     fn selected_tcp_omission_labels_payload_and_exact_close_relation() {
         let mut packet = vec![0u8; 40];
         packet[0] = 0x45;
@@ -7183,7 +7293,26 @@ mod tests {
         eprintln!("selected route transaction elapsed_ms={selected_elapsed_ms}");
         let stats = stop_result.unwrap();
         assert!(stats.packets.consumed > 0, "selected flow was not routed");
-        assert_eq!(stats.packets.lost, 0);
+        let ack_only_tails = stats
+            .bypass_reasons
+            .get("selected-tuple-post-close-ack-only-unattributed")
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            ack_only_tails <= 1,
+            "too many post-CLOSE ACK-only tails: {stats:?}"
+        );
+        assert_eq!(
+            stats.packets.lost,
+            stats
+                .bypass_reasons
+                .get("selected-tuple-post-close-control-unattributed")
+                .copied()
+                .unwrap_or(0)
+                + ack_only_tails,
+            "only exact post-CLOSE FIN/RST or ACK-only tails may be lost: {:?}",
+            stats.bypass_reasons
+        );
         assert_eq!(stats.synthetic_reply_lost, 0);
         assert!(stats.pre_receive_loss_unmeasurable);
         let mut after = spawn_client("sentinel-tcp", original);
@@ -7491,8 +7620,13 @@ mod tests {
                 .bypass_reasons
                 .get("selected-tuple-post-close-control-unattributed")
                 .copied()
-                .unwrap_or(0),
-            "only exact post-CLOSE header-only control tails may be lost: {:?}",
+                .unwrap_or(0)
+                + stats
+                    .bypass_reasons
+                    .get("selected-tuple-post-close-ack-only-unattributed")
+                    .copied()
+                    .unwrap_or(0),
+            "only exact post-CLOSE FIN/RST or ACK-only tails may be lost: {:?}",
             stats.bypass_reasons
         );
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
