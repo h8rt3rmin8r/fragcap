@@ -367,7 +367,7 @@ pub struct PendingCandidate<A> {
 
 pub enum CandidateDecision<A> {
     Selected {
-        flow: OriginalFlow,
+        flow: Box<OriginalFlow>,
         epoch: SocketEpoch,
         packet: Vec<u8>,
         address: A,
@@ -473,7 +473,7 @@ impl<A> CandidateBuffer<A> {
     ) -> Vec<CandidateDecision<A>> {
         enum Status {
             Wait,
-            Selected(OriginalFlow, SocketEpoch),
+            Selected(Box<OriginalFlow>, SocketEpoch),
             Pass(&'static str),
         }
         let count = if newest_only {
@@ -526,7 +526,7 @@ impl<A> CandidateBuffer<A> {
                         .ok()
                         .map(SocketEpoch::from_open)
                         .expect("selected flow has exact socket event");
-                    Status::Selected(flow, epoch)
+                    Status::Selected(Box::new(flow), epoch)
                 }
                 Some(DirectAdmission::Bypassed(reason) | DirectAdmission::Ambiguous(reason)) => {
                     Status::Pass(reason)

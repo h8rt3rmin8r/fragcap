@@ -1631,12 +1631,13 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     reinject(&handle, &stats, &packet, &address)?;
                 }
                 CandidateDecision::Selected {
-                    mut flow,
+                    flow,
                     epoch,
                     packet,
                     address,
                     received_ns,
                 } => {
+                    let mut flow = *flow;
                     stats.record_candidate_terminal_delay(received_ns);
                     if !epoch.contains_packet(address.timestamp_qpc)
                         || observer
