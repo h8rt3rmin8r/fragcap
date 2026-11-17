@@ -25,7 +25,7 @@ use super::{
     direct_bridge::{
         connect_authenticated_socks5_staged, DirectBridgeError, DirectTcpBridge, HelperFailure,
     },
-    direct_observer::{DirectSocketObserver, SocketObserverStats},
+    direct_observer::{CurrentOwner, DirectSocketObserver, SocketObserverStats},
     direct_route::{
         CandidateBuffer, CandidateDecision, DirectPacketAccounting, DirectReceiptLedger,
         DirectSocketEvent, DirectTuple, OriginalFlow, PacketDisposition, RouteReceiptId,
@@ -477,7 +477,7 @@ struct AckWitness {
 }
 
 impl AckWitness {
-    fn accepts_owner(&self, current_owner: Option<SocketEpoch>, packet_qpc: i64) -> bool {
+    fn accepts_owner(&self, current_owner: CurrentOwner, packet_qpc: i64) -> bool {
         if !self.epoch.contains_packet(packet_qpc)
             || self
                 .close_qpc
@@ -485,11 +485,16 @@ impl AckWitness {
         {
             return false;
         }
-        current_owner == Some(self.epoch)
-            || self.close_qpc.is_some_and(|close_qpc| {
-                packet_qpc < close_qpc
-                    && current_owner.is_none_or(|owner| owner.open_qpc > packet_qpc)
-            })
+        match current_owner {
+            CurrentOwner::Unique(owner) if owner == self.epoch => true,
+            CurrentOwner::Unique(owner) => self
+                .close_qpc
+                .is_some_and(|close_qpc| packet_qpc < close_qpc && owner.open_qpc > packet_qpc),
+            CurrentOwner::Absent => self
+                .close_qpc
+                .is_some_and(|close_qpc| packet_qpc < close_qpc),
+            CurrentOwner::Ambiguous => false,
+        }
     }
 }
 
@@ -512,7 +517,7 @@ fn observe_returned_ack(
     let current_owner = observer
         .lock()
         .expect("socket observer lock")
-        .current_owner_epoch(tuple);
+        .current_owner_state(tuple);
     if !witness.accepts_owner(current_owner, packet_qpc) {
         return;
     }
@@ -3236,12 +3241,13 @@ mod tests {
             closed_at: Some(now),
             close_qpc: Some(200),
         };
-        assert!(witness.accepts_owner(Some(epoch), 150));
-        assert!(witness.accepts_owner(None, 150));
-        assert!(witness.accepts_owner(Some(reused), 150));
-        assert!(!witness.accepts_owner(Some(reused), 200));
-        assert!(!witness.accepts_owner(Some(reused), 210));
-        assert!(!witness.accepts_owner(Some(reused), 100));
+        assert!(witness.accepts_owner(CurrentOwner::Unique(epoch), 150));
+        assert!(witness.accepts_owner(CurrentOwner::Absent, 150));
+        assert!(witness.accepts_owner(CurrentOwner::Unique(reused), 150));
+        assert!(!witness.accepts_owner(CurrentOwner::Ambiguous, 150));
+        assert!(!witness.accepts_owner(CurrentOwner::Unique(reused), 200));
+        assert!(!witness.accepts_owner(CurrentOwner::Unique(reused), 210));
+        assert!(!witness.accepts_owner(CurrentOwner::Unique(reused), 100));
     }
     use std::{
         io::{BufRead, BufReader, Read, Write},
