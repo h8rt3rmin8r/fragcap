@@ -43,7 +43,11 @@ use super::{
 const PACKET_QUEUE: usize = 256;
 const CANDIDATE_QUEUE_LIMIT: usize = PACKET_QUEUE / 2;
 const CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
-const CANDIDATE_WAIT_NS: u64 = 100_000_000;
+// An unknown-owner packet may belong to unrelated workstation traffic.
+// Leave 10 ms of the physical 50 ms sentinel budget for scheduling and
+// reinjection after the ownership wait. Queue stalls are measured separately;
+// this deadline alone cannot guarantee physical pass-through latency.
+const CANDIDATE_WAIT_NS: u64 = 40_000_000;
 const SOCKET_EVENTS: usize = 4096;
 const EVENT_HISTORY_NS: i64 = 300_000_000;
 const REFUSED_FLOWS: usize = 4096;
@@ -1053,6 +1057,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
     let mut issued_receipts = Vec::<RouteReceiptId>::new();
     let mut helper_id = 0u64;
     let mut last_ack_prune = Instant::now();
+    let mut last_event_prune = Instant::now();
     ready
         .send(())
         .map_err(|_| io::Error::other("direct route startup was abandoned"))?;
@@ -1282,10 +1287,16 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
         }
         let socket_evidence_changed = !new_events.is_empty();
         events.extend(new_events);
-        let cutoff_unix_ns = i64::try_from(unix_now_ns()?)
-            .map_err(|_| io::Error::other("system time outside route event history"))?
-            .saturating_sub(EVENT_HISTORY_NS);
-        prune_socket_events(&mut events, cutoff_unix_ns);
+        // Pruning scans the entire bounded history. It is not part of the
+        // packet fast path: a burst of unrelated packets must not repeatedly
+        // walk unchanged socket evidence while selected traffic waits behind it.
+        if last_event_prune.elapsed() >= Duration::from_millis(10) || events.len() > SOCKET_EVENTS {
+            let cutoff_unix_ns = i64::try_from(unix_now_ns()?)
+                .map_err(|_| io::Error::other("system time outside route event history"))?
+                .saturating_sub(EVENT_HISTORY_NS);
+            prune_socket_events(&mut events, cutoff_unix_ns);
+            last_event_prune = Instant::now();
+        }
         if events.len() > SOCKET_EVENTS {
             stats.event_history_overflow.store(true, Ordering::Release);
             let _ = handle.stop();

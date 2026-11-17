@@ -459,12 +459,63 @@ impl NativeObservationContext {
     /// Cloning the full event history on every ETW event would be quadratic.
     pub fn record_live_process_evidence(&self, evidence: &super::CaptureProcessEvidence) {
         let mut held = self.process_evidence.lock().expect("process evidence lock");
+        if held.as_ref().is_some_and(|live| {
+            let live_identity = live.launch_identity.as_ref().map(|identity| {
+                (
+                    identity.pid,
+                    identity.created,
+                    &identity.path,
+                    &identity.user_sid,
+                    identity.session,
+                )
+            });
+            let incoming_identity = evidence.launch_identity.as_ref().map(|identity| {
+                (
+                    identity.pid,
+                    identity.created,
+                    &identity.path,
+                    &identity.user_sid,
+                    identity.session,
+                )
+            });
+            live.event_limit == evidence.event_limit
+                && (!live.startup_snapshot.is_empty() || evidence.startup_snapshot.is_empty())
+                && live.snapshot_at == evidence.snapshot_at
+                && live.launch_pid == evidence.launch_pid
+                && live.launch_at == evidence.launch_at
+                && live.launch_earliest_at == evidence.launch_earliest_at
+                && live_identity == incoming_identity
+                && live.existing_platform_root == evidence.existing_platform_root
+                && live.direct_alternate_used == evidence.direct_alternate_used
+                && live.associated_root_failure == evidence.associated_root_failure
+                && live.events_unretained == evidence.events_unretained
+                && live.stage_transitions_unretained == evidence.stage_transitions_unretained
+                && live.stage_path_limitations == evidence.stage_path_limitations
+                && live.unparseable_events == evidence.unparseable_events
+                && live.rundown_ignored == evidence.rundown_ignored
+                && live.watcher_ended == evidence.watcher_ended
+                && live.watcher_report == evidence.watcher_report
+                && (!live.shutdown_scope.is_empty() || evidence.shutdown_scope.is_empty())
+                && live.events.len() >= evidence.events.len()
+                && live.stage_transitions.len() >= evidence.stage_transitions.len()
+                && live.managed_instances.len() >= evidence.managed_instances.len()
+                && live.managed_instance_limit_reached == evidence.managed_instance_limit_reached
+        }) {
+            return;
+        }
         let live = held.get_or_insert_with(super::CaptureProcessEvidence::default);
         live.event_limit = evidence.event_limit;
+        if live.startup_snapshot.is_empty() {
+            live.startup_snapshot.clone_from(&evidence.startup_snapshot);
+        }
+        live.snapshot_at = evidence.snapshot_at;
         live.launch_pid = evidence.launch_pid;
         live.launch_at = evidence.launch_at;
         live.launch_earliest_at = evidence.launch_earliest_at;
         live.launch_identity = evidence.launch_identity.clone();
+        live.existing_platform_root = evidence.existing_platform_root;
+        live.direct_alternate_used = evidence.direct_alternate_used;
+        live.associated_root_failure = evidence.associated_root_failure.clone();
         live.events_unretained = evidence.events_unretained;
         live.stage_transitions_unretained = evidence.stage_transitions_unretained;
         live.stage_path_limitations = evidence.stage_path_limitations.clone();
@@ -3781,6 +3832,60 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(windows, feature = "direct-route"))]
+    #[test]
+    fn live_process_revision_changes_only_with_new_evidence() {
+        let context = NativeObservationContext::default();
+        let mut evidence = super::super::CaptureProcessEvidence::default();
+        assert_eq!(context.direct_process_evidence_version(), 0);
+
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 1);
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 1);
+
+        evidence.watcher_report = Some(fragcap_core::WatcherReport {
+            events_lost: 1,
+            ..Default::default()
+        });
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 2);
+
+        evidence.events.push(ProcessEvent::started(
+            42,
+            1,
+            "client.exe",
+            "client",
+            Timestamp::from_nanos(10),
+        ));
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 3);
+
+        evidence.existing_platform_root = true;
+        evidence.direct_alternate_used = true;
+        evidence.associated_root_failure = Some("associated-root-failed".into());
+        evidence.snapshot_at = Some(Timestamp::from_nanos(5));
+        evidence
+            .startup_snapshot
+            .push(fragcap_core::ProcessRecord::new(42, 1, "client.exe"));
+        evidence.shutdown_scope.push(PathBuf::from("client.exe"));
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 4);
+        let retained = context.direct_process_evidence().expect("live evidence");
+        assert_eq!(retained.events.len(), 1);
+        assert!(retained.existing_platform_root);
+        assert!(retained.direct_alternate_used);
+        assert_eq!(retained.snapshot_at, evidence.snapshot_at);
+        assert_eq!(retained.startup_snapshot, evidence.startup_snapshot);
+        assert_eq!(retained.shutdown_scope, evidence.shutdown_scope);
+        assert_eq!(
+            retained.associated_root_failure.as_deref(),
+            Some("associated-root-failed")
+        );
+        context.record_live_process_evidence(&evidence);
+        assert_eq!(context.direct_process_evidence_version(), 4);
+    }
 
     #[cfg(windows)]
     #[test]

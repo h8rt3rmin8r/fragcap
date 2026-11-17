@@ -1823,6 +1823,7 @@ fn drive_live(
     loop {
         let now = std::time::Instant::now();
         let progress_before = emitter.progress_written();
+        let mut process_evidence_changed = false;
         // Every wakeup, including the idle timeout. The idle case is the whole
         // point: on a `--launch` run the target is silent for tens of seconds
         // before it opens its first socket, and a narrator driven only by packet
@@ -1843,6 +1844,7 @@ fn drive_live(
                 let was_active = is_active(session);
                 record_bound_image(&event, bound_images);
                 apply_event(event, session, bound, emitter, process_evidence);
+                process_evidence_changed = true;
                 if managed_route {
                     publish_managed_bindings(session, process_evidence, publisher);
                 } else {
@@ -1855,6 +1857,7 @@ fn drive_live(
             Ok(DriverMsg::WatcherLost) => {
                 process_evidence.watcher_ended = true;
                 session.on_process_watcher_lost();
+                process_evidence_changed = true;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // Both forwarders ended: the pipeline is done and the watcher is
@@ -1862,11 +1865,17 @@ fn drive_live(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         if let Some(watcher) = watcher {
-            process_evidence.watcher_report = Some(watcher.report());
-            process_evidence.unparseable_events = watcher.unparsed_events();
+            let report = watcher.report();
+            let unparseable = watcher.unparsed_events();
+            process_evidence_changed |= process_evidence.watcher_report != Some(report)
+                || process_evidence.unparseable_events != unparseable;
+            process_evidence.watcher_report = Some(report);
+            process_evidence.unparseable_events = unparseable;
         }
-        if let Some(context) = inspection_context {
-            context.record_live_process_evidence(process_evidence);
+        if process_evidence_changed {
+            if let Some(context) = inspection_context {
+                context.record_live_process_evidence(process_evidence);
+            }
         }
         // A busy queue may never time out. Tick after every kind of message,
         // using the same monotonic clock as a silent capture.
