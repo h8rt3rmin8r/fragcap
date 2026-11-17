@@ -642,6 +642,13 @@ async fn connection_task(
     let connection_id = identity.id;
     let peer = identity.peer;
     let local = identity.local;
+    // A direct helper registers its exact original socket after connecting to
+    // this listener and before writing the first SOCKS byte. Peek first so
+    // the owner decision cannot outrun that registration on a busy runner.
+    let socks5 = tokio::select! {
+        _ = shutdown.changed() => false,
+        value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
+    };
     let decision = decide_inspection(
         services.inspection_decider.clone(),
         Arc::clone(&services.inspection_slots),
@@ -656,10 +663,6 @@ async fn connection_task(
     .await;
     trace.lock().expect("connection trace lock").inspection = Some(decision);
     let uninspected = decision.action == crate::InspectionAction::Uninspected;
-    let socks5 = tokio::select! {
-        _ = shutdown.changed() => false,
-        value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
-    };
     if socks5 {
         trace_reach(&trace, crate::ConnectionStage::Authentication);
         let on_stage = |stage, completed| {
@@ -2940,6 +2943,8 @@ fn owner_thread_timeout_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn exhausted_inspection_slots_freeze_an_uninspected_decision() {
@@ -2970,6 +2975,87 @@ mod tests {
         ));
         assert_eq!(decision.action, crate::InspectionAction::Uninspected);
         assert_eq!(decision.reason, crate::InspectionReason::QueueSaturated);
+    }
+
+    #[test]
+    fn socks_owner_decision_waits_for_first_byte_after_helper_registration() {
+        struct RegisteredDirectOwner {
+            registered: Arc<AtomicBool>,
+            decided_early: Arc<AtomicBool>,
+        }
+        impl crate::InspectionDecider for RegisteredDirectOwner {
+            fn decide(
+                &self,
+                _: crate::InspectionRequest,
+                _: Duration,
+            ) -> crate::InspectionDecision {
+                if self.registered.load(Ordering::Acquire) {
+                    crate::InspectionDecision::verified_direct_route(0)
+                } else {
+                    self.decided_early.store(true, Ordering::Release);
+                    crate::InspectionDecision::uninspected(
+                        crate::InspectionReason::TelemetryUnavailable,
+                        0,
+                    )
+                }
+            }
+        }
+
+        let registered = Arc::new(AtomicBool::new(false));
+        let decided_early = Arc::new(AtomicBool::new(false));
+        let config = NativeProxyConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            2,
+            4_096,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let mut lease = NativeProxyBackend::new(config)
+            .with_inspection_decider(Arc::new(RegisteredDirectOwner {
+                registered: Arc::clone(&registered),
+                decided_early: Arc::clone(&decided_early),
+            }))
+            .start(Duration::from_secs(2))
+            .unwrap();
+        let mut helper = std::net::TcpStream::connect(lease.endpoint()).unwrap();
+        helper
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let deadline = StdInstant::now() + Duration::from_secs(2);
+        loop {
+            if lease
+                .observation(Duration::from_millis(100))
+                .unwrap()
+                .accepted_connections
+                == 1
+            {
+                break;
+            }
+            assert!(StdInstant::now() < deadline, "proxy did not accept helper");
+            thread::sleep(Duration::from_millis(1));
+        }
+        // Exceed the old ten-millisecond direct-helper lookup window before
+        // registration, while no SOCKS byte is available to the proxy yet.
+        thread::sleep(Duration::from_millis(25));
+        assert!(!decided_early.load(Ordering::Acquire));
+        registered.store(true, Ordering::Release);
+        helper.write_all(&[5, 1, 2]).unwrap();
+        let mut method = [0; 2];
+        helper.read_exact(&mut method).unwrap();
+        assert_eq!(method, [5, 2]);
+        drop(helper);
+        let report = lease.cleanup(Duration::from_secs(2));
+        assert!(report.is_clean());
+        assert!(!decided_early.load(Ordering::Acquire));
+        assert_eq!(report.observation.connection_diagnostics.len(), 1);
+        let decision = report.observation.connection_diagnostics[0]
+            .inspection
+            .unwrap();
+        assert_eq!(decision.action, crate::InspectionAction::Inspect);
+        assert_eq!(
+            decision.owner_proof,
+            "direct-original-socket-and-managed-process-instance"
+        );
     }
 
     #[test]

@@ -122,7 +122,7 @@ fn selected_packet_admission(
 /// WinDivert handles and worker queue are independent. Preserve the original
 /// datagram unless its QPC proves it predates a now-live reused generation;
 /// reinjection of that older datagram could enter the new socket's tuple.
-fn stale_selected_can_reinject(
+fn stale_selected_can_pass_original(
     selected: SelectedRoute,
     current: Option<SocketEpoch>,
     packet_qpc: i64,
@@ -649,7 +649,8 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                     }
                 }
                 stats.record_bypass(reason);
-                let reinjected = stale_selected_can_reinject(route, current, address.timestamp_qpc);
+                let reinjected =
+                    stale_selected_can_pass_original(route, current, address.timestamp_qpc);
                 if reinjected {
                     reinject(&handle, &stats, bytes, &address)?;
                 } else {
@@ -1318,8 +1319,11 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let pass_new_owner = current_owner.is_some_and(|owner| {
                         owner != route.epoch && owner.contains_packet(address.timestamp_qpc)
                     });
-                    let reinjected =
-                        stale_selected_can_reinject(route, current_owner, address.timestamp_qpc);
+                    let reinjected = stale_selected_can_pass_original(
+                        route,
+                        current_owner,
+                        address.timestamp_qpc,
+                    );
                     if reinjected {
                         reinject(&handle, &stats, &packet, &address)?;
                     } else {
@@ -3044,14 +3048,14 @@ mod tests {
         // CLOSE may be delivered on the socket handle before this already
         // captured control packet is drained from the network handle.
         assert!(selected_packet_admission(a, None, 150).is_err());
-        assert!(stale_selected_can_reinject(a, None, 150));
+        assert!(stale_selected_can_pass_original(a, None, 150));
         assert!(selected_work_admission(a, None, None, None, 150).is_err());
-        assert!(stale_selected_can_reinject(a, None, 150));
+        assert!(stale_selected_can_pass_original(a, None, 150));
         // Numeric endpoint/PID reuse still cannot send old A bytes through B.
-        assert!(!stale_selected_can_reinject(a, Some(b), 150));
-        assert!(stale_selected_can_reinject(a, Some(b), 225));
-        assert!(!stale_selected_can_reinject(a, None, 100));
-        assert!(!stale_selected_can_reinject(a, None, 0));
+        assert!(!stale_selected_can_pass_original(a, Some(b), 150));
+        assert!(stale_selected_can_pass_original(a, Some(b), 225));
+        assert!(!stale_selected_can_pass_original(a, None, 100));
+        assert!(!stale_selected_can_pass_original(a, None, 0));
     }
 
     #[test]
@@ -5034,6 +5038,10 @@ mod tests {
         eprintln!(
             "S211 classified proxy protocol: {:?}",
             report.observation.protocol
+        );
+        eprintln!(
+            "S211 classified proxy connections: {:?}",
+            report.observation.connection_diagnostics
         );
         let origin_error = server.join().err().map(|panic| {
             panic
