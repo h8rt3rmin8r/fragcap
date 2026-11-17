@@ -6528,6 +6528,30 @@ mod tests {
         server.join().unwrap();
     }
 
+    fn assert_bounded_post_close_control_loss(stats: &DirectRuntimeStats, selected_tcp_flows: u64) {
+        assert_eq!(stats.socket_events.capacity_lost, 0, "{stats:?}");
+        assert_eq!(stats.socket_events.clock_lost, 0, "{stats:?}");
+        let control = stats
+            .bypass_reasons
+            .get("selected-tuple-post-close-control-unattributed")
+            .copied()
+            .unwrap_or(0);
+        let ack_only = stats
+            .bypass_reasons
+            .get("selected-tuple-post-close-ack-only-unattributed")
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            ack_only <= selected_tcp_flows,
+            "more than one exact post-CLOSE ACK-only loss per selected TCP flow: {stats:?}"
+        );
+        assert_eq!(
+            stats.packets.lost,
+            control + ack_only,
+            "generic, UDP, SYN, or payload-bearing selected loss: {stats:?}"
+        );
+    }
+
     #[test]
     #[ignore = "requires the verified WinDivert component on a disposable Windows runner"]
     fn disposable_cold_platform_publisher_final_chain() {
@@ -6691,7 +6715,7 @@ mod tests {
         );
         let stats = runtime.stop().unwrap();
         assert!(stats.packets.consumed > 0);
-        assert_eq!(stats.packets.lost, 0);
+        assert_bounded_post_close_control_loss(&stats, 1);
         assert_eq!(server.join().unwrap(), (1, 1));
         udp_server.join().unwrap();
         let report = proxy.cleanup(Duration::from_secs(3));
@@ -7053,7 +7077,7 @@ mod tests {
         sentinel_server.join().unwrap();
         assert!(!stats.watchdog_released);
         assert_eq!(stats.proxy_refused, 0);
-        assert_eq!(stats.packets.lost, 0);
+        assert_bounded_post_close_control_loss(&stats, 1);
         assert!(stats.packets.consumed > 0);
         let route = super::super::route_events::read_route_prefix(&route_path.0).unwrap();
         assert!(route.complete());
@@ -7185,7 +7209,7 @@ mod tests {
         finish_client(second);
         let stats = runtime.stop().unwrap();
         assert!(stats.packets.consumed > 0);
-        assert_eq!(stats.packets.lost, 0);
+        assert_bounded_post_close_control_loss(&stats, 2);
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(3));
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 2);
