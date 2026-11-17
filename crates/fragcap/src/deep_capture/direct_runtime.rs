@@ -118,6 +118,19 @@ fn selected_packet_admission(
     Ok(())
 }
 
+/// A selected packet may outlive its socket event or worker route because the
+/// WinDivert handles and worker queue are independent. Preserve the original
+/// datagram unless its QPC proves it predates a now-live reused generation;
+/// reinjection of that older datagram could enter the new socket's tuple.
+fn stale_selected_can_reinject(
+    selected: SelectedRoute,
+    current: Option<SocketEpoch>,
+    packet_qpc: i64,
+) -> bool {
+    selected.epoch.contains_packet(packet_qpc)
+        && current.is_none_or(|owner| owner == selected.epoch || owner.contains_packet(packet_qpc))
+}
+
 fn selected_work_admission(
     queued: SelectedRoute,
     selected_now: Option<SelectedRoute>,
@@ -636,7 +649,8 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                     }
                 }
                 stats.record_bypass(reason);
-                if pass_new_owner {
+                let reinjected = stale_selected_can_reinject(route, current, address.timestamp_qpc);
+                if reinjected {
                     reinject(&handle, &stats, bytes, &address)?;
                 } else {
                     packet_finished(&stats, PacketDisposition::Lost)?;
@@ -647,7 +661,7 @@ fn receive_packets(inputs: ReceiveRuntimeInputs) -> io::Result<()> {
                         route.flow_id,
                         RouteEventKind::PacketOmission {
                             reason,
-                            disposition: "lost",
+                            disposition: if reinjected { "reinjected" } else { "lost" },
                         },
                     );
                 }
@@ -1304,7 +1318,9 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                     let pass_new_owner = current_owner.is_some_and(|owner| {
                         owner != route.epoch && owner.contains_packet(address.timestamp_qpc)
                     });
-                    if pass_new_owner {
+                    let reinjected =
+                        stale_selected_can_reinject(route, current_owner, address.timestamp_qpc);
+                    if reinjected {
                         reinject(&handle, &stats, &packet, &address)?;
                     } else {
                         packet_finished(&stats, PacketDisposition::Lost)?;
@@ -1315,7 +1331,7 @@ fn process_packets(inputs: ProcessRuntimeInputs) -> io::Result<()> {
                             route.flow_id,
                             RouteEventKind::PacketOmission {
                                 reason,
-                                disposition: "lost",
+                                disposition: if reinjected { "reinjected" } else { "lost" },
                             },
                         );
                     }
@@ -2989,6 +3005,53 @@ mod tests {
             selected_packet_admission(b, None, 225),
             Err("selected-owner-epoch-changed-or-ambiguous")
         );
+    }
+
+    #[test]
+    fn selected_fin_ack_after_close_reinjects_but_pre_reuse_packet_cannot_enter_new_tuple() {
+        let mut fin_ack = vec![0u8; 40];
+        fin_ack[0] = 0x45;
+        fin_ack[2..4].copy_from_slice(&40u16.to_be_bytes());
+        fin_ack[8] = 64;
+        fin_ack[9] = 6;
+        fin_ack[12..16].copy_from_slice(&[192, 0, 2, 10]);
+        fin_ack[16..20].copy_from_slice(&[198, 51, 100, 20]);
+        fin_ack[20..22].copy_from_slice(&49152u16.to_be_bytes());
+        fin_ack[22..24].copy_from_slice(&443u16.to_be_bytes());
+        fin_ack[32] = 0x50;
+        fin_ack[33] = 0x11;
+        let head = raw_transport_head(&fin_ack).unwrap();
+        assert_eq!(head.tcp_flags, Some(0x11));
+        assert_eq!(head.transport_len, 20);
+        let tuple = DirectTuple {
+            transport: Proto::Tcp,
+            local: head.source,
+            remote: head.destination,
+        };
+        let a = SelectedRoute {
+            epoch: SocketEpoch {
+                tuple,
+                endpoint_id: 7,
+                pid: 42,
+                open_qpc: 100,
+            },
+            flow_id: 1,
+        };
+        let b = SocketEpoch {
+            open_qpc: 200,
+            ..a.epoch
+        };
+        // CLOSE may be delivered on the socket handle before this already
+        // captured control packet is drained from the network handle.
+        assert!(selected_packet_admission(a, None, 150).is_err());
+        assert!(stale_selected_can_reinject(a, None, 150));
+        assert!(selected_work_admission(a, None, None, None, 150).is_err());
+        assert!(stale_selected_can_reinject(a, None, 150));
+        // Numeric endpoint/PID reuse still cannot send old A bytes through B.
+        assert!(!stale_selected_can_reinject(a, Some(b), 150));
+        assert!(stale_selected_can_reinject(a, Some(b), 225));
+        assert!(!stale_selected_can_reinject(a, None, 100));
+        assert!(!stale_selected_can_reinject(a, None, 0));
     }
 
     #[test]

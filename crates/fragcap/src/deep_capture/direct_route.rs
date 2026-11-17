@@ -104,10 +104,12 @@ impl SocketEpoch {
         }
     }
 
+    #[cfg(all(windows, feature = "direct-route"))]
     pub fn contains_packet(self, packet_qpc: i64) -> bool {
         self.open_qpc > 0 && packet_qpc > self.open_qpc
     }
 
+    #[cfg(all(windows, feature = "direct-route"))]
     pub fn matches_event(self, event: DirectSocketEvent) -> bool {
         event.tuple == self.tuple
             && event.endpoint_id == self.endpoint_id
@@ -368,6 +370,7 @@ pub struct PendingCandidate<A> {
 pub enum CandidateDecision<A> {
     Selected {
         flow: Box<OriginalFlow>,
+        #[cfg(all(windows, feature = "direct-route"))]
         epoch: SocketEpoch,
         packet: Vec<u8>,
         address: A,
@@ -545,9 +548,12 @@ impl<A> CandidateBuffer<A> {
             match status {
                 Status::Wait => self.pending.push_back(candidate),
                 Status::Selected(flow, epoch) => {
+                    #[cfg(not(all(windows, feature = "direct-route")))]
+                    let _ = epoch;
                     self.held_bytes -= candidate.packet.len();
                     resolved.push(CandidateDecision::Selected {
                         flow,
+                        #[cfg(all(windows, feature = "direct-route"))]
                         epoch,
                         packet: candidate.packet,
                         address: candidate.address,
