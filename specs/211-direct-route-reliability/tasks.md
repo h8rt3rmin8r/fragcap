@@ -13,15 +13,15 @@
 
 - [x] T003 Add failing 60-100 ms success, refusal, true timeout, and stage/error diagnostic tests.
 - [x] T004 Move TCP helper SOCKS admission off packet worker with bounded exact pending state, packet accounting, and cancellation.
-- [x] T005 Add protected typed helper outcome and verify no false refusal, watchdog release, sentinel loss, or duplicate route. Controlled source rows and the final exact-binary eight-case external-peer matrix passed; the worst active TCP sentinel was 18 ms against the 50 ms bound, route loss and watchdog release were zero, and the finite peer counted one selected exchange per permitted attempt.
+- [ ] T005 Add protected typed helper outcome and verify no false refusal, watchdog release, sentinel loss, or duplicate route. Controlled source rows and the eight-case external-peer matrix passed on binary `8279C62F`; the worst active TCP sentinel was 18 ms against the 50 ms bound. A subsequent portability edit changed the binary hash, so exact-final-head physical qualification remains pending.
 
 ## Phase 3: Physical correlation acceptance
 
 **User story**: Trust original-packet evidence.
 
 - [x] T006 Prepare exact portable package and controlled external client/peer runner, with no visible console children and fallible cleanup.
-- [x] T007 Exercise original-present, original-absent, and truncated packet histories plus TCP/UDP negative cases on packaged WinDivert/Npcap. The final candidate retained a TCP refusal original with exact target ownership and incomplete history, while TCP transfers and UDP cases reported original unavailable. UDP refusal remained distinct from transfer. UDP original-present was not exercised; the acceptance matrix establishes both orderings across the supported transports.
-- [x] T008 Reconcile route, compatibility, terminal/result, and manifest from the exact candidate bundle. All eight final-candidate hosted assertions and independent bundle readback agree on selected disposition, original/history state, route outcome, cleanup, and manifest correlation; required artifacts finalized with explicit process-trace partiality.
+- [ ] T007 Exercise original-present, original-absent, and truncated packet histories plus TCP/UDP negative cases on packaged WinDivert/Npcap. Binary `8279C62F` retained a TCP refusal original with exact target ownership and incomplete history; TCP transfers and UDP cases reported original unavailable. UDP refusal remained distinct from transfer, while UDP original-present was not exercised. Repeat after the portability edit changes the final binary hash.
+- [ ] T008 Reconcile route, compatibility, terminal/result, and manifest from the exact candidate bundle. All eight `8279C62F` hosted assertions and independent bundle readback agreed on selected disposition, original/history state, route outcome, cleanup, and manifest correlation; required artifacts finalized with explicit process-trace partiality. Repeat on the final hash.
 
 ## Phase 4: Completion
 

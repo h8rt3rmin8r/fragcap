@@ -4210,7 +4210,25 @@ mod tests {
             (None, None)
         };
         let server = thread::spawn(move || {
-            let (stream, _) = origin.accept().unwrap();
+            origin.set_nonblocking(true).unwrap();
+            let accept_deadline = Instant::now() + Duration::from_secs(5);
+            let stream = loop {
+                match origin.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < accept_deadline, "origin accept timed out");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("origin accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut stream: Box<dyn ReadWrite> = match origin_config {
                 Some(config) => Box::new(rustls::StreamOwned::new(
                     rustls::ServerConnection::new(config).unwrap(),
@@ -4307,17 +4325,45 @@ mod tests {
         )
         .unwrap();
         release_client(&mut child);
-        finish_client(child);
+        drop(child.stdin.take());
+        let child_output = child.wait_with_output().unwrap();
         let stats = runtime.stop().unwrap();
         eprintln!("S211 classified route stats: {stats:?}");
-        assert!(stats.packets.consumed > 0);
-        assert_eq!(stats.packets.lost, 0);
-        server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(3));
         eprintln!(
             "S211 classified proxy protocol: {:?}",
             report.observation.protocol
         );
+        let origin_error = server.join().err().map(|panic| {
+            panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).into())
+                })
+                .unwrap_or_else(|| "non-string panic".into())
+        });
+        assert!(
+            child_output.status.success(),
+            "child failed: {}; origin error={origin_error:?}; direct received={}, consumed={}, reinjected={}, lost={}, bypass={:?}; proxy SOCKS connected={}, TLS={}, opaque={}, undetermined={}, client TLS={}, upstream TLS={}",
+            String::from_utf8_lossy(&child_output.stderr),
+            stats.packets.received,
+            stats.packets.consumed,
+            stats.packets.reinjected,
+            stats.packets.lost,
+            stats.bypass_reasons,
+            report.observation.protocol.socks_connect_succeeded,
+            report.observation.protocol.socks_tls,
+            report.observation.protocol.socks_tcp_opaque,
+            report.observation.protocol.socks_tcp_undetermined,
+            report.observation.protocol.client_tls_completed,
+            report.observation.protocol.upstream_tls_completed,
+        );
+        assert!(origin_error.is_none(), "origin failed: {origin_error:?}");
+        assert!(stats.packets.consumed > 0);
+        assert_eq!(stats.packets.lost, 0);
         assert_eq!(report.observation.protocol.socks_connect_succeeded, 1);
         assert_eq!(
             report.observation.protocol.http1_exchanges_completed,

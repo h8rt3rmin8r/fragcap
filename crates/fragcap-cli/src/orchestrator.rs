@@ -203,6 +203,7 @@ pub struct ReleasePhaseTiming {
     pub elapsed_us: u64,
 }
 
+#[cfg(all(feature = "etw", windows))]
 fn elapsed_us(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
