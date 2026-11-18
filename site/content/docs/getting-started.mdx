@@ -1,19 +1,19 @@
 ---
 title: Getting started
-description: Install published fragcap bytes, record passive packet truth, and explicitly calibrate a target before Deep Capture.
+description: Install published fragcap bytes, record passive packet truth, and start game-scoped Deep Capture.
 ---
 
-Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
+Published baseline: [v0.11.2](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.2).
 
 <Callout title="Release and completion status">
-These instructions describe the S207 source workflow. The published v0.11.1 release used guided calibration; S207 retires that command and makes game-scoped capture the ordinary path. The [Native product contract](/docs/reference/native-documentation) records the published release boundary.
+These instructions describe the published v0.11.2 workflow. Ordinary Deep Capture scopes inspection to the final game and records compatibility evidence during capture without a separate calibration command. Installed ESO behavior remains unverified; the [Native product contract](/docs/reference/native-documentation) records the published support boundary.
 </Callout>
 
 Capture passively records packets and attributes flows to processes. Deep Capture runs Capture beside an explicit, target-scoped local proxy and adds application observations for eligible traffic reaching that proxy. Start either mode for a stored target; Deep Capture records its own compatibility evidence.
 
 ## Before you begin
 
-Live packet recording requires Windows, an elevated terminal, and separately installed Npcap in WinPcap API-compatible mode. The native Deep Capture proxy is included. The v0.11.1 release includes an explicit signed direct-socket route for final-client TCP and supported UDP. Neither mode reaches inside the target process. Do not configure a system-wide proxy, disable certificate verification, or attempt to bypass pinning.
+Live packet recording requires Windows, an elevated terminal, and separately installed Npcap in WinPcap API-compatible mode. The native Deep Capture proxy is included. The v0.11.2 release uses the signed direct-socket route for the final game's TCP and supported UDP traffic in ordinary Deep Capture. Neither mode reaches inside the target process. Do not configure a system-wide proxy, disable certificate verification, or attempt to bypass pinning.
 
 ```mermaid
 flowchart TB
@@ -30,7 +30,7 @@ Npcap supplies live packets, while attribution uses Windows socket and process e
 
 ## 1. Install fragcap and its prerequisites
 
-Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH` and provisions the installation CA; the portable archive runs from its unpacked directory and requires a separate elevated `fragcap ca install` before Deep Capture. The MSI and fragcap executable are unsigned. The v0.11.1 release bundles a separately signed upstream WinDivert driver and needs no separate WinDivert installer. A checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
+Download the installer or portable archive from the [official releases](https://github.com/h8rt3rmin8r/fragcap/releases), and verify its accompanying SHA-256 checksum. The MSI adds fragcap to `PATH` and provisions the installation CA; the portable archive runs from its unpacked directory and requires a separate elevated `fragcap ca install` before Deep Capture. The MSI and fragcap executable are unsigned. The v0.11.2 release bundles a separately signed upstream WinDivert driver and needs no separate WinDivert installer. A checksum checks consistency with the published download, not publisher authentication. Review an Unknown Publisher warning deliberately rather than disabling Windows protections. See [packaging and migration](/docs/guides/packaging-and-migration).
 
 If installing Npcap through Wireshark, leave **Install Npcap** selected and enable **WinPcap API-compatible Mode** in the Npcap installer. Loopback support is supplied by current Npcap installations.
 
@@ -54,7 +54,7 @@ Doctor is read-only: it starts no capture, proxy, target, or trust change. It re
 | `extcap install --user` and `extcap uninstall --user` | No | Writes the current user's Wireshark directory. System or custom protected directories require permission to write there. |
 | Live `capture`, Wireshark extcap `--capture`, and Deep Capture | Yes | The live Npcap packet path checks elevation. |
 | `ca install`, `ca repair`, `ca remove` | Yes | Changes the LocalMachine installation CA. The MSI performs its own install-time CA setup. |
-| v0.11.1 release `deep-capture --direct-route` | Yes | Also opens the exact packaged WinDivert driver after authorization. |
+| v0.11.2 game-scoped `deep-capture` | Yes | Opens the exact packaged WinDivert driver after authorization. |
 
 Review named remediation first. `fragcap doctor --fix` is the individually confirmed action runner, not permission to repair everything. Re-run plain Doctor afterward. Optional `fragcap extcap install` adds a Wireshark source but is not required for command-line Capture. See [Doctor and troubleshooting](/docs/guides/doctor-and-troubleshooting).
 
@@ -93,7 +93,7 @@ fragcap targets show sample-target
 fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-The ordinary S207 path prepares one exact plan, then waits for authorization before effects. It launches through the stored platform or publisher chain, gives those launchers no Fragcap proxy URL, and routes eligible final-game sockets through the direct route. `--inspect-scope auto` resolves to the final game. It requires Administrator and the packaged direct-route component on Windows. No prior positive calibration fact is required; each capture records routing, protocol, process, loss, and cleanup evidence.
+The ordinary v0.11.2 path prepares one exact plan, then waits for authorization before effects. It launches through the stored platform or publisher chain, gives those launchers no Fragcap proxy URL, and routes eligible final-game sockets through the direct route. `--inspect-scope auto` resolves to the final game. It requires Administrator and the packaged direct-route component on Windows. No prior positive calibration fact is required; each capture records routing, protocol, process, loss, and cleanup evidence.
 
 If the target is missing or has no reliable final-client declaration, use `fragcap targets add --help`, `fragcap targets scan --help`, or `fragcap targets show` to inspect and author it. A title or launch hint alone does not prove which executable is the game. If a stored Steam root moved, `fragcap targets relocate --steam <APP_ID>` supplies an exact relocation plan.
 

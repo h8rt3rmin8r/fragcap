@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "product_version": "0.11.1",
-  "tag": "v0.11.1",
-  "source_revision": "6b071dc2c5ca6dd6f8f56bdcd28f70b7e986b22b",
-  "lockfile_sha256": "8d94d1dc6cc2672d5fc5009358533c9cda4711b46a9a2b41cee4334a501a59c0",
-  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1",
-  "release_run_id": 43358210848,
+  "product_version": "0.11.2",
+  "tag": "v0.11.2",
+  "source_revision": "20c027130db0b51151844c7ced4ba6430325b0f8",
+  "lockfile_sha256": "d082434a2bfde7ab7c65da50f4a486146f4178044c826fcb063364a0130e46c4",
+  "release_url": "https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.2",
+  "release_run_id": 44207796116,
   "target": "x86_64-pc-windows-msvc",
   "features": [
     "direct-route",
@@ -18,44 +18,44 @@
     {
       "role": "standalone-catalog",
       "filename": "catalog.db",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/catalog.db",
-      "size_bytes": 90112,
-      "sha256": "cb15a909692a08ced5990ca78ec8679297ba0ee55203c8c429c0323dd139dcd8"
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/catalog.db",
+      "size_bytes": 98304,
+      "sha256": "04970fda81d96e41b4e284c3de8709f77268e89688c768274632e873ec80957a"
     },
     {
       "role": "standalone-catalog-checksum",
       "filename": "catalog.db.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/catalog.db.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/catalog.db.sha256",
       "size_bytes": 77,
-      "sha256": "ededeb11a598367c37a5bff36b9853deaae794e67929bcb37f0146dca8cf818e"
+      "sha256": "d818d6167ef0977f4753745bc7548f01c8d5294fbfef33fd5ae93a33ad95efdf"
     },
     {
       "role": "portable-zip",
-      "filename": "fragcap-0.11.1-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/fragcap-0.11.1-x86_64-pc-windows-msvc.zip",
-      "size_bytes": 8322611,
-      "sha256": "c4f1de068ce6e3c6277b5bd1d20b7677bb98fba2529528a9c4b08da60e9bd6f2"
+      "filename": "fragcap-0.11.2-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/fragcap-0.11.2-x86_64-pc-windows-msvc.zip",
+      "size_bytes": 8316907,
+      "sha256": "d90bb749cb74d3fce0d64f4d0127347c59e8f5c1ee5d1e3fb605d730e63ff477"
     },
     {
       "role": "portable-zip-checksum",
-      "filename": "fragcap-0.11.1-x86_64-pc-windows-msvc.zip.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/fragcap-0.11.1-x86_64-pc-windows-msvc.zip.sha256",
+      "filename": "fragcap-0.11.2-x86_64-pc-windows-msvc.zip.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/fragcap-0.11.2-x86_64-pc-windows-msvc.zip.sha256",
       "size_bytes": 108,
-      "sha256": "ccef0edc2ad9e3756a434de321fc32b5c6abbe7d3b34d6af7cded633b4dabf55"
+      "sha256": "a66e2f9b54552bd78f184c361d6c334aea4e39375abce31a98c9d50097d4879a"
     },
     {
       "role": "windows-msi",
-      "filename": "fragcap-0.11.1-x86_64.msi",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/fragcap-0.11.1-x86_64.msi",
-      "size_bytes": 8560640,
-      "sha256": "c429b140fe466f87681383db232af5e4db5573c8e36770090efd6b46868bd3db"
+      "filename": "fragcap-0.11.2-x86_64.msi",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/fragcap-0.11.2-x86_64.msi",
+      "size_bytes": 8556544,
+      "sha256": "46a09cfcb4fbcfe664aa649d904376183e64790e3229c4ea49e95c254a7ebda0"
     },
     {
       "role": "windows-msi-checksum",
-      "filename": "fragcap-0.11.1-x86_64.msi.sha256",
-      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.1/fragcap-0.11.1-x86_64.msi.sha256",
+      "filename": "fragcap-0.11.2-x86_64.msi.sha256",
+      "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.11.2/fragcap-0.11.2-x86_64.msi.sha256",
       "size_bytes": 92,
-      "sha256": "9cc7aea079dfcf5083bc9e22c5279a4abf03ed04546999645014dac72cbc3f4f"
+      "sha256": "d0cd7d266db61a375eab4ff960cbf3200e10692e7c4c849f25f035088ba8abf6"
     }
   ],
   "predecessor": {
