@@ -12,9 +12,9 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-Published baseline: [v0.11.1](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.1).
+Published baseline: [v0.11.2](https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.11.2).
 
-This page describes the current source command tree, checked by the production parser without dispatch. S207 makes ordinary Deep Capture game-scoped, uses the exact final-client direct route, and records evidence during capture without a separate calibration step. The published v0.11.1 release used the older guided-calibration workflow. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
+This page describes the v0.11.2 command tree, checked by the production parser without dispatch. Ordinary Deep Capture is game-scoped, uses the exact final-client direct route, and records evidence during capture without a separate calibration step. Hidden test controls are excluded. clap's generated `help` and `version` controls remain available but are not repeated in every table.
 
 In the tables, `open` means the parser accepts a value whose grammar is explained
 in the Meaning column. `none` means clap declares no default; the application may
@@ -27,7 +27,7 @@ Running `fragcap` with no command lists registered targets and points at
 
 ## Retired command migration
 
-Older releases and their preserved changelog pages may refer to command forms that the current CLI no longer accepts. Use these replacements with the published v0.10.9 command surface:
+Older releases and their preserved changelog pages may refer to command forms that the current CLI no longer accepts. Use these replacements with the published v0.11.2 command surface:
 
 | Retired form | Current form |
 | --- | --- |
@@ -179,7 +179,7 @@ Doctor retains the recovery record. The operator closes an application
 manually only for warm preflight or when exact automatic cleanup remains
 incomplete.
 
-v0.10.10 corrects the v0.10.9 installed-session findings [#526](https://github.com/h8rt3rmin8r/fragcap/issues/526) and [#527](https://github.com/h8rt3rmin8r/fragcap/issues/527). An ordinary `--duration 4m` now appears as 240,000 ms in the authorization plan and the terminal event; a separate five-second allowance is reserved for Capture to return after the requested observation. Calibration retains its 60-second maximum. A same-name process event without proven ancestry receives no control and no longer blocks release of independently proven managed owners. If any plausible routed owner remains unresolved, route cleanup stays partial, installation trust remains in place, and a stopped proxy is reported as unable to serve that route. Close the application normally, then use `fragcap doctor --fix` for exact recovery. Doctor verifies that every observed plausible routed process has exited before it replays route cleanup and refuses recovery if exit evidence is incomplete.
+v0.10.10 corrects the v0.10.9 installed-session findings [#526](https://github.com/h8rt3rmin8r/fragcap/issues/526) and [#527](https://github.com/h8rt3rmin8r/fragcap/issues/527). An ordinary `--duration 4m` now appears as 240,000 ms in the authorization plan and the terminal event; a separate five-second allowance is reserved for Capture to return after the requested observation. The historical guided-calibration command retained its 60-second maximum in that release and was retired in v0.11.2. A same-name process event without proven ancestry receives no control and no longer blocks release of independently proven managed owners. If any plausible routed owner remains unresolved, route cleanup stays partial, installation trust remains in place, and a stopped proxy is reported as unable to serve that route. Close the application normally, then use `fragcap doctor --fix` for exact recovery. Doctor verifies that every observed plausible routed process has exited before it replays route cleanup and refuses recovery if exit evidence is incomplete.
 
 Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.
