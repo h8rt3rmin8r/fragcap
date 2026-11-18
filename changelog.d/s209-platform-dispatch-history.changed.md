@@ -1,2 +1,0 @@
-<!-- spec-impact: 16.4, 17.2, 24.3 -->
-Ordinary exact-game Deep Capture can dispatch a Steam-associated target through an exact cold or query-verified existing Steam process. A failed cold Steam process creation may select one preauthorized direct client alternate before title dispatch when no game process is present. Existing platform and game processes receive no shutdown control. The local target store retains bounded chronological capture outcomes and `targets show` reports them with advisory drift.

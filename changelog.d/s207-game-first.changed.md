@@ -1,2 +1,0 @@
-<!-- spec-impact: 15, 17, 27, 28 -->
-Deep Capture now starts an ordinary game-only attempt without prior calibration. The reviewed plan selects direct routing for the final game and leaves launchers on their native network path. Explicit full-chain sessions can select SOCKS-only launcher routing. Store version 16 preserves historical facts while admitting the truthful new route identities. The public calibration command, guided acceptance gate, and embedded calibration flags are retired; historical compatibility facts remain readable.
