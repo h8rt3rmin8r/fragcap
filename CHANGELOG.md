@@ -66,6 +66,8 @@ The documentation site now uses Next.js 16.4.6 to clear the reported security ad
 
 ### Decisions
 
+2026-11-13: Advance the pinned published-review workflow, exact v0.11.1 asset registry, release handoff, and current documentation only after the tagged Windows package and all ten crates.io archives pass independent public readback. Keep the physical Npcap ordering and installed positive calibration claims open for fresh field testing.
+
 2026-11-15: Retire the pinned guided-calibration acceptance step from `.github/workflows/ci.yml` as part of the S207 game-first capture workflow. An ordinary capture now records routing, protocol, ownership, and failure evidence during its own authorized session; a separate calibration command is no longer a prerequisite or public workflow. Keep the native protocol conformance, CLI, artifact, and lifecycle checks as the active gates, and preserve stored calibration history as readable diagnostic evidence. This decision does not claim a fresh installed ESO success, which remains a separate field test.
 
 2026-11-16: Update the pinned Windows direct-route oracle after S207 separates unknown generic TCP bytes from proven plaintext. The controlled final client sends an unrecognized payload through a successful authenticated SOCKS CONNECT. Require one opaque-or-undetermined SOCKS classification, one unknown-provenance generic stream, and zero plain generic streams while keeping the existing process, packet, relay, and cleanup assertions. The earlier expectation of one plain stream encoded the retired provenance claim and caused four hosted cases to fail despite successful routing.
@@ -124,7 +126,7 @@ The documentation site now uses Next.js 16.4.6 to clear the reported security ad
 
 2026-11-17: Exact-head native CI exposed a header-only TCP loss after the retained socket CLOSE. An aggregate label could not distinguish ACK from SYN, so classify only a complete, zero-payload ACK with QPC strictly after that CLOSE, absent historical and live owner results, and unique selected tuple lineage. Keep the packet Lost and unattributed because a competing socket event may still be in flight on WinDivert's separate socket handle. The controlled fixture accepts at most one such typed loss per selected TCP flow while generic, payload-bearing, SYN, ambiguous-owner, and over-limit losses still fail. This is a bounded diagnostic and fixture criterion, not proof of loss-free physical delivery or installed ESO compatibility.
 
-2026-11-13: Advance the pinned published-review workflow, exact v0.11.1 asset registry, release handoff, and current documentation only after the tagged Windows package and all ten crates.io archives pass independent public readback. Keep the physical Npcap ordering and installed positive calibration claims open for fresh field testing.
+2026-11-17: The v0.11.2 release audit found GHSA-fc5q-39xc-vjpf in the documentation site's locked picomatch 4.0.5 dependency. No patched upstream release was available. Track #630 and use one exact pnpm advisory exception through 2026-12-01 while every other finding remains blocking. A passing site audit under this exception is exception-qualified, not a clean dependency result. The Windows product and Rust crates do not include this npm package; remove the exception after a verified corrected dependency passes the unfiltered audit.
 
 ## [0.11.1] - 2026-11-12
 

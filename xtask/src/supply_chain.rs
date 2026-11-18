@@ -10,6 +10,10 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POLICY_REL: &str = "supply-chain/policy-v1.json";
+const SITE_EXCEPTION_REL: &str = "supply-chain/site-audit-exception-v1.json";
+const SITE_EXCEPTION_ID: &str = "GHSA-fc5q-39xc-vjpf";
+const SITE_EXCEPTION_CVE: &str = "CVE-2026-112366";
+const SITE_EXCEPTION_EXPIRY: &str = "2026-12-01";
 const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
 const RELEASE_FEATURES: &str =
@@ -79,13 +83,110 @@ fn validate_repository(root: &Path) -> Result<usize, String> {
     let policy_bytes = fs::read(root.join(POLICY_REL)).map_err(|e| e.to_string())?;
     let policy: Value = serde_json::from_slice(&policy_bytes).map_err(|e| e.to_string())?;
     let graphs = collect_graphs(root)?;
-    let mut findings = validate_policy(&policy, &graphs, today_ymd());
+    let today = today_ymd();
+    let mut findings = validate_policy(&policy, &graphs, today.clone());
+    findings.extend(validate_site_exception(root, &today)?);
     findings.extend(validate_repository_wiring(root, &policy)?);
     normalize_findings(&mut findings);
     for finding in &findings {
         eprintln!("supply-chain: {finding}");
     }
     Ok(findings.len())
+}
+
+fn validate_site_exception(root: &Path, today: &str) -> Result<Vec<String>, String> {
+    let record: Value = serde_json::from_slice(
+        &fs::read(root.join(SITE_EXCEPTION_REL)).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let lock =
+        fs::read_to_string(root.join("site/pnpm-lock.yaml")).map_err(|error| error.to_string())?;
+    let workspace = fs::read_to_string(root.join("site/pnpm-workspace.yaml"))
+        .map_err(|error| error.to_string())?;
+    Ok(validate_site_exception_value(
+        &record, &lock, &workspace, today,
+    ))
+}
+
+fn validate_site_exception_value(
+    record: &Value,
+    lock: &str,
+    workspace: &str,
+    today: &str,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let Some(object) = record.as_object() else {
+        return vec!["site-exception-schema: record must be an object".into()];
+    };
+    check_keys(
+        object,
+        &[
+            "schema_version",
+            "id",
+            "cve",
+            "rule",
+            "package",
+            "version",
+            "owner",
+            "rationale",
+            "created",
+            "expires",
+            "removal_condition",
+            "tracking_issue",
+        ],
+        "site advisory exception",
+        &mut findings,
+    );
+    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        findings.push("site-exception-schema: schema version must be 1".into());
+    }
+    for (key, expected) in [
+        ("id", SITE_EXCEPTION_ID),
+        ("cve", SITE_EXCEPTION_CVE),
+        ("rule", "site-advisory"),
+        ("package", "picomatch"),
+        ("version", "4.0.5"),
+        ("owner", "project-maintainers"),
+        ("created", "2026-11-17"),
+        ("expires", SITE_EXCEPTION_EXPIRY),
+        (
+            "tracking_issue",
+            "https://github.com/h8rt3rmin8r/fragcap/issues/630",
+        ),
+    ] {
+        if object.get(key).and_then(Value::as_str) != Some(expected) {
+            findings.push(format!("site-exception-schema: {key} must be {expected}"));
+        }
+    }
+    validate_governance(object, today, "site advisory exception", &mut findings);
+    if today >= SITE_EXCEPTION_EXPIRY {
+        findings.push(format!(
+            "site-exception-expired: {SITE_EXCEPTION_ID} expired {SITE_EXCEPTION_EXPIRY} UTC"
+        ));
+    }
+    let locked_versions: Vec<_> = lock
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("picomatch@"))
+        .collect();
+    if locked_versions.len() != 2
+        || locked_versions
+            .iter()
+            .any(|line| *line != "picomatch@4.0.5:" && *line != "picomatch@4.0.5: {}")
+    {
+        findings.push("site-exception-unused: locked picomatch is not exactly 4.0.5".into());
+    }
+    let expected_config = format!("auditConfig:\n  ignoreCves:\n    - {SITE_EXCEPTION_CVE}\n");
+    if !workspace.ends_with(&expected_config)
+        || workspace.matches("auditConfig:").count() != 1
+        || workspace.matches("ignoreCves:").count() != 1
+        || workspace
+            .lines()
+            .any(|line| matches!(line.trim(), "audit:" | "ignoreGhsas:"))
+    {
+        findings.push("site-exception-config: only the exact CVE may be ignored".into());
+    }
+    findings
 }
 
 fn collect_graphs(root: &Path) -> Result<Vec<Graph>, String> {
@@ -960,7 +1061,24 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
             "cargo run --locked --package xtask -- docs check",
         ]),
         (audit, "Install site dependencies", vec!["working-directory: site", "run: pnpm install --frozen-lockfile"]),
-        (audit, "Audit the complete site graph", vec!["working-directory: site", "run: pnpm audit --audit-level low"]),
+        (audit, "Validate temporary site advisory exception", vec![
+            "run: |",
+            "\"supply-chain/site-audit-exception-v1.json\", \"utf8\"));",
+            "if (record.id !== \"GHSA-fc5q-39xc-vjpf\" ||",
+            "record.cve !== \"CVE-2026-112366\" ||",
+            "record.package !== \"picomatch\" ||",
+            "record.version !== \"4.0.5\" ||",
+            "record.expires !== \"2026-12-01\") {",
+            "if (workspace.slice(workspace.indexOf(\"auditConfig:\")) !==",
+            "const versions = [...lock.matchAll(/^  picomatch@([^:]+):/gm)];",
+            "versions.some((entry) => entry[1] !== \"4.0.5\")) {",
+            "const expiry = Date.parse(`${record.expires}T00:00:00Z`);",
+            "if (!Number.isFinite(expiry) || Date.now() >= expiry) {",
+        ]),
+        (audit, "Audit the complete site graph", vec![
+            "working-directory: site",
+            "run: pnpm audit --audit-level low",
+        ]),
         (audit, "Audit isolated Rust graphs", vec![
             "cargo deny --locked --all-features --manifest-path \"$manifest\" --config deny.toml check advisories",
         ]),
@@ -979,6 +1097,24 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
     if !matches!((docs.find("      - name: Fetch locked Rust dependencies\n"), docs.find("      - name: Validate root content contracts\n")), (Some(fetch), Some(check)) if fetch < check)
     {
         findings.push("dependency-workflow: locked fetch must precede root validation".to_string());
+    }
+    if !matches!(
+        (
+            audit.find("      - name: Validate temporary site advisory exception\n"),
+            audit.find("      - name: Audit the complete site graph\n")
+        ),
+        (Some(validation), Some(audit)) if validation < audit
+    ) {
+        findings.push("dependency-workflow: site exception must expire before audit".into());
+    }
+    let site_audit = workflow_step(audit, "Audit the complete site graph").unwrap_or_default();
+    if site_audit
+        .lines()
+        .filter(|line| line.contains("pnpm audit"))
+        .count()
+        != 1
+    {
+        findings.push("dependency-workflow: site must run one exact audit".into());
     }
     for required in [
         "pnpm/action-setup@v4",
@@ -2867,6 +3003,50 @@ mod tests {
     }
 
     #[test]
+    fn site_advisory_exception_is_exact_used_and_finite() {
+        let record: Value = serde_json::from_str(include_str!(
+            "../../supply-chain/site-audit-exception-v1.json"
+        ))
+        .unwrap();
+        let lock = include_str!("../../site/pnpm-lock.yaml");
+        let workspace = include_str!("../../site/pnpm-workspace.yaml");
+        assert!(validate_site_exception_value(&record, lock, workspace, "2026-11-17").is_empty());
+        assert!(
+            validate_site_exception_value(&record, lock, workspace, "2026-12-01")
+                .iter()
+                .any(|finding| finding.contains("expired"))
+        );
+
+        let mut wrong_id = record.clone();
+        wrong_id["id"] = json!("GHSA-0000-0000-0000");
+        assert!(
+            !validate_site_exception_value(&wrong_id, lock, workspace, "2026-11-17").is_empty()
+        );
+        let mut wrong_cve = record.clone();
+        wrong_cve["cve"] = json!("CVE-2026-000000");
+        assert!(
+            !validate_site_exception_value(&wrong_cve, lock, workspace, "2026-11-17").is_empty()
+        );
+        let mut extended = record.clone();
+        extended["expires"] = json!("2027-12-01");
+        assert!(
+            !validate_site_exception_value(&extended, lock, workspace, "2026-11-17").is_empty()
+        );
+        let stale_lock = lock.replace("picomatch@4.0.5:", "picomatch@4.0.7:");
+        assert!(
+            !validate_site_exception_value(&record, &stale_lock, workspace, "2026-11-17")
+                .is_empty()
+        );
+        let extra_ignore = workspace.replace(
+            "    - CVE-2026-112366",
+            "    - CVE-2026-112366\n    - CVE-2026-000000",
+        );
+        assert!(
+            !validate_site_exception_value(&record, lock, &extra_ignore, "2026-11-17").is_empty()
+        );
+    }
+
+    #[test]
     fn dependency_workflows_reject_skips_unlocked_fetch_and_filtered_audits() {
         let audit = include_str!("../../.github/workflows/audit.yml");
         let docs = include_str!("../../.github/workflows/docs.yml");
@@ -2902,6 +3082,19 @@ mod tests {
             (
                 "pnpm audit --audit-level low",
                 "pnpm audit --audit-level low || true",
+            ),
+            (
+                "pnpm audit --audit-level low",
+                "pnpm audit --audit-level low --ignore-unfixable",
+            ),
+            (
+                "pnpm audit --audit-level low",
+                "pnpm audit --audit-level low --ignore GHSA-0000-0000-0000",
+            ),
+            ("Date.now() >= expiry", "Date.now() < expiry"),
+            (
+                "Validate temporary site advisory exception\n",
+                "Removed site advisory exception\n",
             ),
             (
                 "Audit the complete site graph\n",

@@ -8,3 +8,8 @@ overrides:
   dompurify: 3.4.17
   katex: 0.18.2
   source-map-js: 1.2.2
+
+# Finite site advisory exception: supply-chain/site-audit-exception-v1.json.
+auditConfig:
+  ignoreCves:
+    - CVE-2026-112366
