@@ -533,19 +533,12 @@ Param(
         Param([string]$Executable, [hashtable]$Environment)
         $help = (Invoke-Fragcap -Executable $Executable -Arguments @('deep-capture', '--help') -Environment $Environment).Stdout
         $normalizedHelp = $help -replace '\s+', ' '
-        $historicalReplay = -not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)
-        $requiredHelp = if ($historicalReplay) {
-            @('Auto selects launch-chain inspection for every managed launch.', 'Select game to inspect only the final game client.', '--direct-route')
-        } else {
-            @('Auto selects the exact final game.', '--launcher-proxy', '--direct-route')
-        }
+        $requiredHelp = @('Auto selects the exact final game.', '--launcher-proxy', '--direct-route')
         foreach ($required in $requiredHelp) {
             if (-not $normalizedHelp.Contains($required)) { throw "packaged Deep Capture help omits $required" }
         }
-        if (-not $historicalReplay) {
-            foreach ($retired in @('--calibrate', '--calibration-protocol', '--launch-case')) {
-                if ($normalizedHelp.Contains($retired)) { throw "packaged Deep Capture help still exposes $retired" }
-            }
+        foreach ($retired in @('--calibrate', '--calibration-protocol', '--launch-case')) {
+            if ($normalizedHelp.Contains($retired)) { throw "packaged Deep Capture help still exposes $retired" }
         }
         $bundleHelp = (Invoke-Fragcap -Executable $Executable -Arguments @('bundle', '--help') -Environment $Environment).Stdout
         if (-not $bundleHelp.Contains('debug-report')) { throw 'packaged bundle help omits debug-report' }
@@ -620,7 +613,10 @@ Param(
             [string]$ValidationManifest,
 
             [Parameter(Mandatory=$true)]
-            [bool]$RequireExactGameInspectionScope
+            [bool]$RequireExactGameInspectionScope,
+
+            [Parameter(Mandatory=$true)]
+            [bool]$LegacyCalibrationReplay
         )
         $surfaceRoot = Join-Path $ScratchRoot "smoke-$Surface"
         $profile = Join-Path $surfaceRoot 'User'
@@ -643,7 +639,7 @@ Param(
         try {
             try {
                 $scopeArguments = if ($RequireExactGameInspectionScope) { @('--inspect-scope', 'game') } else { @() }
-                $legacyArguments = if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) { @() } else { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') }
+                $legacyArguments = if ($LegacyCalibrationReplay) { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') } else { @() }
                 $arguments = @('--json', 'deep-capture', $targetHandle, '--launch') + $scopeArguments + $legacyArguments + @('--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle)
                 $smoke = Invoke-Fragcap -Executable $Executable -Arguments $arguments -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
             } catch {
@@ -675,7 +671,8 @@ Param(
     function Invoke-InstalledSlowTiming {
         [CmdletBinding()]
         Param(
-            [Parameter(Mandatory=$true)][string]$Executable
+            [Parameter(Mandatory=$true)][string]$Executable,
+            [Parameter(Mandatory=$true)][bool]$LegacyCalibrationReplay
         )
         # This case runs only on the isolated certification account. Read its
         # real documented defaults back instead of supplying path overrides.
@@ -700,7 +697,7 @@ Param(
         [void](New-NetFirewallRule -Name $firewallRuleName -DisplayName $firewallRuleName -Direction Outbound -Action Block -Program $Executable -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         [void]$script:SmokeFirewallRules.Add($firewallRuleName)
         try {
-            $legacyArguments = if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) { @() } else { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') }
+            $legacyArguments = if ($LegacyCalibrationReplay) { @('--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm') } else { @() }
             $arguments = @('--json', 'deep-capture', $targetHandle, '--launch', '--inspect-scope', 'game') + $legacyArguments + @('--duration', '2m', '--wait', '2m', '--authorize-stdin', '--controlled-target')
             $run = Invoke-Fragcap -Executable $Executable -Arguments $arguments -Environment $environment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan -TimeoutSeconds 240
             if ($run.ElapsedSeconds -lt 168 -or $run.ElapsedSeconds -gt 215) { throw 'installed slow timing did not retain the two-minute post-handoff observation span' }
@@ -881,10 +878,11 @@ Param(
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
-        if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) {
+        $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
+        $legacyCalibrationReplay = (-not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) -and ([version]$buildIdentity.version -lt [version]'0.11.2')
+        if (-not $legacyCalibrationReplay) {
             Assert-DirectRouteHelp -Executable $zipExe -Environment $cleanEnvironment
         }
-        $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
         $legacyStorageReplay = (-not [string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) -and ($buildIdentity.version -ceq '0.10.13')
         $fixtureRoamingRoot = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.APPDATA 'fragcap' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'roaming' }
         $fixtureLocalRoot = if ($legacyStorageReplay) { Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap' } else { Join-Path $cleanEnvironment.FRAGCAP_STORAGE_ROOT 'local' }
@@ -901,7 +899,7 @@ Param(
             if ($componentChecks.Count -ne 1 -or $componentChecks[0].status -ne 'ok' -or $componentChecks[0].detail -notmatch 'driver load and policy compatibility unverified') { throw 'packaged Doctor does not report exact static WinDivert readiness' }
         }
         if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
-        $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope
+        $portableSmoke = Invoke-ControlledSmoke -Surface 'portable' -Executable $zipExe -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope -LegacyCalibrationReplay $legacyCalibrationReplay
         $portableSmokeLocalDb = Join-Path $scratch 'smoke-portable\local.db'
         $portableSmokeBundle = Join-Path $scratch 'smoke-portable\bundle'
         $installDirectory = Join-Path $scratch 'installed'
@@ -959,7 +957,7 @@ Param(
         if ($seededDefender -and -not (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { throw 'clean install removed the pre-existing Defender exclusion' }
         $lifecycle.Add([pscustomobject]@{ id = 'clean-install'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$clean.ElapsedSeconds; complete = $true })
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
-        $installedSmoke = Invoke-ControlledSmoke -Surface 'installed' -Executable $installedExecutable -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope
+        $installedSmoke = Invoke-ControlledSmoke -Surface 'installed' -Executable $installedExecutable -ScratchRoot $scratch -BaseEnvironment $cleanEnvironment -ValidationManifest $validationManifest -RequireExactGameInspectionScope $requireExactGameInspectionScope -LegacyCalibrationReplay $legacyCalibrationReplay
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'NOTICE'), 'Delete owned file before repair')) { Remove-Item -LiteralPath (Join-Path $installDirectory 'NOTICE') -Force }
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'LICENSE'), 'Alter owned file before repair')) { [System.IO.File]::WriteAllText((Join-Path $installDirectory 'LICENSE'), 'altered', [System.Text.UTF8Encoding]::new($false)) }
         $repair = Invoke-MsiOperation -Case 'repair' -Arguments @('/fa', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'repair.log')
@@ -1004,7 +1002,7 @@ Param(
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
         $installedPe = Get-PeInspection -ExecutablePath $installedExecutable -Dumper $dumper -Policy $contract.pe_imports -Surface 'installed-msi'
         $installedIdentity = (Invoke-Fragcap -Executable $installedExecutable -Arguments @('__build-identity') -Environment $cleanEnvironment).Stdout | ConvertFrom-Json
-        if ([string]::IsNullOrEmpty($env:FRAGCAP_REVIEW_ARTIFACTS)) {
+        if (-not $legacyCalibrationReplay) {
             Assert-DirectRouteHelp -Executable $installedExecutable -Environment $cleanEnvironment
         }
         if (($installedIdentity | ConvertTo-Json -Compress) -cne ($buildIdentity | ConvertTo-Json -Compress)) { throw 'installed executable identity differs from the portable executable identity' }
@@ -1036,7 +1034,7 @@ Param(
         $msiRoamingRoot = if ($legacyStorageReplay) { Join-Path $msiStorageRoot 'Roaming\fragcap' } else { Join-Path $msiStorageRoot 'roaming' }
         $msiLocalRoot = if ($legacyStorageReplay) { Join-Path $msiStorageRoot 'Local\fragcap' } else { Join-Path $msiStorageRoot 'local' }
         if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
-        if ($RequireInstallationCa) { Invoke-InstalledSlowTiming -Executable $installedExecutable }
+        if ($RequireInstallationCa) { Invoke-InstalledSlowTiming -Executable $installedExecutable -LegacyCalibrationReplay $legacyCalibrationReplay }
         if (-not $legacyStorageReplay) { Invoke-DefaultStorageReadback -Executable $installedExecutable -ScratchRoot $scratch }
         [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
         [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
