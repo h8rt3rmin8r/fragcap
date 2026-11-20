@@ -1039,14 +1039,7 @@ Portable skill content is vendored in `.agents/skills/` and committed, with
 provenance in `skills-lock.json`. First-party skills authored for this
 repository live in `skills/`. There are none yet.
 
-**The vendored set is the ShruggieTech house standards this constitution binds,
-from one upstream, and nothing else.** A skill is admitted only if a named
-principle binds this repository to it or a repository gate executes it;
-plausible usefulness does not qualify it, and neither does sharing a brand with
-something that does. The upstream is <https://github.com/shruggietech/skills>,
-Apache-2.0, and each lock entry's `source` names the release tag its content
-came from. Slice S071 established this after the set reached 36 entries from an
-unrelated repository that nothing here could account for.
+The vendored set comes from the Apache-2.0 [ShruggieTech skills repository](https://github.com/shruggietech/skills). A skill is admitted if a named constitution principle binds the project to it or a repository gate executes it. Workflowy is a specific owner-directed exception for project continuity. Each lock entry names its source release. See S071 for the consolidation that established the general rule.
 
 A skill is checked against P-1 before it is vendored. A skill that teaches a
 denylisted technique does not land here, whatever else it is useful for. It is
@@ -1062,6 +1055,16 @@ tracked files in every surface and are the exception.
 
 `cargo xtask skills` holds the directory, the lock, and git's index to
 agreement. It does not verify hashes; `skills/README.md` says why.
+
+## Workflowy
+
+This project opts into the `workflowy` skill and Workflowy Desktop MCP for substantive work. Load the skill when available and use the MCP to follow the steps below. These instructions also stand on their own.
+
+- **Find the project.** Read **ABOUT** in **AI Agent Workspace**. Find this repo or folder under **PROJECTS** by name or use the operator's project link. Read the current state and relevant discussion. Check the destination before writing. Reuse the existing branch or create it in alphabetical order. **PROJECTS → _general** is reserved for work without a named project.
+- **Work in the notebook.** Use the private branch to brainstorm, develop drafts, give candid feedback, and work through disagreements with the operator and their authorized agents. Put replies beneath the discussion they address. Shape the outline around the work. Publication is an operator decision.
+- **Keep the record useful.** Start each major session entry and substantive update with an ISO 8601 timestamp in the operator's local time zone, using the offset in effect. Record outcomes, evidence, and open questions or next actions. Update the current state in place. Git and the established tracker are authoritative when used. Otherwise, verify against project artifacts. Link to the evidence. For a requested backfill, bring forward useful past decisions and context with their sources.
+- **Connect related notes.** Reuse native hashtags. Follow **ABOUT** for the named fields in **GLOSSARY**, **REFERENCES**, and **ENTITIES**. Sort entries alphabetically by name, ignoring case and hashtags. Use absolute URLs for external links and name local sources sparingly.
+- **Verify and continue.** Read back MCP edits. Desktop MCP requires a running, signed-in Workflowy app with Local MCP enabled and a connected agent session. If MCP is unavailable, continue the work and put any useful draft or handoff in the final reply when its audience is appropriate.
 
 ## Non-negotiables
 

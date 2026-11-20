@@ -49,16 +49,9 @@ See "The gate" below.
 
 ## What is admitted, and what is not
 
-The vendored set is the ShruggieTech house standards this repository's
-constitution binds, taken from one upstream, and nothing else.
+A vendored skill must come from ShruggieTech. The general admission test requires a named constitution principle or a repository gate that executes the skill. The owner explicitly opted this project into Workflowy as a specific exception for project continuity.
 
-**The admission test.** A skill is admitted only if a named constitution
-principle binds this repository to it, or a repository gate executes it. Both
-conditions are checkable against a file and a line, which is what makes the
-test usable on a skill nobody here has seen before. Plausible usefulness is not
-a qualification, and neither is sharing a brand with something that is.
-
-That test currently admits four:
+The current set is:
 
 | Skill | Admitted by |
 | --- | --- |
@@ -66,6 +59,7 @@ That test currently admits four:
 | `shruggie-markdown` | P-8 names Markdown |
 | `shruggie-powershell` | P-8 names PowerShell, and `cargo xtask wrappers` executes its compliance checker |
 | `shruggie-speckit` | Drives the spec-kit workflow `AGENTS.md` makes mandatory |
+| `workflowy` | Owner-directed Workflowy opt-in in `AGENTS.md` |
 
 **The upstream** is <https://github.com/shruggietech/skills>, Apache-2.0. Every
 lock entry's `source` names it together with the release tag the content came
@@ -104,8 +98,7 @@ tempted to add one, read the S071 decisions fragment first.
 
 ## Adding a vendored skill
 
-1. Check it against the admission test above. If no principle binds it and no
-   gate runs it, it does not go in, however useful it looks.
+1. Check the admission test above and document any explicit owner-approved exception in the inventory.
 2. Download it from the upstream release and verify the archive against that
    release's published `SHA256SUMS.txt` **before** extracting.
 3. Copy the directory into `.agents/skills/` **unmodified**. Do not hand-edit it
