@@ -1,87 +1,69 @@
 ---
 name: workflowy
-description: Read, discuss, capture, and organize the operator's private working notes through the Workflowy MCP. Use when asked to brainstorm or review ideas in Workflowy, connect research and references, maintain an outline, or work with a project that opts in.
-disable-model-invocation: false
+description: Work in a private Workflowy notebook using Desktop MCP. Use to brainstorm, review a discussion, record a project session or Spec Kit slice, backfill a project, or maintain the shared glossary, entities, and references.
 metadata:
-  version: "1.0.1"
+  version: "1.1.0"
 ---
 
 # Workflowy
 
-Workflowy is the operator's private working notebook, shared with the agents they choose to involve. Use it to think together while an idea is still forming, work through a disagreement, keep a useful discovery, or develop something the operator wants to return to. Some of that work belongs to a project. Some starts with a question, an observation, or a subject the operator wants to explore.
+Use Workflowy to think with the operator and their authorized agents. Develop ideas, drafts, questions, and disagreements in the relevant discussion. Keep useful reasoning and changes of mind beside the decision they explain. Revise existing prose when asked to edit it. The operator decides what is published. Use the intended signed-in account and destination for private material and keep credentials in their secret store. [Workflowy sharing](https://workflowy.com/help/share-collaborate)
 
-## Work in the notebook
+## Route the work
 
-- Read the note, its surrounding discussion, and any source that matters to the question. When asked to contribute, put your response beneath the relevant idea so the operator's words and your reply can be read together. Revise existing prose when the request is to edit it.
-- If the operator asks what they're missing, state the strongest concern you see and what makes it consequential. If the evidence is thin, say what would change your mind. During a brainstorm, develop the promising options and keep unresolved questions visible. Preserve disagreements, abandoned approaches, rough drafts, and private context when they matter to the discussion.
-- Give the material the shape it needs. An observation can be a single bullet. A discussion can grow through replies, links, and revisions. A draft can live in full. When a decision changes, connect it to the earlier choice so the reasons remain legible. Keep exploratory ideas distinct from decisions the operator has made.
-- Date major sessions and substantive updates, including research and brainstorming. Use a timezone-aware clock to generate an ISO 8601 timestamp in the operator's local time zone with the UTC offset in effect.
+- Discover the MCP tools and confirm access with a scoped read. Desktop MCP requires the Workflowy desktop app running and signed in with Local MCP enabled, plus an agent session connected to its Streamable HTTP connection. The [MCP reference](assets/workflowy-mcp.md) shows scoped seeks, link markup, native dates, and readback checks. [Official setup](https://community.workflowy.com/t/workflowy-desktop-mcp/1695)
+- Read **AI Agent Workspace → ABOUT** and follow the operator's branch link when given. Keep one branch per named project under **PROJECTS**, in case-insensitive name order after `_example` and `_general`. Use `_general` for cross-project or non-project discussions. Organize it by topic when useful. Check ancestry before edits.
+- If the connector is unavailable, continue the task and tell the operator what remains to be recorded. Provide a draft when the conversation is suitable for the material.
 
-Write candidly for the operator and their authorized agents. This is an appropriate place for a frank assessment or unpublished context that would be out of place in a public issue or PR. Workflowy is hosted and node sharing can include descendants. Use the intended account and private branch, and resolve any ambiguity about who can read restricted material before adding it. Keep credentials in their existing secret store. Publication is a separate decision for the operator. [Workflowy sharing guide](https://workflowy.com/help/share-collaborate) · [Workflowy privacy policy](https://workflowy.com/privacy-policy/)
+## Project records
 
-## Find the right place
+- Named projects use `info`, `notes`, and `spec-kit` when applicable. Keep `info` to the purpose, latest supported state, next action, active blockers, and links. Git and the established tracker govern official progress where used. Otherwise use the project artifacts.
+- Keep `notes` as one oldest-first timeline. Use one local ISO 8601 timestamp with its real offset, followed by a short fragment, for a major session or substantive update. Structural labels are exempt. Nest updates and replies with the session or discussion. Outcomes, reasoning, questions, links, and tags belong in children.
+- Keep all formal slices as direct children of `spec-kit` in code order. Use the exact formal slice code and a short title, such as `S094 Check source order`. Put dates, tags, scope, outcome, and authoritative links in children. Require a `Date` child and, for a slice belonging to an epic, a linked `Epic` child. Use the verified integration or authoritative closeout date, labeled by event, or mark it Pending or Unknown.
+- Use one native Workflowy date, `#timeline`, and the primary project hashtag on the same metadata child for indexable records. Add `#slice` for slices. Save a scoped date-range search or export a chronological view using [the date and link methods](assets/workflowy-mcp.md).
+- Use the [project setup and backfill guide](assets/project-backfill.md) for Git, folder-only work, or recovery from local agent records. Copy the [project outline template](assets/templates/project-outline.md) as needed.
 
-The desktop MCP requires a workstation with Workflowy installed, running, signed in, and Local MCP enabled. The agent session needs a connection to that server. Discover the available tools, then confirm access with a scoped read. [Workflowy MCP reference](assets/workflowy-mcp.md) · [Official Workflowy Desktop MCP documentation](https://community.workflowy.com/t/workflowy-desktop-mcp/1695)
+## Shared catalogs
 
-Start with the link, branch, or topic the operator named. In **AI Agent Workspace**, read **ABOUT** for operating guidance. Find opted-in repos and folders under **PROJECTS**. Follow an existing conversation or subject branch when it fits. Use the reserved **PROJECTS → _general** branch for discussions, ideas, and notes without a named project or an established destination. A new topic can start with the question itself. Check title and ancestry before writing. If the destination is ambiguous, show the candidates and ask which one to use. Read back edits through the MCP.
+- **GLOSSARY** owns reusable meanings, methods, protocols, and formats. **ENTITIES** owns named people, organizations, tools, services, models, systems, and datasets. **REFERENCES** owns citable sources, editions, specs, releases, and artifacts. Follow the [catalog rules and worked examples](assets/shared-catalogs.md).
+- Resolve identity across all three catalogs before adding a record. Use a single record per referent and give aliases to the preferred record. A matching title or URL is a review cue. Preserve source versions and actual distinctions.
+- Keep catalog entries alphabetized by name, ignoring case and hashtags. Put fields under their entry as named child bullets. Use a link to the existing source record when it fits, and retain the exact section or version that supports the claim. Reuse hashtags for browsing and direct node links for specific relationships.
 
-If the connection is unavailable, carry on with what can be done in the conversation. State which note or change still needs to be saved, and put a useful draft or handoff in the reply when that conversation is appropriate for the material.
+## Verify and continue
 
-## Build shared knowledge
+Before writing, find the canonical record by meaning and evidence. Update it in place or link to it and record only the change. Preserve stable node IDs. After each batch, read back the affected nodes and verify titles, hierarchy, ordering, link targets, native dates, duplicates, and current state where relevant. Re-read before repeating an uncertain write. A rerun with the same source evidence should add zero records.
 
-Use the shared collections to make unfamiliar terms, people, tools, and subjects easier to look up. Check for an existing entry before adding one, and keep local discussion with the topic or project it came from. Each shared entry takes its name and native Workflowy hashtags in the title. Give each field a child bullet in `Field: value` form. Find and edit fields by label.
+## Activate in agent instructions
 
-Keep entries in **GLOSSARY**, **REFERENCES**, and **ENTITIES** in alphabetical order by name. Ignore case and topic hashtags when sorting, and insert each new entry in its sorted position.
-
-| Collection | Fields | Optional fields |
-| --- | --- | --- |
-| **GLOSSARY** | `Definition` | `Aliases`, `Source` |
-| **REFERENCES** | `URL`, `Use when` | `Type`, `Source ID` |
-| **ENTITIES** | `Type`, `Summary` | `URL` |
-
-Use absolute URLs to the actual external source. Preserve a source's published identifier in `Source ID` when it helps trace the entry. Name a local path or document sparingly when it adds something, preferably in the branch that uses it. Reuse the same hashtag across related entries. For example, `#mcp` can connect a definition, a specification, and a discussion. Click or search the tag from **AI Agent Workspace** for matches across its branches. Via MCP, search for the literal tag and check the matched bullets. [Workflowy tags and mentions](https://workflowy.com/help/tags-mentions) · [Workflowy search scope](https://workflowy.com/help/search-your-notes/)
-
-## Use Workflowy for a project
-
-Use the project's own outline and adapt it as the work changes. Keep conversations, open questions, and reasons for decisions where the work happens. Update the current state and next action in place when they change. A major session can record an outcome, what you checked, and any blocker or follow-up. Use Git, the issue or PR tracker, or the relevant project artifacts to verify official progress. Link directly to the evidence.
-
-Keep direct children of **PROJECTS** in case-insensitive alphabetical order by displayed name. The reserved branches `_example` and `_general` come first in that order. Insert a new project in its sorted position.
-
-For a new repo, an existing Git project, or a folder-only effort, use the [project setup and backfill guide](assets/project-backfill.md). It covers changelogs and Git evidence, local GPT/Codex, Claude, and Ollama records, and recovering useful material in batches.
-
-### Enable Workflowy for a project
-
-Paste the Markdown inside the code block into the project's active `AGENTS.md`, or the equivalent instruction file your agent reads in a standalone folder. This opts that project into using Workflowy. Agents use the `workflowy` skill and Desktop MCP available to their session. The live copy is under **ABOUT → Enable Workflowy for a project**.
+Paste the following block into the active project `AGENTS.md` or equivalent to opt that project in. The live copy is under **ABOUT → Enable Workflowy for a project**. The [global agent context template](assets/templates/global-agent-context.md) is for user-level instructions covering unrelated or cross-project work.
 
 ```markdown
 ## Workflowy
 
 This project opts into the `workflowy` skill and Workflowy Desktop MCP for
-substantive work. Load the skill when available and use the MCP to follow the
-steps below. These instructions also stand on their own.
+substantive work. Load the skill when available. A running, signed-in desktop
+app with Local MCP enabled and a connected agent session is required.
 
-- **Find the project.** Read **ABOUT** in **AI Agent Workspace**. Find this repo
-  or folder under **PROJECTS** by name or use the operator's project link.
-  Read the current state and relevant discussion. Check the destination before
-  writing. Reuse the existing branch or create it in alphabetical order.
-  **PROJECTS → _general** is reserved for work without a named project.
-- **Work in the notebook.** Use the private branch to brainstorm, develop
-  drafts, give candid feedback, and work through disagreements with the operator
-  and their authorized agents. Put replies beneath the discussion they address.
-  Shape the outline around the work. Publication is an operator decision.
-- **Keep the record useful.** Start each major session entry and substantive
-  update with an ISO 8601 timestamp in the operator's local time zone, using
-  the offset in effect. Record outcomes, evidence, and open questions or next
-  actions. Update the current state in place. Git and the established tracker
-  are authoritative when used. Otherwise, verify against project artifacts.
-  Link to the evidence. For a requested backfill, bring forward useful past
-  decisions and context with their sources.
-- **Connect related notes.** Reuse native hashtags. Follow **ABOUT** for the
-  named fields in **GLOSSARY**, **REFERENCES**, and **ENTITIES**. Sort entries
-  alphabetically by name, ignoring case and hashtags. Use absolute URLs for
-  external links and name local sources sparingly.
-- **Verify and continue.** Read back MCP edits. Desktop MCP requires a running,
-  signed-in Workflowy app with Local MCP enabled and a connected agent session.
-  If MCP is unavailable, continue the work and put any useful draft or handoff
-  in the final reply when its audience is appropriate.
+- Read **AI Agent Workspace → ABOUT** and locate the project under **PROJECTS**.
+  Reuse its branch or insert it alphabetically. Use **PROJECTS → _general** for
+  work without a named project. Confirm the destination before writing.
+- Keep named projects in `info`, `notes`, and `spec-kit` when the project uses
+  Spec Kit. Keep `info` current and link its claims to evidence. Use `notes` for
+  candid drafts, decisions, questions, and sessions in chronological order.
+  Start each major session and substantive update title with one local
+  ISO 8601 timestamp and its offset, followed by a short fragment. Keep
+  updates and replies with their session or discussion.
+- Put each formal slice directly under `spec-kit` in code order. Its title
+  contains only the formal code and short title, like `S094 Check source order`.
+  Add a `Date` child and an `Epic` child when applicable. Put scope, outcome, and
+  links in children. Use the native Workflowy date and project hashtag
+  together on the timeline child for dated records.
+- Find the existing record by meaning and source before writing. Link to
+  the exact finding or authoritative Git, tracker, or project artifact.
+  Add new evidence or a delta in place and preserve the original node ID.
+  Follow ABOUT for shared catalog fields, alphabetical order, and link roles.
+- Keep private work with the operator and their authorized agents. The
+  operator decides what is published. Read back MCP edits and check titles,
+  parents, order, links, dates, and duplicates. If MCP is unavailable,
+  continue the work and report what still needs to be saved.
 ```

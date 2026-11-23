@@ -27,10 +27,10 @@
       "computedHash": "ec5b5a0c4d1c815080dec3690c996da02e198645aaecab4c67e08092b3640617"
     },
     "workflowy": {
-      "source": "shruggietech/skills@v1.12.0",
+      "source": "shruggietech/skills@v1.13.0",
       "sourceType": "vendored",
       "skillPath": ".agents/skills/workflowy/SKILL.md",
-      "computedHash": "ce06bb39d5ba049a96f9d93921be3ed5aa109958b2d487d51673cc11e3df25d3"
+      "computedHash": "2b2a187886be2fa8bc9a284bc7373de7dbb376c57f355bea8e03bb08598c9209"
     }
   }
 }

@@ -1058,13 +1058,13 @@ agreement. It does not verify hashes; `skills/README.md` says why.
 
 ## Workflowy
 
-This project opts into the `workflowy` skill and Workflowy Desktop MCP for substantive work. Load the skill when available and use the MCP to follow the steps below. These instructions also stand on their own.
+This project opts into the `workflowy` skill and Workflowy Desktop MCP for substantive work. Load the skill when available. A running, signed-in desktop app with Local MCP enabled and a connected agent session is required.
 
-- **Find the project.** Read **ABOUT** in **AI Agent Workspace**. Find this repo or folder under **PROJECTS** by name or use the operator's project link. Read the current state and relevant discussion. Check the destination before writing. Reuse the existing branch or create it in alphabetical order. **PROJECTS → _general** is reserved for work without a named project.
-- **Work in the notebook.** Use the private branch to brainstorm, develop drafts, give candid feedback, and work through disagreements with the operator and their authorized agents. Put replies beneath the discussion they address. Shape the outline around the work. Publication is an operator decision.
-- **Keep the record useful.** Start each major session entry and substantive update with an ISO 8601 timestamp in the operator's local time zone, using the offset in effect. Record outcomes, evidence, and open questions or next actions. Update the current state in place. Git and the established tracker are authoritative when used. Otherwise, verify against project artifacts. Link to the evidence. For a requested backfill, bring forward useful past decisions and context with their sources.
-- **Connect related notes.** Reuse native hashtags. Follow **ABOUT** for the named fields in **GLOSSARY**, **REFERENCES**, and **ENTITIES**. Sort entries alphabetically by name, ignoring case and hashtags. Use absolute URLs for external links and name local sources sparingly.
-- **Verify and continue.** Read back MCP edits. Desktop MCP requires a running, signed-in Workflowy app with Local MCP enabled and a connected agent session. If MCP is unavailable, continue the work and put any useful draft or handoff in the final reply when its audience is appropriate.
+- Read **AI Agent Workspace → ABOUT** and locate the project under **PROJECTS**. Reuse its branch or insert it alphabetically. Use **PROJECTS → _general** for work without a named project. Confirm the destination before writing.
+- Keep named projects in `info`, `notes`, and `spec-kit` when the project uses Spec Kit. Keep `info` current and link its claims to evidence. Use `notes` for candid drafts, decisions, questions, and sessions in chronological order. Start each major session and substantive update title with one local ISO 8601 timestamp and its offset, followed by a short fragment. Keep updates and replies with their session or discussion.
+- Put each formal slice directly under `spec-kit` in code order. Its title contains only the formal code and short title, like `S094 Check source order`. Add a `Date` child and an `Epic` child when applicable. Put scope, outcome, and links in children. Use the native Workflowy date and project hashtag together on the timeline child for dated records.
+- Find the existing record by meaning and source before writing. Link to the exact finding or authoritative Git, tracker, or project artifact. Add new evidence or a delta in place and preserve the original node ID. Follow ABOUT for shared catalog fields, alphabetical order, and link roles.
+- Keep private work with the operator and their authorized agents. The operator decides what is published. Read back MCP edits and check titles, parents, order, links, dates, and duplicates. If MCP is unavailable, continue the work and report what still needs to be saved.
 
 ## Non-negotiables
 
