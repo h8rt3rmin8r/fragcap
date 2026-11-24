@@ -1058,15 +1058,43 @@ agreement. It does not verify hashes; `skills/README.md` says why.
 
 ## Workflowy
 
-This project opts into the `workflowy` skill and Workflowy Desktop MCP for substantive work. Load the skill when available. A running, signed-in desktop app with Local MCP enabled and a connected agent session is required.
+This project opts into the `workflowy` skill and its private agent workspace.
+Load the skill when available. Use the operator's project link or find this
+repo or folder under **AI Agent Workspace > PROJECTS**. Reuse its branch or
+insert it alphabetically. Search **STANDARDS** by title or topic tag. Read the
+applicable rules, defaults, and scopes before governed work.
 
-- Read **AI Agent Workspace → ABOUT** and locate the project under **PROJECTS**. Reuse its branch or insert it alphabetically. Use **PROJECTS → _general** for work without a named project. Confirm the destination before writing.
-- Keep named projects in `info`, `notes`, and `spec-kit` when the project uses Spec Kit. Keep `info` current and link its claims to evidence. Use `notes` for candid drafts, decisions, questions, and sessions in chronological order. Start each major session and substantive update title with one local ISO 8601 timestamp and its offset, followed by a short fragment. Keep updates and replies with their session or discussion.
-- Put each formal slice directly under `spec-kit` in code order. Its title contains only the formal code and short title, like `S094 Check source order`. Add a `Date` child and an `Epic` child when applicable. Put scope, outcome, and links in children. Use the native Workflowy date and project hashtag together on the timeline child for dated records.
-- Find the existing record by meaning and source before writing. Link to the exact finding or authoritative Git, tracker, or project artifact. Add new evidence or a delta in place and preserve the original node ID. Follow ABOUT for shared catalog fields, alphabetical order, and link roles.
-- Keep private work with the operator and their authorized agents. The operator decides what is published. Read back MCP edits and check titles, parents, order, links, dates, and duplicates. If MCP is unavailable, continue the work and report what still needs to be saved.
+Use normal bullets for candid discussion, drafts, decisions, and evidence.
+Never store work in Workflowy comments or comment drafts. Give `info` exactly
+three direct children: `tags`, `links`, and `details`. Put purpose, current state,
+next actions, blockers, and supporting evidence under `details`.
+Use lowercase letters and underscores for reusable field names. Use inline
+code for exact technical literals. Link to the exact canonical finding or evidence.
+Git and the established tracker govern official progress where used.
+Otherwise use the project artifacts. The operator decides what is published.
 
-For Fragcap, the primary project hashtag is `#fragcap`. Indexable dated records also use `#timeline`, and formal slices use `#slice`.
+In `notes`, keep major sessions and substantive updates as a flat, oldest-first
+list. Use only the ISO 8601 date or timestamp as the title. Retain the finest
+supported precision and offset. Put the description, scope tags, and prose
+under `title`, `tags`, and `details`. Use label-only field bullets with each
+value or link nested in its own bullet. Require the Workflowy bullet format
+for fields and values. Only the contents of `details` may use other formats.
+Keep tags out of names and other fields. Use one hashtag per `tags` value.
+Put any project-level tags in `info > tags`. Link related updates. The operator
+owns timeline construction. Agents record dates without creating timeline
+metadata, views, saved searches, or exports.
+
+For Spec Kit, use one direct `spec-kit` bullet per formal slice in code order.
+Use only its code and short title. Nest the verified date under `date` and
+the documented epic under `epic` when applicable. Use the skill for shared
+reference records, migration, and precise field rules.
+
+Desktop MCP requires a running, signed-in Workflowy app with Local MCP
+enabled and a connected client. A cloud or other nonlocal agent uses a
+separately configured, operator-authorized connector when available. Confirm
+the destination and read back writes. If no connector is available, continue
+under the available instructions and provide an appropriately private,
+ready-to-paste nested outline with its exact destination. Mark it unsynced.
 
 ## Non-negotiables
 

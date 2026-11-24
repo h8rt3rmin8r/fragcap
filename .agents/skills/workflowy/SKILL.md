@@ -1,70 +1,78 @@
 ---
 name: workflowy
-description: Work in a private Workflowy notebook using Desktop MCP. Use to brainstorm, review a discussion, record a project session or Spec Kit slice, backfill a project, or maintain the shared glossary, entities, and references.
+description: Work with the operator and their agents in their private Workflowy workspace. Use for candid collaboration, project notes, Spec Kit records, personal notes, applicable company standards, shared references, project onboarding, backfills, or repair of legacy Workflowy records.
 disable-model-invocation: false
 metadata:
-  version: "1.1.0"
+  version: "1.3.1"
 ---
 
 # Workflowy
 
-Use Workflowy to think with the operator and their authorized agents. Develop ideas, drafts, questions, and disagreements in the relevant discussion. Keep useful reasoning and changes of mind beside the decision they explain. Revise existing prose when asked to edit it. The operator decides what is published. Use the intended signed-in account and destination for private material and keep credentials in their secret store. [Workflowy sharing](https://workflowy.com/help/share-collaborate)
+Use the operator's private workspace to develop ideas and drafts, share candid feedback, and work through decisions with the operator and their authorized agents. The operator decides what is published. Verify the account and destination before writing. Keep credentials in their secret store. [Workflowy sharing](https://workflowy.com/help/share-collaborate)
 
-## Route the work
+## Find the workspace
 
-- Discover the MCP tools and confirm access with a scoped read. Desktop MCP requires the Workflowy desktop app running and signed in with Local MCP enabled, plus an agent session connected to its Streamable HTTP connection. The [MCP reference](assets/workflowy-mcp.md) shows scoped seeks, link markup, native dates, and readback checks. [Official setup](https://community.workflowy.com/t/workflowy-desktop-mcp/1695)
-- Read **AI Agent Workspace → ABOUT** and follow the operator's branch link when given. Keep one branch per named project under **PROJECTS**, in case-insensitive name order after `_example` and `_general`. Use `_general` for cross-project or non-project discussions. Organize it by topic when useful. Check ancestry before edits.
-- If the connector is unavailable, continue the task and tell the operator what remains to be recorded. Provide a draft when the conversation is suitable for the material.
+- Discover an authorized connector and confirm access with a scoped read. Workflowy Desktop MCP requires a running, signed-in desktop app, Local MCP enabled, and a connected client. A cloud agent can use a separately configured, operator-authorized connector if available. When access is unavailable, continue under the available instructions and supply an appropriately private, ready-to-paste nested outline with its intended destination. Mark it unsynced. [Official Desktop MCP setup](https://community.workflowy.com/t/workflowy-desktop-mcp/1695)
+- Use the layout and exact ABOUT bootstrap in [Workspace layout](assets/workspace-layout.md). Find a named project by its owner-confirmed link or under **PROJECTS**, in case-insensitive alphabetical order. Route generic non-project notes to **PERSONAL > notes**. Search the flat **STANDARDS** list by title or topic tag before governed work. Read each applicable standard's `rule` or `default` and any `scope`.
+- Use normal bullets for discussion, drafts, evidence, and updates. Never save records as Workflowy comments or comment drafts. Check the existing record first and add a link or a delta when the finding already has a home.
 
-## Project records
+## Write records
 
-- Named projects use `info`, `notes`, and `spec-kit` when applicable. Keep `info` to the purpose, latest supported state, next action, active blockers, and links. Git and the established tracker govern official progress where used. Otherwise use the project artifacts.
-- Keep `notes` as one oldest-first timeline. Use one local ISO 8601 timestamp with its real offset, followed by a short fragment, for a major session or substantive update. Structural labels are exempt. Nest updates and replies with the session or discussion. Outcomes, reasoning, questions, links, and tags belong in children.
-- Keep all formal slices as direct children of `spec-kit` in code order. Use the exact formal slice code and a short title, such as `S094 Check source order`. Put dates, tags, scope, outcome, and authoritative links in children. Require a `Date` child and, for a slice belonging to an epic, a linked `Epic` child. Use the verified integration or authoritative closeout date, labeled by event, or mark it Pending or Unknown.
-- Use one native Workflowy date, `#timeline`, and the primary project hashtag on the same metadata child for indexable records. Add `#slice` for slices. Save a scoped date-range search or export a chronological view using [the date and link methods](assets/workflowy-mcp.md).
-- Use the [project setup and backfill guide](assets/project-backfill.md) for Git, folder-only work, or recovery from local agent records. Copy the [project outline template](assets/templates/project-outline.md) as needed.
+- Named projects use `info`, `notes`, and `spec-kit` when applicable. The only direct children of `info` are `tags`, `links`, and `details`. Under `details`, keep purpose, current state, next actions, blockers, and supporting evidence.
+- Use lowercase letters and underscores for reusable field names, such as `current_state` and `date_basis`. Keep established section names and distinct record titles. Format exact technical literals as inline code. Use the [MCP example](assets/workflowy-mcp.md#write-inline-code) to write native code formatting.
+- Put dated records directly under `notes`, in oldest-first order. The title contains only its ISO 8601 date or timestamp. Put substantive follow-ups at the same level and link to the prior record. Require `title`, `tags`, and `details`. Write field labels on their own bullets with values as children. Use the explicit Workflowy bullet format for every field and value. Only content inside `details` may use another format. Use one tag, link, or distinct item per child. The [record contract](assets/record-format.md) defines precision, optional fields, ordering, and the slice format.
+- Place one formal slice directly under `spec-kit` in code order. Use the formal code and short title. Put the verified date and documented epic in child fields. Use the [project outline template](assets/templates/project-outline.md).
+- Keep record and project names free of inline tags. Store hashtags as individual bullet values under `tags`. For a named project, put its project-level tags in `info > tags`. Record source dates and useful scope tags. The operator owns any timeline construction. Routine recording excludes timeline fields or tags, saved searches, views, and exports.
+- Use [catalog guidance](assets/shared-catalogs.md) for **REFERENCE > Entities**, **Glossary**, and **Remote Data**. Look up identity first, sort by name, and use direct links for specific relationships. Use absolute external URLs and local evidence references sparingly.
 
-## Shared catalogs
+## Backfill, repair, and verify
 
-- **GLOSSARY** owns reusable meanings, methods, protocols, and formats. **ENTITIES** owns named people, organizations, tools, services, models, systems, and datasets. **REFERENCES** owns citable sources, editions, specs, releases, and artifacts. Follow the [catalog rules and worked examples](assets/shared-catalogs.md).
-- Resolve identity across all three catalogs before adding a record. Use a single record per referent and give aliases to the preferred record. A matching title or URL is a review cue. Preserve source versions and actual distinctions.
-- Keep catalog entries alphabetized by name, ignoring case and hashtags. Put fields under their entry as named child bullets. Use a link to the existing source record when it fits, and retain the exact section or version that supports the claim. Reuse hashtags for browsing and direct node links for specific relationships.
+- Use [project setup and backfill](assets/project-backfill.md) for new, existing Git, and folder-only projects, including recovery from local GPT, Claude, and Ollama records.
+- Use [legacy remediation](assets/legacy-remediation.md) to upgrade older note layouts, slice metadata, and comment-based records. Read [Workflowy MCP methods](assets/workflowy-mcp.md) for scoped seeks, patches, links, and date handling.
+- Preserve stable node IDs whenever possible. Read back each patch and check titles, ancestry, order, precision, links, and duplicates. Re-read before retrying an uncertain write. The same evidence should produce zero new records when reapplied.
 
-## Verify and continue
+## Activate in project instructions
 
-Before writing, find the canonical record by meaning and evidence. Update it in place or link to it and record only the change. Preserve stable node IDs. After each batch, read back the affected nodes and verify titles, hierarchy, ordering, link targets, native dates, duplicates, and current state where relevant. Re-read before repeating an uncertain write. A rerun with the same source evidence should add zero records.
-
-## Activate in agent instructions
-
-Paste the following block into the active project `AGENTS.md` or equivalent to opt that project in. The live copy is under **ABOUT → Enable Workflowy for a project**. The [global agent context template](assets/templates/global-agent-context.md) is for user-level instructions covering unrelated or cross-project work.
+Paste this block into the active project `AGENTS.md` or equivalent to enable the Workflowy workflow for that project. Put any project-specific destination link outside the block. Use the [global context prompt](assets/templates/global-agent-context.md) for user-level opt-in.
 
 ```markdown
 ## Workflowy
 
-This project opts into the `workflowy` skill and Workflowy Desktop MCP for
-substantive work. Load the skill when available. A running, signed-in desktop
-app with Local MCP enabled and a connected agent session is required.
+This project opts into the `workflowy` skill and its private agent workspace.
+Load the skill when available. Use the operator's project link or find this
+repo or folder under **AI Agent Workspace > PROJECTS**. Reuse its branch or
+insert it alphabetically. Search **STANDARDS** by title or topic tag. Read the
+applicable rules, defaults, and scopes before governed work.
 
-- Read **AI Agent Workspace → ABOUT** and locate the project under **PROJECTS**.
-  Reuse its branch or insert it alphabetically. Use **PROJECTS → _general** for
-  work without a named project. Confirm the destination before writing.
-- Keep named projects in `info`, `notes`, and `spec-kit` when the project uses
-  Spec Kit. Keep `info` current and link its claims to evidence. Use `notes` for
-  candid drafts, decisions, questions, and sessions in chronological order.
-  Start each major session and substantive update title with one local
-  ISO 8601 timestamp and its offset, followed by a short fragment. Keep
-  updates and replies with their session or discussion.
-- Put each formal slice directly under `spec-kit` in code order. Its title
-  contains only the formal code and short title, like `S094 Check source order`.
-  Add a `Date` child and an `Epic` child when applicable. Put scope, outcome, and
-  links in children. Use the native Workflowy date and project hashtag
-  together on the timeline child for dated records.
-- Find the existing record by meaning and source before writing. Link to
-  the exact finding or authoritative Git, tracker, or project artifact.
-  Add new evidence or a delta in place and preserve the original node ID.
-  Follow ABOUT for shared catalog fields, alphabetical order, and link roles.
-- Keep private work with the operator and their authorized agents. The
-  operator decides what is published. Read back MCP edits and check titles,
-  parents, order, links, dates, and duplicates. If MCP is unavailable,
-  continue the work and report what still needs to be saved.
+Use normal bullets for candid discussion, drafts, decisions, and evidence.
+Never store work in Workflowy comments or comment drafts. Give `info` exactly
+three direct children: `tags`, `links`, and `details`. Put purpose, current state,
+next actions, blockers, and supporting evidence under `details`.
+Use lowercase letters and underscores for reusable field names. Use inline
+code for exact technical literals. Link to the exact canonical finding or evidence.
+Git and the established tracker govern official progress where used.
+Otherwise use the project artifacts. The operator decides what is published.
+
+In `notes`, keep major sessions and substantive updates as a flat, oldest-first
+list. Use only the ISO 8601 date or timestamp as the title. Retain the finest
+supported precision and offset. Put the description, scope tags, and prose
+under `title`, `tags`, and `details`. Use label-only field bullets with each
+value or link nested in its own bullet. Require the Workflowy bullet format
+for fields and values. Only the contents of `details` may use other formats.
+Keep tags out of names and other fields. Use one hashtag per `tags` value.
+Put any project-level tags in `info > tags`. Link related updates. The operator
+owns timeline construction. Agents record dates without creating timeline
+metadata, views, saved searches, or exports.
+
+For Spec Kit, use one direct `spec-kit` bullet per formal slice in code order.
+Use only its code and short title. Nest the verified date under `date` and
+the documented epic under `epic` when applicable. Use the skill for shared
+reference records, migration, and precise field rules.
+
+Desktop MCP requires a running, signed-in Workflowy app with Local MCP
+enabled and a connected client. A cloud or other nonlocal agent uses a
+separately configured, operator-authorized connector when available. Confirm
+the destination and read back writes. If no connector is available, continue
+under the available instructions and provide an appropriately private,
+ready-to-paste nested outline with its exact destination. Mark it unsynced.
 ```
