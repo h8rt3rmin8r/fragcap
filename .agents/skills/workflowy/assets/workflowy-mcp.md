@@ -24,18 +24,43 @@ Discover the active tool schema. For a normal read, use `tree_seek` with `wait_a
 
 ## Patch existing records
 
-Use `tree_patch` with the smallest scoped batch. Find the direct child field by label and replace it by handle. For a move, retain the node ID and check parent and sibling order afterward. Use an adjacent anchor for sorted insertion and explicit child nesting for fields. Read back per-request outcomes and the live nodes. Re-read before retrying a failed or uncertain request. The attached note and bullet title are different fields. Use child bullets for structured fields.
+Use `tree_patch` with the smallest scoped batch. Find the direct child field by label and replace it by handle. For a move, retain the node ID and check parent and sibling order afterward. Use an adjacent anchor for sorted insertion and explicit child nesting for fields. Read back per-request outcomes and the live nodes. Re-read before retrying a failed or uncertain request. The attached note and bullet title are different fields. Set `block_format: "bullets"` explicitly on each structured record title, field label, and value when inserting or reformatting. This includes nested items in a recursive insert. Plain paragraphs may have no visible bullet marker. Only content inside `details` may use another format. Read back the format as well as the hierarchy.
 
-Write native hashtags as plain text. Use a supported HTML anchor such as `<a href="https://workflowy.com/#/NODE">Source title</a>` for an exact internal reference. The editor's `[[` picker can also create internal links. Verify the target and, when relevant, its backlink. A generated backlink can appear in a seek as an unlabeled container and excerpts under the target. Treat it as incoming navigation. User-authored empty bullets are a separate case. Use native mirrors for intentionally shared live content and keep one canonical record. [Links and backlinks](https://workflowy.com/help/internal-external-links/) · [Tags and mentions](https://workflowy.com/help/tags-mentions) · [Mirrors](https://workflowy.com/help/mirrors)
+Write each native hashtag as a plain-text bullet beneath the `tags` field. Omit hashtags from title and other structured field values. Use a supported HTML anchor such as `<a href="https://workflowy.com/#/NODE">Source title</a>` for an exact internal reference. The editor's `[[` picker can also create internal links. Verify the target and, when relevant, its backlink. A generated backlink can appear in a seek as an unlabeled container and excerpts under the target. Treat it as incoming navigation. User-authored empty bullets are a separate case. Use native mirrors for intentionally shared live content and keep one canonical record. [Links and backlinks](https://workflowy.com/help/internal-external-links/) · [Tags and mentions](https://workflowy.com/help/tags-mentions) · [Mirrors](https://workflowy.com/help/mirrors)
 
-## Activate a timeline date
+## Write inline code
 
-Use the editor's `!!` or `/date` picker, or the active patch schema's supported native `time` HTML. Write the local calendar day and project tag on the same named child. This example indexes a landed slice.
+Use inline code for exact paths, file names, flags, environment variables, keys, literal values, and other identifiers when the spelling matters. In a `tree_patch` request, put `<code>...</code>` in the item's `name` to create native Workflowy inline code. Encode literal `&`, `<`, and `>` as `&amp;`, `&lt;`, and `&gt;` inside the element. Serialize the request as JSON so backslashes in paths are escaped correctly. Keep field keys and native hashtags as plain text.
 
-```html
-Date: <time startYear="2026" startMonth="11" startDay="20">Nov 20, 2026</time> Integrated #timeline #demo #slice
+```json
+{
+  "requests": [
+    {
+      "insert_after": "DETAILS_HANDLE",
+      "inside": true,
+      "items": [
+        {
+          "block_format": "bullets",
+          "name": "Set <code>retry_count</code> to <code>3</code> in <code>src/config.toml</code>."
+        }
+      ]
+    }
+  ]
+}
 ```
 
-Read back the `time` attributes and exact tags. Workflowy can normalize the displayed date label. Use an ISO timestamp with the local offset for precise order in a session title or an `Integrated at` child. Preserve day precision when an exact time is unavailable. Use Pending or Unknown for undated slices. A text search can find `#timeline`, while the returned markup confirms the native date. A markup regex in a text filter may miss a native date.
+Read back the changed item using `tree_seek` and check that the exact literal remains inside the code markup. For Markdown handoffs, use backticks around the same literals.
 
-Zoom to PROJECTS and use a starred search with `#timeline` and a date range. Add the project hashtag or `#slice` as needed. Calendar Found Dates gives a day view. For an exported chronology, follow each metadata hit to its parent, deduplicate by the canonical parent ID, and order by supported date and time. Add timeline metadata to each indexable event once. Keep catalog reference dates in reference fields unless the source is itself an independently recorded project event. [Date tags](https://community.workflowy.com/t/date-tags/1675) · [Advanced search](https://community.workflowy.com/t/advanced-search/1672) · [Calendar](https://workflowy.com/help/plan-with-calendar/)
+## Record source dates
+
+Use ISO 8601 text for the exact date or timestamp in a note title. For a day-only date value, use the editor's `!!` or `/date` picker or the supported native `time` markup. Keep the markup alone on its own value bullet.
+
+```html
+<time startYear="2026" startMonth="11" startDay="20">Nov 20, 2026</time>
+```
+
+Read back the time attributes and any separate exact ISO timestamp. The app can normalize the display text. Use separate tag values under `tags` and retain the source's finest verified precision. [Date tags](https://community.workflowy.com/t/date-tags/1675)
+
+## Recover comments
+
+Existing comments can appear as a separate container when inspecting a bullet. Seek from that container to read the contents available to the current connector. A comment draft may be visible only to its owner. Keep published comments and drafts separate from normal records. For recovery and deletion checks, follow [legacy remediation](legacy-remediation.md). [Workflowy comment documentation](https://community.workflowy.com/t/fractal-comments/1681)
