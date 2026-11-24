@@ -6,7 +6,7 @@
 
 ## Summary
 
-Remove the finite site-audit exception for GHSA-fc5q-39xc-vjpf after GitHub withdrew it. Restore an unqualified full site dependency audit without changing the lockfile merely to remove a withdrawn report. Replace the exception-specific validators with small offline and hosted guards that reject audit bypass settings and refuse noncanonical root YAML forms or bare-CR lines that could hide those settings. Correct current guidance, preserve historical v0.11.2 release evidence, and leave the separate Rust advisory work under #640 untouched.
+Remove the finite site-audit exception for GHSA-fc5q-39xc-vjpf after GitHub withdrew it. Restore an unqualified full site dependency audit without changing the lockfile merely to remove a withdrawn report. Replace the exception-specific validators with small offline and hosted guards for workspace YAML, the root package manifest, and repository `.npmrc` files; inspect the hosted audit step's own environment before invoking pnpm. Correct current guidance, preserve historical v0.11.2 release evidence, and leave the separate Rust advisory work under #640 untouched.
 
 ## Technical Context
 
@@ -16,7 +16,7 @@ Remove the finite site-audit exception for GHSA-fc5q-39xc-vjpf after GitHub with
 
 **Storage**: Committed YAML, JSON, Markdown, and Rust source only; no new product or user storage.
 
-**Testing**: Focused xtask negative fixtures for the four bypass forms, unsupported root YAML syntax, bare CR, and a standalone root sequence, plus LF/CRLF and indentless `packages` sequence baselines; cargo xtask supply-chain; pinned pnpm frozen-lockfile install, full audit, and build; cargo xtask ci; final-head hosted audit, docs, and repository checks.
+**Testing**: Focused xtask negative fixtures for workspace, `site/package.json#pnpm.auditConfig`, both repository `.npmrc` locations, unsupported root YAML syntax, bare CR, direct audit-step environment overrides, and mutations that remove or reorder fresh HOME/XDG_CONFIG_HOME isolation; positive LF/CRLF, indentless `packages`, and benign manifest baselines; cargo xtask supply-chain; pinned pnpm frozen-lockfile install, full audit, and build; cargo xtask ci; final-head hosted audit, docs, and repository checks.
 
 **Target Platform**: GitHub hosted Linux site job and local/hosted repository gates. No Windows product behavior change.
 
@@ -62,6 +62,8 @@ specs/213-site-advisory-withdrawal/
 
 ```text
 site/pnpm-workspace.yaml
+site/package.json  (read and validate; no production dependency change)
+.npmrc and site/.npmrc  (must be absent)
 supply-chain/site-audit-exception-v1.json  (remove)
 .github/workflows/audit.yml
 xtask/src/supply_chain.rs
@@ -73,8 +75,8 @@ changelog.d/S213-site-advisory-withdrawal.changed.md
 changelog.d/S213-site-advisory-withdrawal.decisions.md
 ```
 
-**Structure Decision**: Keep the existing site job and offline xtask as independent audit authorities. Replace their exception-specific checks in place. Accept LF/CRLF and canonical root block-mapping keys in the workspace YAML, including indentless list items after a mapping key; reject bare CR, standalone root sequences, and unsupported root forms instead of trusting a partial parse to find every audit key. Do not add a new policy file, new dependency, or general-purpose YAML policy engine. The site lockfile and Rust policy remain outside the diff unless a separate red gate demonstrates a concrete need.
+**Structure Decision**: Keep the existing site job and offline xtask as independent audit authorities. Replace their exception-specific checks in place. Accept LF/CRLF and canonical root block-mapping keys in the workspace YAML, including indentless list items after a mapping key; reject bare CR, standalone root sequences, and unsupported root forms instead of trusting a partial parse to find every audit key. Parse the root package manifest as JSON to reject `pnpm.auditConfig`, reject repository `.npmrc` sources, and put the direct configuration environment assertion in the same hosted step as `pnpm audit`. In that step, set HOME and XDG_CONFIG_HOME to a fresh temporary directory before invoking the unchanged command, preventing step-scoped path overrides from reaching repository-controlled global config files. A prior step cannot see variables scoped only to the audit step. Do not add a new policy file, new dependency, or general-purpose YAML policy engine. The site lockfile and Rust policy remain outside the diff unless a separate red gate demonstrates a concrete need.
 
 ## Delivery Boundary
 
-The PR closes #630 only after the full unfiltered site audit, frozen install, static export, local repository gate, and final-head hosted checks pass. The owner retains merge authority. S213 does not claim a product runtime, installed-product, or private client compatibility result. #640's temporary Rust exception and replacement remain separate.
+The PR closes #630 only after the expanded configuration guard, full unfiltered site audit, frozen install, static export, local repository gate, and final-head hosted checks pass and review comments are resolved. The owner retains merge authority. S213 does not claim a product runtime, installed-product, or private client compatibility result. #640's temporary Rust exception and replacement remain separate.

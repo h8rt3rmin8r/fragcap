@@ -24,3 +24,5 @@
 - [x] CHK010 The advisory withdrawal links an authoritative dated source.
 - [x] CHK011 The slice does not claim a clean audit before the unfiltered command runs.
 - [x] CHK012 Issue closure does not require a future patched release or unspecified field test.
+- [x] CHK013 The PR review finding is translated into testable requirements for the pinned root manifest, both repository `.npmrc` locations, and the hosted audit-step environment.
+- [x] CHK014 Earlier local evidence is distinguished from the corrected final-head candidate that still needs qualification.

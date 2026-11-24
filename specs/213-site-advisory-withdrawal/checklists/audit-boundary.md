@@ -24,3 +24,11 @@
 - [x] CHK010 Current guidance links GitHub's dated withdrawal and describes the present audit state.
 - [x] CHK011 Historical v0.11.2 exception evidence remains accurate as a record of publication time.
 - [x] CHK012 A dated decision records the pinned workflow change and why it removes a now-obsolete exception.
+
+## Review-driven source coverage
+
+- [x] CHK013 Pinned pnpm 10.26.0 source shows `pnpm.auditConfig` is read from the root package manifest and used by the audit handler; the contract requires parsed-JSON refusal with CVE and GHSA fixtures.
+- [x] CHK014 The contract names both repository `.npmrc` paths as refused audit configuration sources and records their current absence.
+- [x] CHK015 The contract requires the hosted environment assertion in the audit step itself, where step-scoped pnpm/npm overrides are visible; a separate prior step is insufficient.
+- [x] CHK016 The final-head audit, site build, repository gate, CI, and review disposition are required again after this second-round change.
+- [x] CHK017 The hosted audit contract isolates HOME and XDG_CONFIG_HOME to a fresh temporary directory so a step-scoped path redirect cannot load repository-controlled global `rc` or user `.npmrc` content.

@@ -2,7 +2,7 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md), [data-model.md](data-model.md), [site audit contract](contracts/site-audit-boundary.md), and [quickstart.md](quickstart.md).
 
-**Organization**: Two independently testable user stories, followed by one final gate. Tests for the audit guard precede its implementation.
+**Organization**: Two independently testable user stories, initial publication, then a review-driven security boundary correction and final gate. Tests for each audit guard expansion precede its implementation.
 
 ## Phase 1: Setup
 
@@ -44,10 +44,23 @@
 - [x] T016 Run `cargo xtask ci` to completion, check Rust formatting and repository documentation rules, and resolve any applicable failure.
 - [x] T017 Re-run the Spec Kit analysis of `specs/213-site-advisory-withdrawal/spec.md`, `plan.md`, and `tasks.md` after implementation; resolve every critical or high mismatch before PR handoff.
 - [x] T018 Inspect the final diff against `contracts/site-audit-boundary.md`: no site lock churn without separate proof, no altered #640 Rust exception, no private identifier, no mojibake, and no stale current GHSA claim.
-- [ ] T019 Commit, push, and publish the S213 PR with `Closes #630`; resolve all comments within the owner's two-round Codex cap, wait for green final-head CI, and hand merge authority to the owner.
+- [x] T019 Commit, push, and publish [S213 PR #642](https://github.com/h8rt3rmin8r/fragcap/pull/642) with `Closes #630`; retain owner merge authority.
+
+## Phase 6: Review-driven audit-source correction
+
+**Goal**: Resolve the security review finding that pinned pnpm 10.26.0 can read audit ignores from the root manifest even when the workspace YAML is clean, and close adjacent repository-controlled audit input paths.
+
+**Independent Test**: A parsed manifest CVE or GHSA ignore, either repository `.npmrc`, and a direct audit-step environment override fail before the unchanged pinned audit command. A step HOME/XDG_CONFIG_HOME redirect cannot reach a committed global config because the audit resets those paths to a fresh temporary directory. The current manifest and no-`.npmrc` baseline pass.
+
+- [x] T020 [US1] Add controlled negative fixtures for `site/package.json#pnpm.auditConfig.ignoreCves`, `.ignoreGhsas`, root `.npmrc`, `site/.npmrc`, and audit-step-only pnpm/npm environment overrides. Add positive fixtures for benign manifest siblings and the current no-`.npmrc` baseline; observe the new contract fail before implementation.
+- [x] T021 [US1] Extend the offline `xtask/src/supply_chain.rs` gate to parse `site/package.json`, reject root `pnpm.auditConfig`, and refuse repository `.npmrc` sources while retaining the workspace YAML guard and unrelated Rust policy.
+- [x] T022 [US1] Extend `.github/workflows/audit.yml` with the matching manifest and `.npmrc` checks and an environment assertion in the same hosted step as `pnpm audit --audit-level low`; keep Node/pnpm pins, frozen install, and exact audit command unchanged. Update workflow-wiring checks to fail a step-scoped environment bypass.
+- [x] T023 [US1] In the hosted audit step, create one fresh temporary directory and set HOME and XDG_CONFIG_HOME to it after refusing direct configuration variables and before invoking the unchanged pinned audit command. Add a workflow-wiring mutation that fails if this isolation is removed or reordered.
+- [x] T024 Re-run affected focused tests, `cargo xtask supply-chain`, and `cargo xtask ci` after the fresh-home change; retain pinned frozen install, full site audit, and static export results from the same unchanged site graph; complete Spec Kit cross-artifact analysis. Update `verification.md` with the distinct evidence tiers and confirm that local green checks do not replace final-head hosted CI.
+- [ ] T025 Push the corrected branch, answer the security review finding and any remaining comments without exceeding the owner's review-round cap, wait for terminal green final-head CI and satisfied reviews, then flag the owner for the final merge ritual.
 
 ## Dependencies and execution order
 
-T001-T003 establish the scope and contract. T004 must be observed red before T006-T008 make the new guard pass. T005 and T010-T011 can run in parallel with guard implementation because they touch separate files. T007 follows the contract from T006. T008 and T009 complete US1. T010-T014 complete US2 independently of the site build, but their current claims must match the final US1 implementation. T015-T018 are final acceptance gates before T019.
+T001-T003 establish the original scope and contract. T004 was observed red before T006-T008 made the workspace guard pass. T005 and T010-T011 ran independently of guard implementation. T008-T009 completed the initial US1 implementation; T010-T014 completed US2; T015-T018 qualified the initial PR candidate; T019 published PR #642. The review finding then expanded US1. T020 established failing fixtures before T021-T022 closed the direct additional sources. T023 closes the indirect hosted global-config path. T024 requalifies the changed candidate, and T025 is the final review and CI handoff.
 
-**Parallel opportunities**: T005, T010, and T011 touch separate files. T014 can proceed after the specification section choices are settled. No task permits a second advisory ignore as a shortcut.
+**Parallel opportunities**: T005, T010, and T011 touched separate files. T021 and T022 have distinct implementation files after the shared T020 contract is fixed. No task permits a second advisory ignore as a shortcut.

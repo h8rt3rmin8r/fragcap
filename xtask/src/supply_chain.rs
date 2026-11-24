@@ -94,6 +94,8 @@ fn validate_repository(root: &Path) -> Result<usize, String> {
     let today = today_ymd();
     let mut findings = validate_policy(&policy, &graphs, today.clone());
     findings.extend(validate_site_workspace(root)?);
+    findings.extend(validate_site_package_manifest(root)?);
+    findings.extend(validate_site_npmrc_absence(root)?);
     findings.extend(validate_repository_wiring(root, &policy)?);
     normalize_findings(&mut findings);
     for finding in &findings {
@@ -106,6 +108,42 @@ fn validate_site_workspace(root: &Path) -> Result<Vec<String>, String> {
     let workspace = fs::read_to_string(root.join("site/pnpm-workspace.yaml"))
         .map_err(|error| error.to_string())?;
     Ok(validate_site_workspace_audit_config(&workspace))
+}
+
+fn validate_site_package_manifest_value(manifest: &Value) -> Vec<String> {
+    if manifest
+        .get("pnpm")
+        .and_then(Value::as_object)
+        .is_some_and(|settings| settings.contains_key("auditConfig"))
+    {
+        vec!["site-audit-bypass: site/package.json pnpm.auditConfig is prohibited".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn validate_site_package_manifest(root: &Path) -> Result<Vec<String>, String> {
+    let bytes = fs::read(root.join("site/package.json"))
+        .map_err(|error| format!("site/package.json: {error}"))?;
+    let manifest: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("site/package.json: {error}"))?;
+    Ok(validate_site_package_manifest_value(&manifest))
+}
+
+fn validate_site_npmrc_absence(root: &Path) -> Result<Vec<String>, String> {
+    let mut findings = Vec::new();
+    for relative in [".npmrc", "site/.npmrc"] {
+        if root
+            .join(relative)
+            .try_exists()
+            .map_err(|error| format!("{relative}: {error}"))?
+        {
+            findings.push(format!(
+                "site-audit-bypass: {relative} can alter the site audit and is prohibited"
+            ));
+        }
+    }
+    Ok(findings)
 }
 
 fn validate_site_workspace_audit_config(workspace: &str) -> Vec<String> {
@@ -1123,6 +1161,10 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
         (audit, "Install site dependencies", vec!["working-directory: site", "run: pnpm install --frozen-lockfile"]),
         (audit, "Reject site audit bypass configuration", vec![
             "run: |",
+            "for (const path of [\".npmrc\", \"site/.npmrc\"]) {",
+            "if (existsSync(path)) {",
+            "const manifest = JSON.parse(readFileSync(\"site/package.json\", \"utf8\"));",
+            "if (Object.hasOwn(manifest.pnpm ?? {}, \"auditConfig\")) {",
             "const workspace = readFileSync(\"site/pnpm-workspace.yaml\", \"utf8\");",
             "if (/\\r(?!\\n)/.test(workspace)) {",
             "const rootIndent = Math.min(...lines.map(({ indent }) => indent));",
@@ -1134,7 +1176,15 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
         ]),
         (audit, "Audit the complete site graph", vec![
             "working-directory: site",
-            "run: pnpm audit --audit-level low",
+            "run: |",
+            "const config = Object.keys(process.env).filter((key) =>",
+            "/^(npm|pnpm)_config_/i.test(key)",
+            "if (config.length) {",
+            "throw Error(`Site audit configuration environment settings are prohibited: ${config.join(\", \")}`);",
+            "audit_home=\"$(mktemp -d)\"",
+            "export HOME=\"$audit_home\"",
+            "export XDG_CONFIG_HOME=\"$audit_home\"",
+            "pnpm audit --audit-level low",
         ]),
         (audit, "Audit isolated Rust graphs", vec![
             "cargo deny --locked --all-features --manifest-path \"$manifest\" --config deny.toml check advisories",
@@ -1171,11 +1221,18 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
         findings.push("dependency-workflow: retired site advisory exception remains".into());
     }
     let site_audit = workflow_step(audit, "Audit the complete site graph").unwrap_or_default();
-    if site_audit
-        .lines()
+    let audit_lines: Vec<_> = site_audit.lines().map(str::trim).collect();
+    if audit_lines
+        .iter()
         .filter(|line| line.contains("pnpm audit"))
         .count()
         != 1
+        || !audit_lines.ends_with(&[
+            "audit_home=\"$(mktemp -d)\"",
+            "export HOME=\"$audit_home\"",
+            "export XDG_CONFIG_HOME=\"$audit_home\"",
+            "pnpm audit --audit-level low",
+        ])
     {
         findings.push("dependency-workflow: site must run one exact audit".into());
     }
@@ -3074,6 +3131,50 @@ mod tests {
     }
 
     #[test]
+    fn site_audit_rejects_repository_npmrc_files() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(validate_site_npmrc_absence(root.path()).unwrap().is_empty());
+        fs::create_dir(root.path().join("site")).unwrap();
+
+        for relative in [".npmrc", "site/.npmrc"] {
+            let path = root.path().join(relative);
+            fs::write(&path, "ignore-registry-errors=true\n").unwrap();
+            let findings = validate_site_npmrc_absence(root.path()).unwrap();
+            assert!(
+                findings.iter().any(|finding| finding.contains(relative)),
+                "repository config bypass {relative} was not rejected: {findings:?}"
+            );
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn site_package_manifest_rejects_audit_exceptions() {
+        let current: Value = serde_json::from_str(include_str!("../../site/package.json")).unwrap();
+        assert!(validate_site_package_manifest_value(&current).is_empty());
+        let benign: Value = serde_json::from_str(
+            r#"{"name":"fixture","pnpm":{"overrides":{"foo":"1.0.0"}},"scripts":{"build":"echo ok"}}"#,
+        )
+        .unwrap();
+        assert!(validate_site_package_manifest_value(&benign).is_empty());
+
+        for fixture in [
+            r#"{"pnpm":{"auditConfig":{"ignoreCves":["CVE-2026-112366"]}}}"#,
+            r#"{"pnpm":{"auditConfig":{"ignoreGhsas":["GHSA-fc5q-39xc-vjpf"]}}}"#,
+            r#"{"pnpm":{"auditConfig":{}}}"#,
+        ] {
+            let manifest: Value = serde_json::from_str(fixture).unwrap();
+            let findings = validate_site_package_manifest_value(&manifest);
+            assert!(
+                findings.iter().any(|finding| {
+                    finding.contains("site/package.json") && finding.contains("pnpm.auditConfig")
+                }),
+                "package manifest audit bypass was not rejected: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
     fn site_workspace_requires_unfiltered_audit_config() {
         let baseline = "packages:\n  - \".\"\n\n# auditConfig: is harmless comment text\n# audit: is also a comment\n# 'audit': false is harmless too\n# {auditConfig: {ignoreCves: []}} is just a comment\n";
         assert!(validate_site_workspace_audit_config(baseline).is_empty());
@@ -3241,6 +3342,25 @@ mod tests {
             (
                 "if (match[1] === \"auditConfig\" || match[1] === \"audit\") {",
                 "if (match[1] === \"unused\") {",
+            ),
+            (
+                "if (Object.hasOwn(manifest.pnpm ?? {}, \"auditConfig\")) {",
+                "if (false) {",
+            ),
+            ("if (existsSync(path)) {", "if (false) {"),
+            (
+                "/^(npm|pnpm)_config_/i.test(key)",
+                "/^this_variable_does_not_exist_/i.test(key)",
+            ),
+            ("audit_home=\"$(mktemp -d)\"", "audit_home=\"$HOME\""),
+            ("export HOME=\"$audit_home\"", "export HOME=\"$HOME\""),
+            (
+                "export XDG_CONFIG_HOME=\"$audit_home\"",
+                "export XDG_CONFIG_HOME=\"$HOME\"",
+            ),
+            (
+                "export HOME=\"$audit_home\"\n          export XDG_CONFIG_HOME=\"$audit_home\"",
+                "export XDG_CONFIG_HOME=\"$audit_home\"\n          export HOME=\"$audit_home\"",
             ),
             ("if (/\\r(?!\\n)/.test(workspace)) {", "if (false) {"),
             (

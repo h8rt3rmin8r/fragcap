@@ -78,7 +78,16 @@ jobs:
       - name: Reject site audit bypass configuration
         run: |
           node --input-type=module -e '
-            import { readFileSync } from "node:fs";
+            import { existsSync, readFileSync } from "node:fs";
+            for (const path of [".npmrc", "site/.npmrc"]) {
+              if (existsSync(path)) {
+                throw Error(`${path} can alter the site audit and is prohibited`);
+              }
+            }
+            const manifest = JSON.parse(readFileSync("site/package.json", "utf8"));
+            if (Object.hasOwn(manifest.pnpm ?? {}, "auditConfig")) {
+              throw Error("site/package.json pnpm.auditConfig is prohibited");
+            }
             const workspace = readFileSync("site/pnpm-workspace.yaml", "utf8");
             if (/\r(?!\n)/.test(workspace)) {
               throw Error("Bare CR line ending in site workspace");
@@ -104,4 +113,16 @@ jobs:
           '
       - name: Audit the complete site graph
         working-directory: site
-        run: pnpm audit --audit-level low
+        run: |
+          node --input-type=module -e '
+            const config = Object.keys(process.env).filter((key) =>
+              /^(npm|pnpm)_config_/i.test(key)
+            );
+            if (config.length) {
+              throw Error(`Site audit configuration environment settings are prohibited: ${config.join(", ")}`);
+            }
+          '
+          audit_home="$(mktemp -d)"
+          export HOME="$audit_home"
+          export XDG_CONFIG_HOME="$audit_home"
+          pnpm audit --audit-level low
