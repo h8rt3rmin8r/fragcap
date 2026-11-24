@@ -1,6 +1,7 @@
 ---
 name: workflowy
 description: Work in a private Workflowy notebook using Desktop MCP. Use to brainstorm, review a discussion, record a project session or Spec Kit slice, backfill a project, or maintain the shared glossary, entities, and references.
+disable-model-invocation: false
 metadata:
   version: "1.1.0"
 ---
