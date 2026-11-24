@@ -491,6 +491,7 @@ pub struct ConnectionDiagnostic {
     pub transport_category: Option<&'static str>,
     pub os_error_code: Option<i32>,
     pub header_timeout_phase: Option<&'static str>,
+    pub http_head_bytes_before_failure: Option<u32>,
     pub completed_exchanges: u64,
     pub inspection: Option<crate::InspectionDecision>,
     pub association_inspection: Option<crate::InspectionDecision>,

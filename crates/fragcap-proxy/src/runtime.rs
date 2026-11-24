@@ -483,6 +483,7 @@ struct ConnectionTrace {
     tls_alert: Option<String>,
     transport_category: Option<&'static str>,
     os_error_code: Option<i32>,
+    http_head_bytes_before_failure: Option<u32>,
     inspection: Option<crate::InspectionDecision>,
     association_inspection: Option<crate::InspectionDecision>,
 }
@@ -500,6 +501,7 @@ impl Default for ConnectionTrace {
             tls_alert: None,
             transport_category: None,
             os_error_code: None,
+            http_head_bytes_before_failure: None,
             inspection: None,
             association_inspection: None,
         }
@@ -575,6 +577,7 @@ impl ConnectionTrace {
             transport_category: self.transport_category,
             os_error_code: self.os_error_code,
             header_timeout_phase: None,
+            http_head_bytes_before_failure: self.http_head_bytes_before_failure,
             completed_exchanges: 0,
             inspection: self.inspection,
             association_inspection: self.association_inspection,
@@ -595,12 +598,14 @@ fn trace_complete(trace: &StdMutex<ConnectionTrace>, stage: crate::ConnectionSta
 }
 
 fn trace_fail(trace: &StdMutex<ConnectionTrace>, boundary: &'static str, error: &ProtocolError) {
-    trace.lock().expect("connection trace lock").fail(
+    let mut trace = trace.lock().expect("connection trace lock");
+    trace.fail(
         boundary,
         error.tls_alert.clone(),
         error.transport_category,
         error.os_error_code,
     );
+    trace.http_head_bytes_before_failure = error.http_head_bytes_before_failure;
 }
 
 #[derive(Clone)]
@@ -3231,6 +3236,30 @@ mod tests {
         assert_eq!(detail.header_timeout_phase, Some("before-first-request"));
         assert_eq!(detail.last_reached, crate::ConnectionStage::FirstRequest);
         assert_eq!(detail.boundary, Some("client-facing"));
+    }
+
+    #[test]
+    fn head_failure_count_survives_connection_trace() {
+        let trace = StdMutex::new(ConnectionTrace::default());
+        let mut error = ProtocolError::new("http-head-early-eof", "message head ended early");
+        error.http_head_bytes_before_failure = Some(3);
+        trace_fail(&trace, "client-facing", &error);
+        let detail = trace
+            .into_inner()
+            .unwrap()
+            .into_diagnostic(23, "failed", Some(error.code));
+        assert_eq!(detail.code, Some("http-head-early-eof"));
+        assert_eq!(detail.boundary, Some("client-facing"));
+        assert_eq!(detail.http_head_bytes_before_failure, Some(3));
+
+        let trace = StdMutex::new(ConnectionTrace::default());
+        let error = ProtocolError::new("upstream-connect-failed", "connection failed");
+        trace_fail(&trace, "upstream-tcp", &error);
+        let detail = trace
+            .into_inner()
+            .unwrap()
+            .into_diagnostic(24, "failed", Some(error.code));
+        assert_eq!(detail.http_head_bytes_before_failure, None);
     }
 
     #[test]

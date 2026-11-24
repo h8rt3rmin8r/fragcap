@@ -166,6 +166,44 @@ fn debug_report_exports_partial_route_without_changing_source() {
     let route = bundle.join("route.jsonl");
     let prefix = b"{\"type\":\"lifecycle.header\",\"schema_version\":1,\"stream\":\"route\",\"session_id\":\"private-session\"}\n";
     std::fs::write(&route, prefix).unwrap();
+    let without_proxy = fragcap::deep_capture::build_route_debug_report(&bundle).unwrap();
+    assert!(without_proxy["proxy"].get("head_read_failures").is_none());
+    let proxy = bundle.join("proxy.jsonl");
+    let proxy_prefix = [
+        serde_json::json!({"type":"lifecycle.header","schema_version":1,"stream":"proxy","session_id":"private-session"}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":1,"fields":{
+            "connection_id":7,"terminal":"failed","code":"http-head-early-eof","boundary":"client-facing",
+            "http_head_bytes_before_failure":3,"inspection_owner_proof":"private-head-canary"
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":2,"fields":{
+            "connection_id":8,"terminal":"failed","code":"unrelated-failure","boundary":"upstream-tcp"
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":3,"fields":{
+            "connection_id":9,"terminal":"failed","code":"unrelated-failure","boundary":"client-facing",
+            "http_head_bytes_before_failure":5
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":4,"fields":{
+            "connection_id":10,"terminal":"failed","code":"http-head-read-failed","boundary":"client-facing",
+            "http_head_bytes_before_failure":"3"
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":5,"fields":{
+            "connection_id":11,"terminal":"failed","code":"http-head-early-eof","boundary":"client-facing",
+            "http_head_bytes_before_failure":0
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":6,"fields":{
+            "connection_id":12,"terminal":"complete","code":"http-head-read-failed","boundary":"client-facing",
+            "http_head_bytes_before_failure":2
+        }}),
+        serde_json::json!({"type":"proxy.connection-diagnostic","sequence":7,"fields":{
+            "connection_id":13,"terminal":"failed","code":"http-head-read-failed","boundary":"upstream",
+            "http_head_bytes_before_failure":0
+        }}),
+    ]
+    .into_iter()
+    .map(|value| value.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&proxy, format!("{proxy_prefix}\n")).unwrap();
     let destination = root.path().join("debug-report.json");
     let (code, output, error) = run(&[
         "--json",
@@ -182,8 +220,23 @@ fn debug_report_exports_partial_route_without_changing_source() {
         serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
     assert_eq!(report["route"]["state"], "crash-prefix");
     assert_eq!(report["route"]["complete"], false);
+    let failures = report["proxy"]["head_read_failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 2);
+    assert_eq!(failures[0]["connection_id"], 7);
+    assert_eq!(failures[0]["code"], "http-head-early-eof");
+    assert_eq!(failures[0]["boundary"], "client-facing");
+    assert_eq!(failures[0]["http_head_bytes_before_failure"], 3);
+    assert_eq!(failures[1]["connection_id"], 13);
+    assert_eq!(failures[1]["code"], "http-head-read-failed");
+    assert_eq!(failures[1]["boundary"], "upstream");
+    assert_eq!(failures[1]["http_head_bytes_before_failure"], 0);
+    assert!(!report.to_string().contains("private-head-canary"));
     assert!(!report.to_string().contains("private-session"));
     assert_eq!(std::fs::read(&route).unwrap(), prefix);
+    assert_eq!(
+        std::fs::read(&proxy).unwrap(),
+        format!("{proxy_prefix}\n").as_bytes()
+    );
     let (repeat, _, _) = run(&[
         "bundle",
         "debug-report",

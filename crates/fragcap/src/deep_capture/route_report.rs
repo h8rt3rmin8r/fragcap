@@ -524,6 +524,50 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
         .as_ref()
         .map(|prefix| stream_status(prefix.status))
         .unwrap_or(proxy_source_state);
+    // Project only typed, counted head-read failures. The lifecycle reader already
+    // bounds the number of source records, and no free-form diagnostic detail is copied.
+    let head_read_failures: Vec<Value> = proxy
+        .as_ref()
+        .into_iter()
+        .flat_map(|prefix| &prefix.records)
+        .filter_map(|record| {
+            if record["type"] != "proxy.connection-diagnostic" {
+                return None;
+            }
+            let fields = &record["fields"];
+            if fields["terminal"] != "failed" {
+                return None;
+            }
+            let code = fields["code"].as_str()?;
+            if !matches!(
+                code,
+                "http-head-read-failed" | "http-head-early-eof" | "http-header-limit-exceeded"
+            ) {
+                return None;
+            }
+            let boundary = fields["boundary"].as_str()?;
+            if !matches!(boundary, "client-facing" | "upstream") {
+                return None;
+            }
+            let count = fields["http_head_bytes_before_failure"].as_u64()?;
+            if count > u32::MAX as u64 {
+                return None;
+            }
+            if count == 0 && code != "http-head-read-failed" {
+                return None;
+            }
+            Some(json!({
+                "connection_id": fields["connection_id"].as_u64()?,
+                "code": code,
+                "boundary": boundary,
+                "http_head_bytes_before_failure": count,
+            }))
+        })
+        .collect();
+    let mut proxy_summary = json!({"state":proxy_state,"events":proxy.as_ref().map_or(0, |prefix| prefix.records.len())});
+    if !head_read_failures.is_empty() {
+        proxy_summary["head_read_failures"] = json!(head_read_failures);
+    }
     let process_trace_state = process_trace
         .as_ref()
         .map(|source| source.state)
@@ -569,7 +613,7 @@ pub fn build_route_debug_report(bundle: &Path) -> io::Result<Value> {
             "failure_stages": manifest.as_ref().and_then(|value| value["failures"].as_array()).map(|failures| failures.iter().map(|failure| json!({"stage":failure["stage"],"code":failure["code"]})).collect::<Vec<_>>()),
         },
         "route": {"state":route_state,"complete":route_complete,"dropped_events":route_loss,"events":route.as_ref().map_or(0, |prefix| prefix.events.len()),"selected_flows":selected_flows,"client_reachable_flows":client_reachable_flows,"bidirectional_flows":bidirectional_flows,"limited_flows":limited_flows,"zero_byte_connected_flows":zero_byte_connected_flows},
-        "proxy": {"state":proxy_state,"events":proxy.as_ref().map_or(0, |prefix| prefix.records.len())},
+        "proxy": proxy_summary,
         "application": {"state":application.as_ref().map(application_status).unwrap_or(application_source_state),"records":application.as_ref().map_or(0, |prefix| prefix.records.len())},
         "process_trace": {"state":process_trace_state,"completeness":process_trace.as_ref().and_then(|source| source.completeness),"events":process_trace.as_ref().map_or(0, |source| source.events)},
         "packet": {"state":if bundle.join("capture.fcapng").is_file() { "artifact-present" } else { "artifact-unavailable" }, "original_flow_reconciliation":if packet_joined_flows > 0 { "joined-by-proxy-connection" } else { "unavailable" }, "joined_flows":packet_joined_flows},

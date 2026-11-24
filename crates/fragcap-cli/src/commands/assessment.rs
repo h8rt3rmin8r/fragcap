@@ -331,6 +331,9 @@ fn proxy_json(proxy: &ProxyDiagnostics) -> Value {
             "inspection_reason": record.inspection_reason,
             "inspection_decided_after_ms": record.inspection_decided_after_ms,
             });
+            if let Some(bytes) = record.http_head_bytes_before_failure {
+                value["http_head_bytes_before_failure"] = json!(bytes);
+            }
             value["association_inspection_scope"] = json!(record.association_inspection_scope);
             value["association_inspection_action"] = json!(record.association_inspection_action);
             value["association_inspection_reason"] = json!(record.association_inspection_reason);
@@ -650,6 +653,58 @@ mod tests {
             evidence_windows: EvidenceWindows::default(),
             observation_windows,
         }
+    }
+
+    #[test]
+    fn debug_report_retains_head_failure_count_only_for_affected_connection() {
+        let failed = ProxyConnectionDiagnostic {
+            schema_version: 1,
+            connection_id: 1,
+            terminal: "failed".into(),
+            cause: None,
+            code: Some("http-head-early-eof".into()),
+            stages: Vec::new(),
+            last_reached: "first-request".into(),
+            last_completed: "authentication".into(),
+            boundary: Some("client-facing".into()),
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
+            header_timeout_phase: None,
+            http_head_bytes_before_failure: Some(3),
+            completed_exchanges: 0,
+            inspection_requested_scope: None,
+            inspection_scope: None,
+            inspection_action: None,
+            inspection_reason: None,
+            inspection_decided_after_ms: None,
+            inspection_policy_id: None,
+            inspection_owner_proof: None,
+            association_inspection_requested_scope: None,
+            association_inspection_scope: None,
+            association_inspection_action: None,
+            association_inspection_reason: None,
+            association_inspection_decided_after_ms: None,
+            association_inspection_policy_id: None,
+            association_inspection_owner_proof: None,
+            relay_client_bytes: 0,
+            relay_upstream_bytes: 0,
+            relay_client_datagrams: 0,
+            relay_upstream_datagrams: 0,
+        };
+        let mut complete = failed.clone();
+        complete.connection_id = 2;
+        complete.terminal = "complete".into();
+        complete.code = None;
+        complete.http_head_bytes_before_failure = None;
+        let mut diagnostic = diagnostics(Vec::new());
+        diagnostic.proxy.as_mut().unwrap().connections = vec![failed, complete];
+        let report = diagnostics_json(&diagnostic);
+        let records = report["proxy"]["connections"].as_array().unwrap();
+        assert_eq!(records[0]["connection_id"], 1);
+        assert_eq!(records[0]["code"], "http-head-early-eof");
+        assert_eq!(records[0]["http_head_bytes_before_failure"], 3);
+        assert!(records[1].get("http_head_bytes_before_failure").is_none());
     }
 
     fn observation(owner: Option<&str>) -> CompatibilityObservation {

@@ -43,6 +43,23 @@ wildcards         = "deny"
 yanked       = "deny"
 unmaintained = "all"
 unsound      = "all"
+# smoltcp 0.12.0 is the sole heapless 0.8.0 parent in the all-features graph.
+# Its enabled path uses Vec and LinearMap, not the listed affected collection
+# APIs. The one Vec IntoIter::drop case iterates Copy IP address/CIDR values,
+# so the advisory's panicking-Drop precondition is absent. Keep these exact,
+# parent-scoped exceptions short-lived while the direct-route stack upgrade
+# and Rust 1.91 MSRV change receive their own compatibility qualification.
+ignore = [
+    { id = "RUSTSEC-2026-0574", reason = "smoltcp 0.12.0 does not use SortedLinkedList", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0575", reason = "smoltcp 0.12.0 does not use Spsc", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0576", reason = "smoltcp 0.12.0 does not use IndexMap", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0577", reason = "smoltcp 0.12.0 iterates only Copy values through Vec IntoIter", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0578", reason = "smoltcp 0.12.0 does not use SortedLinkedList", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0579", reason = "smoltcp 0.12.0 does not use Deque", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0580", reason = "smoltcp 0.12.0 does not use heapless pools", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0581", reason = "smoltcp 0.12.0 does not use Deque", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+    { id = "RUSTSEC-2026-0582", reason = "smoltcp 0.12.0 does not use IndexMap", expiry = "2026-12-15", allow = ["smoltcp@0.12.0"] },
+]
 
 [graph]
 all-features = true

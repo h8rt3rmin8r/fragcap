@@ -92,6 +92,7 @@ pub struct ProtocolError {
     pub transport_category: Option<&'static str>,
     pub os_error_code: Option<i32>,
     pub boundary: Option<&'static str>,
+    pub http_head_bytes_before_failure: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +129,13 @@ impl ProtocolError {
             transport_category: None,
             os_error_code: None,
             boundary: None,
+            http_head_bytes_before_failure: None,
         }
+    }
+
+    fn with_http_head_bytes(mut self, bytes: usize) -> Self {
+        self.http_head_bytes_before_failure = Some(bytes.min(u32::MAX as usize) as u32);
+        self
     }
 
     pub(crate) fn at_boundary(mut self, boundary: &'static str) -> Self {
@@ -1644,10 +1651,9 @@ where
         let mut result = Vec::with_capacity(max_bytes.min(1024));
         let mut byte = [0_u8; 1];
         loop {
-            let read = stream
-                .read(&mut byte)
-                .await
-                .map_err(|error| ProtocolError::io("http-head-read-failed", error))?;
+            let read = stream.read(&mut byte).await.map_err(|error| {
+                ProtocolError::io("http-head-read-failed", error).with_http_head_bytes(result.len())
+            })?;
             if read == 0 {
                 return if result.is_empty() {
                     Ok(None)
@@ -1655,7 +1661,8 @@ where
                     Err(ProtocolError::new(
                         "http-head-early-eof",
                         "peer closed during a message head",
-                    ))
+                    )
+                    .with_http_head_bytes(result.len()))
                 };
             }
             result.push(byte[0]);
@@ -1666,7 +1673,8 @@ where
                 return Err(ProtocolError::new(
                     "http-header-limit-exceeded",
                     "message head exceeds the configured byte limit",
-                ));
+                )
+                .with_http_head_bytes(result.len()));
             }
         }
     })
@@ -1994,6 +2002,100 @@ fn emit_response_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
+    use tokio::io::{AsyncWriteExt, ReadBuf};
+
+    struct BytesThenError {
+        bytes: &'static [u8],
+        position: usize,
+    }
+
+    impl AsyncRead for BytesThenError {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            target: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            if let Some(&byte) = this.bytes.get(this.position) {
+                this.position += 1;
+                target.put_slice(&[byte]);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn head_read_error_reports_only_the_observed_count() {
+        for (bytes, expected) in [(&b""[..], 0), (&b"GET"[..], 3)] {
+            let error = read_head(
+                &mut BytesThenError { bytes, position: 0 },
+                32,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, "http-head-read-failed");
+            assert_eq!(error.http_head_bytes_before_failure, Some(expected));
+            assert!(!error.detail.contains("GET"));
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_head_eof_and_limit_preserve_distinct_outcomes() {
+        let (mut input, mut peer) = tokio::io::duplex(32);
+        peer.write_all(b"GET").await.unwrap();
+        drop(peer);
+        let eof = read_head(&mut input, 32, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(eof.code, "http-head-early-eof");
+        assert_eq!(eof.http_head_bytes_before_failure, Some(3));
+
+        let (mut input, mut peer) = tokio::io::duplex(32);
+        peer.write_all(b"GET").await.unwrap();
+        let limit = read_head(&mut input, 2, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(limit.code, "http-header-limit-exceeded");
+        assert_eq!(limit.http_head_bytes_before_failure, Some(2));
+    }
+
+    #[tokio::test]
+    async fn clean_empty_eof_and_complete_head_have_no_failure_count() {
+        let (mut input, peer) = tokio::io::duplex(32);
+        drop(peer);
+        assert!(read_head(&mut input, 32, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .is_none());
+
+        let (mut input, mut peer) = tokio::io::duplex(32);
+        let head = b"GET / HTTP/1.1\r\n\r\n";
+        peer.write_all(head).await.unwrap();
+        assert_eq!(
+            read_head(&mut input, 32, Duration::from_secs(1))
+                .await
+                .unwrap(),
+            Some(head.to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_head_timeout_does_not_invent_observed_bytes() {
+        let (mut input, _peer) = tokio::io::duplex(32);
+        let error = read_head(&mut input, 32, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "http-header-timeout");
+        assert_eq!(error.http_head_bytes_before_failure, None);
+    }
 
     #[test]
     fn tunnel_request_uses_https_scheme_and_effective_port() {
