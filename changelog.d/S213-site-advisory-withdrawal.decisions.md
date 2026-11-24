@@ -1,0 +1,2 @@
+<!-- spec-impact: 24.2, 24.3, 27.3 -->
+**2026-11-24** GitHub withdrew GHSA-fc5q-39xc-vjpf on 2026-11-18 because it is not a security issue. Remove the site-only exception and its pinned workflow validator, retain the unchanged full-graph audit, and require a plain block mapping at the workspace root so alternate YAML syntax cannot hide an audit bypass from the local and hosted guards. Preserve the v0.11.2 release record as publication-time evidence; the separate Rust exceptions under #640 remain governed independently.

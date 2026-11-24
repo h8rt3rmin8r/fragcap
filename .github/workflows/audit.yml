@@ -75,40 +75,33 @@ jobs:
         working-directory: site
         run: pnpm install --frozen-lockfile
 
-      - name: Validate temporary site advisory exception
+      - name: Reject site audit bypass configuration
         run: |
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            const record = JSON.parse(readFileSync(
-              "supply-chain/site-audit-exception-v1.json", "utf8"));
-            if (record.id !== "GHSA-fc5q-39xc-vjpf" ||
-                record.cve !== "CVE-2026-112366" ||
-                record.package !== "picomatch" ||
-                record.version !== "4.0.5" ||
-                record.expires !== "2026-12-01") {
-              throw Error("Site advisory exception identity changed");
-            }
             const workspace = readFileSync("site/pnpm-workspace.yaml", "utf8");
-            const expected = "auditConfig:\n  ignoreCves:\n" +
-              "    - CVE-2026-112366\n";
-            if (workspace.slice(workspace.indexOf("auditConfig:")) !==
-                expected || workspace.includes("\naudit:\n")) {
-              throw Error("Site advisory ignore configuration changed");
+            if (/\r(?!\n)/.test(workspace)) {
+              throw Error("Bare CR line ending in site workspace");
             }
-            const lock = readFileSync("site/pnpm-lock.yaml", "utf8");
-            const versions = [...lock.matchAll(/^  picomatch@([^:]+):/gm)];
-            if (versions.length !== 2 ||
-                versions.some((entry) => entry[1] !== "4.0.5")) {
-              throw Error("Locked picomatch version changed");
+            const lines = workspace.split(/\r?\n/)
+              .map((line) => {
+                const trimmed = line.trimStart();
+                return { trimmed, indent: line.length - trimmed.length };
+              })
+              .filter(({ trimmed }) => trimmed && !trimmed.startsWith("#"));
+            const rootIndent = Math.min(...lines.map(({ indent }) => indent));
+            let seenRootKey = false;
+            for (const { trimmed, indent } of lines) {
+              if (indent !== rootIndent) continue;
+              if (trimmed.startsWith("- ") && seenRootKey) continue;
+              const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:/.exec(trimmed);
+              if (!match) throw Error("Noncanonical site workspace root mapping");
+              seenRootKey = true;
+              if (match[1] === "auditConfig" || match[1] === "audit") {
+                throw Error("Site audit bypass configuration is prohibited");
+              }
             }
-            const expiry = Date.parse(`${record.expires}T00:00:00Z`);
-            if (!Number.isFinite(expiry) || Date.now() >= expiry) {
-              throw Error(`Site advisory exception ${record.id} expired`);
-            }
-            console.log(`Exception-qualified site audit: ${record.id}`);
           '
-
-      # Exact temporary exception tracked in issue #630; every other finding blocks.
       - name: Audit the complete site graph
         working-directory: site
         run: pnpm audit --audit-level low

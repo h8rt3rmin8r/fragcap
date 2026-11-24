@@ -10,10 +10,6 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POLICY_REL: &str = "supply-chain/policy-v1.json";
-const SITE_EXCEPTION_REL: &str = "supply-chain/site-audit-exception-v1.json";
-const SITE_EXCEPTION_ID: &str = "GHSA-fc5q-39xc-vjpf";
-const SITE_EXCEPTION_CVE: &str = "CVE-2026-112366";
-const SITE_EXCEPTION_EXPIRY: &str = "2026-12-01";
 const HEAPLESS_ADVISORY_EXPIRY: &str = "2026-12-15";
 const HEAPLESS_ADVISORY_IDS: [&str; 9] = [
     "RUSTSEC-2026-0574",
@@ -97,7 +93,7 @@ fn validate_repository(root: &Path) -> Result<usize, String> {
     let graphs = collect_graphs(root)?;
     let today = today_ymd();
     let mut findings = validate_policy(&policy, &graphs, today.clone());
-    findings.extend(validate_site_exception(root, &today)?);
+    findings.extend(validate_site_workspace(root)?);
     findings.extend(validate_repository_wiring(root, &policy)?);
     normalize_findings(&mut findings);
     for finding in &findings {
@@ -106,97 +102,60 @@ fn validate_repository(root: &Path) -> Result<usize, String> {
     Ok(findings.len())
 }
 
-fn validate_site_exception(root: &Path, today: &str) -> Result<Vec<String>, String> {
-    let record: Value = serde_json::from_slice(
-        &fs::read(root.join(SITE_EXCEPTION_REL)).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let lock =
-        fs::read_to_string(root.join("site/pnpm-lock.yaml")).map_err(|error| error.to_string())?;
+fn validate_site_workspace(root: &Path) -> Result<Vec<String>, String> {
     let workspace = fs::read_to_string(root.join("site/pnpm-workspace.yaml"))
         .map_err(|error| error.to_string())?;
-    Ok(validate_site_exception_value(
-        &record, &lock, &workspace, today,
-    ))
+    Ok(validate_site_workspace_audit_config(&workspace))
 }
 
-fn validate_site_exception_value(
-    record: &Value,
-    lock: &str,
-    workspace: &str,
-    today: &str,
-) -> Vec<String> {
-    let mut findings = Vec::new();
-    let Some(object) = record.as_object() else {
-        return vec!["site-exception-schema: record must be an object".into()];
-    };
-    check_keys(
-        object,
-        &[
-            "schema_version",
-            "id",
-            "cve",
-            "rule",
-            "package",
-            "version",
-            "owner",
-            "rationale",
-            "created",
-            "expires",
-            "removal_condition",
-            "tracking_issue",
-        ],
-        "site advisory exception",
-        &mut findings,
-    );
-    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
-        findings.push("site-exception-schema: schema version must be 1".into());
+fn validate_site_workspace_audit_config(workspace: &str) -> Vec<String> {
+    let bytes = workspace.as_bytes();
+    if bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| *byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+    {
+        return vec!["site-audit-bypass: bare CR line ending is prohibited".into()];
     }
-    for (key, expected) in [
-        ("id", SITE_EXCEPTION_ID),
-        ("cve", SITE_EXCEPTION_CVE),
-        ("rule", "site-advisory"),
-        ("package", "picomatch"),
-        ("version", "4.0.5"),
-        ("owner", "project-maintainers"),
-        ("created", "2026-11-17"),
-        ("expires", SITE_EXCEPTION_EXPIRY),
-        (
-            "tracking_issue",
-            "https://github.com/h8rt3rmin8r/fragcap/issues/630",
-        ),
-    ] {
-        if object.get(key).and_then(Value::as_str) != Some(expected) {
-            findings.push(format!("site-exception-schema: {key} must be {expected}"));
-        }
-    }
-    validate_governance(object, today, "site advisory exception", &mut findings);
-    if today >= SITE_EXCEPTION_EXPIRY {
-        findings.push(format!(
-            "site-exception-expired: {SITE_EXCEPTION_ID} expired {SITE_EXCEPTION_EXPIRY} UTC"
-        ));
-    }
-    let locked_versions: Vec<_> = lock
+    let root_indent = workspace
         .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("picomatch@"))
-        .collect();
-    if locked_versions.len() != 2
-        || locked_versions
-            .iter()
-            .any(|line| *line != "picomatch@4.0.5:" && *line != "picomatch@4.0.5: {}")
-    {
-        findings.push("site-exception-unused: locked picomatch is not exactly 4.0.5".into());
-    }
-    let expected_config = format!("auditConfig:\n  ignoreCves:\n    - {SITE_EXCEPTION_CVE}\n");
-    if !workspace.ends_with(&expected_config)
-        || workspace.matches("auditConfig:").count() != 1
-        || workspace.matches("ignoreCves:").count() != 1
-        || workspace
-            .lines()
-            .any(|line| matches!(line.trim(), "audit:" | "ignoreGhsas:"))
-    {
-        findings.push("site-exception-config: only the exact CVE may be ignored".into());
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            (!trimmed.is_empty() && !trimmed.starts_with('#')).then_some(line.len() - trimmed.len())
+        })
+        .min()
+        .unwrap_or(0);
+    let mut findings = Vec::new();
+    let mut seen_root_key = false;
+    for line in workspace.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || line.len() - trimmed.len() != root_indent
+        {
+            continue;
+        }
+        if trimmed.starts_with("- ") && seen_root_key {
+            continue;
+        }
+        let Some((raw_key, _)) = trimmed.split_once(':') else {
+            findings.push("site-audit-bypass: noncanonical root mapping syntax".into());
+            continue;
+        };
+        let key = raw_key.trim_end();
+        let mut chars = key.chars();
+        if !matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
+            || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        {
+            findings.push("site-audit-bypass: noncanonical root mapping syntax".into());
+            continue;
+        }
+        seen_root_key = true;
+        if matches!(key, "auditConfig" | "audit") {
+            findings.push(format!(
+                "site-audit-bypass: top-level {key} is prohibited in site/pnpm-workspace.yaml"
+            ));
+        }
     }
     findings
 }
@@ -1162,19 +1121,16 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
             "cargo run --locked --package xtask -- docs check",
         ]),
         (audit, "Install site dependencies", vec!["working-directory: site", "run: pnpm install --frozen-lockfile"]),
-        (audit, "Validate temporary site advisory exception", vec![
+        (audit, "Reject site audit bypass configuration", vec![
             "run: |",
-            "\"supply-chain/site-audit-exception-v1.json\", \"utf8\"));",
-            "if (record.id !== \"GHSA-fc5q-39xc-vjpf\" ||",
-            "record.cve !== \"CVE-2026-112366\" ||",
-            "record.package !== \"picomatch\" ||",
-            "record.version !== \"4.0.5\" ||",
-            "record.expires !== \"2026-12-01\") {",
-            "if (workspace.slice(workspace.indexOf(\"auditConfig:\")) !==",
-            "const versions = [...lock.matchAll(/^  picomatch@([^:]+):/gm)];",
-            "versions.some((entry) => entry[1] !== \"4.0.5\")) {",
-            "const expiry = Date.parse(`${record.expires}T00:00:00Z`);",
-            "if (!Number.isFinite(expiry) || Date.now() >= expiry) {",
+            "const workspace = readFileSync(\"site/pnpm-workspace.yaml\", \"utf8\");",
+            "if (/\\r(?!\\n)/.test(workspace)) {",
+            "const rootIndent = Math.min(...lines.map(({ indent }) => indent));",
+            "let seenRootKey = false;",
+            "if (trimmed.startsWith(\"- \") && seenRootKey) continue;",
+            "const match = /^([A-Za-z][A-Za-z0-9_-]*)\\s*:/.exec(trimmed);",
+            "if (!match) throw Error(\"Noncanonical site workspace root mapping\");",
+            "if (match[1] === \"auditConfig\" || match[1] === \"audit\") {",
         ]),
         (audit, "Audit the complete site graph", vec![
             "working-directory: site",
@@ -1201,12 +1157,18 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
     }
     if !matches!(
         (
-            audit.find("      - name: Validate temporary site advisory exception\n"),
+            audit.find("      - name: Reject site audit bypass configuration\n"),
             audit.find("      - name: Audit the complete site graph\n")
         ),
         (Some(validation), Some(audit)) if validation < audit
     ) {
-        findings.push("dependency-workflow: site exception must expire before audit".into());
+        findings.push("dependency-workflow: site audit bypass guard must precede audit".into());
+    }
+    if audit.contains("site-audit-exception-v1.json")
+        || audit.contains("CVE-2026-112366")
+        || audit.contains("GHSA-fc5q-39xc-vjpf")
+    {
+        findings.push("dependency-workflow: retired site advisory exception remains".into());
     }
     let site_audit = workflow_step(audit, "Audit the complete site graph").unwrap_or_default();
     if site_audit
@@ -3112,47 +3074,68 @@ mod tests {
     }
 
     #[test]
-    fn site_advisory_exception_is_exact_used_and_finite() {
-        let record: Value = serde_json::from_str(include_str!(
-            "../../supply-chain/site-audit-exception-v1.json"
+    fn site_workspace_requires_unfiltered_audit_config() {
+        let baseline = "packages:\n  - \".\"\n\n# auditConfig: is harmless comment text\n# audit: is also a comment\n# 'audit': false is harmless too\n# {auditConfig: {ignoreCves: []}} is just a comment\n";
+        assert!(validate_site_workspace_audit_config(baseline).is_empty());
+        assert!(validate_site_workspace_audit_config(
+            "packages:\r\n  - \".\"\r\n# audit: comment\r\n"
+        )
+        .is_empty());
+        assert!(validate_site_workspace_audit_config("packages:\n- \".\"\n").is_empty());
+        assert!(validate_site_workspace_audit_config(
+            "overrides:\n  audit: 1.2.3\n  auditConfig: 2.0.0\n"
+        )
+        .is_empty());
+        assert!(validate_site_workspace_audit_config(include_str!(
+            "../../site/pnpm-workspace.yaml"
         ))
-        .unwrap();
-        let lock = include_str!("../../site/pnpm-lock.yaml");
-        let workspace = include_str!("../../site/pnpm-workspace.yaml");
-        assert!(validate_site_exception_value(&record, lock, workspace, "2026-11-17").is_empty());
-        assert!(
-            validate_site_exception_value(&record, lock, workspace, "2026-12-01")
-                .iter()
-                .any(|finding| finding.contains("expired"))
-        );
+        .is_empty());
+        assert!(validate_site_workspace_audit_config("  audit: false\n")
+            .iter()
+            .any(|finding| finding.contains("site-audit-bypass")));
 
-        let mut wrong_id = record.clone();
-        wrong_id["id"] = json!("GHSA-0000-0000-0000");
-        assert!(
-            !validate_site_exception_value(&wrong_id, lock, workspace, "2026-11-17").is_empty()
-        );
-        let mut wrong_cve = record.clone();
-        wrong_cve["cve"] = json!("CVE-2026-000000");
-        assert!(
-            !validate_site_exception_value(&wrong_cve, lock, workspace, "2026-11-17").is_empty()
-        );
-        let mut extended = record.clone();
-        extended["expires"] = json!("2027-12-01");
-        assert!(
-            !validate_site_exception_value(&extended, lock, workspace, "2026-11-17").is_empty()
-        );
-        let stale_lock = lock.replace("picomatch@4.0.5:", "picomatch@4.0.7:");
-        assert!(
-            !validate_site_exception_value(&record, &stale_lock, workspace, "2026-11-17")
-                .is_empty()
-        );
-        let extra_ignore = workspace.replace(
-            "    - CVE-2026-112366",
-            "    - CVE-2026-112366\n    - CVE-2026-000000",
-        );
-        assert!(
-            !validate_site_exception_value(&record, lock, &extra_ignore, "2026-11-17").is_empty()
-        );
+        for (name, fixture) in [
+            (
+                "auditConfig",
+                "auditConfig:\n  ignoreCves:\n    - CVE-2026-000000\n",
+            ),
+            (
+                "auditConfig",
+                "auditConfig:\n  ignoreGhsas:\n    - GHSA-0000-0000-0000\n",
+            ),
+            (
+                "noncanonical",
+                "\"auditConfig\":\n  ignoreCves:\n    - CVE-2026-000000\n",
+            ),
+            ("audit", "audit:\n  ignore:\n    - GHSA-0000-0000-0000\n"),
+            ("audit", "audit: false\n"),
+            ("noncanonical", "'audit': false\n"),
+        ] {
+            let findings = validate_site_workspace_audit_config(&format!("{baseline}{fixture}"));
+            assert!(
+                findings.iter().any(|finding| {
+                    finding.contains("site-audit-bypass") && finding.contains(name)
+                }),
+                "{name} bypass was not rejected: {findings:?}"
+            );
+        }
+
+        for fixture in [
+            "- auditConfig: {}\n",
+            "{packages: [\".\"], auditConfig: {ignoreCves: [CVE-2026-112366]}}\n",
+            "? auditConfig\n: {ignoreCves: [CVE-2026-112366]}\n",
+            "defaults: &site\n  auditConfig:\n    ignoreCves:\n      - CVE-2026-112366\n<<: *site\n",
+            "*site\n",
+            "!site {packages: [\".\"]}\n",
+            "\"aud\\u0069tConfig\":\n  ignoreCves:\n    - CVE-2026-112366\n",
+            "packages:\r  - \".\"\rauditConfig:\r  ignoreCves:\r    - CVE-2026-112366\r",
+        ] {
+            let findings = validate_site_workspace_audit_config(fixture);
+            assert!(
+                findings.iter().any(|finding| finding.contains("site-audit-bypass")),
+                "noncanonical root bypass was not rejected: {findings:?}"
+            );
+        }
     }
 
     #[test]
@@ -3255,10 +3238,14 @@ mod tests {
                 "pnpm audit --audit-level low",
                 "pnpm audit --audit-level low --ignore GHSA-0000-0000-0000",
             ),
-            ("Date.now() >= expiry", "Date.now() < expiry"),
             (
-                "Validate temporary site advisory exception\n",
-                "Removed site advisory exception\n",
+                "if (match[1] === \"auditConfig\" || match[1] === \"audit\") {",
+                "if (match[1] === \"unused\") {",
+            ),
+            ("if (/\\r(?!\\n)/.test(workspace)) {", "if (false) {"),
+            (
+                "Reject site audit bypass configuration\n",
+                "Removed site audit bypass guard\n",
             ),
             (
                 "Audit the complete site graph\n",
