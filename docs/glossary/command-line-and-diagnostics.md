@@ -67,6 +67,19 @@ A native Deep Capture connection record that names the accepted connection, reac
 
 **See also:** [Session progress](command-line-and-diagnostics.md#session-progress), [Deep Capture](capture-and-networking.md#deep-capture)
 
+## HTTP-head failure count
+
+The number of HTTP/1.1 head bytes a bounded proxy reader actually observed before a read error, partial EOF, or configured head-size refusal. The optional `http_head_bytes_before_failure` field appears on native and terminal connection diagnostics only for these failures; an actual read error before any byte reports zero. The separate bundle debug report summarizes valid counted failures without copying partial head content.
+
+{: .matters }
+> A clean EOF before any byte and a completed head omit the field. The count reveals neither the head content nor why a peer stopped, and it never implies a completed HTTP exchange. The same reader may consume plain or TLS-backed HTTP streams.
+
+**See also:** [TLS refusal diagnostic](command-line-and-diagnostics.md#tls-refusal-diagnostic), [Failure boundary](capture-and-networking.md#failure-boundary)
+
+**References:**
+
+- [Deep Capture session bundle contract](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md#137-deep-capture-session-bundles) (project primary source for the native connection diagnostic).
+
 ## Terminal report
 
 An immutable result that distinguishes an operation's outcome from its evidence completeness and resource cleanup.

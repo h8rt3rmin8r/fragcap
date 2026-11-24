@@ -105,6 +105,7 @@ the owning category page.
 - [Hero listing](command-line-and-diagnostics.md#hero-listing)
 - [Hint database](process-and-attribution.md#hint-database)
 - [Hint provider](process-and-attribution.md#hint-provider)
+- [HTTP-head failure count](command-line-and-diagnostics.md#http-head-failure-count)
 - [Inspectability state](capture-and-networking.md#inspectability-state)
 - [Install acknowledgement](capture-and-networking.md#install-acknowledgement)
 - [Installer effect](platform-and-distribution.md#installer-effect)

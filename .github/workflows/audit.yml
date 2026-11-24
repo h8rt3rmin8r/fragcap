@@ -38,7 +38,7 @@ jobs:
       # Install the exact governed tool from its locked source graph, without
       # a Docker Hub bootstrap that can prevent the audit from running.
       - name: Install pinned cargo-deny
-        run: cargo install cargo-deny --version 0.20.2 --locked
+        run: cargo install cargo-deny --version 0.21.0 --locked
       - name: Audit all features
         run: cargo deny --locked --all-features check advisories licenses bans sources
 

@@ -126,6 +126,7 @@ pub struct ProxyConnectionDiagnostic {
     pub transport_category: Option<String>,
     pub os_error_code: Option<i32>,
     pub header_timeout_phase: Option<String>,
+    pub http_head_bytes_before_failure: Option<u32>,
     pub completed_exchanges: u64,
     pub inspection_requested_scope: Option<String>,
     pub inspection_scope: Option<String>,
@@ -227,6 +228,7 @@ impl ProxyDiagnostics {
                     transport_category: record.transport_category.map(str::to_string),
                     os_error_code: record.os_error_code,
                     header_timeout_phase: record.header_timeout_phase.map(str::to_string),
+                    http_head_bytes_before_failure: record.http_head_bytes_before_failure,
                     completed_exchanges: record.completed_exchanges,
                     inspection_requested_scope: record
                         .inspection
@@ -319,5 +321,76 @@ impl ProxyDiagnostics {
                 .failed_connections
                 .saturating_add(self.authentication_refused)
                 .saturating_add(self.forced_connections)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_head_failure_count_retains_connection_identity() {
+        let failed = fragcap_proxy::ConnectionDiagnostic {
+            schema_version: 1,
+            connection_id: 23,
+            terminal: "failed",
+            cause: None,
+            code: Some("http-head-early-eof"),
+            stages: Vec::new(),
+            last_reached: fragcap_proxy::ConnectionStage::FirstRequest,
+            last_completed: fragcap_proxy::ConnectionStage::Authentication,
+            boundary: Some("client-facing"),
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
+            header_timeout_phase: None,
+            http_head_bytes_before_failure: Some(3),
+            completed_exchanges: 0,
+            inspection: None,
+            association_inspection: None,
+            relay_client_bytes: 0,
+            relay_upstream_bytes: 0,
+            relay_client_datagrams: 0,
+            relay_upstream_datagrams: 0,
+        };
+        let mut complete = failed.clone();
+        complete.connection_id = 24;
+        complete.terminal = "complete";
+        complete.code = None;
+        complete.http_head_bytes_before_failure = None;
+        let runtime = fragcap_proxy::RuntimeObservation {
+            state: fragcap_proxy::LifecycleState::Running,
+            endpoint: "127.0.0.1:1".parse().unwrap(),
+            accepted_connections: 2,
+            authenticated_connections: 2,
+            authentication_refused: 0,
+            saturated_connections: 0,
+            completed_connections: 1,
+            failed_connections: 1,
+            forced_connections: 0,
+            live_connections: 0,
+            peak_live_connections: 2,
+            failures: Vec::new(),
+            connection_causes: Default::default(),
+            connection_diagnostics: vec![failed, complete],
+            resources: Default::default(),
+            protocol: Default::default(),
+            application: Vec::new(),
+        };
+        let projected = ProxyDiagnostics::from_runtime(&runtime);
+        assert_eq!(projected.connections[0].connection_id, 23);
+        assert_eq!(
+            projected.connections[0].code.as_deref(),
+            Some("http-head-early-eof")
+        );
+        assert_eq!(
+            projected.connections[0].http_head_bytes_before_failure,
+            Some(3)
+        );
+        assert_eq!(projected.connections[1].connection_id, 24);
+        assert_eq!(
+            projected.connections[1].http_head_bytes_before_failure,
+            None
+        );
     }
 }

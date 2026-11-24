@@ -3288,6 +3288,9 @@ impl NativeProxyLease {
                 "relay_client_datagrams": record.relay_client_datagrams,
                 "relay_upstream_datagrams": record.relay_upstream_datagrams,
             });
+            if let Some(bytes) = record.http_head_bytes_before_failure {
+                value["http_head_bytes_before_failure"] = serde_json::json!(bytes);
+            }
             value["inspection_requested_scope"] =
                 serde_json::json!(record.inspection_requested_scope);
             value["inspection_policy_id"] = serde_json::json!(record.inspection_policy_id);
@@ -5457,6 +5460,79 @@ mod tests {
             diagnostics_appended: false,
             observation_ended_at_ns: None,
         }
+    }
+
+    #[test]
+    fn native_bundle_retains_head_failure_count_only_when_observed() {
+        let directory = tempfile::tempdir().unwrap();
+        let ip = "127.0.0.1".parse().unwrap();
+        let mut lease = native_join_test_lease(
+            ip,
+            SocketAddr::new(ip, 9),
+            &directory.path().join("application.jsonl"),
+        );
+        let path = directory.path().join("proxy.jsonl");
+        lease.proxy_lifecycle =
+            Some(super::super::ProxyLifecycleLease::open(&path, "s212-head-count", 16).unwrap());
+        let failed = super::super::ProxyConnectionDiagnostic {
+            schema_version: 1,
+            connection_id: 1,
+            terminal: "failed".into(),
+            cause: None,
+            code: Some("http-head-early-eof".into()),
+            stages: Vec::new(),
+            last_reached: "first-request".into(),
+            last_completed: "authentication".into(),
+            boundary: Some("client-facing".into()),
+            tls_alert: None,
+            transport_category: None,
+            os_error_code: None,
+            http_head_bytes_before_failure: Some(3),
+            header_timeout_phase: None,
+            completed_exchanges: 0,
+            inspection_requested_scope: None,
+            inspection_scope: None,
+            inspection_action: None,
+            inspection_reason: None,
+            inspection_decided_after_ms: None,
+            inspection_policy_id: None,
+            inspection_owner_proof: None,
+            association_inspection_requested_scope: None,
+            association_inspection_scope: None,
+            association_inspection_action: None,
+            association_inspection_reason: None,
+            association_inspection_decided_after_ms: None,
+            association_inspection_policy_id: None,
+            association_inspection_owner_proof: None,
+            relay_client_bytes: 0,
+            relay_upstream_bytes: 0,
+            relay_client_datagrams: 0,
+            relay_upstream_datagrams: 0,
+        };
+        let mut complete = failed.clone();
+        complete.connection_id = 2;
+        complete.terminal = "complete".into();
+        complete.code = None;
+        complete.http_head_bytes_before_failure = None;
+        lease.diagnostics = Some(super::super::ProxyDiagnostics {
+            connections: vec![failed, complete],
+            ..Default::default()
+        });
+        lease.append_connection_diagnostics().unwrap();
+        lease.proxy_lifecycle.take().unwrap().finish().unwrap();
+        let prefix = super::super::read_lifecycle_prefix(&path).unwrap();
+        let records: Vec<_> = prefix
+            .records
+            .iter()
+            .filter(|record| record["type"] == "proxy.connection-diagnostic")
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["fields"]["code"], "http-head-early-eof");
+        assert_eq!(records[0]["fields"]["http_head_bytes_before_failure"], 3);
+        assert!(records[1]["fields"]
+            .get("http_head_bytes_before_failure")
+            .is_none());
+        lease.cleanup(Budget::new(Duration::from_secs(3)));
     }
 
     #[test]

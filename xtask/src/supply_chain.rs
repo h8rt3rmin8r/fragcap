@@ -14,6 +14,18 @@ const SITE_EXCEPTION_REL: &str = "supply-chain/site-audit-exception-v1.json";
 const SITE_EXCEPTION_ID: &str = "GHSA-fc5q-39xc-vjpf";
 const SITE_EXCEPTION_CVE: &str = "CVE-2026-112366";
 const SITE_EXCEPTION_EXPIRY: &str = "2026-12-01";
+const HEAPLESS_ADVISORY_EXPIRY: &str = "2026-12-15";
+const HEAPLESS_ADVISORY_IDS: [&str; 9] = [
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
+];
 const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
 const RELEASE_FEATURES: &str =
@@ -989,7 +1001,7 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
                 "removal_condition",
                 "rule",
             ],
-            &["tool", "tool_version"],
+            &["parent", "tool", "tool_version"],
             "exception",
             findings,
         );
@@ -1007,6 +1019,7 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
         }
         validate_governance(item, today, &format!("exception {id}"), findings);
         let rule = item.get("rule").and_then(Value::as_str).unwrap_or("");
+        let parent = item.get("parent").and_then(Value::as_str).unwrap_or("");
         let tool = item.get("tool").and_then(Value::as_str).unwrap_or("");
         let tool_version = item
             .get("tool_version")
@@ -1019,6 +1032,11 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
                 "exception-schema: {id} has tool scope for a non-tool rule"
             ));
         }
+        if rule != "rustsec-unsound" && item.contains_key("parent") {
+            findings.push(format!(
+                "exception-schema: {id} has parent scope for a non-RustSec rule"
+            ));
+        }
         let governed_version = object
             .get("tools")
             .and_then(Value::as_array)
@@ -1027,7 +1045,7 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
             .find(|record| record.get("name").and_then(Value::as_str) == Some(tool))
             .and_then(|record| record.get("version"))
             .and_then(Value::as_str);
-        let used = matches!(
+        let used_tool = matches!(
             (rule, package, tool, tool_version, governed_version),
             (
                 "tool-yanked",
@@ -1037,10 +1055,93 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
                 Some("0.5.9")
             )
         );
-        if !used {
+        let used_heapless = rule == "rustsec-unsound"
+            && HEAPLESS_ADVISORY_IDS.contains(&id)
+            && package == "heapless@0.8.0"
+            && parent == "smoltcp@0.12.0"
+            && item.get("expires").and_then(Value::as_str) == Some(HEAPLESS_ADVISORY_EXPIRY);
+        if !used_tool && !used_heapless {
             findings.push(format!("exception-unused: {id}"));
         }
     }
+}
+
+fn validate_heapless_advisory_mirror(policy: &Value, deny: &str, findings: &mut Vec<String>) {
+    let Some(section) = deny.split_once("[advisories]").map(|(_, rest)| rest) else {
+        findings.push("advisory-mirror: deny.toml lacks [advisories]".to_string());
+        return;
+    };
+    let section = section
+        .split_once("\n[graph]")
+        .map_or(section, |(before, _)| before);
+    if !section.lines().any(|line| {
+        line.split_once('=')
+            .is_some_and(|(key, value)| key.trim() == "unsound" && value.trim() == "\"all\"")
+    }) {
+        findings.push("advisory-mirror: unsound must remain all".to_string());
+    }
+    let Some(body) = section
+        .split_once("ignore = [")
+        .and_then(|(_, rest)| rest.split_once("\n]"))
+        .map(|(body, _)| body)
+    else {
+        findings.push("advisory-mirror: exact ignore list is missing".to_string());
+        return;
+    };
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let records: Vec<&Value> = policy
+        .get("exceptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    for id in HEAPLESS_ADVISORY_IDS {
+        let matching: Vec<&Value> = records
+            .iter()
+            .copied()
+            .filter(|record| record.get("id").and_then(Value::as_str) == Some(id))
+            .collect();
+        let needle = format!("id = \"{id}\"");
+        let mirrored: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|line| line.contains(&needle))
+            .collect();
+        if matching.len() != 1 || mirrored.len() != 1 {
+            findings.push(format!(
+                "advisory-mirror: {id} needs one policy record and one ignore"
+            ));
+            continue;
+        }
+        let record = matching[0];
+        let line = mirrored[0];
+        let expiry = record.get("expires").and_then(Value::as_str).unwrap_or("");
+        let parent = record.get("parent").and_then(Value::as_str).unwrap_or("");
+        if !exact_advisory_ignore_line(line, id, expiry, parent) {
+            findings.push(format!("advisory-mirror: {id} differs from governed scope"));
+        }
+    }
+    if lines.len() != HEAPLESS_ADVISORY_IDS.len() {
+        findings.push("advisory-mirror: unexpected cargo-deny ignore".to_string());
+    }
+}
+
+fn exact_advisory_ignore_line(line: &str, id: &str, expiry: &str, parent: &str) -> bool {
+    let prefix = format!("{{ id = \"{id}\", reason = \"");
+    let Some(rest) = line.strip_prefix(&prefix) else {
+        return false;
+    };
+    let Some((reason, tail)) = rest.split_once("\", expiry = \"") else {
+        return false;
+    };
+    !reason.is_empty()
+        && !reason.contains('"')
+        && !reason.contains('\\')
+        && tail == format!("{expiry}\", allow = [\"{parent}\"] }},")
 }
 
 fn workflow_step<'a>(workflow: &'a str, name: &str) -> Option<&'a str> {
@@ -1168,6 +1269,8 @@ fn validate_dependency_workflows(audit: &str, docs: &str) -> Vec<String> {
 fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
     findings.extend(validate_critical_declarations(root, policy)?);
+    let deny = fs::read_to_string(root.join("deny.toml")).map_err(|e| e.to_string())?;
+    validate_heapless_advisory_mirror(policy, &deny, &mut findings);
     let audit =
         fs::read_to_string(root.join(".github/workflows/audit.yml")).map_err(|e| e.to_string())?;
     let docs =
@@ -1194,12 +1297,18 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
     for required in [
         "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
         "toolchain: 1.89.0",
-        "cargo install cargo-deny --version 0.20.2 --locked",
         "cargo deny --locked --all-features check advisories licenses bans sources",
     ] {
         if !audit.contains(required) {
             findings.push(format!("workflow-tool-pin: audit.yml lacks {required}"));
         }
+    }
+    let deny_install = format!(
+        "cargo install cargo-deny --version {} --locked",
+        policy_tool_version(policy, "cargo-deny")?
+    );
+    if !audit.contains(&deny_install) {
+        findings.push(format!("workflow-tool-pin: audit.yml lacks {deny_install}"));
     }
     let tools = policy
         .get("tools")
@@ -2958,7 +3067,7 @@ mod tests {
     #[test]
     fn maintenance_review_cannot_be_future_dated() {
         let item = json!({
-            "name": "cargo-deny", "version": "0.20.2", "owner": "maintainers",
+            "name": "cargo-deny", "version": "0.21.0", "owner": "maintainers",
             "last_reviewed": "2026-09-06", "cadence_days": 30
         });
         let mut findings = Vec::new();
@@ -3044,6 +3153,61 @@ mod tests {
         assert!(
             !validate_site_exception_value(&record, lock, &extra_ignore, "2026-11-17").is_empty()
         );
+    }
+
+    #[test]
+    fn heapless_advisory_exceptions_match_exact_parent_and_expiry() {
+        let policy: Value =
+            serde_json::from_str(include_str!("../../supply-chain/policy-v1.json")).unwrap();
+        let deny = include_str!("../../deny.toml");
+        let mut findings = Vec::new();
+        validate_exceptions(policy.as_object().unwrap(), "2026-11-24", &mut findings);
+        validate_heapless_advisory_mirror(&policy, deny, &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let broad_parent = deny.replacen("smoltcp@0.12.0", "smoltcp", 1);
+        let mut findings = Vec::new();
+        validate_heapless_advisory_mirror(&policy, &broad_parent, &mut findings);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("differs from governed scope")));
+
+        let stale_expiry = deny.replacen("expiry = \"2026-12-15\"", "expiry = \"2026-11-23\"", 1);
+        let mut findings = Vec::new();
+        validate_heapless_advisory_mirror(&policy, &stale_expiry, &mut findings);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("differs from governed scope")));
+
+        let original_line = deny
+            .lines()
+            .find(|line| line.contains("RUSTSEC-2026-0574"))
+            .unwrap();
+        let spoofed_line = r#"    { id = "RUSTSEC-2026-0574", reason = 'expiry = "2026-12-15", allow = ["smoltcp@0.12.0"]', expiry = "2026-12-15", allow = ["smoltcp"] },"#;
+        let spoofed_reason = deny.replacen(original_line, spoofed_line, 1);
+        let mut findings = Vec::new();
+        validate_heapless_advisory_mirror(&policy, &spoofed_reason, &mut findings);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("differs from governed scope")));
+
+        let mut wrong_policy_parent = policy.clone();
+        wrong_policy_parent["exceptions"][1]["parent"] = json!("other-parent@0.1.0");
+        let mut findings = Vec::new();
+        validate_exceptions(
+            wrong_policy_parent.as_object().unwrap(),
+            "2026-11-24",
+            &mut findings,
+        );
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("exception-unused")));
+
+        let mut findings = Vec::new();
+        validate_exceptions(policy.as_object().unwrap(), "2026-12-16", &mut findings);
+        assert!(findings.iter().any(|finding| {
+            finding.contains("exception-expired") && finding.contains("RUSTSEC-2026-0574")
+        }));
     }
 
     #[test]
